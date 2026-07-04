@@ -1,0 +1,21 @@
+Email,Account UUID,Product,Model,Model Family,Request Count,Prompt Tokens,Completion Tokens,Total Gross Spend USD,Total Net Spend USD
+tanaka@example.co.jp,uuid-40552995,Claude Code,claude-opus-4-8,claude-opus,1664,55466666,5546666,416.0000,416.0000
+tanaka@example.co.jp,uuid-40552995,Chat,claude-opus-4-8,claude-opus,416,13866666,1386666,104.0000,104.0000
+suzuki@example.co.jp,uuid-35700323,Claude Code,claude-opus-4-8,claude-opus,1088,36266666,3626666,272.0000,272.0000
+suzuki@example.co.jp,uuid-35700323,Chat,claude-opus-4-8,claude-opus,272,9066666,906666,68.0000,68.0000
+sato@example.co.jp,uuid-63508834,Claude Code,claude-sonnet-4-6,claude-sonnet,57,3200000,320000,14.4000,14.4000
+sato@example.co.jp,uuid-63508834,Chat,claude-sonnet-4-6,claude-sonnet,14,800000,80000,3.6000,3.6000
+watanabe@example.co.jp,uuid-34725975,Claude Code,claude-sonnet-4-6,claude-sonnet,112,6222222,622222,28.0000,28.0000
+watanabe@example.co.jp,uuid-34725975,Chat,claude-sonnet-4-6,claude-sonnet,28,1555555,155555,7.0000,7.0000
+yamamoto@example.co.jp,uuid-41099342,Claude Code,claude-opus-4-8,claude-opus,1536,51200000,5120000,384.0000,384.0000
+yamamoto@example.co.jp,uuid-41099342,Chat,claude-opus-4-8,claude-opus,384,12800000,1280000,96.0000,96.0000
+nakamura@example.co.jp,uuid-97108496,Claude Code,claude-opus-4-8,claude-opus,928,30933333,3093333,232.0000,232.0000
+nakamura@example.co.jp,uuid-97108496,Chat,claude-opus-4-8,claude-opus,232,7733333,773333,58.0000,58.0000
+kobayashi@example.co.jp,uuid-08411901,Claude Code,claude-sonnet-4-6,claude-sonnet,147,8177777,817777,36.8000,36.8000
+kobayashi@example.co.jp,uuid-08411901,Chat,claude-sonnet-4-6,claude-sonnet,36,2044444,204444,9.2000,9.2000
+kato@example.co.jp,uuid-98990913,Claude Code,claude-sonnet-4-6,claude-sonnet,70,3911111,391111,17.6000,17.6000
+kato@example.co.jp,uuid-98990913,Chat,claude-sonnet-4-6,claude-sonnet,17,977777,97777,4.4000,4.4000
+yoshida@example.co.jp,uuid-51235409,Claude Code,claude-haiku-4-5,claude-haiku,25,4266666,426666,6.4000,6.4000
+yoshida@example.co.jp,uuid-51235409,Chat,claude-haiku-4-5,claude-haiku,6,1066666,106666,1.6000,1.6000
+yamada@example.co.jp,uuid-38552174,Claude Code,claude-sonnet-4-6,claude-sonnet,96,5333333,533333,24.0000,24.0000
+yamada@example.co.jp,uuid-38552174,Chat,claude-sonnet-4-6,claude-sonnet,24,1333333,133333,6.0000,6.0000

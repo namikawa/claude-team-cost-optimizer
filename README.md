@@ -1,0 +1,92 @@
+# claude-team-cost-optimizer
+
+Claude Team プラン（Standard / Premium シート）のシート最適化分析ツール。
+
+メンバーごとの利用実績（スペンドレポート）から API 換算コストを集計し、
+
+- **Premium なのに使っていない** → Standard へダウングレード推奨
+- **Standard + 従量課金が Premium を超えそう** → Premium へアップグレード推奨
+
+を月次で判定・レポートします。ローカルマシン上で Claude Code から実行する想定です。
+
+> **免責**: 本ツールは Anthropic 非公式のコミュニティツールです。シート料金・モデル単価・
+> スペンドレポートの仕様は変更される可能性があるため、利用前に `config.yaml` の単価
+> （2026-07 時点の値）を最新の公式情報と照合してください。本ツールの分析結果に基づく
+> 判断は利用者の責任で行ってください。
+
+## セットアップ
+
+```sh
+uv sync
+```
+
+## 月次運用手順（毎月月初に実施）
+
+> ⚠️ **スペンドレポートは90日より前に遡れません。毎月必ずエクスポートしてください。**
+
+1. **スペンドレポート（必須）** — Owner / Primary Owner のみ
+   - claude.ai 左下のイニシャル → **Settings > Analytics**
+   - 「How much is Claude costing?」セクション → **Export spend report**
+   - 期間は **Custom で前月1日〜末日** を指定
+   - ダウンロードした CSV を `input/spend/spend_YYYY-MM.csv` として保存（YYYY-MM は対象月）
+2. **メンバー一覧（必須）**
+   - 管理画面のメンバー管理からエクスポート（email とシート種別を含むもの）
+   - `input/members/members_YYYY-MM.csv` として保存
+   - エクスポートが無い場合は `email,seat_type` の2列 CSV を手動作成でも可
+3. **Claude Code 分析（任意・活用度分析用）**
+   - https://claude.ai/analytics/claude-code → Leaderboard → **Export all users**
+   - `input/code-analytics/cc_YYYY-MM.csv` として保存
+4. **分析実行**
+   - Claude Code で `/seat-analysis` を実行（推奨。数値検証と考察執筆まで行う）
+   - または CLI 直接実行: `uv run seat-analyzer analyze --month YYYY-MM`
+5. `reports/YYYY-MM/` に以下が生成される
+   - `report.md` — 推奨テーブル + 感度分析 + 考察
+   - `dashboard.html` — 経営層共有用ダッシュボード（自己完結 HTML）
+   - `recommendations.csv` — スプレッドシート二次加工用
+
+## 判定ロジック概要
+
+ユーザ×月ごとに API 換算コスト `api_cost` を集計し、
+
+```
+cost_if_standard = $25  + max(0, api_cost − S_allowance)
+cost_if_premium  = $125 + max(0, api_cost − P_allowance)
+```
+
+の安い方を推奨。ただし:
+
+- **allowance（シート込み利用量の USD 換算）は Anthropic 非公開**のため、
+  `config.yaml` の low / mid / high 3 シナリオで感度分析する（判定の主系は mid）
+- **ヒステリシス**: 直近 2 ヶ月連続（`decision.hysteresis_months`）で同じ推奨、
+  かつ削減見込みが差額 $100 の 20% 以上（`decision.buffer_ratio`）のときのみ「変更推奨」
+- **センサリング警告**: 従量課金が無効な場合、Standard ユーザの観測利用量は上限で
+  頭打ちになり真の需要を過小評価する。上限到達が疑われるユーザにはフラグを付ける
+
+## スペンドレポートの仕様に関する知見（実データで検証済み）
+
+1. **spend 列（net_spend）は「実課金額」**であり API 等価見積りではない。
+   シート込み利用は $0、上限超過の従量課金と組織サービス利用のみ計上される。
+   このため需要指標は `cost_basis: computed`（tokens×単価のAPI等価計算）を採用。
+2. **キャッシュ実効単価の検算**: `未キャッシュ×1.0 + キャッシュ読取×0.1 +
+   書込5m×1.25 + 書込1h×2.0 + 出力×単価` が実課金行の金額と一致することを確認済み
+   （`cache_multipliers` 参照）。計算値は需要指標として信頼できる。
+3. **`(org service usage)` 行**（Code Review 等のユーザ非帰属利用）が存在する場合、
+   シート判定から自動分離され、サマリに別枠計上される。
+4. **Standard シートの実効的な込み利用量は、公開情報からの保守的な推定より
+   大きい傾向がある**。本ツールの判定は実課金の観測値を優先する設計のため
+   allowance 推定誤差の影響は限定的だが、自組織の実測に基づく調整を推奨（下記）。
+
+## allowance のキャリブレーション
+
+数ヶ月分の実データが溜まったら:
+
+- Standard ユーザの月次 `api_cost` の分布を確認し、上限到達（頭打ち）している
+  ユーザの観測最大値 ≒ `S_allowance` として `config.yaml` を更新
+- Premium は Standard の 5 倍程度（セッション倍率 1.25x vs 6.25x）を目安に設定
+
+## 開発
+
+```sh
+uv run pytest              # テスト
+uv run seat-analyzer analyze --input-dir examples/input --month 2026-06   # サンプルデータでE2E
+```

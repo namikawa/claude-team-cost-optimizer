@@ -1,0 +1,98 @@
+# Claude Team シート最適化分析 設定ファイル
+#
+# 単価・閾値はすべてここで管理する。実データが溜まったら allowance_usd を
+# キャリブレーションすること（README「allowanceのキャリブレーション」参照）。
+
+currency:
+  display: USD
+  # 円換算を併記したい場合にレートを設定（例: 155.0）。null なら USD のみ。
+  jpy_rate: null
+
+seats:
+  standard:
+    price_usd: 25.0        # 月払い
+    # Standard シートに「含まれる」利用量の API 換算 USD/月。
+    # Anthropic 非公開のため推定値。low/mid/high の3シナリオで感度分析する。
+    allowance_usd:
+      low: 30.0
+      mid: 50.0
+      high: 75.0
+  premium:
+    price_usd: 125.0       # 月払い
+    allowance_usd:
+      low: 150.0
+      mid: 250.0
+      high: 375.0
+
+decision:
+  # 直近 N ヶ月連続で同じ推奨のときだけ「変更推奨」。それ未満は「要観察」。
+  hysteresis_months: 2
+  # 月あたり削減見込みが（Premium−Standard 差額 × この割合）以上のときのみ変更推奨。
+  buffer_ratio: 0.20
+  # Standard ユーザで api_cost >= allowance(mid) * この値 のとき
+  # 「上限到達の可能性（需要が観測上限で切られている恐れ）」フラグを付ける。
+  censoring_margin: 0.85
+
+# スペンドレポートに spend 列が無い/信頼できない場合の fallback 単価
+# （USD per 1M tokens）。model 名の部分一致（小文字）で判定、上から順に評価。
+model_prices:
+  patterns:
+    - { match: "fable",  input: 10.0, output: 50.0 }
+    - { match: "opus",   input: 5.0,  output: 25.0 }
+    - { match: "sonnet", input: 3.0,  output: 15.0 }
+    - { match: "haiku",  input: 1.0,  output: 5.0 }
+  default: { input: 5.0, output: 25.0 }
+
+# ユーザ需要（api_cost）の算出基準:
+#   computed  = tokens×単価のAPI等価計算（キャッシュ実効単価込み）
+#   net_spend = スペンドレポートの net_spend 列
+#   auto      = net_spend 合計が computed の 50% 未満なら computed を採用
+# 実データ検証（2026-07-05）: net_spend はシート込み利用が $0 になる「実課金額」であり
+# 需要指標には使えないため computed を採用する。net_spend は「実課金（従量課金分）」
+# として別列でレポートに表示する。
+cost_basis: computed
+
+# spend 列と tokens×単価 の乖離がこの割合を超えたら警告（cost_basis=net_spend 時のみ）
+spend_validation:
+  deviation_warn_ratio: 0.10
+
+# 入力 CSV のカラム名マッピング（実ファイルのヘッダに合わせて追記可能）。
+# ヘッダは 小文字化・前後空白除去・連続空白/アンダースコア→単一スペース に
+# 正規化してから照合する。
+columns:
+  spend:
+    email:            ["email", "user email", "user"]
+    account_uuid:     ["account uuid", "uuid"]
+    product:          ["product", "product type", "surface"]
+    model:            ["model", "model name"]
+    model_family:     ["model family"]
+    requests:         ["request count", "requests", "num requests", "total requests"]
+    prompt_tokens:    ["prompt tokens", "input tokens", "total prompt tokens"]
+    completion_tokens: ["completion tokens", "output tokens", "total completion tokens"]
+    net_spend:        ["total net spend usd", "net spend usd", "net spend"]
+    gross_spend:      ["total gross spend usd", "gross spend usd", "gross spend"]
+    # キャッシュ内訳（実スペンドレポートに存在。あると spend 検算の精度が上がる）
+    uncached_input_tokens: ["total uncached input tokens", "uncached input tokens"]
+    cache_read_tokens:     ["total cache read tokens", "cache read tokens"]
+    cache_write_5m_tokens: ["total cache write 5m tokens", "cache write 5m tokens"]
+    cache_write_1h_tokens: ["total cache write 1h tokens", "cache write 1h tokens"]
+  members:
+    email:     ["email", "user email"]
+    seat_type: ["seat", "seat type", "seat tier", "plan", "subscription"]
+    name:      ["name", "full name", "display name"]
+    role:      ["role"]
+    status:    ["status"]
+  code_analytics:
+    email:       ["email", "user", "user email", "member"]
+    prs_with_cc: ["prs with cc", "prs with claude code", "cc prs"]
+    prs_total:   ["all prs", "total prs", "prs"]
+    loc_with_cc: ["lines with cc", "lines of code with cc", "lines with claude code", "cc lines", "lines this month"]
+    loc_total:   ["all lines", "total lines", "lines"]
+
+# キャッシュトークンの実効単価係数（入力単価に対する倍率）。
+# 実データで net_spend = uncached×1.0 + cache_read×0.1 + write_5m×1.25 + write_1h×2.0
+# + completion×出力単価 と一致することを確認済み（2026-07-05）。
+cache_multipliers:
+  read: 0.1
+  write_5m: 1.25
+  write_1h: 2.0

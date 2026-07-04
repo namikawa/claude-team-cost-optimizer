@@ -1,0 +1,13 @@
+# 実データ（個人情報・利用実績を含むためコミット禁止）
+# ルート直下のみ。examples/input/ の合成サンプルは対象外
+/input/
+reports/
+
+CLAUDE.md
+.claude/settings.local.json
+.DS_Store
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
