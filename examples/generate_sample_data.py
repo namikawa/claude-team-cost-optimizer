@@ -63,6 +63,24 @@ USERS_ORG_B = [
 # members に載っていない利用者（シート不明の検知確認用）
 ORPHANS_ORG_A = [("guest@example.co.jp", {"2026-06": 15.0}, "claude-sonnet-4-6")]
 
+# 部署・チーム・職種・備考のマッピング（任意ファイル members-info.csv のデモ）。
+# 組織階層は 部署 > チーム。日本語ヘッダ（email,部署,チーム,職種,備考）で日本語
+# エイリアスの動作確認も兼ねる。org-a のみ生成。
+# (email, 部署, チーム, 職種, 備考)
+MEMBERS_INFO_ORG_A = [
+    ("tanaka@example.co.jp",    "プラットフォーム開発部", "基盤チーム",     "テックリード", ""),
+    ("suzuki@example.co.jp",    "プラットフォーム開発部", "基盤チーム",     "エンジニア",   ""),
+    ("sato@example.co.jp",      "プロダクト開発部",       "Webチーム",      "エンジニア",   "2026-06 ヒアリング済み: 7月からPJ利用予定"),
+    ("watanabe@example.co.jp",  "プロダクト開発部",       "Webチーム",      "エンジニア",   ""),
+    ("ito@example.co.jp",       "コーポレート",           "情シスチーム",   "エンジニア",   "2026-06 休職中・9月復帰予定"),
+    ("yamamoto@example.co.jp",  "プラットフォーム開発部", "SREチーム",      "エンジニア",   ""),
+    ("nakamura@example.co.jp",  "プロダクト開発部",       "モバイルチーム", "テックリード", ""),
+    ("kobayashi@example.co.jp", "プロダクト開発部",       "モバイルチーム", "エンジニア",   ""),
+    ("kato@example.co.jp",      "コーポレート",           "情シスチーム",   "エンジニア",   ""),
+    ("yoshida@example.co.jp",   "コーポレート",           "デザインチーム", "デザイナー",   ""),
+    ("yamada@example.co.jp",    "プラットフォーム開発部", "SREチーム",      "エンジニア",   ""),
+]
+
 CC_STATS_ORG_A = {  # (PRs with CC, All PRs, Lines with CC, All Lines) — 2026-06
     "tanaka@example.co.jp": (24, 30, 5200, 6800),
     "suzuki@example.co.jp": (18, 26, 3900, 6100),
@@ -135,6 +153,17 @@ def write_members(org: str, month: str, users: list) -> None:
     print(f"wrote {path}")
 
 
+def write_members_info(org: str, info: list) -> None:
+    """任意ファイル members-info.csv（月情報なし・org ディレクトリ直下・固定ファイル名）。"""
+    path = BASE / org / "members-info.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["email", "部署", "チーム", "職種", "備考"])
+        writer.writerows(info)
+    print(f"wrote {path}")
+
+
 def write_code_analytics(org: str, month: str, cc_stats: dict) -> None:
     path = BASE / org / "code-analytics" / f"cc_{month}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,3 +182,5 @@ if __name__ == "__main__":
         write_members(org, "2026-06", users)
         if cc_stats is not None:
             write_code_analytics(org, "2026-06", cc_stats)
+    # 任意入力デモ: 部署・職種・備考は org-a のみ（org-b は生成しない）
+    write_members_info("org-a", MEMBERS_INFO_ORG_A)

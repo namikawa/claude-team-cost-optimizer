@@ -1,0 +1,213 @@
+"""任意ファイル members-info.csv（部署・チーム・職種・備考マッピング）のテスト。"""
+
+from pathlib import Path
+
+from seat_analyzer import analyze as analyze_mod
+from seat_analyzer.analyze import analyze, preview
+from seat_analyzer.report import write_markdown
+
+from .conftest import spend_row
+
+
+def _write_info(input_dir: Path, org: str | None, text: str) -> None:
+    base = input_dir / org if org else input_dir
+    (base / "members-info.csv").write_text(text, encoding="utf-8")
+
+
+def test_japanese_header_merges(make_input, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard", "b@example.com,Premium"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,チーム,職種,備考\n"
+        "a@example.com,開発部,基盤チーム,エンジニア,テスト備考\n"
+        "b@example.com,営業部,西日本チーム,マネージャ,\n",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    by_email = result.users.set_index("email")
+    assert by_email.loc["a@example.com", "department"] == "開発部"
+    assert by_email.loc["a@example.com", "team"] == "基盤チーム"
+    assert by_email.loc["a@example.com", "role"] == "エンジニア"
+    assert by_email.loc["a@example.com", "note"] == "テスト備考"
+    assert by_email.loc["b@example.com", "department"] == "営業部"
+    assert by_email.loc["b@example.com", "team"] == "西日本チーム"
+    assert result.sources.get("members_info", "").endswith("members-info.csv")
+
+
+def test_english_header_merges(make_input, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,department,team,role,note\n"
+        "a@example.com,Platform,Core,Engineer,hello\n",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    row = result.users.set_index("email").loc["a@example.com"]
+    assert row["department"] == "Platform"
+    assert row["team"] == "Core"
+    assert row["role"] == "Engineer"
+    assert row["note"] == "hello"
+
+
+def test_team_only_without_department(make_input, cfg, tmp_path):
+    """チーム列だけ記入・部署未記入でも動く（チーム別サマリのみ出る）。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard", "b@example.com,Premium"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,チーム,職種,備考\n"
+        "a@example.com,基盤チーム,エンジニア,\n"
+        "b@example.com,SREチーム,エンジニア,\n",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    by_email = result.users.set_index("email")
+    assert by_email.loc["a@example.com", "team"] == "基盤チーム"
+    assert (result.users["department"] == "").all()
+    out = tmp_path / "report.md"
+    write_markdown(result, out)
+    text = out.read_text(encoding="utf-8")
+    assert "## チーム別サマリ" in text
+    assert "## 部署別サマリ" not in text
+    assert "| チーム |" in text  # ユーザ表にチーム列
+    assert "| 部署 |" not in text
+
+
+def test_no_file_no_error(make_input, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    # 列は空文字列で存在し、report 生成も落ちない
+    assert (result.users["department"] == "").all()
+    assert (result.users["team"] == "").all()
+    assert "members_info" not in result.sources
+    write_markdown(result, input_dir / "report.md")
+
+
+def test_unmapped_member_is_blank_no_warning(make_input, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0), spend_row("c@example.com", 5.0)]},
+        members=["a@example.com,Standard", "c@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,,\n",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    by_email = result.users.set_index("email")
+    assert by_email.loc["c@example.com", "department"] == ""
+    assert by_email.loc["c@example.com", "team"] == ""
+    # マッピング漏れは正常系のため members-info 由来の警告は出ない
+    assert not any("members-info" in w or "members_info" in w for w in result.warnings)
+
+
+def test_preview_merges(make_input, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,エンジニア,pv備考\n",
+    )
+    result = preview(input_dir, "2026-06", cfg, days_observed=15)
+    row = result.users.set_index("email").loc["a@example.com"]
+    assert row["department"] == "開発部"
+    assert row["team"] == "基盤チーム"
+    assert row["note"] == "pv備考"
+
+
+def test_markdown_has_both_summaries_and_notes(make_input, cfg, tmp_path):
+    """両軸データあり時、部署別サマリとチーム別サマリの両方が出る。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard", "b@example.com,Premium"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,チーム,職種,備考\n"
+        "a@example.com,開発部,基盤チーム,エンジニア,ヒアリング済み\n"
+        "b@example.com,営業部,西日本チーム,マネージャ,\n",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    out = tmp_path / "report.md"
+    write_markdown(result, out)
+    text = out.read_text(encoding="utf-8")
+    assert "## 部署別サマリ" in text
+    assert "## チーム別サマリ" in text
+    # 表示順は 部署別 → チーム別
+    assert text.index("## 部署別サマリ") < text.index("## チーム別サマリ")
+    assert "### 備考" in text
+    assert "a@example.com: ヒアリング済み" in text
+    assert "| 部署 |" in text  # ユーザ表に部署列
+    assert "| チーム |" in text  # ユーザ表にチーム列
+
+
+def test_markdown_no_sections_without_info(make_input, cfg, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    out = tmp_path / "report.md"
+    write_markdown(result, out)
+    text = out.read_text(encoding="utf-8")
+    assert "## 部署別サマリ" not in text
+    assert "## チーム別サマリ" not in text
+    assert "### 備考" not in text
+
+
+def test_legacy_department_only_still_works(make_input, cfg, tmp_path):
+    """旧形式（部署のみ・チーム列なし）でも落ちず部署別サマリが出る（後方互換）。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard", "b@example.com,Premium"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,職種,備考\n"
+        "a@example.com,開発部,エンジニア,\n"
+        "b@example.com,営業部,マネージャ,\n",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    by_email = result.users.set_index("email")
+    assert by_email.loc["a@example.com", "department"] == "開発部"
+    assert (result.users["team"] == "").all()
+    out = tmp_path / "report.md"
+    write_markdown(result, out)
+    text = out.read_text(encoding="utf-8")
+    assert "## 部署別サマリ" in text
+    assert "## チーム別サマリ" not in text
+    assert "| 部署 |" in text
+    assert "| チーム |" not in text
+
+
+def test_info_only_email_not_added(make_input, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,チーム,職種,備考\n"
+        "a@example.com,開発部,基盤チーム,,\n"
+        "ghost@example.com,幽霊部,幽霊チーム,,\n",  # members にも spend にも居ない
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    assert "ghost@example.com" not in set(result.users["email"])
+
+
+def test_load_members_info_none_when_absent(make_input, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    assert analyze_mod.ingest.load_members_info(input_dir, cfg) is None

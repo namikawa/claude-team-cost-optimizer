@@ -69,20 +69,36 @@ def _org_products(summary: dict) -> str:
     return f"（{detail}）"
 
 
+def _has_values(users: pd.DataFrame, col: str) -> bool:
+    """指定カラムに1つでも非空の値があるか（当該軸の列・サマリの表示可否）。"""
+    return col in users.columns and users[col].fillna("").astype(str).str.strip().ne("").any()
+
+
 def _user_table_md(users: pd.DataFrame) -> str:
     has_cc = "prs_with_cc" in users.columns
     has_loc = "loc_with_cc" in users.columns
+    has_dept = _has_values(users, "department")
+    has_team = _has_values(users, "team")
     header = (
-        "| ユーザ | 現シート | API換算需要 | 実課金(従量) | Standard時 | Premium時 | 推奨 | 削減/月 | 判定 | 確度 |"
+        "| ユーザ | 現シート |"
+        + (" 部署 |" if has_dept else "")
+        + (" チーム |" if has_team else "")
+        + " API換算需要 | 実課金(従量) | Standard時 | Premium時 | 推奨 | 削減/月 | 判定 | 確度 |"
         + (" PR(CC) |" if has_cc else "") + (" 行数(CC) |" if has_loc else "")
     )
-    sep = "|" + "---|" * (10 + int(has_cc) + int(has_loc))
+    sep = "|" + "---|" * (10 + int(has_dept) + int(has_team) + int(has_cc) + int(has_loc))
     lines = [header, sep]
     for _, r in users.iterrows():
         flag = " ⚠️上限?" if r["cap_suspected"] else ""
         cells = [
             r["email"],
             SEAT_LABELS.get(r["current_seat"], r["current_seat"]),
+        ]
+        if has_dept:
+            cells.append(str(r.get("department", "") or ""))
+        if has_team:
+            cells.append(str(r.get("team", "") or ""))
+        cells += [
             _fmt_usd(r["api_cost_usd"]) + flag,
             _fmt_usd(r.get("billed_extra_usd", 0.0)),
             _fmt_usd(r["cost_if_standard_usd"]),
@@ -100,6 +116,80 @@ def _user_table_md(users: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def _notes_md(users: pd.DataFrame) -> str:
+    """備考（note）が非空のユーザを「- email: note」の箇条書きにする。無ければ空文字列。"""
+    if "note" not in users.columns:
+        return ""
+    noted = users[users["note"].fillna("").astype(str).str.strip().ne("")]
+    if noted.empty:
+        return ""
+    lines = ["### 備考", ""]
+    lines += [f"- {r['email']}: {str(r['note']).strip()}" for _, r in noted.iterrows()]
+    return "\n".join(lines) + "\n"
+
+
+def _seat_price(seat: str, summary: dict) -> float:
+    """シート料金（unassigned/unknown は判定対象外のため $0 扱い）。summary の価格を使う。"""
+    if seat == "standard":
+        return float(summary.get("seat_price_standard_usd", 0.0))
+    if seat == "premium":
+        return float(summary.get("seat_price_premium_usd", 0.0))
+    return 0.0
+
+
+def _group_summary_rows(users: pd.DataFrame, summary: dict, col: str) -> list[dict]:
+    """指定軸（col）でのグループ別サマリの行データ。col 非空のユーザがいない場合は空リスト。
+
+    API換算需要の降順、（未設定）は常に最後。col の空値は「（未設定）」に集約する。
+    """
+    if not _has_values(users, col):
+        return []
+    u = users.copy()
+    u["_grp"] = u[col].fillna("").astype(str).str.strip()
+    u["_seat_price"] = u["current_seat"].map(lambda x: _seat_price(x, summary))
+    rows = []
+    for grp, g in u.groupby("_grp", dropna=False):
+        label = grp if grp else "（未設定）"
+        n_change = int((g["status"] == "変更推奨").sum())
+        saving = float(g.loc[g["status"] == "変更推奨", "monthly_saving_usd"].fillna(0).sum())
+        rows.append({
+            "group": label,
+            "is_unset": grp == "",
+            "n": int(len(g)),
+            "seat_cost": float(g["_seat_price"].sum()),
+            "api": float(g["api_cost_usd"].fillna(0).sum()),
+            "billed": float(g["billed_extra_usd"].fillna(0).sum()) if "billed_extra_usd" in g.columns else 0.0,
+            "n_change": n_change,
+            "saving": saving,
+        })
+    rows.sort(key=lambda r: (r["is_unset"], -r["api"]))
+    return rows
+
+
+def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str) -> str:
+    """指定軸（col）のグループ別サマリ表。col 非空のユーザがいる場合のみ生成し、無ければ空文字列。
+
+    heading は見出し文言（例: "部署別サマリ"）で、1列目のヘッダにも流用する。
+    """
+    rows = _group_summary_rows(users, summary, col)
+    if not rows:
+        return ""
+    col_label = heading.replace("別サマリ", "")
+    lines = [
+        f"## {heading}",
+        "",
+        f"| {col_label} | 人数 | シート費用/月 | API換算需要/月 | 実課金(従量)/月 | 変更推奨 | 削減見込み/月 |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for r in rows:
+        lines.append(
+            f"| {r['group']} | {r['n']} 名 | {_fmt_usd(r['seat_cost'])} "
+            f"| {_fmt_usd(r['api'])} | {_fmt_usd(r['billed'])} "
+            f"| {r['n_change']} 名 | {_fmt_usd(r['saving'])} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def write_markdown(result: AnalysisResult, path: Path) -> None:
     s = result.summary
     users = result.users.copy()
@@ -110,6 +200,11 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 
     changes = users[users["status"] == "変更推奨"]
     sensitivity_disagree = users[users["confidence"].isin(["中", "低"])]
+
+    nl = "\n"
+    notes_block = _notes_md(users)
+    dept_block = _group_summary_md(users, s, "department", "部署別サマリ")
+    team_block = _group_summary_md(users, s, "team", "チーム別サマリ")
 
     md = f"""# Claude Team シート最適化レポート — {_scope_label(result)}
 
@@ -141,7 +236,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 - **⚠️上限?**: 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ。「実効込み量が推定より大きい」か「上限で停止した」かの要確認
 - **確度**: 込み利用量（allowance）の low/mid/high 3シナリオで推奨が一致するか（高=3/3, 中=2/3, 低=1/3）
 - **対象外（シート未割当）**: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。損益分岐判定は行わない
-
+{(nl + notes_block) if notes_block else ''}{(nl + dept_block) if dept_block else ''}{(nl + team_block) if team_block else ''}
 ## 感度分析
 
 allowance（シート込み利用量のUSD換算・非公開のため推定）の仮定によって推奨が変わるユーザ:
@@ -264,6 +359,22 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 {% endfor %}
 </table></div>
 
+{% for grp in group_summaries %}
+<h2>{{ grp.heading }}</h2>
+<div class="tablebox"><table>
+<tr><th>{{ grp.col_label }}</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th><th class="num">変更推奨</th></tr>
+{% for t in grp.rows %}
+<tr>
+  <td>{{ t.group }}</td>
+  <td class="num">{{ t.n }}</td>
+  <td class="num">{{ t.seat_cost_fmt }}</td>
+  <td class="num">{{ t.api_fmt }}</td>
+  <td class="num">{{ t.n_change }}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% endfor %}
+
 <h2>前提と注意</h2>
 <div class="card note">
   <ul>
@@ -301,10 +412,25 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         u["prem_fmt"] = _fmt_compact(u["cost_if_premium_usd"])
         u["saving_fmt"] = _fmt_compact(u.get("monthly_saving_usd"))
     max_cost = max((u["api_cost_usd"] for u in users_sorted), default=0) or 1.0
+    # 部署別 → チーム別の順で、データがある軸のみサマリ表を出す
+    group_summaries = []
+    for col, heading in (("department", "部署別サマリ"), ("team", "チーム別サマリ")):
+        rows = _group_summary_rows(result.users, result.summary, col)
+        if not rows:
+            continue
+        for t in rows:
+            t["seat_cost_fmt"] = _fmt_compact(t["seat_cost"])
+            t["api_fmt"] = _fmt_compact(t["api"])
+        group_summaries.append({
+            "heading": heading,
+            "col_label": heading.replace("別サマリ", ""),
+            "rows": rows,
+        })
     html = _HTML_TEMPLATE.render(
         scope=_scope_label(result),
         s=result.summary,
         users_sorted=users_sorted,
+        group_summaries=group_summaries,
         max_cost=max_cost,
         seat_labels=SEAT_LABELS,
         seat_short={"standard": "Standard", "premium": "Premium",
@@ -330,19 +456,30 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> Path:
     ).fillna(len(PREVIEW_ORDER))
     users = users.sort_values(["_order", "api_cost_projected_usd"], ascending=[True, False])
 
+    has_dept = _has_values(users, "department")
+    has_team = _has_values(users, "team")
     obs_label = f"観測需要({result.days_observed}日)"
     lines = [
-        f"| ユーザ | 現シート | {obs_label} | 月末ペース換算 | 実課金(観測) | 一次判断 | 確度 |",
-        "|" + "---|" * 7,
+        "| ユーザ | 現シート |"
+        + (" 部署 |" if has_dept else "")
+        + (" チーム |" if has_team else "")
+        + f" {obs_label} | 月末ペース換算 | 実課金(観測) | 一次判断 | 確度 |",
+        "|" + "---|" * (7 + int(has_dept) + int(has_team)),
     ]
     for _, r in users.iterrows():
         billed_flag = " ⚠️超過済" if r["billed_observed_usd"] > 0 and r["current_seat"] == "premium" else ""
+        dept_cell = f" {str(r.get('department', '') or '')} |" if has_dept else ""
+        team_cell = f" {str(r.get('team', '') or '')} |" if has_team else ""
         lines.append(
-            f"| {r['email']} | {SEAT_LABELS.get(r['current_seat'], r['current_seat'])} "
-            f"| {_fmt_usd(r['api_cost_observed_usd'])} | {_fmt_usd(r['api_cost_projected_usd'])} "
+            f"| {r['email']} | {SEAT_LABELS.get(r['current_seat'], r['current_seat'])} |"
+            f"{dept_cell}"
+            f"{team_cell}"
+            f" {_fmt_usd(r['api_cost_observed_usd'])} | {_fmt_usd(r['api_cost_projected_usd'])} "
             f"| {_fmt_usd(r['billed_observed_usd'])}{billed_flag} | {r['label']} | {r['confidence']} |"
         )
     table = "\n".join(lines)
+    nl = "\n"
+    notes_block = _notes_md(users)
 
     counts = s["label_counts"]
     count_line = " / ".join(
@@ -368,7 +505,7 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> Path:
 ## 一次判断テーブル
 
 {table}
-
+{(nl + notes_block) if notes_block else ''}
 - 一次判断: 月末ペース換算需要を損益分岐モデル（allowance 3シナリオ）にかけた参考判定。
   境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒しています
 - 遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨

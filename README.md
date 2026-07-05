@@ -32,9 +32,19 @@ input/
     spend/            spend_YYYY-MM.csv        （必須）
     members/          members_YYYY-MM.csv      （必須）
     code-analytics/   cc_YYYY-MM.csv           （任意）
+    members-info.csv                           （任意）
   <組織名B>/
     ...
 ```
+
+`members-info.csv` は部署・チーム・職種・備考をメールアドレスに紐づける任意の
+マッピングファイル。組織ディレクトリ直下に固定ファイル名で置く（サブディレクトリ
+ではなく、月情報も持たない手動メンテのファイル）。カラムは email（必須）・部署・
+チーム・職種・備考で、`email` 以外はすべて空欄でよい。組織階層は部署 > チームだが、
+部署とチームは別軸として扱うためどちらか一方だけの記入でもよい。日本語ヘッダ
+（email,部署,チーム,職種,備考）と英語ヘッダ（email,department,team,role,note）の
+どちらも使える。置くとレポートに部署列・チーム列・部署別サマリ・チーム別サマリ・
+備考が追加され（データがある軸のみ）、無ければ従来どおり動作する。
 
 雛形は以下のコマンドで作成できる（`input/<組織名>/{spend,members,code-analytics}/` と
 `reports/<組織名>/` をまとめて作る。複数指定可）:

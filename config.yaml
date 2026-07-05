@@ -92,6 +92,14 @@ columns:
     prs_total:   ["all prs", "total prs", "prs"]
     loc_with_cc: ["lines with cc", "lines of code with cc", "lines with claude code", "cc lines", "lines this month"]
     loc_total:   ["all lines", "total lines", "lines"]
+  # 任意ファイル members-info.csv（部署・チーム・職種・備考のマッピング。手動メンテ）
+  # 組織階層は 部署 > チーム。department と team は別軸でどちらか一方だけでもよい
+  members_info:
+    email:      ["email", "user email", "メールアドレス"]
+    department: ["department", "dept", "部署", "所属"]
+    team:       ["team", "チーム", "グループ"]
+    role:       ["role", "職種", "役割"]
+    note:       ["note", "memo", "備考", "コメント"]
 
 # キャッシュトークンの実効単価係数（入力単価に対する倍率）。
 # 実データで net_spend = uncached×1.0 + cache_read×0.1 + write_5m×1.25 + write_1h×2.0

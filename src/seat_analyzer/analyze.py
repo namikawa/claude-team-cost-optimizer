@@ -70,6 +70,23 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
     return grouped.reset_index()
 
 
+def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict, sources: dict) -> None:
+    """任意ファイル members-info.csv の department/team/role/note を email で users に付与する。
+
+    未登録メンバーは空文字列。members-info にだけ居るメールは行を追加しない。
+    ファイルが読めた場合のみ sources["members_info"] にパスを記録する。
+    """
+    info_result = ingest.load_members_info(input_dir, cfg)
+    if info_result is None:
+        for col in ("department", "team", "role", "note"):
+            users[col] = ""
+        return
+    sources["members_info"] = str(info_result.source)
+    info = info_result.df.set_index("email")
+    for col in ("department", "team", "role", "note"):
+        users[col] = users["email"].map(info[col]).fillna("") if col in info.columns else ""
+
+
 def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None) -> AnalysisResult:
     """1組織分の分析。input_dir はその組織の入力ディレクトリ（spend/ 等を直下に持つ）。"""
     input_dir = Path(input_dir)
@@ -275,6 +292,9 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
 
     users = pd.DataFrame(rows)
 
+    # 部署・職種・備考（任意ファイル members-info.csv）の結合
+    _merge_members_info(users, input_dir, cfg, sources)
+
     # 活用度（Claude Code 貢献データ）の結合
     if code_result is not None:
         cc = code_result.df.set_index("email")
@@ -322,6 +342,8 @@ def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
         "n_unassigned": int(seats.get("unassigned", 0)),
         "n_unknown": int(seats.get("unknown", 0)),
         "seat_cost_now_usd": round(seat_cost_now, 2),
+        "seat_price_standard_usd": std_price,
+        "seat_price_premium_usd": prem_price,
         "total_api_cost_usd": round(float(month_agg["api_cost"].sum()), 2),
         "n_change_recommended": int(len(to_change)),
         "n_watching": int(len(watching)),
@@ -450,6 +472,9 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
             "confidence": confidence,
         })
     users = pd.DataFrame(rows)
+
+    # 部署・職種・備考（任意ファイル members-info.csv）の結合
+    _merge_members_info(users, input_dir, cfg, sources)
 
     orphan = users[users["current_seat"] == "unknown"]["email"].tolist()
     if orphan:

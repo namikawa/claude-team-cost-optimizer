@@ -308,6 +308,32 @@ def load_members(input_dir: Path, month: str, cfg: dict) -> LoadResult:
     return LoadResult(df=df, source=path, warnings=warnings)
 
 
+def load_members_info(input_dir: Path, cfg: dict) -> LoadResult | None:
+    """部署・チーム・職種・備考のマッピング（任意ファイル members-info.csv）。無ければ None。
+
+    org の入力ディレクトリ直下にファイル名固定で置く（月情報なし・手動メンテ）。
+    email 列のみ必須。department/team/role/note が無くても警告は出さず、空文字列列で補完する。
+    """
+    path = Path(input_dir) / "members-info.csv"
+    if not path.exists():
+        return None
+    df = _read_csv(path)
+    # department/team/role/note が無い場合の「任意カラムなし」警告は捨てる（完全に任意のため）
+    df, _ = map_columns(
+        df,
+        cfg["columns"]["members_info"],
+        required=["email"],
+        source=path,
+    )
+    df["email"] = df["email"].astype(str).str.strip().str.lower()
+    for col in ("department", "team", "role", "note"):
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].fillna("").astype(str)
+    df = df.drop_duplicates(subset="email", keep="last")
+    return LoadResult(df=df, source=path, warnings=[])
+
+
 def load_code_analytics(input_dir: Path, month: str, cfg: dict) -> LoadResult | None:
     """Claude Code 貢献データ（任意）。無ければ None。"""
     files, file_warns = _files_by_month(Path(input_dir) / "code-analytics")
