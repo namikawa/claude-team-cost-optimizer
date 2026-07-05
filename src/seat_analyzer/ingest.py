@@ -26,6 +26,26 @@ _RANGE_RE = re.compile(
 _DATE_RE = re.compile(rf"(20\d{{2}})[-_](0[1-9]|1[0-2])[-_]({_DAY})")
 MONTH_RE = re.compile(r"(20\d{2})[-_](0[1-9]|1[0-2])")
 
+# 兼務（複数所属）の区切り: 半角セミコロン / 全角セミコロン
+_AFFIL_SEP_RE = re.compile(r"[;；]")
+
+
+def parse_affiliations(cell) -> list[str]:
+    """部署・チームのセル文字列を所属リストへ分割する（兼務対応）。
+
+    半角/全角セミコロンで区切り、各要素を strip、空要素は捨てる。
+    空セル・欠損は空リストを返す（＝所属未設定）。
+    """
+    if cell is None or cell != cell:  # NaN
+        return []
+    parts = (p.strip() for p in _AFFIL_SEP_RE.split(str(cell)))
+    return [p for p in parts if p]
+
+
+def normalize_affiliations(cell) -> str:
+    """所属セルを正規化した表示文字列にする（半角セミコロン+スペース区切り）。空なら空文字列。"""
+    return "; ".join(parse_affiliations(cell))
+
 
 @dataclass(frozen=True)
 class FilePeriod:

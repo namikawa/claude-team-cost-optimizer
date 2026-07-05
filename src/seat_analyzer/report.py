@@ -9,6 +9,7 @@ import pandas as pd
 from jinja2 import Environment
 
 from .analyze import SEAT_LABELS, AnalysisResult, PreviewResult
+from .ingest import parse_affiliations
 
 STATUS_ORDER = ["変更推奨", "要観察", "要観察（データ蓄積待ち）", "シート不明", "現状維持",
                 "対象外（シート未割当）"]
@@ -140,30 +141,53 @@ def _seat_price(seat: str, summary: dict) -> float:
 def _group_summary_rows(users: pd.DataFrame, summary: dict, col: str) -> list[dict]:
     """指定軸（col）でのグループ別サマリの行データ。col 非空のユーザがいない場合は空リスト。
 
-    API換算需要の降順、（未設定）は常に最後。col の空値は「（未設定）」に集約する。
+    兼務（複数所属）ユーザは所属数 n で 1/n の重みに按分し、各所属グループへ計上する
+    （人数・費用・需要・実課金・変更推奨数・削減見込みすべて同じ重み）。所属が空のユーザは
+    「（未設定）」へ重み1で計上する。よって各グループの縦合計は常に全体と一致する。
+    API換算需要の降順、（未設定）は常に最後。
     """
     if not _has_values(users, col):
         return []
-    u = users.copy()
-    u["_grp"] = u[col].fillna("").astype(str).str.strip()
-    u["_seat_price"] = u["current_seat"].map(lambda x: _seat_price(x, summary))
+    has_billed = "billed_extra_usd" in users.columns
+    # グループ名 → 集計値の accumulator（初期化順は問わない。最後に並べ替える）
+    acc: dict[str, dict] = {}
+    for _, r in users.iterrows():
+        groups = parse_affiliations(r.get(col)) or ["（未設定）"]
+        w = 1.0 / len(groups)
+        is_change = r["status"] == "変更推奨"
+        seat_price = _seat_price(r["current_seat"], summary)
+        api = float(r["api_cost_usd"]) if r["api_cost_usd"] == r["api_cost_usd"] else 0.0
+        billed = float(r["billed_extra_usd"] or 0.0) if has_billed and r["billed_extra_usd"] == r["billed_extra_usd"] else 0.0
+        saving = float(r["monthly_saving_usd"] or 0.0) if is_change and r["monthly_saving_usd"] == r["monthly_saving_usd"] else 0.0
+        for grp in groups:
+            a = acc.setdefault(grp, {"n": 0.0, "seat_cost": 0.0, "api": 0.0,
+                                     "billed": 0.0, "n_change": 0.0, "saving": 0.0})
+            a["n"] += w
+            a["seat_cost"] += seat_price * w
+            a["api"] += api * w
+            a["billed"] += billed * w
+            a["n_change"] += (1.0 * w) if is_change else 0.0
+            a["saving"] += saving * w
     rows = []
-    for grp, g in u.groupby("_grp", dropna=False):
-        label = grp if grp else "（未設定）"
-        n_change = int((g["status"] == "変更推奨").sum())
-        saving = float(g.loc[g["status"] == "変更推奨", "monthly_saving_usd"].fillna(0).sum())
+    for grp, a in acc.items():
         rows.append({
-            "group": label,
-            "is_unset": grp == "",
-            "n": int(len(g)),
-            "seat_cost": float(g["_seat_price"].sum()),
-            "api": float(g["api_cost_usd"].fillna(0).sum()),
-            "billed": float(g["billed_extra_usd"].fillna(0).sum()) if "billed_extra_usd" in g.columns else 0.0,
-            "n_change": n_change,
-            "saving": saving,
+            "group": grp,
+            "is_unset": grp == "（未設定）",
+            "n": a["n"],
+            "seat_cost": a["seat_cost"],
+            "api": a["api"],
+            "billed": a["billed"],
+            "n_change": a["n_change"],
+            "saving": a["saving"],
         })
     rows.sort(key=lambda r: (r["is_unset"], -r["api"]))
     return rows
+
+
+def _fmt_count(v) -> str:
+    """按分後の人数・変更推奨数の表示。整数なら「3」、端数は小数1桁「3.5」（末尾ゼロなし）。"""
+    r = round(float(v), 1)
+    return str(int(r)) if r == int(r) else f"{r:.1f}"
 
 
 def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str) -> str:
@@ -183,9 +207,9 @@ def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str
     ]
     for r in rows:
         lines.append(
-            f"| {r['group']} | {r['n']} 名 | {_fmt_usd(r['seat_cost'])} "
+            f"| {r['group']} | {_fmt_count(r['n'])} 名 | {_fmt_usd(r['seat_cost'])} "
             f"| {_fmt_usd(r['api'])} | {_fmt_usd(r['billed'])} "
-            f"| {r['n_change']} 名 | {_fmt_usd(r['saving'])} |"
+            f"| {_fmt_count(r['n_change'])} 名 | {_fmt_usd(r['saving'])} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -366,10 +390,10 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 {% for t in grp.rows %}
 <tr>
   <td>{{ t.group }}</td>
-  <td class="num">{{ t.n }}</td>
+  <td class="num">{{ t.n_fmt }}</td>
   <td class="num">{{ t.seat_cost_fmt }}</td>
   <td class="num">{{ t.api_fmt }}</td>
-  <td class="num">{{ t.n_change }}</td>
+  <td class="num">{{ t.n_change_fmt }}</td>
 </tr>
 {% endfor %}
 </table></div>
@@ -421,6 +445,8 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         for t in rows:
             t["seat_cost_fmt"] = _fmt_compact(t["seat_cost"])
             t["api_fmt"] = _fmt_compact(t["api"])
+            t["n_fmt"] = _fmt_count(t["n"])
+            t["n_change_fmt"] = _fmt_count(t["n_change"])
         group_summaries.append({
             "heading": heading,
             "col_label": heading.replace("別サマリ", ""),

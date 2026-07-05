@@ -73,7 +73,7 @@ MEMBERS_INFO_ORG_A = [
     ("sato@example.co.jp",      "プロダクト開発部",       "Webチーム",      "エンジニア",   "2026-06 ヒアリング済み: 7月からPJ利用予定"),
     ("watanabe@example.co.jp",  "プロダクト開発部",       "Webチーム",      "エンジニア",   ""),
     ("ito@example.co.jp",       "コーポレート",           "情シスチーム",   "エンジニア",   "2026-06 休職中・9月復帰予定"),
-    ("yamamoto@example.co.jp",  "プラットフォーム開発部", "SREチーム",      "エンジニア",   ""),
+    ("yamamoto@example.co.jp",  "プラットフォーム開発部", "基盤チーム; SREチーム", "エンジニア", "2チーム兼務（兼務按分のデモ）"),
     ("nakamura@example.co.jp",  "プロダクト開発部",       "モバイルチーム", "テックリード", ""),
     ("kobayashi@example.co.jp", "プロダクト開発部",       "モバイルチーム", "エンジニア",   ""),
     ("kato@example.co.jp",      "コーポレート",           "情シスチーム",   "エンジニア",   ""),

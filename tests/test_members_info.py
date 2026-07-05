@@ -211,3 +211,94 @@ def test_load_members_info_none_when_absent(make_input, cfg):
         members=["a@example.com,Standard"],
     )
     assert analyze_mod.ingest.load_members_info(input_dir, cfg) is None
+
+
+# --- 兼務（複数所属）の按分 -----------------------------------------------
+
+from seat_analyzer.report import _group_summary_rows  # noqa: E402
+
+
+def test_dual_team_split_half_and_half(make_input, cfg):
+    """A; B の2所属ユーザは両チームに 0.5 名ずつ、費用・需要も半分ずつ計上される。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 40.0),
+                     spend_row("b@example.com", 10.0)]},
+        members=["a@example.com,Standard", "b@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,チーム,職種,備考\n"
+        "a@example.com,基盤チーム; SREチーム,,\n"
+        "b@example.com,基盤チーム,,\n",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    # 表示は正規化された半角セミコロン+スペース区切り
+    assert result.users.set_index("email").loc["a@example.com", "team"] == "基盤チーム; SREチーム"
+    rows = {r["group"]: r for r in _group_summary_rows(result.users, result.summary, "team")}
+    assert set(rows) == {"基盤チーム", "SREチーム"}
+    # a は各チームに 0.5 名、b は基盤チームに 1 名
+    assert rows["基盤チーム"]["n"] == 1.5
+    assert rows["SREチーム"]["n"] == 0.5
+    # 費用・需要の縦合計が全体と一致
+    total_n = sum(r["n"] for r in rows.values())
+    total_api = sum(r["api"] for r in rows.values())
+    total_seat = sum(r["seat_cost"] for r in rows.values())
+    assert total_n == 2.0
+    assert abs(total_api - float(result.users["api_cost_usd"].sum())) < 1e-6
+    assert abs(total_seat - result.summary["seat_cost_now_usd"]) < 1e-6
+    # a の需要 40 は基盤/SRE に 20 ずつ、b の 10 は基盤へ → 基盤 30 / SRE 20
+    assert abs(rows["SREチーム"]["api"] - 20.0) < 1e-6
+
+
+def test_fullwidth_semicolon_parsed(make_input, cfg):
+    """全角セミコロン ； でも同様に分割される。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,チーム,職種,備考\na@example.com,基盤チーム；SREチーム,,\n",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    assert result.users.set_index("email").loc["a@example.com", "team"] == "基盤チーム; SREチーム"
+    rows = {r["group"]: r for r in _group_summary_rows(result.users, result.summary, "team")}
+    assert rows["基盤チーム"]["n"] == 0.5
+    assert rows["SREチーム"]["n"] == 0.5
+
+
+def test_single_and_empty_affiliation_unchanged(make_input, cfg):
+    """単一所属・空欄のユーザは重み1・（未設定）で従来どおり。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0),
+                     spend_row("c@example.com", 5.0)]},
+        members=["a@example.com,Standard", "c@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,チーム,職種,備考\na@example.com,基盤チーム,,\n",  # c は未設定
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    rows = {r["group"]: r for r in _group_summary_rows(result.users, result.summary, "team")}
+    assert rows["基盤チーム"]["n"] == 1.0
+    assert rows["（未設定）"]["n"] == 1.0
+    # （未設定）は常に最後
+    assert list(r["group"] for r in _group_summary_rows(result.users, result.summary, "team"))[-1] == "（未設定）"
+
+
+def test_dual_team_display_and_fraction_in_md(make_input, cfg, tmp_path):
+    """ユーザ表に A; B 形式で表示され、サマリに端数人数（0.5 名）が出る。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,チーム,職種,備考\na@example.com,基盤チーム; SREチーム,,\n",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    out = tmp_path / "report.md"
+    write_markdown(result, out)
+    text = out.read_text(encoding="utf-8")
+    assert "基盤チーム; SREチーム" in text  # ユーザ表の表示
+    assert "0.5 名" in text  # 按分後の端数人数

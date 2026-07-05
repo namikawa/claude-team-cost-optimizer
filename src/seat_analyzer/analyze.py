@@ -85,6 +85,9 @@ def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict, sources
     info = info_result.df.set_index("email")
     for col in ("department", "team", "role", "note"):
         users[col] = users["email"].map(info[col]).fillna("") if col in info.columns else ""
+    # 部署・チームは兼務（複数所属）を正規化した表示文字列で保持する（集計時に再分割）
+    for col in ("department", "team"):
+        users[col] = users[col].map(ingest.normalize_affiliations)
 
 
 def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None) -> AnalysisResult:
