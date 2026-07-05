@@ -1,4 +1,4 @@
-"""CLI エントリポイント: seat-analyzer analyze [--month YYYY-MM] [--org NAME ...]"""
+"""CLI エントリポイント: seat-analyzer {analyze,init-org}"""
 
 from __future__ import annotations
 
@@ -25,13 +25,55 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
     p.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     p.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    p.set_defaults(func=_run_analyze)
+
+    pi = sub.add_parser("init-org", help="新しい組織の入力/出力ディレクトリの雛形を作成")
+    pi.add_argument("orgs", nargs="+", metavar="組織名",
+                    help="作成する組織名（input/ 直下のディレクトリ名になる）。複数指定可")
+    pi.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
+    pi.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    pi.set_defaults(func=_run_init_org)
 
     args = parser.parse_args(argv)
     try:
-        return _run_analyze(args)
+        return args.func(args)
     except (FileNotFoundError, ValueError) as e:
         print(f"エラー: {e}", file=sys.stderr)
         return 1
+
+
+INPUT_SUBDIRS = ("spend", "members", "code-analytics")
+
+
+def _run_init_org(args: argparse.Namespace) -> int:
+    input_dir = Path(args.input_dir)
+    output_dir = Path(args.output_dir)
+    for org in args.orgs:
+        # summary は横断サマリの出力先（reports/summary/）として予約
+        if org == "summary" or org.startswith(".") or Path(org).name != org:
+            raise ValueError(
+                f"組織名に使えない名前です: {org!r}"
+                "（summary は予約済み。パス区切りや先頭の . を含む名前も不可）"
+            )
+
+    for org in args.orgs:
+        existed = (input_dir / org).is_dir()
+        for subdir in INPUT_SUBDIRS:
+            (input_dir / org / subdir).mkdir(parents=True, exist_ok=True)
+        (output_dir / org).mkdir(parents=True, exist_ok=True)
+        print(f"組織 '{org}' の雛形を{'確認しました（既存）' if existed else '作成しました'}:")
+        print(f"  {input_dir / org / 'spend'}/           ← spend_YYYY-MM.csv（必須）")
+        print(f"  {input_dir / org / 'members'}/         ← members_YYYY-MM.csv（必須。最低限 email,seat_type の2列）")
+        print(f"  {input_dir / org / 'code-analytics'}/  ← cc_YYYY-MM.csv（任意）")
+        print(f"  {output_dir / org}/")
+
+    if (input_dir / "spend").is_dir():
+        print(
+            f"\n! 旧レイアウトのデータが {input_dir}/spend/ にあります。"
+            f"分析前に {input_dir}/<組織名>/ 配下へ移動してください"
+        )
+    print("\nCSV 配置後: uv run seat-analyzer analyze （エクスポート手順は README 参照）")
+    return 0
 
 
 def _resolve_targets(

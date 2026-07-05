@@ -107,3 +107,28 @@ def test_mixed_layout_errors(make_input, tmp_path, capsys):
     rc, _ = _run(input_dir, tmp_path)
     assert rc == 1
     assert "混在" in capsys.readouterr().err
+
+
+def test_init_org_creates_scaffold(tmp_path):
+    input_dir, output_dir = tmp_path / "input", tmp_path / "reports"
+    rc = main([
+        "init-org", "org-x", "org-y",
+        "--input-dir", str(input_dir), "--output-dir", str(output_dir),
+    ])
+    assert rc == 0
+    for org in ("org-x", "org-y"):
+        for sub in ("spend", "members", "code-analytics"):
+            assert (input_dir / org / sub).is_dir()
+        assert (output_dir / org).is_dir()
+    assert discover_orgs(input_dir) == ["org-x", "org-y"]
+
+
+def test_init_org_rejects_reserved_and_invalid_names(tmp_path, capsys):
+    for bad in ("summary", "a/b", ".hidden"):
+        rc = main([
+            "init-org", bad,
+            "--input-dir", str(tmp_path / "input"), "--output-dir", str(tmp_path / "reports"),
+        ])
+        assert rc == 1
+        assert "組織名に使えない名前" in capsys.readouterr().err
+    assert not (tmp_path / "input").exists()
