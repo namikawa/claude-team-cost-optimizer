@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +12,9 @@ from . import ingest, pricing
 
 SCENARIOS = ("low", "mid", "high")
 SEAT_LABELS = {"standard": "Standard", "premium": "Premium", "unknown": "不明"}
+
+# 速報モード: 観測需要がこの額 [USD] 未満なら「遊休候補」（数日〜半月でこの水準は実質未使用）
+PREVIEW_IDLE_OBS_USD = 1.0
 
 
 @dataclass
@@ -309,3 +313,132 @@ def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
 
 def users_month(months_used: list[str]) -> str:
     return months_used[-1] if months_used else ""
+
+
+# --- 速報モード（部分月データからの一次判断） ---
+
+@dataclass
+class PreviewResult:
+    month: str
+    users: pd.DataFrame
+    summary: dict
+    days_observed: int
+    days_in_month: int
+    org: str | None = None
+    warnings: list[str] = field(default_factory=list)
+    sources: dict = field(default_factory=dict)
+
+
+def _preview_label(seat: str, api_obs: float, api_proj: float, cfg: dict,
+                   min_saving: float) -> tuple[str, str]:
+    """月末ペース換算需要を allowance モデルにかけた一次判断ラベルと確度。
+
+    実課金の観測は部分月では非線形（込み量を使い切るまで $0）で月額に換算できない
+    ため、正式分析と違い観測実課金による拘束は行わず、純粋なモデル判定のみ。
+    境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒す。
+    """
+    if seat == "unknown":
+        return "シート不明", "—"
+    if api_obs < PREVIEW_IDLE_OBS_USD:
+        return "遊休候補", "—"
+    recs = {s: _recommend(api_proj, s, cfg) for s in SCENARIOS}
+    rec_mid, cost_std, cost_prem = recs["mid"]
+    agree = sum(1 for s in ("low", "high") if recs[s][0] == rec_mid)
+    confidence = {2: "高", 1: "中", 0: "低"}[agree]
+    if rec_mid == seat:
+        return ("Premium妥当" if seat == "premium" else "Standard妥当"), confidence
+    saving = (cost_prem - cost_std) if seat == "premium" else (cost_std - cost_prem)
+    if agree == 2 and saving >= min_saving:
+        return ("Standard候補" if seat == "premium" else "Premium検討"), confidence
+    return "判断保留", confidence
+
+
+def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
+            org: str | None = None) -> PreviewResult:
+    """部分月データの一次判断。対象月のみ使用し、ヒステリシス・変更推奨は行わない。"""
+    input_dir = Path(input_dir)
+    warnings: list[str] = []
+
+    year, mon = (int(x) for x in month.split("-"))
+    days_in_month = calendar.monthrange(year, mon)[1]
+    if not 1 <= days_observed <= days_in_month:
+        raise ValueError(f"--days は 1〜{days_in_month}（{month} の暦日数）で指定してください")
+    factor = days_in_month / days_observed
+
+    spend_result = ingest.load_spend(input_dir, month, cfg)
+    warnings.extend(spend_result.warnings)
+    sources = {"spend": {month: str(spend_result.source)}}
+    df = pricing.add_computed_cost(spend_result.df, cfg)
+
+    unknown_models = pricing.unmatched_models(df["model"].unique(), cfg)
+    if unknown_models:
+        warnings.append(
+            f"model_prices: 単価表に一致しないモデルに default 単価を適用: {unknown_models}。"
+            "config.yaml > model_prices にパターンを追記してください"
+        )
+
+    is_user = df["email"].str.contains("@", na=False)
+    basis, basis_notes = pricing.resolve_cost_basis(df[is_user], cfg)
+    warnings.extend(basis_notes)
+    df = pricing.apply_cost_basis(df, basis)
+    org_service_obs = round(float(df[~is_user]["billed_usd"].sum()), 2)
+    agg = aggregate_month(df[is_user]).set_index("email")
+
+    members_result = ingest.load_members(input_dir, month, cfg)
+    warnings.extend(members_result.warnings)
+    members = members_result.df
+    sources["members"] = str(members_result.source)
+    seat_by_email = members.set_index("email")["seat_type"].to_dict()
+
+    seat_diff = float(cfg["seats"]["premium"]["price_usd"]) - float(cfg["seats"]["standard"]["price_usd"])
+    min_saving = float(cfg["decision"]["buffer_ratio"]) * seat_diff
+
+    rows = []
+    for email in sorted(set(members["email"]) | set(agg.index)):
+        seat = seat_by_email.get(email, "unknown")
+        row = agg.loc[email] if email in agg.index else None
+        api_obs = float(row["api_cost"]) if row is not None else 0.0
+        billed_obs = float(row["billed"]) if row is not None and "billed" in row.index else 0.0
+        api_proj = api_obs * factor
+        label, confidence = _preview_label(seat, api_obs, api_proj, cfg, min_saving)
+        rows.append({
+            "email": email,
+            "current_seat": seat,
+            "api_cost_observed_usd": round(api_obs, 2),
+            "api_cost_projected_usd": round(api_proj, 2),
+            "billed_observed_usd": round(billed_obs, 2),
+            "label": label,
+            "confidence": confidence,
+        })
+    users = pd.DataFrame(rows)
+
+    orphan = users[users["current_seat"] == "unknown"]["email"].tolist()
+    if orphan:
+        warnings.append(
+            f"members に存在しない利用ユーザ {len(orphan)} 名（シート不明として集計）: {orphan[:5]}"
+        )
+
+    seats = users["current_seat"].value_counts().to_dict()
+    std_price = float(cfg["seats"]["standard"]["price_usd"])
+    prem_price = float(cfg["seats"]["premium"]["price_usd"])
+    summary = {
+        "month": month,
+        "days_observed": days_observed,
+        "days_in_month": days_in_month,
+        "n_members": int(len(users)),
+        "n_standard": int(seats.get("standard", 0)),
+        "n_premium": int(seats.get("premium", 0)),
+        "n_unknown": int(seats.get("unknown", 0)),
+        "seat_cost_now_usd": round(
+            seats.get("standard", 0) * std_price + seats.get("premium", 0) * prem_price, 2),
+        "total_api_observed_usd": round(float(users["api_cost_observed_usd"].sum()), 2),
+        "total_api_projected_usd": round(float(users["api_cost_projected_usd"].sum()), 2),
+        "n_billed": int((users["billed_observed_usd"] > 0).sum()),
+        "label_counts": users["label"].value_counts().to_dict(),
+        "org_service_cost_usd": org_service_obs,
+    }
+    return PreviewResult(
+        month=month, users=users, summary=summary,
+        days_observed=days_observed, days_in_month=days_in_month,
+        org=org, warnings=warnings, sources=sources,
+    )

@@ -8,9 +8,13 @@ from pathlib import Path
 import pandas as pd
 from jinja2 import Environment
 
-from .analyze import SEAT_LABELS, AnalysisResult
+from .analyze import SEAT_LABELS, AnalysisResult, PreviewResult
 
 STATUS_ORDER = ["変更推奨", "要観察", "要観察（データ蓄積待ち）", "シート不明", "現状維持"]
+
+# 速報の一次判断ラベルの表示順（対応アクションが明確なものから）
+PREVIEW_ORDER = ["遊休候補", "Standard候補", "Premium検討", "判断保留",
+                 "シート不明", "Premium妥当", "Standard妥当"]
 
 # CSV 由来の値（email 等）が HTML/JS として解釈されないよう autoescape を有効化
 _HTML_ENV = Environment(autoescape=True)
@@ -307,6 +311,83 @@ def write_html(result: AnalysisResult, path: Path) -> None:
 
 def summary_json(result: AnalysisResult) -> str:
     return json.dumps(result.summary, ensure_ascii=False, indent=2)
+
+
+def write_preview(result: PreviewResult, output_dir: str | Path) -> Path:
+    """速報モードの出力（reports/<組織>/<月>/preview.md のみ。正式レポートには触れない）。"""
+    out = Path(output_dir) / result.month
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "preview.md"
+    s = result.summary
+
+    users = result.users.copy()
+    users["_order"] = users["label"].map(
+        {lb: i for i, lb in enumerate(PREVIEW_ORDER)}
+    ).fillna(len(PREVIEW_ORDER))
+    users = users.sort_values(["_order", "api_cost_projected_usd"], ascending=[True, False])
+
+    obs_label = f"観測需要({result.days_observed}日)"
+    lines = [
+        f"| ユーザ | 現シート | {obs_label} | 月末ペース換算 | 実課金(観測) | 一次判断 | 確度 |",
+        "|" + "---|" * 7,
+    ]
+    for _, r in users.iterrows():
+        billed_flag = " ⚠️超過済" if r["billed_observed_usd"] > 0 and r["current_seat"] == "premium" else ""
+        lines.append(
+            f"| {r['email']} | {SEAT_LABELS.get(r['current_seat'], r['current_seat'])} "
+            f"| {_fmt_usd(r['api_cost_observed_usd'])} | {_fmt_usd(r['api_cost_projected_usd'])} "
+            f"| {_fmt_usd(r['billed_observed_usd'])}{billed_flag} | {r['label']} | {r['confidence']} |"
+        )
+    table = "\n".join(lines)
+
+    counts = s["label_counts"]
+    count_line = " / ".join(
+        f"{lb} {counts[lb]} 名" for lb in PREVIEW_ORDER if counts.get(lb)
+    ) or "対象なし"
+    factor = result.days_in_month / result.days_observed
+
+    md = f"""# Claude Team シート速報プレビュー — {_scope_label(result)}
+
+{result.days_observed}日間の観測データ（{result.month}、暦{result.days_in_month}日、月末ペース換算 ×{factor:.1f}）に基づく一次判断です。
+シート変更の確定判断には使わず、ヒアリング・観察対象の絞り込みに使ってください。
+
+## サマリ
+
+| 指標 | 値 |
+|---|---|
+| 対象メンバー数 | {s['n_members']} 名（Standard {s['n_standard']} / Premium {s['n_premium']} / 不明 {s['n_unknown']}） |
+| 現在のシート費用 | {_fmt_usd(s['seat_cost_now_usd'])} /月 |
+| 観測需要 → 月末ペース換算 | {_fmt_usd(s['total_api_observed_usd'])} → {_fmt_usd(s['total_api_projected_usd'])} |
+| 一次判断の内訳 | {count_line} |
+| 実課金発生 | {s['n_billed']} 名 |
+
+## 一次判断テーブル
+
+{table}
+
+- 一次判断: 月末ペース換算需要を損益分岐モデル（allowance 3シナリオ）にかけた参考判定。
+  境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒しています
+- 遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨
+- ⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）
+
+## 注意事項
+
+- 日割り換算（×{factor:.1f}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません
+- 実課金は込み量を使い切ってから発生する非線形な値のため、月末ペース換算していません
+- 変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（`analyze`）で行ってください
+
+## データ検証・警告
+
+{chr(10).join(f'- {w}' for w in result.warnings) if result.warnings else '- なし'}
+
+## 考察
+
+<!-- /seat-analysis 実行時に Claude が記入するセクション -->
+（未記入 — `/seat-analysis preview <日数>` を実行すると考察が追記されます）
+"""
+    md = _preserve_discussion(md, path)
+    path.write_text(md, encoding="utf-8")
+    return path
 
 
 def write_org_summary(results: list[AnalysisResult], output_dir: str | Path) -> Path:

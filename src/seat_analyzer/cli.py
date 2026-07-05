@@ -25,6 +25,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
     p.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     p.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    p.add_argument(
+        "--preview", action="store_true",
+        help="速報モード: 部分月データから一次判断のみ行う（変更推奨・ヒステリシスなし）",
+    )
+    p.add_argument("--days", type=int, help="速報モードの観測日数（--preview 時必須）")
     p.set_defaults(func=_run_analyze)
 
     pi = sub.add_parser("init-org", help="新しい組織の入力/出力ディレクトリの雛形を作成")
@@ -120,6 +125,11 @@ def _resolve_targets(
 
 
 def _run_analyze(args: argparse.Namespace) -> int:
+    if args.preview and not args.days:
+        raise ValueError("--preview には --days <観測日数> の指定が必要です")
+    if args.days and not args.preview:
+        raise ValueError("--days は --preview 専用のオプションです")
+
     cfg = load_config(args.config)
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
@@ -139,6 +149,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
 
     results: list[AnalysisResult] = []
     skipped: list[str] = []
+    n_previewed = 0
     for org, org_input, org_output in targets:
         if month not in ingest.discover_months(org_input):
             if len(targets) == 1:
@@ -147,6 +158,12 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 )
             skipped.append(org or str(org_input))
             continue
+        if args.preview:
+            pv = analyze_mod.preview(org_input, month, cfg, args.days, org=org)
+            path = report.write_preview(pv, org_output)
+            _print_preview(pv, path)
+            n_previewed += 1
+            continue
         result = analyze_mod.analyze(org_input, month, cfg, org=org)
         paths = report.write_all(result, org_output)
         results.append(result)
@@ -154,13 +171,32 @@ def _run_analyze(args: argparse.Namespace) -> int:
 
     if skipped:
         print(f"\n! {month} のスペンドレポートが無いためスキップした組織: {', '.join(skipped)}")
-    if not results:
+    if not results and not n_previewed:
         raise FileNotFoundError(f"{month} のデータを持つ組織がありません")
 
     if len(results) > 1:
         summary_path = report.write_org_summary(results, output_dir)
         _print_totals(results, summary_path)
     return 0
+
+
+def _print_preview(pv, path: Path) -> None:
+    s = pv.summary
+    scope = f"{pv.org} {pv.month}" if pv.org else pv.month
+    print(f"\n=== {scope} 速報プレビュー（{pv.days_observed}日間の観測） ===")
+    print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']} / 不明 {s['n_unknown']})")
+    print(f"観測需要: ${s['total_api_observed_usd']:,.2f} → 月末ペース換算 ${s['total_api_projected_usd']:,.2f}")
+    counts = s["label_counts"]
+    detail = " / ".join(f"{lb} {n} 名" for lb, n in sorted(counts.items(), key=lambda kv: -kv[1]))
+    print(f"一次判断: {detail}")
+    if s["n_billed"]:
+        print(f"実課金発生: {s['n_billed']} 名")
+
+    if pv.warnings:
+        print("\n--- 警告 ---")
+        for w in pv.warnings:
+            print(f"  ! {w}")
+    print(f"\n--- 出力 ---\n  preview: {path}")
 
 
 def _print_result(result: AnalysisResult, paths: dict[str, Path]) -> None:
