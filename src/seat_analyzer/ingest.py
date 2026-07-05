@@ -254,6 +254,9 @@ def _normalize_seat(value: str) -> str:
         return "premium"
     if "standard" in s or s in ("member", "basic"):
         return "standard"
+    # 意図的な未割当（別組織でアサイン済み・管理者等）。判定対象外として扱う
+    if "unassigned" in s:
+        return "unassigned"
     return "unknown"
 
 

@@ -195,7 +195,8 @@ def _print_preview(pv, path: Path) -> None:
     s = pv.summary
     scope = f"{pv.org} {pv.month}" if pv.org else pv.month
     print(f"\n=== {scope} 速報プレビュー（{pv.days_observed}日間の観測） ===")
-    print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']} / 不明 {s['n_unknown']})")
+    print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']}"
+          f" / 未割当 {s.get('n_unassigned', 0)} / 不明 {s['n_unknown']})")
     print(f"観測需要: ${s['total_api_observed_usd']:,.2f} → 月末ペース換算 ${s['total_api_projected_usd']:,.2f}")
     counts = s["label_counts"]
     detail = " / ".join(f"{lb} {n} 名" for lb, n in sorted(counts.items(), key=lambda kv: -kv[1]))
@@ -214,7 +215,8 @@ def _print_result(result: AnalysisResult, paths: dict[str, Path]) -> None:
     s = result.summary
     scope = f"{result.org} {result.month}" if result.org else result.month
     print(f"\n=== {scope} 分析結果 ===")
-    print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']} / 不明 {s['n_unknown']})")
+    print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']}"
+          f" / 未割当 {s.get('n_unassigned', 0)} / 不明 {s['n_unknown']})")
     print(f"現在のシート費用: ${s['seat_cost_now_usd']:,.2f}/月, API換算利用額: ${s['total_api_cost_usd']:,.2f}/月")
     if s.get("org_service_cost_usd"):
         print(f"組織サービス利用（非帰属）: ${s['org_service_cost_usd']:,.2f}/月")

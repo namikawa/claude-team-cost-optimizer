@@ -11,7 +11,8 @@ import pandas as pd
 from . import ingest, pricing
 
 SCENARIOS = ("low", "mid", "high")
-SEAT_LABELS = {"standard": "Standard", "premium": "Premium", "unknown": "不明"}
+SEAT_LABELS = {"standard": "Standard", "premium": "Premium",
+               "unassigned": "未割当", "unknown": "不明"}
 
 # 速報モード: 観測需要がこの額 [USD] 未満なら「遊休候補」（数日〜半月でこの水準は実質未使用）
 PREVIEW_IDLE_OBS_USD = 1.0
@@ -189,55 +190,66 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             float(row["billed"]) if row is not None and "billed" in row.index else 0.0
         )
 
-        recs = {s: _costs_for(seat, api_cost, billed, s) for s in SCENARIOS}
-        rec_mid, cost_std, cost_prem = recs["mid"]
-
-        # 現シートでのコスト（観測実績）と、推奨シートに変えた場合の削減額（mid）
-        if seat == "standard":
-            cost_current, saving = cost_std, cost_std - min(cost_std, cost_prem)
-        elif seat == "premium":
-            cost_current, saving = cost_prem, cost_prem - min(cost_std, cost_prem)
+        if seat == "unassigned":
+            # 意図的な未割当（別組織でアサイン済み・管理者等）は損益分岐判定の対象外。
+            # シート料 $0 の現状が最安のため、推奨もコスト試算も行わない
+            nan = float("nan")
+            rec_mid, cost_std, cost_prem = "unassigned", nan, nan
+            rec_low = rec_high = "unassigned"
+            cost_current, saving = nan, nan
+            status, confidence = "対象外（シート未割当）", "—"
+            censored = False
         else:
-            cost_current = float("nan")
-            saving = float("nan")
+            recs = {s: _costs_for(seat, api_cost, billed, s) for s in SCENARIOS}
+            rec_mid, cost_std, cost_prem = recs["mid"]
+            rec_low, rec_high = recs["low"][0], recs["high"][0]
 
-        # ヒステリシス: 直近 n_hyst ヶ月すべてで同じ推奨・削減額がバッファ以上か
-        if seat == "unknown":
-            status = "シート不明"
-        elif rec_mid == seat:
-            status = "現状維持"
-        else:
-            recent = months_used[-n_hyst:]
-            checks = []
-            for m in recent:
-                mdf = monthly[m].set_index("email")
-                if email in mdf.index:
-                    m_cost = float(mdf.loc[email, "api_cost"])
-                    m_billed = float(mdf.loc[email, "billed"]) if "billed" in mdf.columns else 0.0
-                else:
-                    m_cost, m_billed = 0.0, 0.0
-                m_rec, m_std, m_prem = _costs_for(seat, m_cost, m_billed, "mid")
-                m_current = m_std if seat == "standard" else m_prem
-                m_saving = m_current - min(m_std, m_prem)
-                checks.append(m_rec == rec_mid and m_saving >= min_saving)
-            if len(months_used) < n_hyst:
-                status = "要観察（データ蓄積待ち）"
-            elif all(checks):
-                status = "変更推奨"
+            # 現シートでのコスト（観測実績）と、推奨シートに変えた場合の削減額（mid）
+            if seat == "standard":
+                cost_current, saving = cost_std, cost_std - min(cost_std, cost_prem)
+            elif seat == "premium":
+                cost_current, saving = cost_prem, cost_prem - min(cost_std, cost_prem)
             else:
-                status = "要観察"
+                cost_current = float("nan")
+                saving = float("nan")
 
-        # 感度: low/high シナリオが mid の推奨と一致するか
-        agree = sum(1 for s in ("low", "high") if recs[s][0] == rec_mid)
-        confidence = {2: "高", 1: "中", 0: "低"}[agree]
+            # ヒステリシス: 直近 n_hyst ヶ月すべてで同じ推奨・削減額がバッファ以上か
+            if seat == "unknown":
+                status = "シート不明"
+            elif rec_mid == seat:
+                status = "現状維持"
+            else:
+                recent = months_used[-n_hyst:]
+                checks = []
+                for m in recent:
+                    mdf = monthly[m].set_index("email")
+                    if email in mdf.index:
+                        m_cost = float(mdf.loc[email, "api_cost"])
+                        m_billed = float(mdf.loc[email, "billed"]) if "billed" in mdf.columns else 0.0
+                    else:
+                        m_cost, m_billed = 0.0, 0.0
+                    m_rec, m_std, m_prem = _costs_for(seat, m_cost, m_billed, "mid")
+                    m_current = m_std if seat == "standard" else m_prem
+                    m_saving = m_current - min(m_std, m_prem)
+                    checks.append(m_rec == rec_mid and m_saving >= min_saving)
+                if len(months_used) < n_hyst:
+                    status = "要観察（データ蓄積待ち）"
+                elif all(checks):
+                    status = "変更推奨"
+                else:
+                    status = "要観察"
 
-        # 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ:
-        # 「実効込み量が推定より大きい」か「上限で止められた」かの要確認フラグ
-        censored = (
-            seat == "standard"
-            and billed == 0.0
-            and api_cost >= censoring_margin * s_allowance_mid
-        )
+            # 感度: low/high シナリオが mid の推奨と一致するか
+            agree = sum(1 for s in ("low", "high") if recs[s][0] == rec_mid)
+            confidence = {2: "高", 1: "中", 0: "低"}[agree]
+
+            # 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ:
+            # 「実効込み量が推定より大きい」か「上限で止められた」かの要確認フラグ
+            censored = (
+                seat == "standard"
+                and billed == 0.0
+                and api_cost >= censoring_margin * s_allowance_mid
+            )
 
         rows.append({
             "email": email,
@@ -250,8 +262,8 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             "monthly_saving_usd": round(saving, 2) if saving == saving else None,
             "status": status,
             "confidence": confidence,
-            "rec_low": recs["low"][0],
-            "rec_high": recs["high"][0],
+            "rec_low": rec_low,
+            "rec_high": rec_high,
             "cap_suspected": censored,
             "billed_extra_usd": round(billed, 2),
             "prompt_tokens": int(row["prompt_tokens"]) if row is not None else 0,
@@ -280,6 +292,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
         warnings.append(
             f"members に存在しない利用ユーザ {len(orphan)} 名（シート不明として集計）: {orphan[:5]}"
         )
+    warnings.extend(_warn_active_unassigned(users, "api_cost_usd"))
 
     summary = _summarize(users, monthly[month], cfg, months_used, n_hyst)
     summary["org_service_cost_usd"] = org_usage.get("cost_usd", 0.0)
@@ -306,6 +319,7 @@ def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
         "n_members": int(len(users)),
         "n_standard": int(seats.get("standard", 0)),
         "n_premium": int(seats.get("premium", 0)),
+        "n_unassigned": int(seats.get("unassigned", 0)),
         "n_unknown": int(seats.get("unknown", 0)),
         "seat_cost_now_usd": round(seat_cost_now, 2),
         "total_api_cost_usd": round(float(month_agg["api_cost"].sum()), 2),
@@ -323,6 +337,19 @@ def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
 
 def users_month(months_used: list[str]) -> str:
     return months_used[-1] if months_used else ""
+
+
+def _warn_active_unassigned(users: pd.DataFrame, cost_col: str) -> list[str]:
+    """シート未割当なのに利用実績があるユーザの警告（データ不整合・月中解約の手がかり）。"""
+    active = users[
+        (users["current_seat"] == "unassigned") & (users[cost_col] > 0)
+    ]["email"].tolist()
+    if not active:
+        return []
+    return [
+        f"シート未割当なのに利用実績があるユーザ {len(active)} 名: {active[:5]}"
+        "（members の更新漏れ、または月中のシート解除の可能性）"
+    ]
 
 
 # --- 速報モード（部分月データからの一次判断） ---
@@ -347,6 +374,8 @@ def _preview_label(seat: str, api_obs: float, api_proj: float, cfg: dict,
     ため、正式分析と違い観測実課金による拘束は行わず、純粋なモデル判定のみ。
     境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒す。
     """
+    if seat == "unassigned":
+        return "対象外（未割当）", "—"
     if seat == "unknown":
         return "シート不明", "—"
     if api_obs < PREVIEW_IDLE_OBS_USD:
@@ -427,6 +456,7 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
         warnings.append(
             f"members に存在しない利用ユーザ {len(orphan)} 名（シート不明として集計）: {orphan[:5]}"
         )
+    warnings.extend(_warn_active_unassigned(users, "api_cost_observed_usd"))
 
     seats = users["current_seat"].value_counts().to_dict()
     std_price = float(cfg["seats"]["standard"]["price_usd"])
@@ -438,6 +468,7 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
         "n_members": int(len(users)),
         "n_standard": int(seats.get("standard", 0)),
         "n_premium": int(seats.get("premium", 0)),
+        "n_unassigned": int(seats.get("unassigned", 0)),
         "n_unknown": int(seats.get("unknown", 0)),
         "seat_cost_now_usd": round(
             seats.get("standard", 0) * std_price + seats.get("premium", 0) * prem_price, 2),

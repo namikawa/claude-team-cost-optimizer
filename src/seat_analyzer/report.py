@@ -10,11 +10,12 @@ from jinja2 import Environment
 
 from .analyze import SEAT_LABELS, AnalysisResult, PreviewResult
 
-STATUS_ORDER = ["変更推奨", "要観察", "要観察（データ蓄積待ち）", "シート不明", "現状維持"]
+STATUS_ORDER = ["変更推奨", "要観察", "要観察（データ蓄積待ち）", "シート不明", "現状維持",
+                "対象外（シート未割当）"]
 
 # 速報の一次判断ラベルの表示順（対応アクションが明確なものから）
 PREVIEW_ORDER = ["遊休候補", "Standard候補", "Premium検討", "判断保留",
-                 "シート不明", "Premium妥当", "Standard妥当"]
+                 "シート不明", "Premium妥当", "Standard妥当", "対象外（未割当）"]
 
 # CSV 由来の値（email 等）が HTML/JS として解釈されないよう autoescape を有効化
 _HTML_ENV = Environment(autoescape=True)
@@ -108,7 +109,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
     users = users.sort_values(["_order", "monthly_saving_usd"], ascending=[True, False])
 
     changes = users[users["status"] == "変更推奨"]
-    sensitivity_disagree = users[users["confidence"] != "高"]
+    sensitivity_disagree = users[users["confidence"].isin(["中", "低"])]
 
     md = f"""# Claude Team シート最適化レポート — {_scope_label(result)}
 
@@ -116,7 +117,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 
 | 指標 | 値 |
 |---|---|
-| 対象メンバー数 | {s['n_members']} 名（Standard {s['n_standard']} / Premium {s['n_premium']} / 不明 {s['n_unknown']}） |
+| 対象メンバー数 | {s['n_members']} 名（Standard {s['n_standard']} / Premium {s['n_premium']} / 未割当 {s.get('n_unassigned', 0)} / 不明 {s['n_unknown']}） |
 | 現在のシート費用 | {_fmt_usd(s['seat_cost_now_usd'])} /月 |
 | 全体の API 換算需要（ユーザ帰属分） | {_fmt_usd(s['total_api_cost_usd'])} /月 |
 | 実際の従量課金（ユーザ帰属分） | {_fmt_usd(s.get('total_billed_extra_usd', 0.0))} /月 |
@@ -139,6 +140,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 - **Standard時 / Premium時**: そのシートの場合の想定月額。**現シート側はシート料+実課金の観測実績**、変更先側は allowance（込み利用量）モデルによる試算
 - **⚠️上限?**: 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ。「実効込み量が推定より大きい」か「上限で停止した」かの要確認
 - **確度**: 込み利用量（allowance）の low/mid/high 3シナリオで推奨が一致するか（高=3/3, 中=2/3, 低=1/3）
+- **対象外（シート未割当）**: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。損益分岐判定は行わない
 
 ## 感度分析
 
@@ -210,6 +212,7 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
   .b-keep { background:#eef0f3; color:#6b7280; }
   .b-unknown { background:#fbe9e9; color:var(--warn); }
   .seat-standard { color:var(--std); } .seat-premium { color:var(--prem); }
+  .seat-unassigned, .seat-unknown { color:#9aa3ad; }
   .bar { display:flex; align-items:center; gap:8px; margin:3px 0; }
   .bar .name { width:220px; font-size:.78rem; overflow:hidden; text-overflow:ellipsis; }
   .bar .track { flex:1; background:#eceef1; border-radius:4px; height:16px; position:relative; }
@@ -223,7 +226,7 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 <h1>Claude Team シート最適化ダッシュボード <small>{{ scope }}</small></h1>
 
 <div class="cards">
-  <div class="card"><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}）</div></div>
+  <div class="card"><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}{% if s.n_unassigned %} / 未割当 {{ s.n_unassigned }}{% endif %}）</div></div>
   <div class="card"><div class="v">${{ '%.0f' % s.seat_cost_now_usd }}</div><div class="l">現在のシート費用 /月</div></div>
   <div class="card"><div class="v">${{ '%.0f' % s.total_api_cost_usd }}</div><div class="l">API換算利用額 /月</div></div>
   <div class="card hl"><div class="v">${{ '%.0f' % s.est_monthly_saving_usd }}</div><div class="l">削減見込み /月（変更推奨 {{ s.n_change_recommended }} 名）</div></div>
@@ -234,7 +237,7 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 {% for u in users_sorted %}
   <div class="bar">
     <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
-    <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_usd / max_cost * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else 'var(--std)' }};"></div></div>
+    <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_usd / max_cost * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('#9aa3ad' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div></div>
     <div class="val">${{ '%.2f' % u.api_cost_usd }}{% if u.cap_suspected %}<span class="cap"> ⚠</span>{% endif %}</div>
   </div>
 {% endfor %}
@@ -256,7 +259,7 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
   <td class="num">{{ u.std_fmt }}</td>
   <td class="num">{{ u.prem_fmt }}</td>
   <td class="num">{{ u.saving_fmt }}</td>
-  <td class="judge"><span class="badge {{ 'b-change' if u.status == '変更推奨' else ('b-watch' if u.status.startswith('要観察') else ('b-unknown' if u.status == 'シート不明' else 'b-keep')) }}">{{ u.status }}</span><span class="conf">確度{{ u.confidence }}</span></td>
+  <td class="judge"><span class="badge {{ 'b-change' if u.status == '変更推奨' else ('b-watch' if u.status.startswith('要観察') else ('b-unknown' if u.status == 'シート不明' else 'b-keep')) }}">{{ u.status }}</span>{% if u.confidence != '—' %}<span class="conf">確度{{ u.confidence }}</span>{% endif %}</td>
 </tr>
 {% endfor %}
 </table></div>
@@ -304,7 +307,8 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         users_sorted=users_sorted,
         max_cost=max_cost,
         seat_labels=SEAT_LABELS,
-        seat_short={"standard": "Standard", "premium": "Premium", "unknown": "不明"},
+        seat_short={"standard": "Standard", "premium": "Premium",
+                    "unassigned": "未割当", "unknown": "不明"},
     )
     path.write_text(html, encoding="utf-8")
 
@@ -355,7 +359,7 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> Path:
 
 | 指標 | 値 |
 |---|---|
-| 対象メンバー数 | {s['n_members']} 名（Standard {s['n_standard']} / Premium {s['n_premium']} / 不明 {s['n_unknown']}） |
+| 対象メンバー数 | {s['n_members']} 名（Standard {s['n_standard']} / Premium {s['n_premium']} / 未割当 {s.get('n_unassigned', 0)} / 不明 {s['n_unknown']}） |
 | 現在のシート費用 | {_fmt_usd(s['seat_cost_now_usd'])} /月 |
 | 観測需要 → 月末ペース換算 | {_fmt_usd(s['total_api_observed_usd'])} → {_fmt_usd(s['total_api_projected_usd'])} |
 | 一次判断の内訳 | {count_line} |
@@ -369,6 +373,7 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> Path:
   境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒しています
 - 遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨
 - ⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）
+- 対象外（未割当）: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）
 
 ## 注意事項
 

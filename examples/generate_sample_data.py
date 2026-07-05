@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 from pathlib import Path
 
 BASE = Path(__file__).parent / "input"
@@ -55,6 +56,8 @@ USERS_ORG_B = [
     # Standard 通常ユーザ（現状維持）
     ("shimizu@example.co.jp",  "Standard", {"2026-05": 16.0,  "2026-06": 21.0},  "claude-sonnet-4-6"),
     ("abe@example.co.jp",      "Standard", {"2026-06": 9.0},                     "claude-haiku-4-5"),
+    # シート未割当（別組織でアサイン済み・管理者等 → 判定対象外）
+    ("okada@example.co.jp",    "Unassigned", {},                                 "claude-sonnet-4-6"),
 ]
 
 # members に載っていない利用者（シート不明の検知確認用）
@@ -102,7 +105,8 @@ def write_spend(org: str, month: str, users: list, orphans: list) -> None:
             p_tok, c_tok = tokens_for_cost(cost, model)
             rows.append({
                 "Email": email,
-                "Account UUID": f"uuid-{abs(hash(email)) % 10**8:08d}",
+                # hash() はラン間で不定のため、再生成しても差分が出ない決定的ハッシュを使う
+                "Account UUID": f"uuid-{hashlib.md5(email.encode()).hexdigest()[:8]}",
                 "Product": product,
                 "Model": model,
                 "Model Family": model.rsplit("-", 2)[0],

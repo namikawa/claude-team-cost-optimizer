@@ -41,6 +41,7 @@ uv run seat-analyzer analyze [--month YYYY-MM] [--org <組織名>]
   - **spend突合の乖離警告** → `config.yaml > model_prices` の単価が最新か、
     spend列の意味（実課金 vs API等価見積り）を確認し、README に解釈を記録する
   - **シート不明ユーザ** → members ファイルの更新漏れの可能性を指摘する
+    （「対象外（シート未割当）」は意図的な未割当のため指摘不要）
   - **スキップされた組織** → 対象月のエクスポート漏れ。手順を案内する
 - `reports/<組織名>/<月>/recommendations.csv` を読み、外れ値（極端な API換算コスト、
   前月からの急変）がないか確認する
