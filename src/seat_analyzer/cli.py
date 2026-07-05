@@ -85,6 +85,11 @@ def _resolve_targets(
     input/spend/ 直下型の旧レイアウトは単一組織（org=None）として扱う。
     """
     orgs = ingest.discover_orgs(input_dir)
+    if "summary" in orgs:
+        raise ValueError(
+            f"組織名 'summary' は横断サマリの出力先（reports/summary/）として予約されています。"
+            f"{input_dir}/summary を別名にリネームしてください"
+        )
     legacy = (input_dir / "spend").is_dir()
     if orgs and legacy:
         raise ValueError(

@@ -74,6 +74,11 @@ def _files_by_month(directory: Path) -> dict[str, Path]:
     for p in sorted(directory.glob("*.csv")):
         month = month_of_file(p)
         if month:
+            if month in result:
+                raise ValueError(
+                    f"{directory}: {month} のCSVが複数あります"
+                    f"（{result[month].name}, {p.name}）。対象月のファイルを1つに絞ってください"
+                )
             result[month] = p
     return result
 
@@ -158,10 +163,18 @@ def load_members(input_dir: Path, month: str, cfg: dict) -> LoadResult:
         path = files[month]
     else:
         earlier = [m for m in sorted(files) if m <= month]
-        path = files[earlier[-1]] if earlier else files[sorted(files)[0]]
-        warnings.append(
-            f"members: {month} のファイルが無いため {path.name} を使用（シート構成が最新でない可能性）"
-        )
+        if earlier:
+            path = files[earlier[-1]]
+            warnings.append(
+                f"members: {month} のファイルが無いため {path.name} を使用（シート構成が最新でない可能性）"
+            )
+        else:
+            # 過去分析（バックフィル）で当時の members が無いケース。未来月しか無い旨を明示する
+            path = files[sorted(files)[0]]
+            warnings.append(
+                f"members: {month} 以前のファイルが無いため未来月の {path.name} を使用。"
+                "対象月当時のシート構成と異なる可能性が高いため、判定は参考値として扱ってください"
+            )
     df = _read_csv(path)
     df, w = map_columns(
         df,
