@@ -1,7 +1,9 @@
 """合成サンプルデータ生成（examples/input/ 配下）。
 
 実スペンドレポートの公開仕様に基づくカラム構成で、動作確認・デモ用の
-2ヶ月分データを生成する。実データの形式確認にも参照できる。
+2組織×2ヶ月分データを生成する。実データの形式確認にも参照できる。
+組織ごとに input/<組織名>/{spend,members,code-analytics}/ を作る
+（code-analytics は任意のため org-b では省略している）。
 
     uv run python examples/generate_sample_data.py
 """
@@ -21,7 +23,7 @@ PRICES = {
 }
 
 # ペルソナ: (email, seat, {month: api_cost_usd}, 主モデル)
-USERS = [
+USERS_ORG_A = [
     # Premium ヘビーユーザ（現状維持）
     ("tanaka@example.co.jp",   "Premium",  {"2026-05": 520.0, "2026-06": 610.0}, "claude-opus-4-8"),
     ("suzuki@example.co.jp",   "Premium",  {"2026-05": 340.0, "2026-06": 415.0}, "claude-opus-4-8"),
@@ -42,10 +44,23 @@ USERS = [
     ("yamada@example.co.jp",   "Standard", {"2026-05": 30.0,  "2026-06": 27.0},  "claude-sonnet-4-6"),
 ]
 
-# members に載っていない利用者（シート不明の検知確認用）
-ORPHAN = ("guest@example.co.jp", {"2026-06": 15.0}, "claude-sonnet-4-6")
+# 小規模な2組織目（横断サマリ・--org オプションのデモ用）
+USERS_ORG_B = [
+    # Premium ヘビーユーザ（現状維持）
+    ("mori@example.co.jp",     "Premium",  {"2026-05": 450.0, "2026-06": 470.0}, "claude-opus-4-8"),
+    # Premium 利用ゼロ（ダウングレード最有力）
+    ("hayashi@example.co.jp",  "Premium",  {},                                    "claude-sonnet-4-6"),
+    # Standard ヘビーユーザ（従量課金が嵩む → アップグレード推奨）
+    ("ikeda@example.co.jp",    "Standard", {"2026-05": 210.0, "2026-06": 260.0}, "claude-opus-4-8"),
+    # Standard 通常ユーザ（現状維持）
+    ("shimizu@example.co.jp",  "Standard", {"2026-05": 16.0,  "2026-06": 21.0},  "claude-sonnet-4-6"),
+    ("abe@example.co.jp",      "Standard", {"2026-06": 9.0},                     "claude-haiku-4-5"),
+]
 
-CC_STATS = {  # (PRs with CC, All PRs, Lines with CC, All Lines) — 2026-06
+# members に載っていない利用者（シート不明の検知確認用）
+ORPHANS_ORG_A = [("guest@example.co.jp", {"2026-06": 15.0}, "claude-sonnet-4-6")]
+
+CC_STATS_ORG_A = {  # (PRs with CC, All PRs, Lines with CC, All Lines) — 2026-06
     "tanaka@example.co.jp": (24, 30, 5200, 6800),
     "suzuki@example.co.jp": (18, 26, 3900, 6100),
     "sato@example.co.jp": (1, 12, 80, 2400),
@@ -58,6 +73,12 @@ CC_STATS = {  # (PRs with CC, All PRs, Lines with CC, All Lines) — 2026-06
     "yamada@example.co.jp": (6, 12, 900, 2000),
 }
 
+# 組織名 → (メンバー, 非メンバー利用者, code-analytics。None なら生成しない)
+ORGS = {
+    "org-a": (USERS_ORG_A, ORPHANS_ORG_A, CC_STATS_ORG_A),
+    "org-b": (USERS_ORG_B, [], None),
+}
+
 
 def tokens_for_cost(cost: float, model: str) -> tuple[int, int]:
     """入力:出力 = 10:1 の前提で cost に一致するトークン数を逆算する。"""
@@ -66,11 +87,11 @@ def tokens_for_cost(cost: float, model: str) -> tuple[int, int]:
     return int(completion * 10), int(completion)
 
 
-def write_spend(month: str) -> None:
-    path = BASE / "spend" / f"spend_{month}.csv"
+def write_spend(org: str, month: str, users: list, orphans: list) -> None:
+    path = BASE / org / "spend" / f"spend_{month}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = []
-    entries = [(u[0], u[2], u[3]) for u in USERS] + [ORPHAN]
+    entries = [(u[0], u[2], u[3]) for u in users] + orphans
     for email, costs, model in entries:
         if month not in costs:
             continue
@@ -98,31 +119,33 @@ def write_spend(month: str) -> None:
     print(f"wrote {path} ({len(rows)} rows)")
 
 
-def write_members(month: str) -> None:
-    path = BASE / "members" / f"members_{month}.csv"
+def write_members(org: str, month: str, users: list) -> None:
+    path = BASE / org / "members" / f"members_{month}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Email", "Name", "Role", "Seat Type"])
-        for email, seat, _, _ in USERS:
+        for email, seat, _, _ in users:
             name = email.split("@")[0].title()
             writer.writerow([email, name, "Member", seat])
     print(f"wrote {path}")
 
 
-def write_code_analytics(month: str) -> None:
-    path = BASE / "code-analytics" / f"cc_{month}.csv"
+def write_code_analytics(org: str, month: str, cc_stats: dict) -> None:
+    path = BASE / org / "code-analytics" / f"cc_{month}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Email", "PRs with CC", "All PRs", "Lines with CC", "All Lines"])
-        for email, stats in CC_STATS.items():
+        for email, stats in cc_stats.items():
             writer.writerow([email, *stats])
     print(f"wrote {path}")
 
 
 if __name__ == "__main__":
-    for month in ("2026-05", "2026-06"):
-        write_spend(month)
-    write_members("2026-06")
-    write_code_analytics("2026-06")
+    for org, (users, orphans, cc_stats) in ORGS.items():
+        for month in ("2026-05", "2026-06"):
+            write_spend(org, month, users, orphans)
+        write_members(org, "2026-06", users)
+        if cc_stats is not None:
+            write_code_analytics(org, "2026-06", cc_stats)

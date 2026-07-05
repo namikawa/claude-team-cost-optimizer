@@ -34,17 +34,23 @@ def spend_row(email: str, cost: float, model: str = "claude-sonnet-4-6",
 
 @pytest.fixture
 def make_input(tmp_path: Path):
-    """input ディレクトリを組み立てるヘルパ。"""
+    """input ディレクトリを組み立てるヘルパ。
+
+    org=None で旧レイアウト（input/spend 直下）、org 指定で input/<org>/spend 配下に
+    生成する。複数回呼べば同じ input/ にマルチ組織構成を組み立てられる。
+    戻り値は常に input/ のルート（旧レイアウトでは組織ディレクトリを兼ねる）。
+    """
 
     def _make(spend_by_month: dict[str, list[str]], members: list[str] | None = None,
-              members_month: str = "2026-06") -> Path:
+              members_month: str = "2026-06", org: str | None = None) -> Path:
         input_dir = tmp_path / "input"
+        base = input_dir / org if org else input_dir
         for month, rows in spend_by_month.items():
-            p = input_dir / "spend" / f"spend_{month}.csv"
+            p = base / "spend" / f"spend_{month}.csv"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(SPEND_HEADER + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
         if members is not None:
-            p = input_dir / "members" / f"members_{members_month}.csv"
+            p = base / "members" / f"members_{members_month}.csv"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("Email,Seat Type\n" + "\n".join(members) + "\n", encoding="utf-8")
         return input_dir

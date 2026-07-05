@@ -18,6 +18,7 @@ class AnalysisResult:
     month: str
     users: pd.DataFrame
     summary: dict
+    org: str | None = None  # 組織名（input/<org>/ レイアウト時。旧レイアウトは None）
     warnings: list[str] = field(default_factory=list)
     months_used: list[str] = field(default_factory=list)
     sources: dict = field(default_factory=dict)
@@ -64,7 +65,8 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
     return grouped.reset_index()
 
 
-def analyze(input_dir: str | Path, month: str, cfg: dict) -> AnalysisResult:
+def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None) -> AnalysisResult:
+    """1組織分の分析。input_dir はその組織の入力ディレクトリ（spend/ 等を直下に持つ）。"""
     input_dir = Path(input_dir)
     warnings: list[str] = []
 
@@ -260,7 +262,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict) -> AnalysisResult:
     summary["org_service_cost_usd"] = org_usage.get("cost_usd", 0.0)
     summary["org_service_by_product"] = org_usage.get("by_product", {})
     return AnalysisResult(
-        month=month, users=users, summary=summary,
+        month=month, users=users, summary=summary, org=org,
         warnings=warnings, months_used=months_used, sources=sources,
     )
 

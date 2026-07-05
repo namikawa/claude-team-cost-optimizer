@@ -83,6 +83,16 @@ def discover_months(input_dir: Path) -> list[str]:
     return sorted(_files_by_month(Path(input_dir) / "spend"))
 
 
+def discover_orgs(input_dir: Path) -> list[str]:
+    """input_dir 直下の組織サブディレクトリ（spend/ を持つもの）の一覧（昇順）。"""
+    input_dir = Path(input_dir)
+    if not input_dir.is_dir():
+        return []
+    return sorted(
+        p.name for p in input_dir.iterdir() if p.is_dir() and (p / "spend").is_dir()
+    )
+
+
 def _read_csv(path: Path) -> pd.DataFrame:
     for encoding in ("utf-8-sig", "utf-8", "cp932"):
         try:

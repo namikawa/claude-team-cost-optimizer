@@ -37,6 +37,11 @@ def _fmt_usd(v) -> str:
     return f"${v:,.2f}"
 
 
+def _scope_label(result: AnalysisResult) -> str:
+    """レポートタイトル用の対象表記。組織名があれば「組織 — 月」。"""
+    return f"{result.org} — {result.month}" if result.org else result.month
+
+
 def _org_products(summary: dict) -> str:
     by_product = summary.get("org_service_by_product") or {}
     if not by_product:
@@ -88,7 +93,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
     changes = users[users["status"] == "変更推奨"]
     sensitivity_disagree = users[users["confidence"] != "高"]
 
-    md = f"""# Claude Team シート最適化レポート — {result.month}
+    md = f"""# Claude Team シート最適化レポート — {_scope_label(result)}
 
 ## サマリ
 
@@ -163,7 +168,7 @@ _HTML_TEMPLATE = Template(r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Team シート最適化 — {{ month }}</title>
+<title>Claude Team シート最適化 — {{ scope }}</title>
 <style>
   :root { --std:#4a90d9; --prem:#d97a4a; --ok:#2e8b57; --warn:#c0392b; }
   * { box-sizing: border-box; }
@@ -198,7 +203,7 @@ _HTML_TEMPLATE = Template(r"""<!doctype html>
 </style>
 </head>
 <body><div class="wrap">
-<h1>Claude Team シート最適化ダッシュボード <small>{{ month }}</small></h1>
+<h1>Claude Team シート最適化ダッシュボード <small>{{ scope }}</small></h1>
 
 <div class="cards">
   <div class="card"><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}）</div></div>
@@ -277,7 +282,7 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         u["saving_fmt"] = _fmt_compact(u.get("monthly_saving_usd"))
     max_cost = max((u["api_cost_usd"] for u in users_sorted), default=0) or 1.0
     html = _HTML_TEMPLATE.render(
-        month=result.month,
+        scope=_scope_label(result),
         s=result.summary,
         users_sorted=users_sorted,
         max_cost=max_cost,
@@ -289,3 +294,45 @@ def write_html(result: AnalysisResult, path: Path) -> None:
 
 def summary_json(result: AnalysisResult) -> str:
     return json.dumps(result.summary, ensure_ascii=False, indent=2)
+
+
+def write_org_summary(results: list[AnalysisResult], output_dir: str | Path) -> Path:
+    """複数組織を一括分析したときの横断サマリ（reports/summary/YYYY-MM.md）。"""
+    month = results[0].month
+    out = Path(output_dir) / "summary"
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"{month}.md"
+
+    lines = [
+        f"# Claude Team シート最適化 組織横断サマリ — {month}",
+        "",
+        "| 組織 | メンバー | シート費用/月 | API換算需要/月 | 実課金(従量)/月 | 組織サービス/月 | 変更推奨 | 削減見込み/月 |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    keys = (
+        "n_members", "seat_cost_now_usd", "total_api_cost_usd",
+        "total_billed_extra_usd", "org_service_cost_usd",
+        "n_change_recommended", "est_monthly_saving_usd",
+    )
+    totals = dict.fromkeys(keys, 0.0)
+    for r in results:
+        s = r.summary
+        for k in keys:
+            totals[k] += float(s.get(k, 0) or 0)
+        lines.append(
+            f"| [{r.org}](../{r.org}/{month}/report.md) | {s['n_members']} 名 "
+            f"| {_fmt_usd(s['seat_cost_now_usd'])} | {_fmt_usd(s['total_api_cost_usd'])} "
+            f"| {_fmt_usd(s.get('total_billed_extra_usd', 0.0))} | {_fmt_usd(s.get('org_service_cost_usd', 0.0))} "
+            f"| {s['n_change_recommended']} 名 | {_fmt_usd(s['est_monthly_saving_usd'])} |"
+        )
+    lines += [
+        f"| **合計** | **{int(totals['n_members'])} 名** "
+        f"| **{_fmt_usd(totals['seat_cost_now_usd'])}** | **{_fmt_usd(totals['total_api_cost_usd'])}** "
+        f"| **{_fmt_usd(totals['total_billed_extra_usd'])}** | **{_fmt_usd(totals['org_service_cost_usd'])}** "
+        f"| **{int(totals['n_change_recommended'])} 名** | **{_fmt_usd(totals['est_monthly_saving_usd'])}** |",
+        "",
+        "各組織の詳細は `reports/<組織>/" + month + "/report.md` を参照。",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
