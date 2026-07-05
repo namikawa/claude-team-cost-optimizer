@@ -47,10 +47,11 @@ def test_csv_formula_cells_are_sanitized(tmp_path):
 # --- 入力ファイルの取り違え防止 ---
 
 def test_duplicate_month_csv_raises(make_input):
+    # 月のみの命名同士は期間で優先順を判断できないためエラー
     input_dir = make_input({"2026-06": [spend_row("a@x.jp", 1.0)]})
     dup = input_dir / "spend" / "spend-report_2026-06.csv"
     dup.write_text(SPEND_HEADER + "\n" + spend_row("a@x.jp", 2.0) + "\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="複数あります"):
+    with pytest.raises(ValueError, match="複数あり"):
         discover_months(input_dir)
 
 

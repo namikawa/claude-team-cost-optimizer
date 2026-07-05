@@ -29,7 +29,10 @@ def main(argv: list[str] | None = None) -> int:
         "--preview", action="store_true",
         help="速報モード: 部分月データから一次判断のみ行う（変更推奨・ヒステリシスなし）",
     )
-    p.add_argument("--days", type=int, help="速報モードの観測日数（--preview 時必須）")
+    p.add_argument(
+        "--days", type=int,
+        help="速報モードの観測日数。省略時はスペンドレポートのファイル名の期間から自動判別",
+    )
     p.set_defaults(func=_run_analyze)
 
     pi = sub.add_parser("init-org", help="新しい組織の入力/出力ディレクトリの雛形を作成")
@@ -125,8 +128,6 @@ def _resolve_targets(
 
 
 def _run_analyze(args: argparse.Namespace) -> int:
-    if args.preview and not args.days:
-        raise ValueError("--preview には --days <観測日数> の指定が必要です")
     if args.days and not args.preview:
         raise ValueError("--days は --preview 専用のオプションです")
 
@@ -159,7 +160,17 @@ def _run_analyze(args: argparse.Namespace) -> int:
             skipped.append(org or str(org_input))
             continue
         if args.preview:
-            pv = analyze_mod.preview(org_input, month, cfg, args.days, org=org)
+            days = args.days
+            if days is None:
+                period = ingest.spend_file_period(org_input, month)
+                days = period.days if period else None
+                if days is None:
+                    raise ValueError(
+                        f"--days <観測日数> を指定してください"
+                        f"（{org or org_input}: スペンドレポートのファイル名に期間が無いため自動判別できません）"
+                    )
+                print(f"{org or ''}: ファイル名の期間から観測日数 {days} 日を使用")
+            pv = analyze_mod.preview(org_input, month, cfg, days, org=org)
             path = report.write_preview(pv, org_output)
             _print_preview(pv, path)
             n_previewed += 1

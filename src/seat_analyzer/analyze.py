@@ -89,6 +89,16 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
         warnings.extend(result.warnings)
         sources["spend"][m] = str(result.source)
         raw[m] = pricing.add_computed_cost(result.df, cfg)
+        # ファイル名の期間が全月に満たない場合、月額前提の判定が歪む（過小評価）
+        period = ingest.file_period(result.source)
+        if period is not None and period.days is not None:
+            year, mon = (int(x) for x in m.split("-"))
+            if period.days < calendar.monthrange(year, mon)[1]:
+                warnings.append(
+                    f"{result.source.name}: {m} は部分月データ"
+                    f"（{period.start:%m-%d}〜{period.end:%m-%d} の {period.days}日分）ですが"
+                    "全月として扱っています。月中の一次判断には --preview を利用してください"
+                )
 
     unknown_models = pricing.unmatched_models(
         pd.concat([df["model"] for df in raw.values()]).unique(), cfg

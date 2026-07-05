@@ -54,14 +54,23 @@ uv run seat-analyzer init-org <組織名>
    - claude.ai 左下のイニシャル → Settings > Analytics（対象組織の workspace で）
    - 「How much is Claude costing?」セクション → Export spend report
    - 期間は Custom で前月1日〜末日 を指定
-   - ダウンロードした CSV を `input/<組織名>/spend/spend_YYYY-MM.csv` として保存（YYYY-MM は対象月）
+   - ダウンロードした CSV をそのままのファイル名で `input/<組織名>/spend/` に置く
 2. メンバー一覧（必須）
    - 管理画面のメンバー管理からエクスポート（email とシート種別を含むもの）
-   - `input/<組織名>/members/members_YYYY-MM.csv` として保存
-   - エクスポートが無い場合は `email,seat_type` の2列 CSV を手動作成でも可
+   - そのまま `input/<組織名>/members/` に置く
+   - エクスポートが無い場合は `email,seat_type` の2列 CSV（ファイル名に YYYY-MM を含める）を手動作成でも可
 3. Claude Code 分析（任意・活用度分析用）
    - https://claude.ai/analytics/claude-code → Leaderboard → Export all users
-   - `input/<組織名>/code-analytics/cc_YYYY-MM.csv` として保存
+   - そのまま `input/<組織名>/code-analytics/` に置く
+
+ファイル名の解釈ルール（リネーム不要）:
+
+- 期間付き（`...-2026-06-01-to-2026-06-30.csv`、アンダースコア区切りも可）は開始月を対象月とする。
+  月をまたぐ期間のエクスポートはエラーになるため、月単位でエクスポートすること
+- 日付のみ（`members-...-2026-07-05.csv`）はエクスポート日の月のスナップショットとして扱う
+- 同一月にファイルが複数ある場合、期間が包含関係なら広い方を自動採用（members の
+  スナップショットは最新日付を採用）し、警告を表示する。判断できない場合はエラー
+- 期間が1ヶ月に満たないスペンドレポートを通常分析に使うと警告が出る（速報モードを案内）
 4. 分析実行
    - Claude Code で `/seat-analysis` を実行（推奨。数値検証と考察執筆まで行う）
    - または CLI 直接実行:
@@ -84,11 +93,14 @@ uv run seat-analyzer init-org <組織名>
 
 導入直後の組織などで月初の正式分析を待たずにシート構成を確認したい場合、
 月の途中までのスペンドレポート（例: 1日〜10日）を通常どおり
-`input/<組織名>/spend/spend_YYYY-MM.csv` として配置し、観測日数を渡して実行する:
+`input/<組織名>/spend/` に配置して実行する:
 
 ```sh
-uv run seat-analyzer analyze --preview --days 10 [--org <組織名>]
+uv run seat-analyzer analyze --preview [--org <組織名>] [--days 10]
 ```
+
+観測日数はファイル名の期間（`...-2026-07-01-to-2026-07-10.csv` なら10日）から
+自動判別される。期間の無いファイル名の場合のみ `--days` で指定する。
 
 - 出力は `reports/<組織名>/<月>/preview.md` のみ。変更推奨・ヒステリシス判定・
   正式レポート（report.md 等）には影響しない
