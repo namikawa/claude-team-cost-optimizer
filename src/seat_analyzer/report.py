@@ -6,11 +6,14 @@ import json
 from pathlib import Path
 
 import pandas as pd
-from jinja2 import Template
+from jinja2 import Environment
 
 from .analyze import SEAT_LABELS, AnalysisResult
 
 STATUS_ORDER = ["変更推奨", "要観察", "要観察（データ蓄積待ち）", "シート不明", "現状維持"]
+
+# CSV 由来の値（email 等）が HTML/JS として解釈されないよう autoescape を有効化
+_HTML_ENV = Environment(autoescape=True)
 
 
 def write_all(result: AnalysisResult, output_dir: str | Path) -> dict[str, Path]:
@@ -27,8 +30,18 @@ def write_all(result: AnalysisResult, output_dir: str | Path) -> dict[str, Path]
     return paths
 
 
+# Excel/スプレッドシートで式として解釈されうる先頭文字（formula injection 対策）
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_csv_cell(v):
+    if isinstance(v, str) and v.startswith(_FORMULA_PREFIXES):
+        return "'" + v
+    return v
+
+
 def write_csv(result: AnalysisResult, path: Path) -> None:
-    result.users.to_csv(path, index=False, encoding="utf-8-sig")
+    result.users.map(_sanitize_csv_cell).to_csv(path, index=False, encoding="utf-8-sig")
 
 
 def _fmt_usd(v) -> str:
@@ -163,7 +176,7 @@ def _preserve_discussion(md: str, path: Path) -> str:
     return md.split(marker, 1)[0] + marker + tail
 
 
-_HTML_TEMPLATE = Template(r"""<!doctype html>
+_HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
