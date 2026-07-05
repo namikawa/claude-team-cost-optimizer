@@ -5,6 +5,7 @@ reports/
 
 CLAUDE.md
 .claude/settings.local.json
+.claude/agents/
 .DS_Store
 .venv/
 __pycache__/
