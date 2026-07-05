@@ -86,6 +86,15 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
         sources["spend"][m] = str(result.source)
         raw[m] = pricing.add_computed_cost(result.df, cfg)
 
+    unknown_models = pricing.unmatched_models(
+        pd.concat([df["model"] for df in raw.values()]).unique(), cfg
+    )
+    if unknown_models:
+        warnings.append(
+            f"model_prices: 単価表に一致しないモデルに default 単価を適用: {unknown_models}。"
+            "config.yaml > model_prices にパターンを追記してください"
+        )
+
     # 需要指標の基準（computed / net_spend）を対象月のユーザ帰属行から決定し、全月に適用
     target_user_rows = raw[month][raw[month]["email"].str.contains("@", na=False)]
     basis, basis_notes = pricing.resolve_cost_basis(target_user_rows, cfg)

@@ -15,6 +15,17 @@ def price_for_model(model: str, cfg: dict) -> tuple[float, float]:
     return float(default["input"]), float(default["output"])
 
 
+def unmatched_models(models, cfg: dict) -> list[str]:
+    """単価表のどのパターンにも一致せず default 単価が適用されるモデル名の一覧。
+
+    新モデルの登場や表記変更に気づかず誤った単価で試算し続けるのを防ぐため、
+    呼び出し側で警告に載せる。
+    """
+    patterns = [str(p["match"]).lower() for p in cfg["model_prices"]["patterns"]]
+    names = {str(m) for m in models if m == m and m is not None}
+    return sorted(n for n in names if not any(p in n.lower() for p in patterns))
+
+
 CACHE_COLS = ("uncached_input_tokens", "cache_read_tokens",
               "cache_write_5m_tokens", "cache_write_1h_tokens")
 
