@@ -157,6 +157,7 @@ def _group_summary_rows(users: pd.DataFrame, summary: dict, col: str) -> list[di
     if not _has_values(users, col):
         return []
     has_billed = "billed_extra_usd" in users.columns
+    has_loc = "loc_with_cc" in users.columns
     # グループ名 → 集計値の accumulator（初期化順は問わない。最後に並べ替える）
     acc: dict[str, dict] = {}
     for _, r in users.iterrows():
@@ -167,15 +168,17 @@ def _group_summary_rows(users: pd.DataFrame, summary: dict, col: str) -> list[di
         api = float(r["api_cost_usd"]) if r["api_cost_usd"] == r["api_cost_usd"] else 0.0
         billed = float(r["billed_extra_usd"] or 0.0) if has_billed and r["billed_extra_usd"] == r["billed_extra_usd"] else 0.0
         saving = float(r["monthly_saving_usd"] or 0.0) if is_change and r["monthly_saving_usd"] == r["monthly_saving_usd"] else 0.0
+        loc = float(r["loc_with_cc"]) if has_loc and r["loc_with_cc"] == r["loc_with_cc"] else 0.0
         for grp in groups:
             a = acc.setdefault(grp, {"n": 0.0, "seat_cost": 0.0, "api": 0.0,
-                                     "billed": 0.0, "n_change": 0.0, "saving": 0.0})
+                                     "billed": 0.0, "n_change": 0.0, "saving": 0.0, "loc": 0.0})
             a["n"] += w
             a["seat_cost"] += seat_price * w
             a["api"] += api * w
             a["billed"] += billed * w
             a["n_change"] += (1.0 * w) if is_change else 0.0
             a["saving"] += saving * w
+            a["loc"] += loc * w
     rows = []
     for grp, a in acc.items():
         rows.append({
@@ -187,6 +190,7 @@ def _group_summary_rows(users: pd.DataFrame, summary: dict, col: str) -> list[di
             "billed": a["billed"],
             "n_change": a["n_change"],
             "saving": a["saving"],
+            "loc": a["loc"],
         })
     rows.sort(key=lambda r: (r["is_unset"], -r["api"]))
     return rows
@@ -206,19 +210,19 @@ def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str
     rows = _group_summary_rows(users, summary, col)
     if not rows:
         return ""
+    has_loc = "loc_with_cc" in users.columns
     col_label = heading.replace("別サマリ", "")
-    lines = [
-        f"## {heading}",
-        "",
-        f"| {col_label} | 人数 | シート費用/月 | API換算需要/月 | 実課金(従量)/月 | 変更推奨 | 削減見込み/月 |",
-        "|---|---|---|---|---|---|---|",
-    ]
+    header = (f"| {col_label} | 人数 | シート費用/月 | API換算需要/月 | 実課金(従量)/月 |"
+              + (" LoC |" if has_loc else "")
+              + " 変更推奨 | 削減見込み/月 |")
+    lines = [f"## {heading}", "", header, "|" + "---|" * (7 + int(has_loc))]
     for r in rows:
-        lines.append(
-            f"| {_md_cell(r['group'])} | {_fmt_count(r['n'])} 名 | {_fmt_usd(r['seat_cost'])} "
-            f"| {_fmt_usd(r['api'])} | {_fmt_usd(r['billed'])} "
-            f"| {_fmt_count(r['n_change'])} 名 | {_fmt_usd(r['saving'])} |"
-        )
+        cells = [_md_cell(r["group"]), f"{_fmt_count(r['n'])} 名",
+                 _fmt_usd(r["seat_cost"]), _fmt_usd(r["api"]), _fmt_usd(r["billed"])]
+        if has_loc:
+            cells.append(f"{round(r['loc']):,}")
+        cells += [f"{_fmt_count(r['n_change'])} 名", _fmt_usd(r["saving"])]
+        lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines) + "\n"
 
 
@@ -244,10 +248,12 @@ def _detail_rows(users: pd.DataFrame) -> list[dict]:
     has_loc = "loc_with_cc" in u.columns
     rows = []
     for _, r in u.iterrows():
+        api = r.get("api_cost_usd", 0.0)
         rows.append({
             "email": r["email"],
             "in": int(r["_in"]),
             "out": int(r["_out"]),
+            "api": float(api) if api == api else 0.0,  # NaN は 0 扱い
             "models": str(r.get("model_breakdown", "") or ""),
             "loc": int(r["loc_with_cc"]) if has_loc else None,
         })
@@ -257,14 +263,15 @@ def _detail_rows(users: pd.DataFrame) -> list[dict]:
 def _detail_table_md(users: pd.DataFrame) -> str:
     """詳細利用状況（input/output トークン・モデル割合・LoC）の Markdown 表。"""
     rows, has_loc = _detail_rows(users)
-    header = "| ユーザ | input | output |" + (" LoC |" if has_loc else "") + " モデル割合（トークン基準） |"
-    sep = "|" + "---|" * (4 + int(has_loc))
+    header = ("| ユーザ | input | output |" + (" LoC |" if has_loc else "")
+              + " API換算需要 | モデル割合（トークン基準） |")
+    sep = "|" + "---|" * (5 + int(has_loc))
     lines = ["## 詳細利用状況", "", header, sep]
     for r in rows:
         cells = [r["email"], _fmt_tokens(r["in"]), _fmt_tokens(r["out"])]
         if has_loc:
             cells.append(f"{r['loc']:,}")
-        cells.append(r["models"])
+        cells += [_fmt_usd(r["api"]), r["models"]]
         lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     lines.append("")
     lines.append("- input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります")
@@ -433,7 +440,7 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
     {%- if u.recommended_seat != u.current_seat %} → <span class="seat-{{ u.recommended_seat }}"><b>{{ seat_short.get(u.recommended_seat, '?') }}</b></span>{% endif %}
   </td>
   <td class="num">{{ u.api_cost_fmt }}{% if u.cap_suspected %} <span class="cap">⚠</span>{% endif %}</td>
-  <td class="num">{{ u.billed_fmt }}</td>
+  <td class="num"{% if u.billed_bg %} style="background:{{ u.billed_bg }}"{% endif %}>{{ u.billed_fmt }}</td>
   <td class="num">{{ u.std_fmt }}</td>
   <td class="num">{{ u.prem_fmt }}</td>
   <td class="num">{{ u.saving_fmt }}</td>
@@ -445,13 +452,14 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 {% for grp in group_summaries %}
 <h2>{{ grp.heading }}</h2>
 <div class="tablebox"><table>
-<tr><th>{{ grp.col_label }}</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th><th class="num">変更推奨</th></tr>
+<tr><th>{{ grp.col_label }}</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th>{% if grp.has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">変更推奨</th></tr>
 {% for t in grp.rows %}
 <tr>
   <td>{{ t.group }}</td>
   <td class="num">{{ t.n_fmt }}</td>
   <td class="num">{{ t.seat_cost_fmt }}</td>
   <td class="num">{{ t.api_fmt }}</td>
+  {% if grp.has_loc %}<td class="num">{{ t.loc_fmt }}</td>{% endif %}
   <td class="num">{{ t.n_change_fmt }}</td>
 </tr>
 {% endfor %}
@@ -460,13 +468,14 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 
 <h2>詳細利用状況</h2>
 <div class="tablebox"><table>
-<tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th>モデル割合（トークン基準）</th></tr>
+<tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">API換算需要</th><th>モデル割合（トークン基準）</th></tr>
 {% for d in detail_rows %}
 <tr>
   <td class="user" title="{{ d.email }}">{{ d.email.split('@')[0] }}</td>
   <td class="num">{{ d.in_fmt }}</td>
   <td class="num">{{ d.out_fmt }}</td>
   {% if detail_has_loc %}<td class="num">{{ d.loc_fmt }}</td>{% endif %}
+  <td class="num">{{ d.api_fmt }}</td>
   <td>{{ d.models }}</td>
 </tr>
 {% endfor %}
@@ -503,12 +512,21 @@ def write_html(result: AnalysisResult, path: Path) -> None:
     users_sorted = users.sort_values(
         ["_order", "api_cost_usd"], ascending=[True, False]
     ).to_dict("records")
+    # 実課金カラムの金額グラデーション: 実課金>0 のユーザだけ、最大額に対する比で
+    # 警告色（--warn）の濃さを段階的に付ける（0 のユーザは無着色）
+    max_billed = max((float(u.get("billed_extra_usd") or 0.0) for u in users_sorted), default=0.0)
     for u in users_sorted:
         u["api_cost_fmt"] = _fmt_compact(u["api_cost_usd"])
         u["billed_fmt"] = _fmt_compact(u.get("billed_extra_usd", 0.0))
         u["std_fmt"] = _fmt_compact(u["cost_if_standard_usd"])
         u["prem_fmt"] = _fmt_compact(u["cost_if_premium_usd"])
         u["saving_fmt"] = _fmt_compact(u.get("monthly_saving_usd"))
+        billed = float(u.get("billed_extra_usd") or 0.0)
+        if billed > 0 and max_billed > 0:
+            alpha = 0.12 + 0.48 * (billed / max_billed)  # 最小 0.12 〜 最大 0.60
+            u["billed_bg"] = f"rgba(192,57,43,{alpha:.2f})"
+        else:
+            u["billed_bg"] = ""
     max_cost = max((u["api_cost_usd"] for u in users_sorted), default=0) or 1.0
     # 部署別 → チーム別の順で、データがある軸のみサマリ表を出す
     group_summaries = []
@@ -521,15 +539,18 @@ def write_html(result: AnalysisResult, path: Path) -> None:
             t["api_fmt"] = _fmt_compact(t["api"])
             t["n_fmt"] = _fmt_count(t["n"])
             t["n_change_fmt"] = _fmt_count(t["n_change"])
+            t["loc_fmt"] = f"{round(t['loc']):,}"
         group_summaries.append({
             "heading": heading,
             "col_label": heading.replace("別サマリ", ""),
             "rows": rows,
+            "has_loc": "loc_with_cc" in result.users.columns,
         })
     detail_rows, detail_has_loc = _detail_rows(result.users)
     for d in detail_rows:
         d["in_fmt"] = _fmt_tokens(d["in"])
         d["out_fmt"] = _fmt_tokens(d["out"])
+        d["api_fmt"] = _fmt_compact(d["api"])
         d["loc_fmt"] = f"{d['loc']:,}" if d["loc"] is not None else ""
     html = _HTML_TEMPLATE.render(
         scope=_scope_label(result),
