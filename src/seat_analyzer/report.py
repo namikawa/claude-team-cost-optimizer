@@ -222,6 +222,55 @@ def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str
     return "\n".join(lines) + "\n"
 
 
+def _fmt_tokens(v) -> str:
+    """トークン数を K/M/B 単位で短く表示（6.7e9 → 6.7B、1.2e6 → 1.2M、340e3 → 340K）。"""
+    n = float(v or 0)
+    if n >= 1e9:
+        return f"{n / 1e9:.1f}B"
+    if n >= 1e6:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1e3:
+        return f"{n / 1e3:.0f}K"
+    return str(int(n))
+
+
+def _detail_rows(users: pd.DataFrame) -> list[dict]:
+    """詳細利用状況テーブルの行データ。input+output トークンの降順で返す。"""
+    u = users.copy()
+    u["_in"] = u["prompt_tokens"].fillna(0) if "prompt_tokens" in u.columns else 0
+    u["_out"] = u["completion_tokens"].fillna(0) if "completion_tokens" in u.columns else 0
+    u["_total"] = u["_in"] + u["_out"]
+    u = u.sort_values("_total", ascending=False)
+    has_loc = "loc_with_cc" in u.columns
+    rows = []
+    for _, r in u.iterrows():
+        rows.append({
+            "email": r["email"],
+            "in": int(r["_in"]),
+            "out": int(r["_out"]),
+            "models": str(r.get("model_breakdown", "") or ""),
+            "loc": int(r["loc_with_cc"]) if has_loc else None,
+        })
+    return rows, has_loc
+
+
+def _detail_table_md(users: pd.DataFrame) -> str:
+    """詳細利用状況（input/output トークン・モデル割合・LoC）の Markdown 表。"""
+    rows, has_loc = _detail_rows(users)
+    header = "| ユーザ | input | output |" + (" LoC |" if has_loc else "") + " モデル割合（トークン基準） |"
+    sep = "|" + "---|" * (4 + int(has_loc))
+    lines = ["## 詳細利用状況", "", header, sep]
+    for r in rows:
+        cells = [r["email"], _fmt_tokens(r["in"]), _fmt_tokens(r["out"])]
+        if has_loc:
+            cells.append(f"{r['loc']:,}")
+        cells.append(r["models"])
+        lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
+    lines.append("")
+    lines.append("- input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります")
+    return "\n".join(lines) + "\n"
+
+
 def write_markdown(result: AnalysisResult, path: Path) -> None:
     s = result.summary
     users = result.users.copy()
@@ -237,6 +286,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
     notes_block = _notes_md(users)
     dept_block = _group_summary_md(users, s, "department", "部署別サマリ")
     team_block = _group_summary_md(users, s, "team", "チーム別サマリ")
+    detail_block = _detail_table_md(users)
 
     md = f"""# Claude Team シート最適化レポート — {_scope_label(result)}
 
@@ -269,6 +319,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 - **確度**: 込み利用量（allowance）の low/mid/high 3シナリオで推奨が一致するか（高=3/3, 中=2/3, 低=1/3）
 - **対象外（シート未割当）**: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。損益分岐判定は行わない
 {(nl + notes_block) if notes_block else ''}{(nl + dept_block) if dept_block else ''}{(nl + team_block) if team_block else ''}
+{detail_block}
 ## 感度分析
 
 allowance（シート込み利用量のUSD換算・非公開のため推定）の仮定によって推奨が変わるユーザ:
@@ -407,6 +458,21 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 </table></div>
 {% endfor %}
 
+<h2>詳細利用状況</h2>
+<div class="tablebox"><table>
+<tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th>モデル割合（トークン基準）</th></tr>
+{% for d in detail_rows %}
+<tr>
+  <td class="user" title="{{ d.email }}">{{ d.email.split('@')[0] }}</td>
+  <td class="num">{{ d.in_fmt }}</td>
+  <td class="num">{{ d.out_fmt }}</td>
+  {% if detail_has_loc %}<td class="num">{{ d.loc_fmt }}</td>{% endif %}
+  <td>{{ d.models }}</td>
+</tr>
+{% endfor %}
+</table></div>
+<div class="note">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。</div>
+
 <h2>前提と注意</h2>
 <div class="card note">
   <ul>
@@ -460,11 +526,18 @@ def write_html(result: AnalysisResult, path: Path) -> None:
             "col_label": heading.replace("別サマリ", ""),
             "rows": rows,
         })
+    detail_rows, detail_has_loc = _detail_rows(result.users)
+    for d in detail_rows:
+        d["in_fmt"] = _fmt_tokens(d["in"])
+        d["out_fmt"] = _fmt_tokens(d["out"])
+        d["loc_fmt"] = f"{d['loc']:,}" if d["loc"] is not None else ""
     html = _HTML_TEMPLATE.render(
         scope=_scope_label(result),
         s=result.summary,
         users_sorted=users_sorted,
         group_summaries=group_summaries,
+        detail_rows=detail_rows,
+        detail_has_loc=detail_has_loc,
         max_cost=max_cost,
         seat_labels=SEAT_LABELS,
         seat_short={"standard": "Standard", "premium": "Premium",

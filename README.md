@@ -95,9 +95,13 @@ uv run seat-analyzer init-org <組織名>
    ```
 
 5. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される
-   - `report.md` — 推奨テーブル + 感度分析 + 考察
+   - `report.md` — 推奨テーブル + 部署別/チーム別サマリ + 詳細利用状況 + 感度分析 + 考察
    - `dashboard.html` — 経営層共有用ダッシュボード（自己完結 HTML）
    - `recommendations.csv` — スプレッドシート二次加工用
+
+   report.md / dashboard.html には「詳細利用状況」として、ユーザごとの input/output
+   トークン量、モデル利用割合（トークン量基準）、LoC（code-analytics がある場合）を
+   出力する。input トークンはキャッシュ読取分を含むため実入力量より大きく見えることがある
 
    複数組織を一括分析した場合は `reports/summary/YYYY-MM.md` に組織横断サマリ
    （組織別のシート費用・削減見込みと合計）も生成される

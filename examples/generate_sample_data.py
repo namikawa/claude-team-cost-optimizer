@@ -19,8 +19,20 @@ BASE = Path(__file__).parent / "input"
 # モデル単価 (USD per 1M tokens) — config.yaml と一致させる
 PRICES = {
     "claude-opus-4-8": (5.0, 25.0),
+    "claude-fable-5": (10.0, 50.0),
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
+}
+
+# 一部ユーザは複数モデルを併用（モデル割合の見える化デモ用）。
+# email -> [(model, 利用割合), ...]。未登録ユーザは主モデル100%。
+MODEL_MIX_ORG_A = {
+    "tanaka@example.co.jp": [
+        ("claude-opus-4-8", 0.6), ("claude-sonnet-4-6", 0.3), ("claude-fable-5", 0.1),
+    ],
+    "nakamura@example.co.jp": [
+        ("claude-sonnet-4-6", 0.7), ("claude-haiku-4-5", 0.3),
+    ],
 }
 
 # ペルソナ: (email, seat, {month: api_cost_usd}, 主モデル)
@@ -117,23 +129,27 @@ def write_spend(org: str, month: str, users: list, orphans: list) -> None:
         if month not in costs:
             continue
         total = costs[month]
-        # Claude Code 8割 / Chat 2割 の2行に分割
-        for product, share in (("Claude Code", 0.8), ("Chat", 0.2)):
-            cost = round(total * share, 4)
-            p_tok, c_tok = tokens_for_cost(cost, model)
-            rows.append({
-                "Email": email,
-                # hash() はラン間で不定のため、再生成しても差分が出ない決定的ハッシュを使う
-                "Account UUID": f"uuid-{hashlib.md5(email.encode()).hexdigest()[:8]}",
-                "Product": product,
-                "Model": model,
-                "Model Family": model.rsplit("-", 2)[0],
-                "Request Count": max(1, int(cost * 4)),
-                "Prompt Tokens": p_tok,
-                "Completion Tokens": c_tok,
-                "Total Gross Spend USD": f"{cost:.4f}",
-                "Total Net Spend USD": f"{cost:.4f}",
-            })
+        models = MODEL_MIX_ORG_A.get(email, [(model, 1.0)])
+        # モデル×プロダクト（Claude Code 8割 / Chat 2割）の組み合わせで明細行を生成
+        for mdl, mshare in models:
+            for product, pshare in (("Claude Code", 0.8), ("Chat", 0.2)):
+                cost = round(total * mshare * pshare, 4)
+                if cost <= 0:
+                    continue
+                p_tok, c_tok = tokens_for_cost(cost, mdl)
+                rows.append({
+                    "Email": email,
+                    # hash() はラン間で不定のため、再生成しても差分が出ない決定的ハッシュを使う
+                    "Account UUID": f"uuid-{hashlib.md5(email.encode()).hexdigest()[:8]}",
+                    "Product": product,
+                    "Model": mdl,
+                    "Model Family": mdl.rsplit("-", 2)[0],
+                    "Request Count": max(1, int(cost * 4)),
+                    "Prompt Tokens": p_tok,
+                    "Completion Tokens": c_tok,
+                    "Total Gross Spend USD": f"{cost:.4f}",
+                    "Total Net Spend USD": f"{cost:.4f}",
+                })
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()

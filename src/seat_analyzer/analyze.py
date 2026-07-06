@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import calendar
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
 
 from . import ingest, pricing
+
+# モデル名を表示用に短縮する（claude-opus-4-8 → Opus 4.8, claude-fable-5 → Fable 5）
+_MODEL_SHORT_RE = re.compile(r"(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?", re.I)
+
+
+def _short_model(name: str) -> str:
+    """API モデル名を表示用の短縮形にする。判別できない場合は元の文字列を返す。"""
+    m = _MODEL_SHORT_RE.search(str(name))
+    if not m:
+        return str(name)
+    family = m.group(1).capitalize()
+    version = m.group(2) + (f".{m.group(3)}" if m.group(3) else "")
+    return f"{family} {version}"
 
 SCENARIOS = ("low", "mid", "high")
 SEAT_LABELS = {"standard": "Standard", "premium": "Premium",
@@ -66,6 +80,26 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
 
         grouped["product_breakdown"] = (
             spend_df.groupby("email")[["product", "cost_usd"]].apply(breakdown)
+        )
+
+    if "model" in spend_df.columns:
+        tmp = spend_df.assign(
+            _tok=spend_df["prompt_tokens"].fillna(0) + spend_df["completion_tokens"].fillna(0)
+        )
+
+        def model_bd(g: pd.DataFrame) -> str:
+            # モデル利用割合はトークン量（input+output）基準。寄与降順・1%未満は集約
+            by_model = g.groupby("model")["_tok"].sum().sort_values(ascending=False)
+            total = by_model.sum()
+            if total <= 0:
+                return ""
+            return " / ".join(
+                f"{_short_model(m)} {v / total:.0%}"
+                for m, v in by_model.items() if v / total >= 0.01
+            )
+
+        grouped["model_breakdown"] = (
+            tmp.groupby("email")[["model", "_tok"]].apply(model_bd)
         )
     return grouped.reset_index()
 
@@ -290,6 +324,9 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             "completion_tokens": int(row["completion_tokens"]) if row is not None else 0,
             "product_breakdown": (
                 str(row["product_breakdown"]) if row is not None and "product_breakdown" in row.index else ""
+            ),
+            "model_breakdown": (
+                str(row["model_breakdown"]) if row is not None and "model_breakdown" in row.index else ""
             ),
         })
 
