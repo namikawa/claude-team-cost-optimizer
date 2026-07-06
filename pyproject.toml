@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Claude Team プランのシート最適化分析ツール（Standard/Premium 損益分岐）"
 requires-python = ">=3.11"
 dependencies = [
-    "pandas>=2.0",
+    "pandas>=2.1",
     "pyyaml>=6.0",
     "jinja2>=3.1",
 ]

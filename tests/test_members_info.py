@@ -286,6 +286,32 @@ def test_single_and_empty_affiliation_unchanged(make_input, cfg):
     assert list(r["group"] for r in _group_summary_rows(result.users, result.summary, "team"))[-1] == "（未設定）"
 
 
+def test_markdown_escapes_pipe_and_newline(make_input, cfg, tmp_path):
+    """note にパイプ・改行、チーム名にパイプが含まれても表・箇条書きが崩れない。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,チーム,職種,備考\n"
+        'a@example.com,"基盤|チーム",,"1行目|注記\n2行目"\n',
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    out = tmp_path / "report.md"
+    write_markdown(result, out)
+    text = out.read_text(encoding="utf-8")
+    # パイプはエスケープされ、生の | として表・箇条書きに残らない
+    assert "基盤\\|チーム" in text
+    assert "1行目\\|注記" in text
+    # 改行は <br> に置換され、備考の箇条書きが1行に収まる
+    assert "<br>2行目" in text
+    # 表の各行のセル数（区切り | の数）が揃っている＝崩れていないことの確認
+    for line in text.splitlines():
+        if line.startswith("| a@example.com |"):
+            assert line.count("|") - line.count("\\|") >= 2
+
+
 def test_dual_team_display_and_fraction_in_md(make_input, cfg, tmp_path):
     """ユーザ表に A; B 形式で表示され、サマリに端数人数（0.5 名）が出る。"""
     input_dir = make_input(

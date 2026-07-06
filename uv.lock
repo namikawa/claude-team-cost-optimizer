@@ -475,7 +475,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
-    { name = "pandas", specifier = ">=2.0" },
+    { name = "pandas", specifier = ">=2.1" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
 

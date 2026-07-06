@@ -56,6 +56,13 @@ def _fmt_usd(v) -> str:
     return f"${v:,.2f}"
 
 
+def _md_cell(v) -> str:
+    """Markdown 表セル用のエスケープ（表崩れ防止）。パイプ・改行が主な対象。"""
+    s = "" if v is None else str(v)
+    s = s.replace("\\", "\\\\").replace("|", "\\|").replace("\r", "").replace("\n", "<br>")
+    return s
+
+
 def _scope_label(result: AnalysisResult) -> str:
     """レポートタイトル用の対象表記。組織名があれば「組織 — 月」。"""
     return f"{result.org} — {result.month}" if result.org else result.month
@@ -113,7 +120,7 @@ def _user_table_md(users: pd.DataFrame) -> str:
             cells.append(str(int(r.get("prs_with_cc", 0))))
         if has_loc:
             cells.append(f"{int(r.get('loc_with_cc', 0)):,}")
-        lines.append("| " + " | ".join(str(c) for c in cells) + " |")
+        lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     return "\n".join(lines)
 
 
@@ -125,7 +132,8 @@ def _notes_md(users: pd.DataFrame) -> str:
     if noted.empty:
         return ""
     lines = ["### 備考", ""]
-    lines += [f"- {r['email']}: {str(r['note']).strip()}" for _, r in noted.iterrows()]
+    lines += [f"- {_md_cell(r['email'])}: {_md_cell(str(r['note']).strip())}"
+              for _, r in noted.iterrows()]
     return "\n".join(lines) + "\n"
 
 
@@ -207,7 +215,7 @@ def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str
     ]
     for r in rows:
         lines.append(
-            f"| {r['group']} | {_fmt_count(r['n'])} 名 | {_fmt_usd(r['seat_cost'])} "
+            f"| {_md_cell(r['group'])} | {_fmt_count(r['n'])} 名 | {_fmt_usd(r['seat_cost'])} "
             f"| {_fmt_usd(r['api'])} | {_fmt_usd(r['billed'])} "
             f"| {_fmt_count(r['n_change'])} 名 | {_fmt_usd(r['saving'])} |"
         )
@@ -493,15 +501,18 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> Path:
         "|" + "---|" * (7 + int(has_dept) + int(has_team)),
     ]
     for _, r in users.iterrows():
-        billed_flag = " ⚠️超過済" if r["billed_observed_usd"] > 0 and r["current_seat"] == "premium" else ""
-        dept_cell = f" {str(r.get('department', '') or '')} |" if has_dept else ""
-        team_cell = f" {str(r.get('team', '') or '')} |" if has_team else ""
+        if r["billed_observed_usd"] > 0:
+            billed_flag = " ⚠️超過済" if r["current_seat"] == "premium" else " ⚠️従量あり"
+        else:
+            billed_flag = ""
+        dept_cell = f" {_md_cell(r.get('department', '') or '')} |" if has_dept else ""
+        team_cell = f" {_md_cell(r.get('team', '') or '')} |" if has_team else ""
         lines.append(
-            f"| {r['email']} | {SEAT_LABELS.get(r['current_seat'], r['current_seat'])} |"
+            f"| {_md_cell(r['email'])} | {_md_cell(SEAT_LABELS.get(r['current_seat'], r['current_seat']))} |"
             f"{dept_cell}"
             f"{team_cell}"
             f" {_fmt_usd(r['api_cost_observed_usd'])} | {_fmt_usd(r['api_cost_projected_usd'])} "
-            f"| {_fmt_usd(r['billed_observed_usd'])}{billed_flag} | {r['label']} | {r['confidence']} |"
+            f"| {_fmt_usd(r['billed_observed_usd'])}{billed_flag} | {_md_cell(r['label'])} | {_md_cell(r['confidence'])} |"
         )
     table = "\n".join(lines)
     nl = "\n"
@@ -536,6 +547,7 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> Path:
   境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒しています
 - 遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨
 - ⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）
+- ⚠️従量あり: Standard 等で従量課金が発生（Premium 検討の重要シグナル）
 - 対象外（未割当）: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）
 
 ## 注意事項
