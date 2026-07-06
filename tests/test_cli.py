@@ -124,11 +124,17 @@ def test_init_org_creates_scaffold(tmp_path):
 
 
 def test_init_org_rejects_reserved_and_invalid_names(tmp_path, capsys):
-    for bad in ("summary", "a/b", ".hidden"):
+    # summary=予約 / a/b=パス区切り / .hidden=先頭ドット / org|x=Markdown を壊す文字
+    for bad, fragment in (
+        ("summary", "予約"),
+        ("a/b", "使えない文字"),
+        (".hidden", "不正"),
+        ("org|x", "使えない文字"),
+    ):
         rc = main([
             "init-org", bad,
             "--input-dir", str(tmp_path / "input"), "--output-dir", str(tmp_path / "reports"),
         ])
         assert rc == 1
-        assert "組織名に使えない名前" in capsys.readouterr().err
+        assert fragment in capsys.readouterr().err
     assert not (tmp_path / "input").exists()

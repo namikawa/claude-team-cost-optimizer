@@ -116,3 +116,38 @@ def test_config_validation_price_ordering(cfg):
         _validate(broken)
     assert "standard より大きい" in str(e.value)
     assert "low <= mid <= high" in str(e.value)
+
+
+def test_config_validation_missing_required_column(cfg):
+    broken = copy.deepcopy(cfg)
+    del broken["columns"]["spend"]["email"]         # 必須エイリアスを削除
+    del broken["columns"]["members"]["seat_type"]
+    with pytest.raises(ValueError) as e:
+        _validate(broken)
+    msg = str(e.value)
+    assert "columns.spend.email" in msg
+    assert "columns.members.seat_type" in msg
+
+
+# --- 組織名バリデーション（共通） ---
+
+def test_org_name_validation():
+    from seat_analyzer.ingest import validate_org_name
+    validate_org_name("org-a")          # 正常
+    validate_org_name("開発本部")        # 日本語は許可
+    for bad in ("summary", ".hidden", "a/b", "org|x", "a[b]", " x", "x "):
+        with pytest.raises(ValueError):
+            validate_org_name(bad)
+
+
+def test_manually_created_bad_org_dir_rejected(make_input, tmp_path, capsys):
+    # spend/ を持つ不正名ディレクトリを手動作成 → 分析時に弾く
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 1.0)]}, members=["a@x.jp,Standard"], org="org|x",
+    )
+    rc = main([
+        "analyze", "--config", "config.yaml",
+        "--input-dir", str(input_dir), "--output-dir", str(tmp_path / "reports"),
+    ])
+    assert rc == 1
+    assert "使えない文字" in capsys.readouterr().err

@@ -57,12 +57,7 @@ def _run_init_org(args: argparse.Namespace) -> int:
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     for org in args.orgs:
-        # summary は横断サマリの出力先（reports/summary/）として予約
-        if org == "summary" or org.startswith(".") or Path(org).name != org:
-            raise ValueError(
-                f"組織名に使えない名前です: {org!r}"
-                "（summary は予約済み。パス区切りや先頭の . を含む名前も不可）"
-            )
+        ingest.validate_org_name(org)
 
     for org in args.orgs:
         existed = (input_dir / org).is_dir()
@@ -93,11 +88,6 @@ def _resolve_targets(
     input/spend/ 直下型の旧レイアウトは単一組織（org=None）として扱う。
     """
     orgs = ingest.discover_orgs(input_dir)
-    if "summary" in orgs:
-        raise ValueError(
-            f"組織名 'summary' は横断サマリの出力先（reports/summary/）として予約されています。"
-            f"{input_dir}/summary を別名にリネームしてください"
-        )
     legacy = (input_dir / "spend").is_dir()
     if orgs and legacy:
         raise ValueError(
@@ -124,6 +114,9 @@ def _resolve_targets(
         selected = list(dict.fromkeys(org_args))
     else:
         selected = orgs
+    # 手動作成された不正名ディレクトリ（summary・パス/Markdown を壊す文字等）を弾く
+    for org in selected:
+        ingest.validate_org_name(org)
     return [(org, input_dir / org, output_dir / org) for org in selected]
 
 

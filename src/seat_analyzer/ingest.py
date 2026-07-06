@@ -223,6 +223,31 @@ def discover_orgs(input_dir: Path) -> list[str]:
     )
 
 
+# 組織名は出力パスと Markdown リンクに使うため、それらを壊す文字を禁止する。
+# 日本語などの名前は許可し、パス区切り・Markdown/HTML を壊す文字のみ拒否する。
+_ORG_NAME_BAD_CHARS = re.compile(r"[/\\|\[\]()<>\r\n\t]")
+
+
+def validate_org_name(org: str) -> None:
+    """組織名（input/ 直下のディレクトリ名）の妥当性検証。不正なら ValueError。
+
+    init-org でユーザが指定する名前と、既存ディレクトリから発見した組織名の両方で使う。
+    """
+    if org == "summary":
+        raise ValueError(
+            "組織名 'summary' は横断サマリの出力先（reports/summary/）として予約されています"
+        )
+    if not org or org != org.strip() or org.startswith("."):
+        raise ValueError(
+            f"組織名が不正です: {org!r}（空・先頭のドット・前後空白は使えません）"
+        )
+    if _ORG_NAME_BAD_CHARS.search(org):
+        raise ValueError(
+            f"組織名に使えない文字が含まれます: {org!r}"
+            "（パス区切りや | [ ] ( ) < > 改行・タブは使えません）"
+        )
+
+
 def _read_csv(path: Path) -> pd.DataFrame:
     for encoding in ("utf-8-sig", "utf-8", "cp932"):
         try:

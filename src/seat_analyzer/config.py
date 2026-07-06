@@ -77,5 +77,27 @@ def _validate(cfg: dict) -> None:
     if not isinstance(default, dict) or not _num(default.get("input")) or not _num(default.get("output")):
         errors.append("model_prices.default には input/output の数値が必要です")
 
+    # 入力処理に必須のカラムエイリアスが columns セクションに定義されているか。
+    # 欠けていると実行時に KeyError / 必須カラム未検出になるため起動時に検出する。
+    required_columns = {
+        "spend": ["email", "model", "prompt_tokens", "completion_tokens"],
+        "members": ["email", "seat_type"],
+        "code_analytics": ["email"],
+        "members_info": ["email"],
+    }
+    columns = cfg["columns"]
+    if not isinstance(columns, dict):
+        errors.append("columns セクションが辞書ではありません")
+    else:
+        for section, required in required_columns.items():
+            sec = columns.get(section)
+            if not isinstance(sec, dict):
+                errors.append(f"columns.{section} がありません")
+                continue
+            for canonical in required:
+                aliases = sec.get(canonical)
+                if not isinstance(aliases, list) or not aliases:
+                    errors.append(f"columns.{section}.{canonical} のエイリアス定義がありません")
+
     if errors:
         raise ValueError("config.yaml の設定に問題があります:\n  - " + "\n  - ".join(errors))
