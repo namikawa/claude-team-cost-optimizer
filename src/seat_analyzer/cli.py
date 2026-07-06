@@ -64,10 +64,16 @@ def _run_init_org(args: argparse.Namespace) -> int:
         for subdir in INPUT_SUBDIRS:
             (input_dir / org / subdir).mkdir(parents=True, exist_ok=True)
         (output_dir / org).mkdir(parents=True, exist_ok=True)
+        # members-info.csv はヘッダ行のみの雛形を作る。既存（記入済みの可能性）は上書きしない
+        info_path = input_dir / org / "members-info.csv"
+        info_created = not info_path.exists()
+        if info_created:
+            info_path.write_text("email,部署,チーム,職種,備考\n", encoding="utf-8")
         print(f"組織 '{org}' の雛形を{'確認しました（既存）' if existed else '作成しました'}:")
         print(f"  {input_dir / org / 'spend'}/           ← spend_YYYY-MM.csv（必須）")
         print(f"  {input_dir / org / 'members'}/         ← members_YYYY-MM.csv（必須。最低限 email,seat_type の2列）")
         print(f"  {input_dir / org / 'code-analytics'}/  ← cc_YYYY-MM.csv（任意）")
+        print(f"  {info_path}  ← 部署・チーム・職種・備考の任意マッピング（{'ヘッダ雛形を作成' if info_created else '既存を保持'}）")
         print(f"  {output_dir / org}/")
 
     if (input_dir / "spend").is_dir():

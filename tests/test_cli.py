@@ -120,7 +120,21 @@ def test_init_org_creates_scaffold(tmp_path):
         for sub in ("spend", "members", "code-analytics"):
             assert (input_dir / org / sub).is_dir()
         assert (output_dir / org).is_dir()
+        # members-info.csv はヘッダ行のみの雛形が作られる
+        info = input_dir / org / "members-info.csv"
+        assert info.read_text(encoding="utf-8") == "email,部署,チーム,職種,備考\n"
     assert discover_orgs(input_dir) == ["org-x", "org-y"]
+
+
+def test_init_org_does_not_overwrite_filled_members_info(tmp_path):
+    input_dir, output_dir = tmp_path / "input", tmp_path / "reports"
+    args = ["init-org", "org-x", "--input-dir", str(input_dir), "--output-dir", str(output_dir)]
+    assert main(args) == 0
+    # ユーザが記入した状態を再 init-org しても上書きしない
+    info = input_dir / "org-x" / "members-info.csv"
+    info.write_text("email,部署,チーム,職種,備考\na@x.jp,開発,基盤,エンジニア,\n", encoding="utf-8")
+    assert main(args) == 0
+    assert "a@x.jp" in info.read_text(encoding="utf-8")
 
 
 def test_init_org_rejects_reserved_and_invalid_names(tmp_path, capsys):
