@@ -71,15 +71,21 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
         grouped["requests"] = spend_df.groupby("email")["requests"].sum()
 
     if "product" in spend_df.columns:
-        def breakdown(g: pd.DataFrame) -> str:
-            by_product = g.groupby("product")["cost_usd"].sum().sort_values(ascending=False)
+        # product 構成比は「利用回数（リクエスト数）」基準。Cowork/Chat は API コストが
+        # 小さくコスト基準だと埋もれるため、回数で見えるようにする。requests が無ければ
+        # 明細行数で代替する
+        weight_col = "requests" if "requests" in spend_df.columns else None
+        tmp = spend_df.assign(_pw=spend_df[weight_col].fillna(0) if weight_col else 1.0)
+
+        def product_bd(g: pd.DataFrame) -> str:
+            by_product = g.groupby("product")["_pw"].sum().sort_values(ascending=False)
             total = by_product.sum()
             if total <= 0:
                 return ""
             return " / ".join(f"{p} {v / total:.0%}" for p, v in by_product.items() if v / total >= 0.01)
 
         grouped["product_breakdown"] = (
-            spend_df.groupby("email")[["product", "cost_usd"]].apply(breakdown)
+            tmp.groupby("email")[["product", "_pw"]].apply(product_bd)
         )
 
     if "model" in spend_df.columns:

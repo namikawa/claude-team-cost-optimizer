@@ -255,6 +255,7 @@ def _detail_rows(users: pd.DataFrame) -> list[dict]:
             "out": int(r["_out"]),
             "api": float(api) if api == api else 0.0,  # NaN は 0 扱い
             "models": str(r.get("model_breakdown", "") or ""),
+            "products": str(r.get("product_breakdown", "") or ""),
             "loc": int(r["loc_with_cc"]) if has_loc else None,
         })
     return rows, has_loc
@@ -264,17 +265,18 @@ def _detail_table_md(users: pd.DataFrame) -> str:
     """詳細利用状況（input/output トークン・モデル割合・LoC）の Markdown 表。"""
     rows, has_loc = _detail_rows(users)
     header = ("| ユーザ | input | output |" + (" LoC |" if has_loc else "")
-              + " API換算需要 | モデル割合（トークン基準） |")
-    sep = "|" + "---|" * (5 + int(has_loc))
+              + " API換算需要 | モデル割合（トークン基準） | product構成（利用回数） |")
+    sep = "|" + "---|" * (6 + int(has_loc))
     lines = ["## 詳細利用状況", "", header, sep]
     for r in rows:
         cells = [r["email"], _fmt_tokens(r["in"]), _fmt_tokens(r["out"])]
         if has_loc:
             cells.append(f"{r['loc']:,}")
-        cells += [_fmt_usd(r["api"]), r["models"]]
+        cells += [_fmt_usd(r["api"]), r["models"], r["products"]]
         lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     lines.append("")
     lines.append("- input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります")
+    lines.append("- product構成 は利用回数（リクエスト数）基準。Cowork/Chat は API コストが小さく出るため回数で示す")
     return "\n".join(lines) + "\n"
 
 
@@ -468,7 +470,7 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 
 <h2>詳細利用状況</h2>
 <div class="tablebox"><table>
-<tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">API換算需要</th><th>モデル割合（トークン基準）</th></tr>
+<tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">API換算需要</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr>
 {% for d in detail_rows %}
 <tr>
   <td class="user" title="{{ d.email }}">{{ d.email.split('@')[0] }}</td>
@@ -477,10 +479,11 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
   {% if detail_has_loc %}<td class="num">{{ d.loc_fmt }}</td>{% endif %}
   <td class="num">{{ d.api_fmt }}</td>
   <td>{{ d.models }}</td>
+  <td>{{ d.products }}</td>
 </tr>
 {% endfor %}
 </table></div>
-<div class="note">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。</div>
+<div class="note">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
 
 <h2>前提と注意</h2>
 <div class="card note">

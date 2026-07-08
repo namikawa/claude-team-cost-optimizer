@@ -47,6 +47,21 @@ def test_model_breakdown_is_token_basis(cfg, make_input):
     assert "Opus 4.8" in bd
 
 
+def test_product_breakdown_is_request_basis(cfg, make_input):
+    # Claude Code(コスト30) と Chat(コスト10) を各1行（各10リクエスト）。
+    # 回数基準なら 50/50、コスト基準なら 75/25 になる → 回数基準を検証
+    input_dir = make_input(
+        {"2026-06": [
+            spend_row("a@x.jp", 30.0, product="Claude Code", net=0.0),
+            spend_row("a@x.jp", 10.0, product="Chat", net=0.0),
+        ]},
+        members=["a@x.jp,Premium"],
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    bd = result.users.set_index("email").loc["a@x.jp", "product_breakdown"]
+    assert "Claude Code 50%" in bd and "Chat 50%" in bd
+
+
 def test_detail_rows_sort_and_loc_absence(cfg, make_input):
     input_dir = make_input(
         {"2026-06": [
