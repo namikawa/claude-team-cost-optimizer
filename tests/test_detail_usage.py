@@ -89,6 +89,34 @@ def test_detail_table_md_with_loc():
     assert "キャッシュ読取分を含む" in md
 
 
+def test_team_summary_excludes_unset(cfg, make_input, tmp_path):
+    from seat_analyzer.report import _group_summary_rows
+
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 30.0, net=0.0), spend_row("b@x.jp", 20.0, net=0.0)]},
+        members=["a@x.jp,Premium", "b@x.jp,Premium"],
+    )
+    (input_dir / "members-info.csv").write_text(
+        "email,部署,チーム,職種,備考\n"
+        "a@x.jp,開発,基盤,,\n"
+        "b@x.jp,営業,,,\n",  # b はチーム未設定
+        encoding="utf-8",
+    )
+    result = analyze(input_dir, "2026-06", cfg)
+    # チーム軸: include_unset=False で（未設定）が消える／部署軸: 残る
+    team_groups = [r["group"] for r in _group_summary_rows(result.users, result.summary, "team", include_unset=False)]
+    dept_groups = [r["group"] for r in _group_summary_rows(result.users, result.summary, "department")]
+    assert "（未設定）" not in team_groups and "基盤" in team_groups
+    assert "（未設定）" not in dept_groups   # この例では部署は両者設定済み
+
+    write_markdown(result, tmp_path / "report.md")
+    write_html(result, tmp_path / "dashboard.html")
+    md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    # チーム別サマリ見出し以降に（未設定）が出ない
+    team_section = md.split("## チーム別サマリ")[1].split("##")[0]
+    assert "（未設定）" not in team_section
+
+
 def test_detail_section_in_markdown_and_html(cfg, make_input, tmp_path):
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 30.0, model="claude-opus-4-8", net=0.0)]},
