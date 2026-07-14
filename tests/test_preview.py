@@ -155,6 +155,45 @@ def test_cli_preview_preserves_discussion(make_input, tmp_path):
     assert "記入済みの考察テキスト" in path.read_text(encoding="utf-8")
 
 
+def _write_preview_with_discussion(path, body: str) -> None:
+    """テスト用: 「## 考察」以降に body を持つ最小の preview.md を書く。"""
+    path.write_text(f"# 見出し\n\n本文\n\n## 考察\n\n{body}\n", encoding="utf-8")
+
+
+def test_preserve_discussion_keeps_filled_text_containing_placeholder_word(tmp_path):
+    """考察本文に「未記入」という語（例: 部署未記入）を含んでも記入済みとして保持する。"""
+    from seat_analyzer.report import _preserve_discussion
+
+    path = tmp_path / "preview.md"
+    _write_preview_with_discussion(path, "- 部署未記入のメンバーがいるため整備が必要\n\n### 評価\n本格運用中")
+    new_md = "# 見出し\n\n本文（再生成）\n\n## 考察\n\n（未記入 — `/seat-analysis` を実行すると考察が追記されます）\n"
+    merged = _preserve_discussion(new_md, path)
+    assert "部署未記入のメンバーがいるため整備が必要" in merged
+    assert "本文（再生成）" in merged                    # 本文側は再生成版で置き換わる
+    assert "（未記入 —" not in merged                     # プレースホルダは残らない
+
+
+def test_preserve_discussion_replaces_placeholder(tmp_path):
+    """未記入プレースホルダのままなら新規 md（プレースホルダ入り）で差し替える。"""
+    from seat_analyzer.report import _preserve_discussion
+
+    path = tmp_path / "preview.md"
+    _write_preview_with_discussion(
+        path, "<!-- コメント -->\n（未記入 — `/seat-analysis preview <日数>` を実行すると考察が追記されます）")
+    new_md = "# 見出し\n\n新本文\n\n## 考察\n\n新プレースホルダ本文\n"
+    assert _preserve_discussion(new_md, path) == new_md
+
+
+def test_preserve_discussion_no_marker_returns_new(tmp_path):
+    """既存ファイルに「## 考察」marker が無ければ新規 md をそのまま返す。"""
+    from seat_analyzer.report import _preserve_discussion
+
+    path = tmp_path / "preview.md"
+    path.write_text("# 見出し\n\n本文だけで考察セクションが無い\n", encoding="utf-8")
+    new_md = "# 見出し\n\n新本文\n\n## 考察\n\n本文\n"
+    assert _preserve_discussion(new_md, path) == new_md
+
+
 def test_cli_days_requires_preview(make_input, tmp_path, capsys):
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 1.0)]}, members=["a@x.jp,Premium"],
