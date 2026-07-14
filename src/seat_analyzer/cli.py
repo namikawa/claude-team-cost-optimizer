@@ -170,8 +170,8 @@ def _run_analyze(args: argparse.Namespace) -> int:
                     )
                 print(f"{org or ''}: ファイル名の期間から観測日数 {days} 日を使用")
             pv = analyze_mod.preview(org_input, month, cfg, days, org=org)
-            path = report.write_preview(pv, org_output)
-            _print_preview(pv, path)
+            paths = report.write_preview(pv, org_output)
+            _print_preview(pv, paths)
             n_previewed += 1
             continue
         result = analyze_mod.analyze(org_input, month, cfg, org=org)
@@ -190,7 +190,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_preview(pv, path: Path) -> None:
+def _print_preview(pv, paths: dict[str, Path]) -> None:
     s = pv.summary
     scope = f"{pv.org} {pv.month}" if pv.org else pv.month
     print(f"\n=== {scope} 速報プレビュー（{pv.days_observed}日間の観測） ===")
@@ -207,7 +207,7 @@ def _print_preview(pv, path: Path) -> None:
         print("\n--- 警告 ---")
         for w in pv.warnings:
             print(f"  ! {w}")
-    print(f"\n--- 出力 ---\n  preview: {path}")
+    print(f"\n--- 出力 ---\n  preview:   {paths['md']}\n  dashboard: {paths['html']}")
 
 
 def _print_result(result: AnalysisResult, paths: dict[str, Path]) -> None:

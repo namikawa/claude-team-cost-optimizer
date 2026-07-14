@@ -381,13 +381,9 @@ def _preserve_discussion(md: str, path: Path) -> str:
     return md.split(marker, 1)[0] + marker + tail
 
 
-_HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Team シート最適化 — {{ scope }}</title>
-<style>
+# dashboard.html / preview-dashboard.html で共有する CSS（二重メンテを避けるため定数化）。
+# 速報専用の追加スタイル（バナー等）は速報テンプレート側で足す。
+_DASHBOARD_CSS = r"""
   :root { --std:#4a90d9; --prem:#d97a4a; --ok:#2e8b57; --warn:#c0392b; }
   * { box-sizing: border-box; }
   body { font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; margin:0; background:#f6f7f9; color:#1f2933; }
@@ -419,7 +415,16 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
   .bar .val { width:80px; text-align:right; font-size:.78rem; font-variant-numeric:tabular-nums; }
   .cap { color:var(--warn); font-weight:700; }
   .note { font-size:.8rem; color:#6b7280; line-height:1.7; }
-</style>
+"""
+
+
+_HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Team シート最適化 — {{ scope }}</title>
+<style>{{ dashboard_css }}</style>
 </head>
 <body><div class="wrap">
 <h1>Claude Team シート最適化ダッシュボード <small>{{ scope }}</small></h1>
@@ -513,11 +518,161 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 """)
 
 
+# 速報の一次判断ラベル → 既存 .badge クラス。PREVIEW_ORDER に無いラベルは b-keep に倒す。
+_PREVIEW_BADGE_CLASS = {
+    "Standard候補": "b-change", "Premium検討": "b-change",   # アクション候補（緑）
+    "遊休候補": "b-watch", "判断保留": "b-watch",             # 要観察・保留（橙）
+    "シート不明": "b-unknown",                                # データ不整合（赤）
+    "Premium妥当": "b-keep", "Standard妥当": "b-keep",        # 現状妥当（グレー）
+    "対象外（未割当）": "b-keep",
+}
+
+
+_PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Team シート速報プレビュー — {{ scope }}</title>
+<style>{{ dashboard_css }}
+  /* 速報専用: 一次判断であることを強調する注意バナー */
+  .banner { background:#fdf3e0; border:1px solid #e0b96b; border-left:5px solid #d97a4a;
+            border-radius:8px; padding:12px 16px; margin:12px 0 20px; font-size:.85rem;
+            line-height:1.6; color:#7a5310; }
+</style>
+</head>
+<body><div class="wrap">
+<h1>Claude Team シート速報プレビュー <small>{{ scope }}</small></h1>
+<div class="banner">{{ days_observed }}日間の観測データ（暦{{ days_in_month }}日、月末ペース換算 ×{{ '%.1f' % factor }}）に基づく一次判断です。シート変更の確定判断には使わず、ヒアリング・観察対象の絞り込みに使ってください。</div>
+
+<div class="cards">
+  <div class="card"><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}{% if s.n_unassigned %} / 未割当 {{ s.n_unassigned }}{% endif %}）</div></div>
+  <div class="card"><div class="v">${{ '%.0f' % s.seat_cost_now_usd }}</div><div class="l">現在のシート費用 /月</div></div>
+  <div class="card"><div class="v">{{ total_obs_fmt }}</div><div class="l">観測需要（{{ days_observed }}日）</div></div>
+  <div class="card"><div class="v">{{ total_proj_fmt }}</div><div class="l">月末ペース換算 /月</div></div>
+  <div class="card"><div class="v">{{ s.n_billed }}</div><div class="l">実課金発生</div></div>
+</div>
+
+<h2>一次判断の内訳</h2>
+<div class="card">
+{% for c in label_counts %}<span class="badge {{ c.cls }}" style="margin:2px 6px 2px 0;">{{ c.label }} {{ c.n }} 名</span>{% endfor %}
+</div>
+
+<h2>月末ペース換算需要</h2>
+<div class="card">
+{% for u in users_sorted %}
+  <div class="bar">
+    <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
+    <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_projected_usd / max_proj * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('#9aa3ad' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div></div>
+    <div class="val">{{ u.proj_fmt }}</div>
+  </div>
+{% endfor %}
+  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span> / <span class="seat-unassigned">■ 未割当・不明</span></div>
+</div>
+
+<h2>一次判断テーブル</h2>
+<div class="tablebox"><table>
+<tr><th>ユーザ</th><th>現シート</th>{% if has_dept %}<th>部署</th>{% endif %}{% if has_team %}<th>チーム</th>{% endif %}<th class="num">{{ obs_label }}</th><th class="num">月末ペース換算</th><th class="num">実課金(観測)</th><th>一次判断</th><th>確度</th></tr>
+{% for u in users_sorted %}
+<tr>
+  <td class="user" title="{{ u.email }}">{{ u.email.split('@')[0] }}</td>
+  <td class="seat"><span class="seat-{{ u.current_seat }}">{{ seat_short.get(u.current_seat, '?') }}</span></td>
+  {% if has_dept %}<td>{{ u.department }}</td>{% endif %}
+  {% if has_team %}<td>{{ u.team }}</td>{% endif %}
+  <td class="num">{{ u.obs_fmt }}</td>
+  <td class="num">{{ u.proj_fmt }}</td>
+  <td class="num"{% if u.billed_bg %} style="background:{{ u.billed_bg }}"{% endif %}>{{ u.billed_fmt }}{% if u.billed_flag %} <span class="cap">{{ u.billed_flag }}</span>{% endif %}</td>
+  <td class="judge"><span class="badge {{ u.badge_class }}">{{ u.label }}</span></td>
+  <td>{% if u.confidence != '—' %}<span class="conf">{{ u.confidence }}</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</table></div>
+
+<h2>注意事項</h2>
+<div class="card note">
+  <ul>
+    <li>日割り換算（×{{ '%.1f' % factor }}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません。</li>
+    <li>実課金は込み量を使い切ってから発生する非線形な値のため、月末ペース換算していません。</li>
+    <li>変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（analyze）で行ってください。</li>
+  </ul>
+  <ul>
+    <li>遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨。</li>
+    <li>⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）。</li>
+    <li>⚠️従量あり: Standard 等で従量課金が発生（Premium 検討の重要シグナル）。</li>
+    <li>対象外（未割当）: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。</li>
+  </ul>
+</div>
+
+</div></body></html>
+""")
+
+
 def _fmt_compact(v) -> str:
     """テーブル幅節約のため $100 以上は整数、未満はセント表示。"""
     if v is None or v != v:
         return "—"
     return f"${v:,.0f}" if abs(v) >= 100 else f"${v:,.2f}"
+
+
+def write_preview_html(result: PreviewResult, path: Path) -> None:
+    """速報ダッシュボード（preview-dashboard.html）。preview.md のミラー。"""
+    users = result.users.copy()
+    users["_order"] = users["label"].map(
+        {lb: i for i, lb in enumerate(PREVIEW_ORDER)}
+    ).fillna(len(PREVIEW_ORDER))
+    users_sorted = users.sort_values(
+        ["_order", "api_cost_projected_usd"], ascending=[True, False]
+    ).to_dict("records")
+
+    has_dept = _has_values(result.users, "department")
+    has_team = _has_values(result.users, "team")
+
+    # 実課金カラムの金額グラデーション（正式 write_html と同じ最大額比の警告色）
+    max_billed = max((float(u.get("billed_observed_usd") or 0.0) for u in users_sorted), default=0.0)
+    for u in users_sorted:
+        u["obs_fmt"] = _fmt_compact(u["api_cost_observed_usd"])
+        u["proj_fmt"] = _fmt_compact(u["api_cost_projected_usd"])
+        u["billed_fmt"] = _fmt_compact(u.get("billed_observed_usd", 0.0))
+        u["department"] = str(u.get("department", "") or "") if has_dept else ""
+        u["team"] = str(u.get("team", "") or "") if has_team else ""
+        u["badge_class"] = _PREVIEW_BADGE_CLASS.get(u["label"], "b-keep")
+        billed = float(u.get("billed_observed_usd") or 0.0)
+        if billed > 0:
+            u["billed_flag"] = "⚠️超過済" if u["current_seat"] == "premium" else "⚠️従量あり"
+            alpha = 0.12 + 0.48 * (billed / max_billed) if max_billed > 0 else 0.12
+            u["billed_bg"] = f"rgba(192,57,43,{alpha:.2f})"
+        else:
+            u["billed_flag"] = ""
+            u["billed_bg"] = ""
+    max_proj = max((u["api_cost_projected_usd"] for u in users_sorted), default=0) or 1.0
+
+    # 一次判断の内訳（PREVIEW_ORDER 順、0名は省略）
+    counts = result.summary["label_counts"]
+    label_counts = [
+        {"label": lb, "n": counts[lb], "cls": _PREVIEW_BADGE_CLASS.get(lb, "b-keep")}
+        for lb in PREVIEW_ORDER if counts.get(lb)
+    ]
+    factor = result.days_in_month / result.days_observed
+
+    html = _PREVIEW_HTML_TEMPLATE.render(
+        dashboard_css=_DASHBOARD_CSS,
+        scope=_scope_label(result),
+        s=result.summary,
+        users_sorted=users_sorted,
+        label_counts=label_counts,
+        has_dept=has_dept,
+        has_team=has_team,
+        obs_label=f"観測需要({result.days_observed}日)",
+        days_observed=result.days_observed,
+        days_in_month=result.days_in_month,
+        factor=factor,
+        total_obs_fmt=_fmt_compact(result.summary["total_api_observed_usd"]),
+        total_proj_fmt=_fmt_compact(result.summary["total_api_projected_usd"]),
+        max_proj=max_proj,
+        seat_short={"standard": "Standard", "premium": "Premium",
+                    "unassigned": "未割当", "unknown": "不明"},
+    )
+    path.write_text(html, encoding="utf-8")
 
 
 def write_html(result: AnalysisResult, path: Path) -> None:
@@ -570,6 +725,7 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         d["api_fmt"] = _fmt_compact(d["api"])
         d["loc_fmt"] = f"{d['loc']:,}" if d["loc"] is not None else ""
     html = _HTML_TEMPLATE.render(
+        dashboard_css=_DASHBOARD_CSS,
         scope=_scope_label(result),
         s=result.summary,
         users_sorted=users_sorted,
@@ -589,8 +745,12 @@ def summary_json(result: AnalysisResult) -> str:
     return json.dumps(result.summary, ensure_ascii=False, indent=2)
 
 
-def write_preview(result: PreviewResult, output_dir: str | Path) -> Path:
-    """速報モードの出力（reports/<組織>/<月>/preview.md のみ。正式レポートには触れない）。"""
+def write_preview(result: PreviewResult, output_dir: str | Path) -> dict[str, Path]:
+    """速報モードの出力（reports/<組織>/<月>/preview.md と preview-dashboard.html）。
+
+    正式レポート（report.md / dashboard.html / recommendations.csv）には触れない。
+    戻り値は正式側 write_all と同様の paths dict（keys: "md", "html"）。
+    """
     out = Path(output_dir) / result.month
     out.mkdir(parents=True, exist_ok=True)
     path = out / "preview.md"
@@ -679,7 +839,10 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> Path:
 """
     md = _preserve_discussion(md, path)
     path.write_text(md, encoding="utf-8")
-    return path
+
+    html_path = out / "preview-dashboard.html"
+    write_preview_html(result, html_path)
+    return {"md": path, "html": html_path}
 
 
 def write_org_summary(results: list[AnalysisResult], output_dir: str | Path) -> Path:
