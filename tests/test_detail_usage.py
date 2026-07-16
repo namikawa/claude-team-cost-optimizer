@@ -79,7 +79,8 @@ def test_detail_rows_sort_and_loc_absence(cfg, make_input):
 def test_detail_table_md_with_loc():
     users = pd.DataFrame([
         {"email": "a@x.jp", "prompt_tokens": 1_200_000, "completion_tokens": 100_000,
-         "api_cost_usd": 234.5, "model_breakdown": "Opus 4.8 100%", "loc_with_cc": 5200},
+         "api_cost_usd": 234.5, "model_breakdown": "Opus 4.8 100%",
+         "product_breakdown": "", "loc_with_cc": 5200},
     ])
     md = _detail_table_md(users)
     assert "## 詳細利用状況" in md

@@ -19,6 +19,15 @@ from pathlib import Path
 
 import pandas as pd
 
+# 各入力ファイルの必須カラム（正準名）。ロード時の required= と、config.py の
+# エイリアス定義チェックの両方がこの1箇所を参照する（定義の二重管理を避ける）。
+REQUIRED_COLUMNS = {
+    "spend": ["email", "model", "prompt_tokens", "completion_tokens"],
+    "members": ["email", "seat_type"],
+    "code_analytics": ["email"],
+    "members_info": ["email"],
+}
+
 _DAY = r"(?:0[1-9]|[12]\d|3[01])"
 _RANGE_RE = re.compile(
     rf"(20\d{{2}})[-_](0[1-9]|1[0-2])[-_]({_DAY})[-_]to[-_](20\d{{2}})[-_](0[1-9]|1[0-2])[-_]({_DAY})"
@@ -36,7 +45,7 @@ def parse_affiliations(cell) -> list[str]:
     半角/全角セミコロンで区切り、各要素を strip、空要素は捨てる。
     空セル・欠損は空リストを返す（＝所属未設定）。
     """
-    if cell is None or cell != cell:  # NaN
+    if cell is None or pd.isna(cell):
         return []
     parts = (p.strip() for p in _AFFIL_SEP_RE.split(str(cell)))
     return [p for p in parts if p]
@@ -249,7 +258,8 @@ def validate_org_name(org: str) -> None:
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
-    for encoding in ("utf-8-sig", "utf-8", "cp932"):
+    # utf-8-sig は BOM 無しの UTF-8 も読めるため、utf-8-sig と cp932 の2種で足りる
+    for encoding in ("utf-8-sig", "cp932"):
         try:
             return pd.read_csv(path, encoding=encoding)
         except UnicodeDecodeError:
@@ -278,11 +288,11 @@ def load_spend(input_dir: Path, month: str, cfg: dict) -> LoadResult:
     df, warnings = map_columns(
         df,
         cfg["columns"]["spend"],
-        required=["email", "model", "prompt_tokens", "completion_tokens"],
+        required=REQUIRED_COLUMNS["spend"],
         source=path,
     )
     _to_numeric(df, [
-        "requests", "prompt_tokens", "completion_tokens", "net_spend", "gross_spend",
+        "requests", "prompt_tokens", "completion_tokens", "net_spend",
         "uncached_input_tokens", "cache_read_tokens",
         "cache_write_5m_tokens", "cache_write_1h_tokens",
     ])
@@ -297,7 +307,7 @@ def _normalize_seat(value: str) -> str:
     s = str(value).strip().lower()
     if "premium" in s:
         return "premium"
-    if "standard" in s or s in ("member", "basic"):
+    if "standard" in s:
         return "standard"
     # 意図的な未割当（別組織でアサイン済み・管理者等）。判定対象外として扱う
     if "unassigned" in s:
@@ -337,7 +347,7 @@ def load_members(input_dir: Path, month: str, cfg: dict) -> LoadResult:
     df, w = map_columns(
         df,
         cfg["columns"]["members"],
-        required=["email", "seat_type"],
+        required=REQUIRED_COLUMNS["members"],
         source=path,
     )
     warnings.extend(w)
@@ -367,7 +377,7 @@ def load_members_info(input_dir: Path, cfg: dict) -> LoadResult | None:
     df, _ = map_columns(
         df,
         cfg["columns"]["members_info"],
-        required=["email"],
+        required=REQUIRED_COLUMNS["members_info"],
         source=path,
     )
     df["email"] = df["email"].astype(str).str.strip().str.lower()
@@ -389,7 +399,7 @@ def load_code_analytics(input_dir: Path, month: str, cfg: dict) -> LoadResult | 
     df, warnings = map_columns(
         df,
         cfg["columns"]["code_analytics"],
-        required=["email"],
+        required=REQUIRED_COLUMNS["code_analytics"],
         source=path,
     )
     _to_numeric(df, ["prs_with_cc", "prs_total", "loc_with_cc", "loc_total"])

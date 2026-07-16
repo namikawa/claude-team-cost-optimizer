@@ -28,6 +28,23 @@ SCENARIOS = ("low", "mid", "high")
 SEAT_LABELS = {"standard": "Standard", "premium": "Premium",
                "unassigned": "未割当", "unknown": "不明"}
 
+# 判定ステータス文字列（report.py の表示順・バッジ分岐と結合。値は変更しないこと）。
+STATUS_CHANGE = "変更推奨"
+STATUS_WATCH = "要観察"
+STATUS_WATCH_WAIT = "要観察（データ蓄積待ち）"
+STATUS_KEEP = "現状維持"
+STATUS_UNKNOWN = "シート不明"
+STATUS_EXCLUDED = "対象外（シート未割当）"
+
+# 速報モードの一次判断ラベル（report.py の表示順・バッジ分岐と結合。値は変更しないこと）。
+LABEL_IDLE = "遊休候補"
+LABEL_STD_CAND = "Standard候補"
+LABEL_PREM_CONSIDER = "Premium検討"
+LABEL_HOLD = "判断保留"
+LABEL_PREM_OK = "Premium妥当"
+LABEL_STD_OK = "Standard妥当"
+LABEL_EXCLUDED = "対象外（未割当）"
+
 # 速報モード: 観測需要がこの額 [USD] 未満なら「遊休候補」（数日〜半月でこの水準は実質未使用）
 PREVIEW_IDLE_OBS_USD = 1.0
 
@@ -57,18 +74,14 @@ def _recommend(api_cost: float, scenario: str, cfg: dict) -> tuple[str, float, f
 
 
 def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
-    """スペンド明細（cost_usd 付与済み）→ ユーザ単位の月次集計。"""
+    """スペンド明細（apply_cost_basis 適用済み・billed_usd 必須）→ ユーザ単位の月次集計。"""
     agg_spec = {
         "api_cost": ("cost_usd", "sum"),
-        "computed_cost": ("computed_cost_usd", "sum"),
         "prompt_tokens": ("prompt_tokens", "sum"),
         "completion_tokens": ("completion_tokens", "sum"),
+        "billed": ("billed_usd", "sum"),
     }
-    if "billed_usd" in spend_df.columns:
-        agg_spec["billed"] = ("billed_usd", "sum")
     grouped = spend_df.groupby("email").agg(**agg_spec)
-    if "requests" in spend_df.columns:
-        grouped["requests"] = spend_df.groupby("email")["requests"].sum()
 
     if "product" in spend_df.columns:
         # product 構成比は「利用回数（リクエスト数）」基準。Cowork/Chat は API コストが
@@ -88,25 +101,25 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
             tmp.groupby("email")[["product", "_pw"]].apply(product_bd)
         )
 
-    if "model" in spend_df.columns:
-        tmp = spend_df.assign(
-            _tok=spend_df["prompt_tokens"].fillna(0) + spend_df["completion_tokens"].fillna(0)
+    # model は load_spend の必須カラムのため常に存在する
+    tmp = spend_df.assign(
+        _tok=spend_df["prompt_tokens"].fillna(0) + spend_df["completion_tokens"].fillna(0)
+    )
+
+    def model_bd(g: pd.DataFrame) -> str:
+        # モデル利用割合はトークン量（input+output）基準。寄与降順・1%未満は集約
+        by_model = g.groupby("model")["_tok"].sum().sort_values(ascending=False)
+        total = by_model.sum()
+        if total <= 0:
+            return ""
+        return " / ".join(
+            f"{_short_model(m)} {v / total:.0%}"
+            for m, v in by_model.items() if v / total >= 0.01
         )
 
-        def model_bd(g: pd.DataFrame) -> str:
-            # モデル利用割合はトークン量（input+output）基準。寄与降順・1%未満は集約
-            by_model = g.groupby("model")["_tok"].sum().sort_values(ascending=False)
-            total = by_model.sum()
-            if total <= 0:
-                return ""
-            return " / ".join(
-                f"{_short_model(m)} {v / total:.0%}"
-                for m, v in by_model.items() if v / total >= 0.01
-            )
-
-        grouped["model_breakdown"] = (
-            tmp.groupby("email")[["model", "_tok"]].apply(model_bd)
-        )
+    grouped["model_breakdown"] = (
+        tmp.groupby("email")[["model", "_tok"]].apply(model_bd)
+    )
     return grouped.reset_index()
 
 
@@ -161,14 +174,9 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
                     "全月として扱っています。月中の一次判断には --preview を利用してください"
                 )
 
-    unknown_models = pricing.unmatched_models(
+    warnings.extend(_warn_unknown_models(
         pd.concat([df["model"] for df in raw.values()]).unique(), cfg
-    )
-    if unknown_models:
-        warnings.append(
-            f"model_prices: 単価表に一致しないモデルに default 単価を適用: {unknown_models}。"
-            "config.yaml > model_prices にパターンを追記してください"
-        )
+    ))
 
     # 需要指標の基準（computed / net_spend）を対象月のユーザ帰属行から決定し、全月に適用
     target_user_rows = raw[month][raw[month]["email"].str.contains("@", na=False)]
@@ -241,14 +249,15 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
         rec = "standard" if cost_std <= cost_prem else "premium"
         return rec, cost_std, cost_prem
 
+    # 以下の rows から作る users DataFrame は固定カラム（下記キー）を常に持つ。
+    # 任意なのは code-analytics 由来の prs_with_cc / loc_with_cc のみ。
     rows = []
     for email in emails:
         seat = seat_by_email.get(email, "unknown")
         row = target.loc[email] if email in target.index else None
         api_cost = float(row["api_cost"]) if row is not None else 0.0
-        billed = (
-            float(row["billed"]) if row is not None and "billed" in row.index else 0.0
-        )
+        # billed は aggregate_month が常に付与するため row があれば必ず存在する
+        billed = float(row["billed"]) if row is not None else 0.0
 
         if seat == "unassigned":
             # 意図的な未割当（別組織でアサイン済み・管理者等）は損益分岐判定の対象外。
@@ -257,7 +266,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             rec_mid, cost_std, cost_prem = "unassigned", nan, nan
             rec_low = rec_high = "unassigned"
             cost_current, saving = nan, nan
-            status, confidence = "対象外（シート未割当）", "—"
+            status, confidence = STATUS_EXCLUDED, "—"
             censored = False
         else:
             recs = {s: _costs_for(seat, api_cost, billed, s) for s in SCENARIOS}
@@ -275,9 +284,9 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
 
             # ヒステリシス: 直近 n_hyst ヶ月すべてで同じ推奨・削減額がバッファ以上か
             if seat == "unknown":
-                status = "シート不明"
+                status = STATUS_UNKNOWN
             elif rec_mid == seat:
-                status = "現状維持"
+                status = STATUS_KEEP
             else:
                 recent = months_used[-n_hyst:]
                 checks = []
@@ -285,7 +294,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
                     mdf = monthly[m].set_index("email")
                     if email in mdf.index:
                         m_cost = float(mdf.loc[email, "api_cost"])
-                        m_billed = float(mdf.loc[email, "billed"]) if "billed" in mdf.columns else 0.0
+                        m_billed = float(mdf.loc[email, "billed"])
                     else:
                         m_cost, m_billed = 0.0, 0.0
                     m_rec, m_std, m_prem = _costs_for(seat, m_cost, m_billed, "mid")
@@ -293,11 +302,11 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
                     m_saving = m_current - min(m_std, m_prem)
                     checks.append(m_rec == rec_mid and m_saving >= min_saving)
                 if len(months_used) < n_hyst:
-                    status = "要観察（データ蓄積待ち）"
+                    status = STATUS_WATCH_WAIT
                 elif all(checks):
-                    status = "変更推奨"
+                    status = STATUS_CHANGE
                 else:
-                    status = "要観察"
+                    status = STATUS_WATCH
 
             # 感度: low/high シナリオが mid の推奨と一致するか
             agree = sum(1 for s in ("low", "high") if recs[s][0] == rec_mid)
@@ -317,9 +326,9 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             "api_cost_usd": round(api_cost, 2),
             "cost_if_standard_usd": round(cost_std, 2),
             "cost_if_premium_usd": round(cost_prem, 2),
-            "cost_current_usd": round(cost_current, 2) if cost_current == cost_current else None,
+            "cost_current_usd": round(cost_current, 2) if not pd.isna(cost_current) else None,
             "recommended_seat": rec_mid,
-            "monthly_saving_usd": round(saving, 2) if saving == saving else None,
+            "monthly_saving_usd": round(saving, 2) if not pd.isna(saving) else None,
             "status": status,
             "confidence": confidence,
             "rec_low": rec_low,
@@ -331,9 +340,8 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             "product_breakdown": (
                 str(row["product_breakdown"]) if row is not None and "product_breakdown" in row.index else ""
             ),
-            "model_breakdown": (
-                str(row["model_breakdown"]) if row is not None and "model_breakdown" in row.index else ""
-            ),
+            # model は必須カラムのため row があれば model_breakdown は常に存在する
+            "model_breakdown": str(row["model_breakdown"]) if row is not None else "",
         })
 
     users = pd.DataFrame(rows)
@@ -353,11 +361,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
     ).reset_index(drop=True)
 
     # spend にいるが members にいないユーザ
-    orphan = users[users["current_seat"] == "unknown"]["email"].tolist()
-    if orphan:
-        warnings.append(
-            f"members に存在しない利用ユーザ {len(orphan)} 名（シート不明として集計）: {orphan[:5]}"
-        )
+    warnings.extend(_warn_orphan_users(users))
     warnings.extend(_warn_active_unassigned(users, "api_cost_usd"))
 
     summary = _summarize(users, monthly[month], cfg, months_used, n_hyst)
@@ -369,27 +373,54 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
     )
 
 
-def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
-               months_used: list[str], n_hyst: int) -> dict:
+def _seat_summary(users: pd.DataFrame, cfg: dict) -> dict:
+    """シート種別ごとの人数と現在のシート費用（analyze/preview サマリの共通部）。"""
     seats = users["current_seat"].value_counts().to_dict()
     std_price = float(cfg["seats"]["standard"]["price_usd"])
     prem_price = float(cfg["seats"]["premium"]["price_usd"])
-    seat_cost_now = seats.get("standard", 0) * std_price + seats.get("premium", 0) * prem_price
-
-    to_change = users[users["status"] == "変更推奨"]
-    watching = users[users["status"].str.startswith("要観察")]
-    savings = float(to_change["monthly_saving_usd"].fillna(0).sum())
-
+    n_standard = int(seats.get("standard", 0))
+    n_premium = int(seats.get("premium", 0))
     return {
-        "month": users_month(months_used),
         "n_members": int(len(users)),
-        "n_standard": int(seats.get("standard", 0)),
-        "n_premium": int(seats.get("premium", 0)),
+        "n_standard": n_standard,
+        "n_premium": n_premium,
         "n_unassigned": int(seats.get("unassigned", 0)),
         "n_unknown": int(seats.get("unknown", 0)),
-        "seat_cost_now_usd": round(seat_cost_now, 2),
-        "seat_price_standard_usd": std_price,
-        "seat_price_premium_usd": prem_price,
+        "seat_cost_now_usd": round(n_standard * std_price + n_premium * prem_price, 2),
+    }
+
+
+def _warn_unknown_models(models, cfg: dict) -> list[str]:
+    """単価表に一致せず default 単価が適用されるモデルの警告（無ければ空リスト）。"""
+    unknown_models = pricing.unmatched_models(models, cfg)
+    if not unknown_models:
+        return []
+    return [
+        f"model_prices: 単価表に一致しないモデルに default 単価を適用: {unknown_models}。"
+        "config.yaml > model_prices にパターンを追記してください"
+    ]
+
+
+def _warn_orphan_users(users: pd.DataFrame) -> list[str]:
+    """members に居ないが spend に居る利用者（seat=unknown）の警告（無ければ空リスト）。"""
+    orphan = users[users["current_seat"] == "unknown"]["email"].tolist()
+    if not orphan:
+        return []
+    return [
+        f"members に存在しない利用ユーザ {len(orphan)} 名（シート不明として集計）: {orphan[:5]}"
+    ]
+
+
+def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
+               months_used: list[str], n_hyst: int) -> dict:
+    to_change = users[users["status"] == STATUS_CHANGE]
+    watching = users[users["status"].str.startswith(STATUS_WATCH)]
+    savings = float(to_change["monthly_saving_usd"].fillna(0).sum())
+
+    summary = _seat_summary(users, cfg)
+    summary.update({
+        "seat_price_standard_usd": float(cfg["seats"]["standard"]["price_usd"]),
+        "seat_price_premium_usd": float(cfg["seats"]["premium"]["price_usd"]),
         "total_api_cost_usd": round(float(month_agg["api_cost"].sum()), 2),
         "n_change_recommended": int(len(to_change)),
         "n_watching": int(len(watching)),
@@ -400,11 +431,8 @@ def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
         "est_monthly_saving_usd": round(savings, 2),
         "months_used": months_used,
         "hysteresis_months": n_hyst,
-    }
-
-
-def users_month(months_used: list[str]) -> str:
-    return months_used[-1] if months_used else ""
+    })
+    return summary
 
 
 def _warn_active_unassigned(users: pd.DataFrame, cost_col: str) -> list[str]:
@@ -443,21 +471,21 @@ def _preview_label(seat: str, api_obs: float, api_proj: float, cfg: dict,
     境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒す。
     """
     if seat == "unassigned":
-        return "対象外（未割当）", "—"
+        return LABEL_EXCLUDED, "—"
     if seat == "unknown":
-        return "シート不明", "—"
+        return STATUS_UNKNOWN, "—"
     if api_obs < PREVIEW_IDLE_OBS_USD:
-        return "遊休候補", "—"
+        return LABEL_IDLE, "—"
     recs = {s: _recommend(api_proj, s, cfg) for s in SCENARIOS}
     rec_mid, cost_std, cost_prem = recs["mid"]
     agree = sum(1 for s in ("low", "high") if recs[s][0] == rec_mid)
     confidence = {2: "高", 1: "中", 0: "低"}[agree]
     if rec_mid == seat:
-        return ("Premium妥当" if seat == "premium" else "Standard妥当"), confidence
+        return (LABEL_PREM_OK if seat == "premium" else LABEL_STD_OK), confidence
     saving = (cost_prem - cost_std) if seat == "premium" else (cost_std - cost_prem)
     if agree == 2 and saving >= min_saving:
-        return ("Standard候補" if seat == "premium" else "Premium検討"), confidence
-    return "判断保留", confidence
+        return (LABEL_STD_CAND if seat == "premium" else LABEL_PREM_CONSIDER), confidence
+    return LABEL_HOLD, confidence
 
 
 def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
@@ -477,12 +505,7 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     sources = {"spend": {month: str(spend_result.source)}}
     df = pricing.add_computed_cost(spend_result.df, cfg)
 
-    unknown_models = pricing.unmatched_models(df["model"].unique(), cfg)
-    if unknown_models:
-        warnings.append(
-            f"model_prices: 単価表に一致しないモデルに default 単価を適用: {unknown_models}。"
-            "config.yaml > model_prices にパターンを追記してください"
-        )
+    warnings.extend(_warn_unknown_models(df["model"].unique(), cfg))
 
     is_user = df["email"].str.contains("@", na=False)
     basis, basis_notes = pricing.resolve_cost_basis(df[is_user], cfg)
@@ -505,7 +528,8 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
         seat = seat_by_email.get(email, "unknown")
         row = agg.loc[email] if email in agg.index else None
         api_obs = float(row["api_cost"]) if row is not None else 0.0
-        billed_obs = float(row["billed"]) if row is not None and "billed" in row.index else 0.0
+        # billed は aggregate_month が常に付与するため row があれば必ず存在する
+        billed_obs = float(row["billed"]) if row is not None else 0.0
         api_proj = api_obs * factor
         label, confidence = _preview_label(seat, api_obs, api_proj, cfg, min_saving)
         rows.append({
@@ -522,33 +546,19 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     # 部署・職種・備考（任意ファイル members-info.csv）の結合
     _merge_members_info(users, input_dir, cfg, sources)
 
-    orphan = users[users["current_seat"] == "unknown"]["email"].tolist()
-    if orphan:
-        warnings.append(
-            f"members に存在しない利用ユーザ {len(orphan)} 名（シート不明として集計）: {orphan[:5]}"
-        )
+    warnings.extend(_warn_orphan_users(users))
     warnings.extend(_warn_active_unassigned(users, "api_cost_observed_usd"))
 
-    seats = users["current_seat"].value_counts().to_dict()
-    std_price = float(cfg["seats"]["standard"]["price_usd"])
-    prem_price = float(cfg["seats"]["premium"]["price_usd"])
-    summary = {
-        "month": month,
+    summary = _seat_summary(users, cfg)
+    summary.update({
         "days_observed": days_observed,
         "days_in_month": days_in_month,
-        "n_members": int(len(users)),
-        "n_standard": int(seats.get("standard", 0)),
-        "n_premium": int(seats.get("premium", 0)),
-        "n_unassigned": int(seats.get("unassigned", 0)),
-        "n_unknown": int(seats.get("unknown", 0)),
-        "seat_cost_now_usd": round(
-            seats.get("standard", 0) * std_price + seats.get("premium", 0) * prem_price, 2),
         "total_api_observed_usd": round(float(users["api_cost_observed_usd"].sum()), 2),
         "total_api_projected_usd": round(float(users["api_cost_projected_usd"].sum()), 2),
         "n_billed": int((users["billed_observed_usd"] > 0).sum()),
         "label_counts": users["label"].value_counts().to_dict(),
         "org_service_cost_usd": org_service_obs,
-    }
+    })
     return PreviewResult(
         month=month, users=users, summary=summary,
         days_observed=days_observed, days_in_month=days_in_month,

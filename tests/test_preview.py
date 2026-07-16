@@ -70,7 +70,7 @@ def test_preview_standard_billed_flag(cfg, make_input, tmp_path):
     )
     result = preview(input_dir, "2026-06", cfg, days_observed=10)
     paths = write_preview(result, tmp_path / "reports")
-    md = paths["md"].read_text(encoding="utf-8")
+    md = paths["markdown"].read_text(encoding="utf-8")
     assert "⚠️従量あり" in md
     assert "⚠️超過済" not in md.split("## 一次判断テーブル")[1].split("\n\n")[0]
     # 凡例にも従量ありの行が追加されている

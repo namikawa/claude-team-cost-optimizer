@@ -31,11 +31,11 @@ CACHE_COLS = ("uncached_input_tokens", "cache_read_tokens",
 
 
 def add_computed_cost(spend_df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """行ごとの tokens×単価 コスト computed_cost_usd と、採用コスト cost_usd を付与する。
+    """行ごとの tokens×単価 コスト computed_cost_usd を付与する。
 
     キャッシュ内訳列があれば実効単価（read 0.1x / write 1.25x / 2.0x）で計算する。
     prompt_tokens はキャッシュ読取を含むため、内訳なしで全量×入力単価にすると過大になる。
-    cost_usd は net_spend があればそれを、無い行は computed_cost_usd を採用する。
+    需要指標 cost_usd と実課金 billed_usd の採用は apply_cost_basis に一本化する。
     """
     df = spend_df.copy()
     prices = df["model"].map(lambda m: price_for_model(m, cfg))
@@ -58,10 +58,6 @@ def add_computed_cost(spend_df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     df["computed_cost_usd"] = (
         input_cost + df["completion_tokens"].fillna(0) / 1e6 * out_price
     )
-    if "net_spend" in df.columns:
-        df["cost_usd"] = df["net_spend"].where(df["net_spend"].notna(), df["computed_cost_usd"])
-    else:
-        df["cost_usd"] = df["computed_cost_usd"]
     return df
 
 

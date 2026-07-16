@@ -20,6 +20,8 @@ def test_add_computed_cost_prefers_net_spend(cfg):
     out = pricing.add_computed_cost(df, cfg)
     # computed = 1.0*3 + 0.1*15 = 4.5
     assert out["computed_cost_usd"].round(2).tolist() == [4.5, 4.5]
+    # cost_usd の採用（net_spend 優先・欠損は計算値）は apply_cost_basis に一本化
+    out = pricing.apply_cost_basis(out, "net_spend")
     assert out["cost_usd"].round(2).tolist() == [9.99, 4.5]
 
 

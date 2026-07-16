@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from .ingest import REQUIRED_COLUMNS
+
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 
 
@@ -79,17 +81,11 @@ def _validate(cfg: dict) -> None:
 
     # 入力処理に必須のカラムエイリアスが columns セクションに定義されているか。
     # 欠けていると実行時に KeyError / 必須カラム未検出になるため起動時に検出する。
-    required_columns = {
-        "spend": ["email", "model", "prompt_tokens", "completion_tokens"],
-        "members": ["email", "seat_type"],
-        "code_analytics": ["email"],
-        "members_info": ["email"],
-    }
     columns = cfg["columns"]
     if not isinstance(columns, dict):
         errors.append("columns セクションが辞書ではありません")
     else:
-        for section, required in required_columns.items():
+        for section, required in REQUIRED_COLUMNS.items():
             sec = columns.get(section)
             if not isinstance(sec, dict):
                 errors.append(f"columns.{section} がありません")

@@ -66,15 +66,12 @@ spend_validation:
 columns:
   spend:
     email:            ["email", "user email", "user"]
-    account_uuid:     ["account uuid", "uuid"]
     product:          ["product", "product type", "surface"]
     model:            ["model", "model name"]
-    model_family:     ["model family"]
     requests:         ["request count", "requests", "num requests", "total requests"]
     prompt_tokens:    ["prompt tokens", "input tokens", "total prompt tokens"]
     completion_tokens: ["completion tokens", "output tokens", "total completion tokens"]
     net_spend:        ["total net spend usd", "net spend usd", "net spend"]
-    gross_spend:      ["total gross spend usd", "gross spend usd", "gross spend"]
     # キャッシュ内訳（実スペンドレポートに存在。あると spend 検算の精度が上がる）
     uncached_input_tokens: ["total uncached input tokens", "uncached input tokens"]
     cache_read_tokens:     ["total cache read tokens", "cache read tokens"]
@@ -83,9 +80,6 @@ columns:
   members:
     email:     ["email", "user email"]
     seat_type: ["seat", "seat type", "seat tier", "plan", "subscription"]
-    name:      ["name", "full name", "display name"]
-    role:      ["role"]
-    status:    ["status"]
   code_analytics:
     email:       ["email", "user", "user email", "member"]
     prs_with_cc: ["prs with cc", "prs with claude code", "cc prs"]

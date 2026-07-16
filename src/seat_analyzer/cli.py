@@ -6,9 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import analyze as analyze_mod
-from . import ingest, report
-from .analyze import AnalysisResult
+from . import analyze, ingest, report
 from .config import load_config
 
 
@@ -127,7 +125,7 @@ def _resolve_targets(
 
 
 def _run_analyze(args: argparse.Namespace) -> int:
-    if args.days and not args.preview:
+    if args.days is not None and not args.preview:
         raise ValueError("--days は --preview 専用のオプションです")
 
     cfg = load_config(args.config)
@@ -147,7 +145,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
         month = max(latest)
         print(f"対象月未指定のため最新月を使用: {month}")
 
-    results: list[AnalysisResult] = []
+    results: list[analyze.AnalysisResult] = []
     skipped: list[str] = []
     n_previewed = 0
     for org, org_input, org_output in targets:
@@ -169,12 +167,12 @@ def _run_analyze(args: argparse.Namespace) -> int:
                         f"（{org or org_input}: スペンドレポートのファイル名に期間が無いため自動判別できません）"
                     )
                 print(f"{org or ''}: ファイル名の期間から観測日数 {days} 日を使用")
-            pv = analyze_mod.preview(org_input, month, cfg, days, org=org)
+            pv = analyze.preview(org_input, month, cfg, days, org=org)
             paths = report.write_preview(pv, org_output)
             _print_preview(pv, paths)
             n_previewed += 1
             continue
-        result = analyze_mod.analyze(org_input, month, cfg, org=org)
+        result = analyze.analyze(org_input, month, cfg, org=org)
         paths = report.write_all(result, org_output)
         results.append(result)
         _print_result(result, paths)
@@ -207,10 +205,10 @@ def _print_preview(pv, paths: dict[str, Path]) -> None:
         print("\n--- 警告 ---")
         for w in pv.warnings:
             print(f"  ! {w}")
-    print(f"\n--- 出力 ---\n  preview:   {paths['md']}\n  dashboard: {paths['html']}")
+    print(f"\n--- 出力 ---\n  preview:   {paths['markdown']}\n  dashboard: {paths['html']}")
 
 
-def _print_result(result: AnalysisResult, paths: dict[str, Path]) -> None:
+def _print_result(result: analyze.AnalysisResult, paths: dict[str, Path]) -> None:
     s = result.summary
     scope = f"{result.org} {result.month}" if result.org else result.month
     print(f"\n=== {scope} 分析結果 ===")
@@ -233,7 +231,7 @@ def _print_result(result: AnalysisResult, paths: dict[str, Path]) -> None:
         print(f"  {kind}: {path}")
 
 
-def _print_totals(results: list[AnalysisResult], summary_path: Path) -> None:
+def _print_totals(results: list[analyze.AnalysisResult], summary_path: Path) -> None:
     n_members = sum(r.summary["n_members"] for r in results)
     seat_cost = sum(r.summary["seat_cost_now_usd"] for r in results)
     n_change = sum(r.summary["n_change_recommended"] for r in results)
