@@ -156,13 +156,17 @@ def month_of_file(path: Path) -> str | None:
 
 
 def _resolve_duplicates(
-    directory: Path, month: str, entries: list[tuple[FilePeriod, Path]]
+    directory: Path, month: str, entries: list[tuple[FilePeriod, Path]],
+    snapshot_mode: bool = False,
 ) -> tuple[Path, str]:
     """同一月に複数ファイルがある場合の解決。
 
     - 全て単日スナップショット（members 等）→ 最新日付を採用
     - 期間の包含関係が一意（例: 全月分が部分月分を包含）→ 広い方を採用
     - どちらでもない → エラー（取り違え防止）
+
+    snapshot_mode=True は、広い方を主データに採る際「未使用」ではなく
+    「スナップショット差分にも使う」という文言にする（月中推移の差分分析が発動する場合）。
     """
     if all(p.kind == "date" for p, _ in entries):
         period, path = max(entries, key=lambda e: e[0].end)
@@ -181,6 +185,12 @@ def _resolve_duplicates(
     if len(containing) == 1:
         (start, end), path = containing[0]
         others = ", ".join(f.name for _, f in intervals if f != path)
+        if snapshot_mode:
+            return path, (
+                f"{directory.name}: {month} のスペンドが複数あるため主データには期間の広い "
+                f"{path.name}（{start:%m-%d}〜{end:%m-%d}）を使用"
+                f"（スナップショット差分に {others} も使用）"
+            )
         return path, (
             f"{directory.name}: {month} のファイルが複数あるため期間の広い "
             f"{path.name}（{start:%m-%d}〜{end:%m-%d}）を使用（未使用: {others}）"
@@ -191,8 +201,14 @@ def _resolve_duplicates(
     )
 
 
-def _files_by_month(directory: Path) -> tuple[dict[str, Path], dict[str, str]]:
-    """月→ファイルの対応と、同一月の重複を自動解決した際の警告（月別）を返す。"""
+def _files_by_month(
+    directory: Path, snapshot_month: str | None = None
+) -> tuple[dict[str, Path], dict[str, str]]:
+    """月→ファイルの対応と、同一月の重複を自動解決した際の警告（月別）を返す。
+
+    snapshot_month を渡すと、その月の重複解決の警告文言を「スナップショット差分にも使う」
+    向けに切り替える（月中推移の差分分析が発動する月のみ）。
+    """
     by_month: dict[str, list[tuple[FilePeriod, Path]]] = {}
     if not directory.exists():
         return {}, {}
@@ -206,7 +222,9 @@ def _files_by_month(directory: Path) -> tuple[dict[str, Path], dict[str, str]]:
         if len(entries) == 1:
             result[month] = entries[0][1]
         else:
-            result[month], warns[month] = _resolve_duplicates(directory, month, entries)
+            result[month], warns[month] = _resolve_duplicates(
+                directory, month, entries, snapshot_mode=(month == snapshot_month)
+            )
     return result, warns
 
 
@@ -276,14 +294,8 @@ def _to_numeric(df: pd.DataFrame, cols: list[str]) -> None:
             )
 
 
-def load_spend(input_dir: Path, month: str, cfg: dict) -> LoadResult:
-    files, file_warns = _files_by_month(Path(input_dir) / "spend")
-    if month not in files:
-        raise FileNotFoundError(
-            f"{input_dir}/spend/ に {month} のスペンドレポートがありません"
-            f"（例: spend_{month}.csv）。存在する月: {sorted(files) or 'なし'}"
-        )
-    path = files[month]
+def _read_spend_df(path: Path, month: str, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
+    """1つのスペンド CSV を読み、カラム正規化・数値化・email 正規化を施す。"""
     df = _read_csv(path)
     df, warnings = map_columns(
         df,
@@ -298,9 +310,61 @@ def load_spend(input_dir: Path, month: str, cfg: dict) -> LoadResult:
     ])
     df["email"] = df["email"].astype(str).str.strip().str.lower()
     df["month"] = month
+    return df, warnings
+
+
+def load_spend(
+    input_dir: Path, month: str, cfg: dict, snapshot_active: bool = False
+) -> LoadResult:
+    """対象月の主スペンドをロードする。
+
+    snapshot_active=True は、同一月に複数の月初開始スペンドがあり月中推移の差分分析が
+    発動する場合で、重複解決の警告文言を「スナップショット差分にも使う」向けにする。
+    """
+    files, file_warns = _files_by_month(
+        Path(input_dir) / "spend", snapshot_month=month if snapshot_active else None
+    )
+    if month not in files:
+        raise FileNotFoundError(
+            f"{input_dir}/spend/ に {month} のスペンドレポートがありません"
+            f"（例: spend_{month}.csv）。存在する月: {sorted(files) or 'なし'}"
+        )
+    path = files[month]
+    df, warnings = _read_spend_df(path, month, cfg)
     if month in file_warns:
         warnings.append(file_warns[month])
     return LoadResult(df=df, source=path, warnings=warnings)
+
+
+def load_spend_file(path: Path, month: str, cfg: dict) -> pd.DataFrame:
+    """指定パスのスペンド CSV を1つだけ読む（スナップショット差分用・重複解決や警告なし）。"""
+    df, _ = _read_spend_df(Path(path), month, cfg)
+    return df
+
+
+def spend_snapshots(
+    input_dir: Path, month: str
+) -> tuple[list[tuple[FilePeriod, Path]], list[str]]:
+    """対象月の月初開始（1日〜）の累積スペンドを end 昇順に返す（月中推移の差分分析用）。
+
+    戻り値: (entries, excluded)。entries は月初開始 range の (FilePeriod, パス)、
+    excluded は「月初開始でない range のため差分対象から外したファイル名」。
+    kind=month / kind=date のファイルは対象外（区間差分の起点にならない）。
+    """
+    directory = Path(input_dir) / "spend"
+    entries: list[tuple[FilePeriod, Path]] = []
+    excluded: list[str] = []
+    if directory.exists():
+        for p in sorted(directory.glob("*.csv")):
+            period = file_period(p)
+            if period is None or period.month != month or period.kind != "range":
+                continue
+            if period.start is None or period.start.day != 1:
+                excluded.append(p.name)
+                continue
+            entries.append((period, p))
+    entries.sort(key=lambda e: e[0].end)
+    return entries, excluded
 
 
 def _normalize_seat(value: str) -> str:

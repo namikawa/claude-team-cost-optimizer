@@ -56,3 +56,35 @@ def make_input(tmp_path: Path):
         return input_dir
 
     return _make
+
+
+@pytest.fixture
+def make_snapshots(tmp_path: Path):
+    """同一月の複数スナップショット（月初開始 range 命名）を組み立てるヘルパ。
+
+    snapshots は {終了日 "YYYY-MM-DD": [行, ...]} で、月初〜終了日の累積エクスポートを
+    claude.ai のダウンロード名（spend-report-...-月初-to-終了日.csv）で置く。
+    extra_files は {ファイル名: [行, ...]} で、月初開始でない range 等の追加ファイルを置く。
+    """
+
+    def _make(month: str, snapshots: dict[str, list[str]],
+              members: list[str] | None = None, members_month: str | None = None,
+              org: str | None = None, extra_files: dict[str, list[str]] | None = None) -> Path:
+        input_dir = tmp_path / "input"
+        base = input_dir / org if org else input_dir
+        spend_dir = base / "spend"
+        spend_dir.mkdir(parents=True, exist_ok=True)
+        for end, rows in snapshots.items():
+            name = f"spend-report-uuid-{month}-01-to-{end}.csv"
+            (spend_dir / name).write_text(
+                SPEND_HEADER + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+        for name, rows in (extra_files or {}).items():
+            (spend_dir / name).write_text(
+                SPEND_HEADER + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
+        if members is not None:
+            p = base / "members" / f"members_{members_month or month}.csv"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("Email,Seat Type\n" + "\n".join(members) + "\n", encoding="utf-8")
+        return input_dir
+
+    return _make

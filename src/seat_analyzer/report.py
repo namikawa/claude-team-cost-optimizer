@@ -91,6 +91,14 @@ def _fmt_usd(v) -> str:
     return f"${v:,.2f}"
 
 
+def _fmt_delta(v, compact: bool = False) -> str:
+    """符号付きの金額（増減表示用）。compact=True はダッシュボードの短縮表記。"""
+    if v is None or pd.isna(v):
+        return "—"
+    body = _fmt_compact(abs(v)) if compact else f"${abs(v):,.2f}"
+    return ("+" if v >= 0 else "-") + body
+
+
 def _sort_for_display(users: pd.DataFrame, label_col: str, order: list[str],
                       value_col: str) -> pd.DataFrame:
     """ラベル列（status/label）を表示順 order で並べ、同順位内は value_col 降順にする。"""
@@ -329,6 +337,129 @@ def _detail_table_md(users: pd.DataFrame) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _people_line_md(label: str, items: list[dict]) -> str:
+    """「利用開始 N 名: email（金額）, ...」形式の1行（該当なしは「label: なし」）。"""
+    if not items:
+        return f"- {label}: なし"
+    listed = ", ".join(f"{_md_cell(x['email'])}（{_fmt_usd(x['amount'])}）" for x in items)
+    return f"- {label} {len(items)} 名: {listed}"
+
+
+def _trend_md(trend: dict | None) -> str:
+    """「## 前月からの変化」セクション（trend が None なら空文字列）。"""
+    if not trend:
+        return ""
+    cmp_line = f"比較対象: {trend['compare_month']}"
+    if trend["gap_skipped"]:
+        cmp_line += "（直前月が欠測のため直前の存在月と比較）"
+    lines = ["## 前月からの変化", "", cmp_line, ""]
+    lines.append(_people_line_md("利用開始", trend["started"]))
+    lines.append(_people_line_md("利用停止", trend["stopped"]))
+    lines.append(_people_line_md("実課金の新規発生", trend["new_billed"]))
+    lines += ["", "### 主な増減", ""]
+    if trend["changes"]:
+        lines += ["| ユーザ | 前月 | 当月 | 増減 |", "|---|---|---|---|"]
+        for c in trend["changes"]:
+            lines.append(
+                f"| {_md_cell(c['email'])} | {_fmt_usd(c['prev'])} | {_fmt_usd(c['curr'])} "
+                f"| {_fmt_delta(c['delta'])} |"
+            )
+    else:
+        lines.append("なし")
+    lines += ["", "### 月次推移", "", "| 月 | API換算需要 | 実課金 | アクティブユーザ数 |",
+              "|---|---|---|---|"]
+    for s in trend["series"]:
+        lines.append(
+            f"| {s['month']} | {_fmt_usd(s['api'])} | {_fmt_usd(s['billed'])} | {s['active']} 名 |"
+        )
+    return "\n".join(lines)
+
+
+def _snapshot_md(snapshot: dict | None) -> str:
+    """「## 月中の利用推移（スナップショット差分）」セクション（None なら空文字列）。"""
+    if not snapshot:
+        return ""
+    snap_list = " / ".join(f"{s['label']}（{s['days']}日）" for s in snapshot["snaps"])
+    lines = ["## 月中の利用推移（スナップショット差分）", "", f"スナップショット: {snap_list}", ""]
+    if not snapshot["judged"]:
+        lines.append(
+            f"- 最新区間が {snapshot['latest_interval_days']} 日と短いため停止判定は行っていません"
+        )
+        lines.append("")
+    labels = snapshot["labels"]
+    lines.append("| ユーザ | " + " | ".join(labels) + " | 最新区間の増分 | 判定 |")
+    lines.append("|" + "---|" * (len(labels) + 3))
+    for r in snapshot["rows"]:
+        cums = " | ".join(_fmt_usd(c) for c in r["cum"])
+        judge = "⚠️停止疑い" if r["stall"] else ""
+        lines.append(
+            f"| {_md_cell(r['email'])} | {cums} | {_fmt_delta(r['latest_delta'])} | {judge} |"
+        )
+    lines.append("")
+    for x in snapshot["stalled_capped"]:
+        lines.append(
+            f"- {_md_cell(x['email'])}: 上限停止の可能性。停止時点の累積 "
+            f"{_fmt_usd(x['cum_at_stall'])} は実効込み量の実測候補"
+        )
+    if snapshot["billed_emerged"]:
+        lines += ["", "### この区間で込み量を消化（実課金が発生）", ""]
+        for x in snapshot["billed_emerged"]:
+            lines.append(
+                f"- {_md_cell(x['email'])}: {x['interval_label']} で従量課金 "
+                f"{_fmt_usd(x['billed'])} が発生（実効込み量は累積需要 "
+                f"{_fmt_usd(x['prev_cum'])}〜{_fmt_usd(x['curr_cum'])} の間）"
+            )
+    lines += ["", "- 停止は休暇・案件の谷でも起こるため、上限到達の断定には本人確認が必要です"]
+    return "\n".join(lines)
+
+
+def _trend_view(trend: dict | None) -> dict | None:
+    """dashboard.html 用に整形した「前月からの変化」データ（None なら None）。"""
+    if not trend:
+        return None
+
+    def _people(items: list[dict]) -> list[dict]:
+        return [{"email": x["email"], "amount_fmt": _fmt_compact(x["amount"])} for x in items]
+
+    return {
+        "compare_month": trend["compare_month"],
+        "gap_skipped": trend["gap_skipped"],
+        "started": _people(trend["started"]),
+        "stopped": _people(trend["stopped"]),
+        "new_billed": _people(trend["new_billed"]),
+        "changes": [{"email": c["email"], "prev_fmt": _fmt_compact(c["prev"]),
+                     "curr_fmt": _fmt_compact(c["curr"]),
+                     "delta_fmt": _fmt_delta(c["delta"], compact=True)}
+                    for c in trend["changes"]],
+        "series": [{"month": s["month"], "api_fmt": _fmt_compact(s["api"]),
+                    "billed_fmt": _fmt_compact(s["billed"]), "active": s["active"]}
+                   for s in trend["series"]],
+    }
+
+
+def _snapshot_view(snapshot: dict | None) -> dict | None:
+    """dashboard.html / preview-dashboard.html 用に整形したスナップショット差分（None なら None）。"""
+    if not snapshot:
+        return None
+    return {
+        "labels": snapshot["labels"],
+        "snap_list": " / ".join(f"{s['label']}（{s['days']}日）" for s in snapshot["snaps"]),
+        "judged": snapshot["judged"],
+        "latest_interval_days": snapshot["latest_interval_days"],
+        "rows": [{"email": r["email"], "stall": r["stall"],
+                  "cum_fmt": [_fmt_compact(c) for c in r["cum"]],
+                  "delta_fmt": _fmt_delta(r["latest_delta"], compact=True)}
+                 for r in snapshot["rows"]],
+        "stalled_capped": [{"email": x["email"], "cum_fmt": _fmt_compact(x["cum_at_stall"])}
+                           for x in snapshot["stalled_capped"]],
+        "billed_emerged": [{"email": x["email"], "interval_label": x["interval_label"],
+                            "prev_fmt": _fmt_compact(x["prev_cum"]),
+                            "curr_fmt": _fmt_compact(x["curr_cum"]),
+                            "billed_fmt": _fmt_compact(x["billed"])}
+                           for x in snapshot["billed_emerged"]],
+    }
+
+
 def write_markdown(result: AnalysisResult, path: Path) -> None:
     s = result.summary
     users = _sort_for_display(result.users, "status", STATUS_ORDER, "monthly_saving_usd")
@@ -352,6 +483,13 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
     detail_block = _detail_table_md(users)
     warnings_md = nl.join(f"- {w}" for w in result.warnings) if result.warnings else "- なし"
 
+    # サマリ直後に置く追加セクション（前月からの変化 → 月中の利用推移）。無ければ空文字列で
+    # 従来出力と完全一致（後方互換）
+    extra_sections = ""
+    for block in (_trend_md(result.trend), _snapshot_md(result.snapshot)):
+        if block:
+            extra_sections += nl + block + nl
+
     md = f"""# Claude Team シート最適化レポート — {_scope_label(result)}
 
 ## サマリ
@@ -367,7 +505,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 | 要観察 | {s['n_watching']} 名 |
 | 上限到達疑い（Standard） | {s['n_cap_suspected']} 名 |
 | 判定に使用した月 | {', '.join(s['months_used'])}（ヒステリシス {s['hysteresis_months']} ヶ月） |
-
+{extra_sections}
 ## シート変更推奨
 
 {_user_table_md(changes) if not changes.empty else "該当なし。"}
@@ -471,7 +609,67 @@ _DASHBOARD_CSS = r"""
 """
 
 
-_HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
+# 「前月からの変化」の HTML 断片（正式ダッシュボードのみ）。二重メンテを避けるため
+# テンプレート本体には placeholder を置き、from_string 前に差し込む。
+_TREND_HTML = r"""
+{% if trend %}
+<h2>前月からの変化</h2>
+<div class="card note">
+  <p>比較対象: {{ trend.compare_month }}{% if trend.gap_skipped %}（直前月が欠測のため直前の存在月と比較）{% endif %}</p>
+  <ul>
+    <li>利用開始 {{ trend.started|length }} 名{% if trend.started %}: {% for x in trend.started %}{{ x.email }}（{{ x.amount_fmt }}）{% if not loop.last %}, {% endif %}{% endfor %}{% else %}: なし{% endif %}</li>
+    <li>利用停止 {{ trend.stopped|length }} 名{% if trend.stopped %}: {% for x in trend.stopped %}{{ x.email }}（{{ x.amount_fmt }}）{% if not loop.last %}, {% endif %}{% endfor %}{% else %}: なし{% endif %}</li>
+    <li>実課金の新規発生 {{ trend.new_billed|length }} 名{% if trend.new_billed %}: {% for x in trend.new_billed %}{{ x.email }}（{{ x.amount_fmt }}）{% if not loop.last %}, {% endif %}{% endfor %}{% else %}: なし{% endif %}</li>
+  </ul>
+</div>
+{% if trend.changes %}
+<div class="tablebox"><table>
+<tr><th>主な増減</th><th class="num">前月</th><th class="num">当月</th><th class="num">増減</th></tr>
+{% for c in trend.changes %}
+<tr><td class="user" title="{{ c.email }}">{{ c.email.split('@')[0] }}</td><td class="num">{{ c.prev_fmt }}</td><td class="num">{{ c.curr_fmt }}</td><td class="num">{{ c.delta_fmt }}</td></tr>
+{% endfor %}
+</table></div>
+{% endif %}
+<div class="tablebox"><table>
+<tr><th>月</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">アクティブ</th></tr>
+{% for m in trend.series %}
+<tr><td>{{ m.month }}</td><td class="num">{{ m.api_fmt }}</td><td class="num">{{ m.billed_fmt }}</td><td class="num">{{ m.active }}</td></tr>
+{% endfor %}
+</table></div>
+{% endif %}
+"""
+
+# 「月中の利用推移（スナップショット差分）」の HTML 断片（正式・速報の両ダッシュボードで共有）。
+_SNAPSHOT_HTML = r"""
+{% if snapshot %}
+<h2>月中の利用推移（スナップショット差分）</h2>
+<div class="card note">
+  <p>スナップショット: {{ snapshot.snap_list }}</p>
+  {% if not snapshot.judged %}<p>最新区間が {{ snapshot.latest_interval_days }} 日と短いため停止判定は行っていません。</p>{% endif %}
+</div>
+<div class="tablebox"><table>
+<tr><th>ユーザ</th>{% for l in snapshot.labels %}<th class="num">{{ l }}</th>{% endfor %}<th class="num">最新区間の増分</th><th>判定</th></tr>
+{% for r in snapshot.rows %}
+<tr>
+  <td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td>
+  {% for c in r.cum_fmt %}<td class="num">{{ c }}</td>{% endfor %}
+  <td class="num">{{ r.delta_fmt }}</td>
+  <td>{% if r.stall %}<span class="cap">⚠️停止疑い</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</table></div>
+{% if snapshot.stalled_capped or snapshot.billed_emerged %}
+<div class="card note"><ul>
+{% for x in snapshot.stalled_capped %}<li>{{ x.email }}: 上限停止の可能性。停止時点の累積 {{ x.cum_fmt }} は実効込み量の実測候補。</li>{% endfor %}
+{% for x in snapshot.billed_emerged %}<li>{{ x.email }}: {{ x.interval_label }} で従量課金 {{ x.billed_fmt }} が発生（実効込み量は累積需要 {{ x.prev_fmt }}〜{{ x.curr_fmt }} の間）。</li>{% endfor %}
+</ul></div>
+{% endif %}
+<div class="note">停止は休暇・案件の谷でも起こるため、上限到達の断定には本人確認が必要です。</div>
+{% endif %}
+"""
+
+
+_HTML_TEMPLATE_SRC = r"""<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
@@ -488,7 +686,8 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
   <div class="card"><div class="v">${{ '%.0f' % s.total_api_cost_usd }}</div><div class="l">API換算利用額 /月</div></div>
   <div class="card hl"><div class="v">${{ '%.0f' % s.est_monthly_saving_usd }}</div><div class="l">削減見込み /月（変更推奨 {{ s.n_change_recommended }} 名）</div></div>
 </div>
-
+<!--TREND_SECTION-->
+<!--SNAPSHOT_SECTION-->
 <h2>ユーザ別 API 換算コスト</h2>
 <div class="card">
 {% for u in users_sorted %}
@@ -568,7 +767,12 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 </div>
 
 </div></body></html>
-""")
+"""
+
+_HTML_TEMPLATE = _HTML_ENV.from_string(
+    _HTML_TEMPLATE_SRC.replace("<!--TREND_SECTION-->", _TREND_HTML)
+    .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML)
+)
 
 
 # 速報の一次判断ラベル → 既存 .badge クラス。PREVIEW_ORDER に無いラベルは b-keep に倒す。
@@ -581,7 +785,7 @@ _PREVIEW_BADGE_CLASS = {
 }
 
 
-_PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
+_PREVIEW_HTML_TEMPLATE_SRC = r"""<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
@@ -640,7 +844,7 @@ _PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 </tr>
 {% endfor %}
 </table></div>
-
+<!--SNAPSHOT_SECTION-->
 <h2>注意事項</h2>
 <div class="card note">
   <ul>
@@ -657,7 +861,11 @@ _PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(r"""<!doctype html>
 </div>
 
 </div></body></html>
-""")
+"""
+
+_PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(
+    _PREVIEW_HTML_TEMPLATE_SRC.replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML)
+)
 
 
 def _fmt_compact(v) -> str:
@@ -703,6 +911,7 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
         dashboard_css=_DASHBOARD_CSS,
         scope=_scope_label(result),
         s=result.summary,
+        snapshot=_snapshot_view(result.snapshot),
         users_sorted=users_sorted,
         label_counts=label_counts,
         has_dept=has_dept,
@@ -764,6 +973,8 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         dashboard_css=_DASHBOARD_CSS,
         scope=_scope_label(result),
         s=result.summary,
+        trend=_trend_view(result.trend),
+        snapshot=_snapshot_view(result.snapshot),
         users_sorted=users_sorted,
         group_summaries=group_summaries,
         has_team_summary=any(g["heading"] == "チーム別サマリ" for g in group_summaries),
@@ -823,6 +1034,9 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> dict[str, Pa
         f"{lb} {counts[lb]} 名" for lb in PREVIEW_ORDER if counts.get(lb)
     ) or "対象なし"
     factor = result.days_in_month / result.days_observed
+    # 一次判断テーブルの後に置く月中推移（スナップショット差分）。無ければ空文字列で従来出力と一致
+    snap_md = _snapshot_md(result.snapshot)
+    snap_section = (nl + nl + snap_md) if snap_md else ""
 
     md = f"""# Claude Team シート速報プレビュー — {_scope_label(result)}
 
@@ -848,7 +1062,7 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> dict[str, Pa
 - 遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨
 - ⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）
 - ⚠️従量あり: Standard 等で従量課金が発生（Premium 検討の重要シグナル）
-- 対象外（未割当）: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）
+- 対象外（未割当）: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）{snap_section}
 
 ## 注意事項
 

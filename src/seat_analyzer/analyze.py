@@ -58,6 +58,10 @@ class AnalysisResult:
     warnings: list[str] = field(default_factory=list)
     months_used: list[str] = field(default_factory=list)
     sources: dict = field(default_factory=dict)
+    # 前月からの変化・月次推移（初月は None）。report が「## 前月からの変化」を描画する
+    trend: dict | None = None
+    # 月中の利用推移（同一月の複数スナップショット差分。1つ以下なら None）
+    snapshot: dict | None = None
 
 
 def _seat_cost(api_cost: float, seat: str, scenario: str, cfg: dict) -> float:
@@ -123,6 +127,183 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
     return grouped.reset_index()
 
 
+def _prev_calendar_month(month: str) -> str:
+    """YYYY-MM の暦上の直前月を返す（欠月判定用）。"""
+    year, mon = (int(x) for x in month.split("-"))
+    return f"{year - 1}-12" if mon == 1 else f"{year}-{mon - 1:02d}"
+
+
+def _trend_thresholds(cfg: dict) -> dict:
+    """「前月からの変化」の表示閾値（config.yaml > trend。無くてもデフォルトで動く）。"""
+    t = cfg.get("trend") or {}
+    return {
+        "idle_usd": float(t.get("idle_usd", 1.0)),
+        "min_activity_usd": float(t.get("min_activity_usd", 10.0)),
+        "change_min_usd": float(t.get("change_min_usd", 50.0)),
+        "top_changes": int(t.get("top_changes", 5)),
+    }
+
+
+def _compute_trend(monthly: dict[str, pd.DataFrame], months_used: list[str],
+                   member_emails: set[str], cfg: dict) -> dict | None:
+    """前月（欠月は飛ばした直前の存在月）との比較と月次推移を計算する。
+
+    monthly はユーザ別月次集計（api_cost / billed）。追加のストレージは持たず、
+    ロード済みデータから毎回計算する（input/ の CSV が恒久アーカイブという前提）。
+    直前の存在月が無い初月は None（report 側でセクションを出さない）。
+    """
+    if len(months_used) < 2:
+        return None
+    th = _trend_thresholds(cfg)
+    month, prev = months_used[-1], months_used[-2]
+    m_df = monthly[month].set_index("email")
+    p_df = monthly[prev].set_index("email")
+    emails = sorted(set(m_df.index) | set(p_df.index) | set(member_emails))
+
+    def _val(df: pd.DataFrame, email: str, col: str) -> float:
+        return float(df.loc[email, col]) if email in df.index else 0.0
+
+    started, stopped, new_billed, changes = [], [], [], []
+    for email in emails:
+        d_m, d_p = _val(m_df, email, "api_cost"), _val(p_df, email, "api_cost")
+        b_m, b_p = _val(m_df, email, "billed"), _val(p_df, email, "billed")
+        is_started = d_p < th["idle_usd"] and d_m >= th["min_activity_usd"]
+        is_stopped = d_p >= th["min_activity_usd"] and d_m < th["idle_usd"]
+        if is_started:
+            started.append({"email": email, "amount": round(d_m, 2)})
+        if is_stopped:
+            stopped.append({"email": email, "amount": round(d_p, 2)})
+        if b_p <= 0.0 and b_m > 0.0:
+            new_billed.append({"email": email, "amount": round(b_m, 2)})
+        # 利用開始/停止は主な増減に重複掲載しない（別項目で列挙済み）
+        if not is_started and not is_stopped and abs(d_m - d_p) >= th["change_min_usd"]:
+            changes.append({"email": email, "prev": round(d_p, 2),
+                            "curr": round(d_m, 2), "delta": round(d_m - d_p, 2)})
+    started.sort(key=lambda x: -x["amount"])
+    stopped.sort(key=lambda x: -x["amount"])
+    new_billed.sort(key=lambda x: -x["amount"])
+    changes.sort(key=lambda c: -abs(c["delta"]))
+
+    # 月次推移は直近6ヶ月まで（アクティブ = 需要が idle_usd 以上のユーザ数）
+    series = []
+    for m in months_used[-6:]:
+        df = monthly[m]
+        series.append({
+            "month": m,
+            "api": round(float(df["api_cost"].sum()), 2),
+            "billed": round(float(df["billed"].sum()), 2),
+            "active": int((df["api_cost"] >= th["idle_usd"]).sum()),
+        })
+
+    return {
+        "compare_month": prev,
+        "gap_skipped": prev != _prev_calendar_month(month),
+        "started": started,
+        "stopped": stopped,
+        "new_billed": new_billed,
+        "changes": changes[: th["top_changes"]],
+        "series": series,
+    }
+
+
+def _snapshot_thresholds(cfg: dict) -> dict:
+    """スナップショット差分の閾値（config.yaml > snapshot_diff。無くてもデフォルトで動く）。"""
+    s = cfg.get("snapshot_diff") or {}
+    return {
+        "stall_max_delta_usd": float(s.get("stall_max_delta_usd", 1.0)),
+        "min_cumulative_usd": float(s.get("min_cumulative_usd", 10.0)),
+        "min_interval_days": int(s.get("min_interval_days", 3)),
+    }
+
+
+def _compute_snapshot_diff(input_dir: Path, month: str, cfg: dict,
+                           seat_by_email: dict) -> tuple[dict | None, list[str]]:
+    """同一月の月初開始スナップショット（2つ以上）の差分から月中推移・停止を検出する。
+
+    需要基準は computed（tokens×単価）固定。区間増分が止まった Standard ユーザや、
+    込み量を消化して実課金が発生したユーザを、allowance 実測の材料として抽出する。
+    スナップショットが1つ以下なら (None, 除外警告) を返す（既存出力と同一）。
+    """
+    entries, excluded = ingest.spend_snapshots(input_dir, month)
+    warnings = [f"{name}: 月初開始でないため差分分析から除外" for name in excluded] \
+        if len(entries) >= 2 else []
+    if len(entries) < 2:
+        return None, warnings
+
+    th = _snapshot_thresholds(cfg)
+    snaps = []
+    for period, path in entries:
+        df = pricing.add_computed_cost(ingest.load_spend_file(path, month, cfg), cfg)
+        u = df[df["email"].str.contains("@", na=False)]
+        cum = {e: float(v) for e, v in u.groupby("email")["computed_cost_usd"].sum().items()}
+        if "net_spend" in u.columns:
+            net = u.assign(_n=u["net_spend"].fillna(0.0)).groupby("email")["_n"].sum()
+            billed = {e: float(v) for e, v in net.items()}
+        else:
+            billed = {}
+        snaps.append({"label": f"〜{period.end:%m-%d}", "days": period.days,
+                      "end": period.end, "cum": cum, "billed": billed})
+
+    labels = [s["label"] for s in snaps]
+    emails = sorted({e for s in snaps for e in s["cum"]})
+    latest_interval_days = (snaps[-1]["end"] - snaps[-2]["end"]).days
+    judged = latest_interval_days >= th["min_interval_days"]
+
+    rows, decreased = [], False
+    for email in emails:
+        cums = [s["cum"].get(email, 0.0) for s in snaps]
+        latest_delta = cums[-1] - cums[-2]
+        if latest_delta < -0.01:
+            decreased = True
+        stall = (judged and latest_delta < th["stall_max_delta_usd"]
+                 and cums[-1] >= th["min_cumulative_usd"])
+        rows.append({
+            "email": email,
+            "cum": [round(c, 2) for c in cums],
+            "latest_delta": round(latest_delta, 2),
+            "stall": stall,
+            "seat": seat_by_email.get(email, "unknown"),
+            "billed_latest": round(snaps[-1]["billed"].get(email, 0.0), 2),
+        })
+    rows.sort(key=lambda r: -r["cum"][-1])
+    if decreased:
+        warnings.append("累積需要が減少しています（ファイルの取り違えの可能性）")
+
+    # 停止疑い ∩ Standard ∩ 実課金ゼロ: 停止時点の累積が実効込み量の実測候補
+    stalled_capped = [
+        {"email": r["email"], "cum_at_stall": r["cum"][-1]}
+        for r in rows if r["stall"] and r["seat"] == "standard" and r["billed_latest"] <= 0.0
+    ]
+
+    # 実課金が 0→正 に転じた最初の区間（実効込み量の消化ポイント）
+    billed_emerged = []
+    for email in emails:
+        bills = [s["billed"].get(email, 0.0) for s in snaps]
+        cums = [s["cum"].get(email, 0.0) for s in snaps]
+        for i in range(1, len(snaps)):
+            if bills[i - 1] <= 0.0 and bills[i] > 0.0:
+                billed_emerged.append({
+                    "email": email,
+                    "interval_label": f"{snaps[i - 1]['label']}→{snaps[i]['label']}",
+                    "prev_cum": round(cums[i - 1], 2),
+                    "curr_cum": round(cums[i], 2),
+                    "billed": round(bills[i], 2),
+                })
+                break
+
+    snapshot = {
+        "labels": labels,
+        "snaps": [{"label": s["label"], "days": s["days"]} for s in snaps],
+        "latest_interval_days": latest_interval_days,
+        "judged": judged,
+        "min_interval_days": th["min_interval_days"],
+        "rows": rows,
+        "stalled_capped": stalled_capped,
+        "billed_emerged": billed_emerged,
+    }
+    return snapshot, warnings
+
+
 def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict, sources: dict) -> None:
     """任意ファイル members-info.csv の department/team/role/note を email で users に付与する。
 
@@ -156,10 +337,17 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             f"{month} のスペンドレポートがありません。存在する月: {available or 'なし'}"
         )
 
+    # 対象月に月初開始スナップショットが2つ以上あるなら月中推移の差分分析を発動する。
+    # 主データの採用は現行どおり（期間の広い方）で、重複警告の文言だけ差し替える。
+    snap_entries, _ = ingest.spend_snapshots(input_dir, month)
+    snapshot_active = len(snap_entries) >= 2
+
     raw: dict[str, pd.DataFrame] = {}
     sources: dict = {"spend": {}}
     for m in months_used:
-        result = ingest.load_spend(input_dir, m, cfg)
+        result = ingest.load_spend(
+            input_dir, m, cfg, snapshot_active=(snapshot_active and m == month)
+        )
         warnings.extend(result.warnings)
         sources["spend"][m] = str(result.source)
         raw[m] = pricing.add_computed_cost(result.df, cfg)
@@ -217,6 +405,12 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
     target = monthly[month].set_index("email")
     emails = sorted(set(members["email"]) | set(target.index))
     seat_by_email = members.set_index("email")["seat_type"].to_dict()
+
+    # 前月からの変化・月次推移（ロード済み monthly から毎回計算・初月は None）
+    trend = _compute_trend(monthly, months_used, set(members["email"]), cfg)
+    # 月中の利用推移（同一月の複数スナップショット差分・1つ以下なら None）
+    snapshot, snap_warns = _compute_snapshot_diff(input_dir, month, cfg, seat_by_email)
+    warnings.extend(snap_warns)
 
     decision_cfg = cfg["decision"]
     n_hyst = int(decision_cfg["hysteresis_months"])
@@ -370,6 +564,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
     return AnalysisResult(
         month=month, users=users, summary=summary, org=org,
         warnings=warnings, months_used=months_used, sources=sources,
+        trend=trend, snapshot=snapshot,
     )
 
 
@@ -460,6 +655,8 @@ class PreviewResult:
     org: str | None = None
     warnings: list[str] = field(default_factory=list)
     sources: dict = field(default_factory=dict)
+    # 月中の利用推移（同一月の複数スナップショット差分。1つ以下なら None）
+    snapshot: dict | None = None
 
 
 def _preview_label(seat: str, api_obs: float, api_proj: float, cfg: dict,
@@ -500,7 +697,11 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
         raise ValueError(f"--days は 1〜{days_in_month}（{month} の暦日数）で指定してください")
     factor = days_in_month / days_observed
 
-    spend_result = ingest.load_spend(input_dir, month, cfg)
+    # 月初開始スナップショットが2つ以上あれば月中推移の差分分析を発動する（重複警告の文言も変える）
+    snap_entries, _ = ingest.spend_snapshots(input_dir, month)
+    snapshot_active = len(snap_entries) >= 2
+
+    spend_result = ingest.load_spend(input_dir, month, cfg, snapshot_active=snapshot_active)
     warnings.extend(spend_result.warnings)
     sources = {"spend": {month: str(spend_result.source)}}
     df = pricing.add_computed_cost(spend_result.df, cfg)
@@ -519,6 +720,10 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     members = members_result.df
     sources["members"] = str(members_result.source)
     seat_by_email = members.set_index("email")["seat_type"].to_dict()
+
+    # 月中の利用推移（同一月の複数スナップショット差分・1つ以下なら None）
+    snapshot, snap_warns = _compute_snapshot_diff(input_dir, month, cfg, seat_by_email)
+    warnings.extend(snap_warns)
 
     seat_diff = float(cfg["seats"]["premium"]["price_usd"]) - float(cfg["seats"]["standard"]["price_usd"])
     min_saving = float(cfg["decision"]["buffer_ratio"]) * seat_diff
@@ -562,5 +767,5 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     return PreviewResult(
         month=month, users=users, summary=summary,
         days_observed=days_observed, days_in_month=days_in_month,
-        org=org, warnings=warnings, sources=sources,
+        org=org, warnings=warnings, sources=sources, snapshot=snapshot,
     )

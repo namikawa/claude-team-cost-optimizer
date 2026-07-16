@@ -5,6 +5,10 @@
 組織ごとに input/<組織名>/{spend,members,code-analytics}/ を作る
 （code-analytics は任意のため org-b では省略している）。
 
+org-b には 2026-07 の「同一月の複数スナップショット」（月初〜05 / 〜13 / 〜31 の
+累積エクスポート）も生成し、月中の利用推移（スナップショット差分）機能の
+デモに使えるようにしている。値はすべて架空。
+
     uv run python examples/generate_sample_data.py
 """
 
@@ -74,6 +78,36 @@ USERS_ORG_B = [
 
 # members に載っていない利用者（シート不明の検知確認用）
 ORPHANS_ORG_A = [("guest@example.co.jp", {"2026-06": 15.0}, "claude-sonnet-4-6")]
+
+# org-b 2026-07 の月中スナップショット（累積エクスポート）。
+# 月初〜05 / 〜13 / 〜31 の3時点で、各ユーザの累積 API 換算需要（computed）と
+# 累積実課金（net_spend）を明示する。差分分析で以下を再現する架空値:
+#   - shimizu: 〜13 以降ほぼ横ばい（停止疑い・Standard 実課金0 → 実効込み量の実測候補）
+#   - abe: 累積が小さいまま横ばい（遊休であり停止疑いにはしない＝閾値の区別）
+#   - mori / ikeda: 途中の区間で実課金が 0→正 に転じる（込み量の消化ポイント）
+# ファイル名は claude.ai の期間付きダウンロード名を模した range 命名にする。
+SNAPSHOT_UUID = "0b1c2d3e-4f56-4789-a012-3456789abcde"
+# ファイル名の日付サフィックス（月初開始の累積） -> [(email, 累積需要, 累積実課金, model)]
+SNAPSHOTS_ORG_B = {
+    "2026-07-01-to-2026-07-05": [
+        ("mori@example.co.jp",    80.0,  0.0, "claude-opus-4-8"),
+        ("ikeda@example.co.jp",   60.0,  0.0, "claude-opus-4-8"),
+        ("shimizu@example.co.jp", 40.0,  0.0, "claude-sonnet-4-6"),
+        ("abe@example.co.jp",      5.0,  0.0, "claude-haiku-4-5"),
+    ],
+    "2026-07-01-to-2026-07-13": [
+        ("mori@example.co.jp",   210.0,  0.0, "claude-opus-4-8"),
+        ("ikeda@example.co.jp",  150.0, 20.0, "claude-opus-4-8"),
+        ("shimizu@example.co.jp", 45.0,  0.0, "claude-sonnet-4-6"),
+        ("abe@example.co.jp",      9.0,  0.0, "claude-haiku-4-5"),
+    ],
+    "2026-07-01-to-2026-07-31": [
+        ("mori@example.co.jp",   470.0, 220.0, "claude-opus-4-8"),
+        ("ikeda@example.co.jp",  260.0,  90.0, "claude-opus-4-8"),
+        ("shimizu@example.co.jp", 45.4,   0.0, "claude-sonnet-4-6"),
+        ("abe@example.co.jp",      9.0,   0.0, "claude-haiku-4-5"),
+    ],
+}
 
 # 部署・チーム・職種・備考のマッピング（任意ファイル members-info.csv のデモ）。
 # 組織階層は 部署 > チーム。日本語ヘッダ（email,部署,チーム,職種,備考）で日本語
@@ -157,6 +191,33 @@ def write_spend(org: str, month: str, users: list, orphans: list) -> None:
     print(f"wrote {path} ({len(rows)} rows)")
 
 
+def write_spend_snapshot(org: str, date_suffix: str, entries: list) -> None:
+    """月初開始の累積スナップショット1件を range 命名の CSV で書く（差分分析デモ用）。"""
+    name = f"spend-report-{SNAPSHOT_UUID}-{date_suffix}.csv"
+    path = BASE / org / "spend" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for email, cum_cost, cum_net, model in entries:
+        p_tok, c_tok = tokens_for_cost(cum_cost, model)
+        rows.append({
+            "Email": email,
+            "Account UUID": f"uuid-{hashlib.md5(email.encode()).hexdigest()[:8]}",
+            "Product": "Claude Code",
+            "Model": model,
+            "Model Family": model.rsplit("-", 2)[0],
+            "Request Count": max(1, int(cum_cost * 4)),
+            "Prompt Tokens": p_tok,
+            "Completion Tokens": c_tok,
+            "Total Gross Spend USD": f"{cum_net:.4f}",
+            "Total Net Spend USD": f"{cum_net:.4f}",
+        })
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"wrote {path} ({len(rows)} rows)")
+
+
 def write_members(org: str, month: str, users: list) -> None:
     path = BASE / org / "members" / f"members_{month}.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,3 +261,8 @@ if __name__ == "__main__":
             write_code_analytics(org, "2026-06", cc_stats)
     # 任意入力デモ: 部署・職種・備考は org-a のみ（org-b は生成しない）
     write_members_info("org-a", MEMBERS_INFO_ORG_A)
+
+    # org-b の 2026-07: 月中スナップショット（差分分析デモ）＋対応する members
+    for date_suffix, entries in SNAPSHOTS_ORG_B.items():
+        write_spend_snapshot("org-b", date_suffix, entries)
+    write_members("org-b", "2026-07", USERS_ORG_B)

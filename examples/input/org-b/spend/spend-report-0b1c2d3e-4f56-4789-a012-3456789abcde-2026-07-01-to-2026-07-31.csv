@@ -1,0 +1,5 @@
+Email,Account UUID,Product,Model,Model Family,Request Count,Prompt Tokens,Completion Tokens,Total Gross Spend USD,Total Net Spend USD
+mori@example.co.jp,uuid-83567d9d,Claude Code,claude-opus-4-8,claude-opus,1880,62666666,6266666,220.0000,220.0000
+ikeda@example.co.jp,uuid-14c271d4,Claude Code,claude-opus-4-8,claude-opus,1040,34666666,3466666,90.0000,90.0000
+shimizu@example.co.jp,uuid-6d746156,Claude Code,claude-sonnet-4-6,claude-sonnet,181,10088888,1008888,0.0000,0.0000
+abe@example.co.jp,uuid-39e417ae,Claude Code,claude-haiku-4-5,claude-haiku,36,6000000,600000,0.0000,0.0000
