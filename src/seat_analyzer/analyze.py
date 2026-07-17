@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +49,33 @@ LABEL_EXCLUDED = "対象外（未割当）"
 # 速報モード: 観測需要がこの額 [USD] 未満なら「遊休候補」（数日〜半月でこの水準は実質未使用）
 PREVIEW_IDLE_OBS_USD = 1.0
 
+# クレジットモード（追加クレジット=usage credits の有効/無効）。値は report.py の表示と結合。
+CREDIT_ENABLED = "enabled"    # κ>0 or 無制限、または実課金の観測から自動確定
+CREDIT_DISABLED = "disabled"  # κ==0
+CREDIT_UNKNOWN = "unknown"    # 未設定かつ実課金の観測なし
+
+
+def credits_mode(credit_limit_usd: float, billed_ever: bool) -> str:
+    """ユーザの追加クレジット（usage credits）モードを導出する。
+
+    κ>0 or inf → enabled / κ==0 → disabled /
+    κ=NaN（未設定）→ 当月までに実課金が観測されていれば enabled と自動確定（無効なら
+    課金は構造的に発生し得ないため論理的に確実）、それ以外は unknown。
+    """
+    kappa = credit_limit_usd
+    if kappa is not None and not pd.isna(kappa):
+        return CREDIT_ENABLED if kappa > 0 else CREDIT_DISABLED
+    return CREDIT_ENABLED if billed_ever else CREDIT_UNKNOWN
+
+
+def _usage_credits_cfg(cfg: dict) -> dict:
+    """追加クレジットの表示閾値（config.yaml > usage_credits。無くてもデフォルトで動く）。"""
+    u = cfg.get("usage_credits") or {}
+    return {
+        "cap_tolerance_usd": float(u.get("cap_tolerance_usd", 5.0)),
+        "grant_suggested_cap_usd": float(u.get("grant_suggested_cap_usd", 150)),
+    }
+
 
 @dataclass
 class AnalysisResult:
@@ -66,6 +94,10 @@ class AnalysisResult:
     code_diff: dict | None = None
     # 月中のメンバー変動（members 単日スナップショット差分。1つ以下なら None）
     member_changes: dict | None = None
+    # 込み枠の実測（E = API換算需要 − 実課金）。実課金発生ユーザがいなければ None
+    e_distribution: dict | None = None
+    # 追加クレジット付与候補（昇格前に上限つきクレジットで課金実測を薦めるユーザ）
+    grant_candidates: list = field(default_factory=list)
 
 
 def _seat_cost(api_cost: float, seat: str, scenario: str, cfg: dict) -> float:
@@ -261,13 +293,16 @@ def _compute_snapshot_diff(input_dir: Path, month: str, cfg: dict,
             decreased = True
         stall = (judged and latest_delta < th["stall_max_delta_usd"]
                  and cums[-1] >= th["min_cumulative_usd"])
+        # 最新区間の実課金増分（追加クレジット到達予測で「現在の課金ペース」に使う）
+        bills = [s["billed"].get(email, 0.0) for s in snaps]
         rows.append({
             "email": email,
             "cum": [round(c, 2) for c in cums],
             "latest_delta": round(latest_delta, 2),
             "stall": stall,
             "seat": seat_by_email.get(email, "unknown"),
-            "billed_latest": round(snaps[-1]["billed"].get(email, 0.0), 2),
+            "billed_latest": round(bills[-1], 2),
+            "billed_delta": round(bills[-1] - bills[-2], 2),
         })
     rows.sort(key=lambda r: -r["cum"][-1])
     if decreased:
@@ -308,18 +343,68 @@ def _compute_snapshot_diff(input_dir: Path, month: str, cfg: dict,
     return snapshot, warnings
 
 
+def _credit_display(kappa) -> str:
+    """追加クレジット上限 κ の表示文字列（未設定/無効/無制限/$金額）。"""
+    if kappa is None or pd.isna(kappa):
+        return "未設定"
+    if math.isinf(kappa):
+        return "無制限"
+    if kappa == 0:
+        return "無効"
+    return f"${kappa:,.0f}" if kappa >= 100 else f"${kappa:,.2f}"
+
+
+def _kappa_equal(a, b) -> bool:
+    """κ の等価判定（NaN 同士は等しい・inf 同士は等しいとみなす）。"""
+    a_nan = a is None or pd.isna(a)
+    b_nan = b is None or pd.isna(b)
+    if a_nan or b_nan:
+        return a_nan and b_nan
+    return a == b
+
+
+def _compute_credit_changes(input_dir: Path, month: str, cfg: dict) -> tuple[list[dict], list[dict]]:
+    """対象月の members-info 日付スナップショット（2つ以上）の隣接差分から κ 変更を検出する。
+
+    戻り値は (credit_changes, credit_snaps)。1つ以下なら ([], []) を返す。
+    """
+    entries = ingest.member_info_snapshots(input_dir, month)
+    if len(entries) < 2:
+        return [], []
+    snaps = []
+    for period, path in entries:
+        df = ingest.load_members_info_file(path, cfg)
+        kappa_by = {e: k for e, k in zip(df["email"], df["credit_limit_usd"], strict=False)}
+        snaps.append({"label": f"{period.start:%m-%d}", "kappa": kappa_by})
+    changes = []
+    for i in range(1, len(snaps)):
+        prev, curr = snaps[i - 1], snaps[i]
+        interval_label = f"{prev['label']}→{curr['label']}"
+        for email in sorted(set(prev["kappa"]) & set(curr["kappa"])):
+            if not _kappa_equal(prev["kappa"][email], curr["kappa"][email]):
+                changes.append({
+                    "email": email,
+                    "from": _credit_display(prev["kappa"][email]),
+                    "to": _credit_display(curr["kappa"][email]),
+                    "interval_label": interval_label,
+                })
+    return changes, [{"label": s["label"]} for s in snaps]
+
+
 def _compute_member_changes(input_dir: Path, month: str, cfg: dict) -> tuple[dict | None, list[str]]:
     """対象月の単日スナップショット members（2つ以上）の隣接差分から月中の変動を検出する。
 
-    シート変更・追加・削除を時系列順に列挙する。変動が1件も無くてもセクションは出す
-    （スナップショットを取って変動が無かったこと自体に情報価値があるため）。
-    スナップショットが1つ以下なら (None, []) を返す（既存出力と同一）。
+    シート変更・追加・削除を時系列順に列挙し、members-info の日付スナップショットが2つ以上
+    あれば追加クレジット上限 κ の変更も併記する。変動が1件も無くてもセクションは出す
+    （スナップショットを取って変動が無かったこと自体に情報価値があるため）。members・members-info
+    のどちらのスナップショットも1つ以下なら (None, []) を返す（既存出力と同一）。
 
     判定ロジック・ヒステリシスには一切影響しない表示専用の情報。シート変更が1件以上
     あれば、当月判定は最新スナップショット時点のシートで行う旨の参考警告を返す。
     """
     entries = ingest.member_snapshots(input_dir, month)
-    if len(entries) < 2:
+    credit_changes, credit_snaps = _compute_credit_changes(input_dir, month, cfg)
+    if len(entries) < 2 and not credit_snaps:
         return None, []
 
     snaps = []
@@ -353,12 +438,20 @@ def _compute_member_changes(input_dir: Path, month: str, cfg: dict) -> tuple[dic
             f"月中にシート変更を検出した ユーザ {len(emails)} 名: {emails[:5]}"
             "（当月の損益分岐判定は最新スナップショット時点のシートで行うため参考値）"
         )
+    if credit_changes:
+        emails = [c["email"] for c in credit_changes]
+        warnings.append(
+            f"月中に追加クレジット上限の変更を検出 {len(emails)} 名: {emails[:5]}"
+            "（変更月の課金は部分月のため、上限に基づく判定は翌月から行ってください）"
+        )
 
     return {
         "snaps": [{"label": s["label"]} for s in snaps],
         "seat_changes": seat_changes,
         "joined": joined,
         "left": left,
+        "credit_snaps": credit_snaps,
+        "credit_changes": credit_changes,
     }, warnings
 
 
@@ -430,17 +523,20 @@ def _attach_loc_corroboration(snapshot: dict | None, code_diff: dict | None) -> 
         x["loc_note"] = note_for(x["email"])
 
 
-def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict, sources: dict) -> None:
-    """任意ファイル members-info.csv の department/team/role/note を email で users に付与する。
+def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict,
+                        sources: dict, month: str | None = None) -> list[str]:
+    """任意ファイル members-info の department/team/role/note/credit_limit_usd を users に付与する。
 
-    未登録メンバーは空文字列。members-info にだけ居るメールは行を追加しない。
-    ファイルが読めた場合のみ sources["members_info"] にパスを記録する。
+    未登録メンバーは空文字列（credit_limit_usd は NaN）。members-info にだけ居るメールは
+    行を追加しない。ファイルが読めた場合のみ sources["members_info"] にパスを記録し、
+    ロード時の警告（スナップショット解決・不正な上限値）を返す。
     """
-    info_result = ingest.load_members_info(input_dir, cfg)
+    info_result = ingest.load_members_info(input_dir, cfg, month=month)
     if info_result is None:
         for col in ("department", "team", "role", "note"):
             users[col] = ""
-        return
+        users["credit_limit_usd"] = float("nan")
+        return []
     sources["members_info"] = str(info_result.source)
     info = info_result.df.set_index("email")
     for col in ("department", "team", "role", "note"):
@@ -448,6 +544,205 @@ def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict, sources
     # 部署・チームは兼務（複数所属）を正規化した表示文字列で保持する（集計時に再分割）
     for col in ("department", "team"):
         users[col] = users[col].map(ingest.normalize_affiliations)
+    if "credit_limit_usd" in info.columns:
+        users["credit_limit_usd"] = users["email"].map(info["credit_limit_usd"]).astype(float)
+    else:
+        users["credit_limit_usd"] = float("nan")
+    return info_result.warnings
+
+
+def _attach_credits_mode(users: pd.DataFrame, billed_ever: set[str]) -> None:
+    """credit_limit_usd と billed_ever から credits_mode 列を付け、enabled の cap_suspected を抑制する。
+
+    enabled のユーザは実課金がセンサーとして働く（billed=0 なら枠内と判断できる）ため
+    上限到達フラグ（cap_suspected）を立てない。disabled / unknown は現行どおり。
+    """
+    users["credits_mode"] = [
+        credits_mode(k, e in billed_ever)
+        for k, e in zip(users["credit_limit_usd"], users["email"], strict=False)
+    ]
+    if "cap_suspected" in users.columns:
+        users.loc[users["credits_mode"] == CREDIT_ENABLED, "cap_suspected"] = False
+
+
+def _credit_shown(users: pd.DataFrame) -> bool:
+    """members-info に credit_limit_usd の非空値が1つでもあるか（構成行・付与候補の表示可否）。"""
+    return "credit_limit_usd" in users.columns and bool(users["credit_limit_usd"].notna().any())
+
+
+def _credit_summary(users: pd.DataFrame) -> dict:
+    """追加クレジットの構成（サマリ行のデータ）。非空の credit 値が無ければ credit_shown=False。"""
+    if not _credit_shown(users):
+        return {"credit_shown": False}
+    modes = users["credits_mode"]
+    caps = users.loc[modes == CREDIT_ENABLED, "credit_limit_usd"]
+    n_unlimited = int(caps.map(lambda v: pd.notna(v) and math.isinf(v)).sum())
+    cap_total = float(caps.map(lambda v: v if (pd.notna(v) and not math.isinf(v)) else 0.0).sum())
+    return {
+        "credit_shown": True,
+        "credit_enabled_n": int((modes == CREDIT_ENABLED).sum()),
+        "credit_disabled_n": int((modes == CREDIT_DISABLED).sum()),
+        "credit_unknown_n": int((modes == CREDIT_UNKNOWN).sum()),
+        "credit_unlimited_n": n_unlimited,
+        "credit_cap_total_usd": round(cap_total, 2),
+    }
+
+
+def _compute_e_distribution(users: pd.DataFrame, cfg: dict) -> dict | None:
+    """実課金発生ユーザの E（=API換算需要 − 実課金）をシート種別ごとに集計する。
+
+    E は各ユーザが込み枠から実際に引き出せた量の実測。billers（実課金>0）がいなければ None。
+    cost_basis=computed 前提（net_spend 基準では需要=課金となり E が意味を持たない）。
+    シート種別ごとに config の allowance（mid）との倍率も添える（キャリブレーションの補助線）。
+    """
+    billers = users[users["billed_extra_usd"].fillna(0.0) > 0.0].copy()
+    if billers.empty:
+        return None
+    billers["_e"] = billers["api_cost_usd"].fillna(0.0) - billers["billed_extra_usd"].fillna(0.0)
+    groups = []
+    for seat in ("premium", "standard", "unknown", "unassigned"):
+        g = billers[billers["current_seat"] == seat]
+        if g.empty:
+            continue
+        rows = [
+            {"email": r["email"], "demand": round(float(r["api_cost_usd"]), 2),
+             "billed": round(float(r["billed_extra_usd"]), 2), "e": round(float(r["_e"]), 2)}
+            for _, r in g.sort_values("_e", ascending=False).iterrows()
+        ]
+        es = g["_e"]
+        median = round(float(es.median()), 2)
+        # allowance が定義されたシート（standard/premium）のみ mid との倍率を出す
+        seat_cfg = cfg["seats"].get(seat)
+        allowance_mid = float(seat_cfg["allowance_usd"]["mid"]) if seat_cfg else None
+        ratio = round(median / allowance_mid, 1) if allowance_mid else None
+        groups.append({
+            "seat": seat, "rows": rows, "count": int(len(g)),
+            "median": median,
+            "min": round(float(es.min()), 2),
+            "max": round(float(es.max()), 2),
+            "allowance_mid": allowance_mid, "ratio": ratio,
+        })
+    return {"groups": groups}
+
+
+def _grant_candidates(users: pd.DataFrame, upgrade_mask: pd.Series, cfg: dict,
+                      demand_col: str = "api_cost_usd") -> list[dict]:
+    """付与候補: credits_mode が disabled/unknown かつ 昇格方向のユーザ。
+
+    upgrade_mask は呼び出し側で作る昇格方向の真偽列（正式=拘束前の純モデル判定で premium、
+    速報=Premium検討/判断保留）。各候補に mid シナリオのモデル超過見込み
+    max(0, 需要 − Standard allowance(mid)) を added として持たせ、その降順で返す
+    （超過見込みが大きいほど付与の優先度が高い）。
+    """
+    if not _credit_shown(users):
+        return []
+    allowance_mid = float(cfg["seats"]["standard"]["allowance_usd"]["mid"])
+    mask = users["credits_mode"].isin([CREDIT_DISABLED, CREDIT_UNKNOWN]) \
+        & (users["current_seat"] == "standard") & upgrade_mask
+    cands = [
+        {"email": r["email"], "mode": r["credits_mode"],
+         "added": round(max(0.0, float(r[demand_col]) - allowance_mid), 2)}
+        for _, r in users[mask].iterrows()
+    ]
+    cands.sort(key=lambda c: -c["added"])
+    return cands
+
+
+def _credit_integrity_warnings(users: pd.DataFrame, cfg: dict, billed_col: str) -> list[str]:
+    """整合性検証の警告: (a) 実課金が上限 κ 超過（上限値が古い）、(b) κ==0 なのに課金発生。"""
+    if "credit_limit_usd" not in users.columns:
+        return []
+    tol = _usage_credits_cfg(cfg)["cap_tolerance_usd"]
+    over_cap, disabled_billed = [], []
+    for _, r in users.iterrows():
+        kappa = r["credit_limit_usd"]
+        billed = float(r[billed_col] or 0.0)
+        if pd.isna(kappa):
+            continue
+        if kappa == 0.0:
+            if billed > 0.0:
+                disabled_billed.append(r["email"])
+        elif not math.isinf(kappa) and billed > kappa + tol:
+            over_cap.append(r["email"])
+    warnings = []
+    if over_cap:
+        warnings.append(
+            f"追加クレジット: 実課金が上限 κ を超過 {len(over_cap)} 名: {over_cap[:10]}"
+            "（members-info の上限値が実態より古い可能性）"
+        )
+    if disabled_billed:
+        warnings.append(
+            f"追加クレジット: 無効（κ=0）と記載されているが課金が発生 {len(disabled_billed)} 名: "
+            f"{disabled_billed[:10]}（記入ミス or 月中の設定変更）"
+        )
+    return warnings
+
+
+def _credit_reached_emails(users: pd.DataFrame, cfg: dict, billed_col: str) -> list[str]:
+    """上限到達（billed ≥ κ − tolerance）の enabled・有限 κ ユーザの一覧。"""
+    if "credit_limit_usd" not in users.columns:
+        return []
+    tol = _usage_credits_cfg(cfg)["cap_tolerance_usd"]
+    reached = []
+    for _, r in users.iterrows():
+        kappa = r["credit_limit_usd"]
+        if pd.isna(kappa) or math.isinf(kappa) or kappa <= 0.0:
+            continue
+        if float(r[billed_col] or 0.0) >= kappa - tol:
+            reached.append(r["email"])
+    return reached
+
+
+def _credit_reach_preview(users: pd.DataFrame, days_observed: int, days_in_month: int,
+                          cfg: dict, snapshot: dict | None = None) -> dict | None:
+    """速報の追加クレジット残額ブロック（enabled・有限 κ・実課金>0 のユーザ）。
+
+    到達済み（billed ≥ κ − tolerance）は「⚠️上限到達」。未到達の到達予測は次のレートで外挿:
+      - スナップショットが2つ以上あるユーザ: 最新区間の課金増分 ÷ 区間日数を現在レートとし、
+        観測末日 + 残額/現在レート（区間レートが 0 なら予測せず None）
+      - 無ければ月初からの平均ペース（billed / days_observed）で外挿
+    月内に到達しない見込みなら None。課金は非線形（込み枠消化後にのみ発生）なので予測は目安。
+    対象ユーザがいなければ None。
+    """
+    tol = _usage_credits_cfg(cfg)["cap_tolerance_usd"]
+    interval_days = snapshot.get("latest_interval_days", 0) if snapshot else 0
+    # email → 最新区間の課金増分（スナップショットがあるユーザのみ）
+    billed_delta = {r["email"]: float(r.get("billed_delta", 0.0))
+                    for r in (snapshot.get("rows", []) if snapshot else [])}
+    rows = []
+    for _, r in users.iterrows():
+        if r.get("credits_mode") != CREDIT_ENABLED:
+            continue
+        kappa = r["credit_limit_usd"]
+        if pd.isna(kappa) or math.isinf(kappa) or kappa <= 0.0:
+            continue
+        billed = float(r["billed_observed_usd"] or 0.0)
+        if billed <= 0.0:
+            continue
+        remaining = float(kappa) - billed
+        reached = billed >= kappa - tol
+        eta_day = None
+        if not reached:
+            if r["email"] in billed_delta and interval_days > 0:
+                # 直近区間の課金ペース: 区間レートが 0 のユーザは予測せず None（直近は課金なし）
+                rate = billed_delta[r["email"]] / interval_days
+                if rate > 0:
+                    d_star = days_observed + remaining / rate
+                    if d_star <= days_in_month:
+                        eta_day = int(math.ceil(d_star))
+            elif days_observed > 0 and billed > 0:
+                # 月初からの平均ペースへフォールバック
+                d_star = kappa * days_observed / billed
+                if d_star <= days_in_month:
+                    eta_day = int(math.ceil(d_star))
+        rows.append({
+            "email": r["email"], "billed": round(billed, 2), "kappa": round(float(kappa), 2),
+            "remaining": round(remaining, 2), "reached": reached, "eta_day": eta_day,
+        })
+    if not rows:
+        return None
+    rows.sort(key=lambda x: x["remaining"])
+    return {"rows": rows}
 
 
 def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None) -> AnalysisResult:
@@ -676,8 +971,15 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
 
     users = pd.DataFrame(rows)
 
-    # 部署・職種・備考（任意ファイル members-info.csv）の結合
-    _merge_members_info(users, input_dir, cfg, sources)
+    # 部署・職種・備考・追加クレジット上限（任意ファイル members-info）の結合
+    warnings.extend(_merge_members_info(users, input_dir, cfg, sources, month))
+
+    # 追加クレジットのモード導出（当月までに実課金が観測されたユーザは enabled と自動確定）
+    billed_ever = set()
+    for m in months_used:
+        dfm = monthly[m]
+        billed_ever |= set(dfm.loc[dfm["billed"] > 0.0, "email"])
+    _attach_credits_mode(users, billed_ever)
 
     # 活用度（Claude Code 貢献データ）の結合
     if code_result is not None:
@@ -694,13 +996,32 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
     warnings.extend(_warn_orphan_users(users))
     warnings.extend(_warn_active_unassigned(users, "api_cost_usd"))
 
+    # 追加クレジットの整合性・上限到達の警告（表示専用・判定には影響しない）
+    reached = _credit_reached_emails(users, cfg, "billed_extra_usd")
+    if reached:
+        warnings.append(
+            f"追加クレジット: 上限到達 {len(reached)} 名: {reached[:10]}"
+            "（月後半は枠内のみで稼働した可能性）"
+        )
+    warnings.extend(_credit_integrity_warnings(users, cfg, "billed_extra_usd"))
+
     summary = _summarize(users, monthly[month], cfg, months_used, n_hyst)
     summary["org_service_cost_usd"] = org_usage.get("cost_usd", 0.0)
     summary["org_service_by_product"] = org_usage.get("by_product", {})
+    # E 分布は cost_basis=computed のときのみ（net_spend 基準では需要=課金で E が無意味）
+    e_distribution = _compute_e_distribution(users, cfg) if basis == "computed" else None
+    # 付与候補の昇格方向は「実課金で拘束する前の純モデル判定」で見る（無効ユーザは billed=0 で
+    # 拘束後は常に Standard 推奨になり本命対象が漏れるため）
+    upgrade = users["api_cost_usd"].map(lambda a: _recommend(float(a), "mid", cfg)[0] == "premium")
+    grant_candidates = _grant_candidates(users, upgrade, cfg)
+    # 追加クレジット情報が無い入力では credit 列を落とし、出力を現行と完全一致させる（後方互換）
+    if not summary.get("credit_shown"):
+        users = users.drop(columns=["credit_limit_usd", "credits_mode"], errors="ignore")
     return AnalysisResult(
         month=month, users=users, summary=summary, org=org,
         warnings=warnings, months_used=months_used, sources=sources,
         trend=trend, snapshot=snapshot, code_diff=code_diff, member_changes=member_changes,
+        e_distribution=e_distribution, grant_candidates=grant_candidates,
     )
 
 
@@ -762,7 +1083,9 @@ def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
         "est_monthly_saving_usd": round(savings, 2),
         "months_used": months_used,
         "hysteresis_months": n_hyst,
+        "grant_suggested_cap_usd": _usage_credits_cfg(cfg)["grant_suggested_cap_usd"],
     })
+    summary.update(_credit_summary(users))
     return summary
 
 
@@ -797,6 +1120,10 @@ class PreviewResult:
     code_diff: dict | None = None
     # 月中のメンバー変動（members 単日スナップショット差分。1つ以下なら None）
     member_changes: dict | None = None
+    # 追加クレジット残額ブロック（enabled・有限 κ・実課金>0 のユーザ。対象なしなら None）
+    credit_reach: dict | None = None
+    # 追加クレジット付与候補（昇格前に上限つきクレジットで課金実測を薦めるユーザ）
+    grant_candidates: list = field(default_factory=list)
 
 
 def _preview_label(seat: str, api_obs: float, api_proj: float, cfg: dict,
@@ -895,11 +1222,15 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
         })
     users = pd.DataFrame(rows)
 
-    # 部署・職種・備考（任意ファイル members-info.csv）の結合
-    _merge_members_info(users, input_dir, cfg, sources)
+    # 部署・職種・備考・追加クレジット上限（任意ファイル members-info）の結合
+    warnings.extend(_merge_members_info(users, input_dir, cfg, sources, month))
+    # クレジットモード（速報は当月の観測実課金のみで billed_ever を判断）
+    billed_ever = set(users.loc[users["billed_observed_usd"] > 0.0, "email"])
+    _attach_credits_mode(users, billed_ever)
 
     warnings.extend(_warn_orphan_users(users))
     warnings.extend(_warn_active_unassigned(users, "api_cost_observed_usd"))
+    warnings.extend(_credit_integrity_warnings(users, cfg, "billed_observed_usd"))
 
     summary = _seat_summary(users, cfg)
     summary.update({
@@ -910,10 +1241,19 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
         "n_billed": int((users["billed_observed_usd"] > 0).sum()),
         "label_counts": users["label"].value_counts().to_dict(),
         "org_service_cost_usd": org_service_obs,
+        "grant_suggested_cap_usd": _usage_credits_cfg(cfg)["grant_suggested_cap_usd"],
     })
+    summary.update(_credit_summary(users))
+    credit_reach = _credit_reach_preview(users, days_observed, days_in_month, cfg, snapshot)
+    upgrade = users["label"].isin([LABEL_PREM_CONSIDER, LABEL_HOLD])
+    grant_candidates = _grant_candidates(users, upgrade, cfg, demand_col="api_cost_projected_usd")
+    # 追加クレジット情報が無い入力では credit 列を落とし、出力を現行と完全一致させる（後方互換）
+    if not summary.get("credit_shown"):
+        users = users.drop(columns=["credit_limit_usd", "credits_mode"], errors="ignore")
     return PreviewResult(
         month=month, users=users, summary=summary,
         days_observed=days_observed, days_in_month=days_in_month,
         org=org, warnings=warnings, sources=sources, snapshot=snapshot,
         code_diff=code_diff, member_changes=member_changes,
+        credit_reach=credit_reach, grant_candidates=grant_candidates,
     )

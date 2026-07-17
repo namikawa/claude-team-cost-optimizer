@@ -66,7 +66,7 @@ def _run_init_org(args: argparse.Namespace) -> int:
         info_path = input_dir / org / "members-info.csv"
         info_created = not info_path.exists()
         if info_created:
-            info_path.write_text("email,部署,チーム,職種,備考\n", encoding="utf-8")
+            info_path.write_text("email,部署,チーム,職種,追加クレジット上限,備考\n", encoding="utf-8")
         print(f"組織 '{org}' の雛形を{'確認しました（既存）' if existed else '作成しました'}:")
         print(f"  {input_dir / org / 'spend'}/           ← spend_YYYY-MM.csv（必須）")
         print(f"  {input_dir / org / 'members'}/         ← members_YYYY-MM.csv（必須。最低限 email,seat_type の2列）")

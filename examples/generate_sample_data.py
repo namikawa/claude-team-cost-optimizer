@@ -5,12 +5,18 @@
 組織ごとに input/<組織名>/{spend,members,code-analytics}/ を作る
 （code-analytics は任意のため org-b では省略している）。
 
-org-b には 2026-07 の月中差分デモ用に、次の3種のスナップショットも生成する（値は架空）:
+org-b には 2026-07 の月中差分デモ用に、次のスナップショットも生成する（値は架空）:
   - spend: 月初〜05 / 〜13 / 〜31 の累積エクスポート（月中の利用推移）
   - members: 07-05 / 07-16 の単日スナップショット（月中のメンバー変動。ikeda が
     Standard→Premium、tanabe が新規追加）
   - code-analytics: 07-05 / 07-16 の単日スナップショット（月中の Claude Code 活動。
     shimizu は LoC 横ばいで spend 停止疑いの傍証、他は増加）
+  - members-info: 07-05 / 07-16 の日付つきスナップショット（追加クレジット上限 κ）。
+    ikeda の κ が $100→$50 に変わる（κ 変更検出）。正数(250)・0(無効)・無制限・空欄の
+    4パターンを含み、上限到達・整合性警告・付与候補・E 分布・構成行のデモになる
+
+org-a の members-info.csv は追加クレジット上限の列を持たない固定名ファイルのまま残す
+（列なしでも従来どおり動く後方互換の確認用）。
 
     uv run python examples/generate_sample_data.py
 """
@@ -91,24 +97,28 @@ ORPHANS_ORG_A = [("guest@example.co.jp", {"2026-06": 15.0}, "claude-sonnet-4-6")
 # ファイル名は claude.ai の期間付きダウンロード名を模した range 命名にする。
 SNAPSHOT_UUID = "0b1c2d3e-4f56-4789-a012-3456789abcde"
 # ファイル名の日付サフィックス（月初開始の累積） -> [(email, 累積需要, 累積実課金, model)]
+# kudo は追加クレジット無効(κ=0)なのに課金が発生する「整合性警告」デモ用の架空ユーザ。
 SNAPSHOTS_ORG_B = {
     "2026-07-01-to-2026-07-05": [
         ("mori@example.co.jp",    80.0,  0.0, "claude-opus-4-8"),
         ("ikeda@example.co.jp",   60.0,  0.0, "claude-opus-4-8"),
         ("shimizu@example.co.jp", 40.0,  0.0, "claude-sonnet-4-6"),
         ("abe@example.co.jp",      5.0,  0.0, "claude-haiku-4-5"),
+        ("kudo@example.co.jp",    50.0,  0.0, "claude-opus-4-8"),
     ],
     "2026-07-01-to-2026-07-13": [
         ("mori@example.co.jp",   210.0,  0.0, "claude-opus-4-8"),
         ("ikeda@example.co.jp",  150.0, 20.0, "claude-opus-4-8"),
         ("shimizu@example.co.jp", 45.0,  0.0, "claude-sonnet-4-6"),
         ("abe@example.co.jp",      9.0,  0.0, "claude-haiku-4-5"),
+        ("kudo@example.co.jp",   150.0, 30.0, "claude-opus-4-8"),
     ],
     "2026-07-01-to-2026-07-31": [
         ("mori@example.co.jp",   470.0, 220.0, "claude-opus-4-8"),
         ("ikeda@example.co.jp",  260.0,  90.0, "claude-opus-4-8"),
         ("shimizu@example.co.jp", 45.4,   0.0, "claude-sonnet-4-6"),
         ("abe@example.co.jp",      9.0,   0.0, "claude-haiku-4-5"),
+        ("kudo@example.co.jp",   260.0, 130.0, "claude-opus-4-8"),
     ],
 }
 
@@ -124,6 +134,7 @@ MEMBER_SNAPSHOTS_ORG_B = {
         ("shimizu@example.co.jp", "Standard"),
         ("abe@example.co.jp",     "Standard"),
         ("okada@example.co.jp",   "Unassigned"),
+        ("kudo@example.co.jp",    "Standard"),
     ],
     "2026-07-16": [
         ("mori@example.co.jp",    "Premium"),
@@ -132,7 +143,35 @@ MEMBER_SNAPSHOTS_ORG_B = {
         ("shimizu@example.co.jp", "Standard"),
         ("abe@example.co.jp",     "Standard"),
         ("okada@example.co.jp",   "Unassigned"),
+        ("kudo@example.co.jp",    "Standard"),
         ("tanabe@example.co.jp",  "Standard"),    # 月中の新規追加（新規メンバー）
+    ],
+}
+
+# org-b 2026-07 の members-info 単日スナップショット（追加クレジット上限 κ のデモ）。
+# 日付つきで置くと「対象月の月末以前で最新」を採用する。07-05 → 07-16 で ikeda の κ が
+# $100→$50 に変わる（κ 変更検出のデモ）。値は正数(250)・0(無効)・無制限・空欄の4パターンを含む。
+# 部署・チーム・職種・備考は空欄（クレジット機能に焦点を当てたデモ）。すべて架空値。
+# 日付 -> [(email, 追加クレジット上限), ...]
+MEMBERS_INFO_SNAPSHOTS_ORG_B = {
+    "2026-07-05": [
+        ("mori@example.co.jp",    "250"),
+        ("hayashi@example.co.jp", "0"),
+        ("ikeda@example.co.jp",   "100"),
+        ("shimizu@example.co.jp", "無制限"),
+        ("abe@example.co.jp",     ""),
+        ("okada@example.co.jp",   ""),
+        ("kudo@example.co.jp",    "0"),
+    ],
+    "2026-07-16": [
+        ("mori@example.co.jp",    "250"),
+        ("hayashi@example.co.jp", "0"),
+        ("ikeda@example.co.jp",   "50"),     # κ 変更: $100 → $50
+        ("shimizu@example.co.jp", "無制限"),
+        ("abe@example.co.jp",     ""),
+        ("okada@example.co.jp",   ""),
+        ("kudo@example.co.jp",    "0"),
+        ("tanabe@example.co.jp",  ""),
     ],
 }
 
@@ -302,13 +341,32 @@ def write_code_snapshot(org: str, date: str, entries: list) -> None:
 
 
 def write_members_info(org: str, info: list) -> None:
-    """任意ファイル members-info.csv（月情報なし・org ディレクトリ直下・固定ファイル名）。"""
+    """任意ファイル members-info.csv（月情報なし・org ディレクトリ直下・固定ファイル名）。
+
+    後方互換確認用に追加クレジット上限の列を持たない旧形式のまま残す（org-a）。
+    """
     path = BASE / org / "members-info.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["email", "部署", "チーム", "職種", "備考"])
         writer.writerows(info)
+    print(f"wrote {path}")
+
+
+def write_members_info_snapshot(org: str, date: str, entries: list) -> None:
+    """members-info の日付つきスナップショット1件（追加クレジット上限のデモ用）。
+
+    entries は [(email, 追加クレジット上限), ...]。部署・チーム・職種・備考は空欄で書く。
+    """
+    name = f"members-info-{SNAPSHOT_UUID}-{date}.csv"
+    path = BASE / org / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["email", "部署", "チーム", "職種", "追加クレジット上限", "備考"])
+        for email, credit_limit in entries:
+            writer.writerow([email, "", "", "", credit_limit, ""])
     print(f"wrote {path}")
 
 
@@ -342,3 +400,6 @@ if __name__ == "__main__":
         write_members_snapshot("org-b", date, entries)
     for date, entries in CODE_SNAPSHOTS_ORG_B.items():
         write_code_snapshot("org-b", date, entries)
+    # org-b の追加クレジット上限（日付つき members-info スナップショット）
+    for date, entries in MEMBERS_INFO_SNAPSHOTS_ORG_B.items():
+        write_members_info_snapshot("org-b", date, entries)

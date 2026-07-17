@@ -122,7 +122,7 @@ def test_init_org_creates_scaffold(tmp_path):
         assert (output_dir / org).is_dir()
         # members-info.csv はヘッダ行のみの雛形が作られる
         info = input_dir / org / "members-info.csv"
-        assert info.read_text(encoding="utf-8") == "email,部署,チーム,職種,備考\n"
+        assert info.read_text(encoding="utf-8") == "email,部署,チーム,職種,追加クレジット上限,備考\n"
     assert discover_orgs(input_dir) == ["org-x", "org-y"]
 
 
