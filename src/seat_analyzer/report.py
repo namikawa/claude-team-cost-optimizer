@@ -397,9 +397,11 @@ def _snapshot_md(snapshot: dict | None) -> str:
         )
     lines.append("")
     for x in snapshot["stalled_capped"]:
+        note = x.get("loc_note")
+        extra = f"。{note}" if note else ""
         lines.append(
             f"- {_md_cell(x['email'])}: 上限停止の可能性。停止時点の累積 "
-            f"{_fmt_usd(x['cum_at_stall'])} は実効込み量の実測候補"
+            f"{_fmt_usd(x['cum_at_stall'])} は実効込み量の実測候補{extra}"
         )
     if snapshot["billed_emerged"]:
         lines += ["", "### この区間で込み量を消化（実課金が発生）", ""]
@@ -410,6 +412,61 @@ def _snapshot_md(snapshot: dict | None) -> str:
                 f"{_fmt_usd(x['prev_cum'])}〜{_fmt_usd(x['curr_cum'])} の間）"
             )
     lines += ["", "- 停止は休暇・案件の谷でも起こるため、上限到達の断定には本人確認が必要です"]
+    return "\n".join(lines)
+
+
+def _fmt_delta_int(v: int) -> str:
+    """整数の増減表示（+/− 符号 + 桁区切り）。"""
+    return ("+" if v >= 0 else "-") + f"{abs(v):,}"
+
+
+def _code_diff_md(code_diff: dict | None) -> str:
+    """「## 月中の Claude Code 活動（code-analytics 差分）」セクション（None なら空文字列）。"""
+    if not code_diff:
+        return ""
+    labels = code_diff["labels"]
+    has_prs = code_diff["has_prs"]
+    header = ("| ユーザ | " + " | ".join(labels)
+              + " | LoC 増分（最新区間） |" + (" PR 増分 |" if has_prs else ""))
+    sep = "|" + "---|" * (len(labels) + 2 + int(has_prs))
+    lines = ["## 月中の Claude Code 活動（code-analytics 差分）", "", header, sep]
+    for r in code_diff["rows"]:
+        cums = " | ".join(f"{c:,}" for c in r["loc_cum"])
+        cells = f"| {_md_cell(r['email'])} | {cums} | {_fmt_delta_int(r['loc_delta'])} |"
+        if has_prs:
+            prs = r["prs_delta"]
+            cells += f" {_fmt_delta_int(prs) if prs is not None else '—'} |"
+        lines.append(cells)
+    lines += ["", "- LoC 増分が止まったユーザは利用の谷や案件の切れ目の可能性もあるため、"
+              "スペンドの停止疑いと合わせて解釈してください"]
+    return "\n".join(lines)
+
+
+def _member_changes_md(mc: dict | None) -> str:
+    """「## 月中のメンバー変動（スナップショット差分）」セクション（None なら空文字列）。"""
+    if not mc:
+        return ""
+    snap_list = " / ".join(s["label"] for s in mc["snaps"])
+    lines = ["## 月中のメンバー変動（スナップショット差分）", "",
+             f"スナップショット時点: {snap_list}", ""]
+    if not (mc["seat_changes"] or mc["joined"] or mc["left"]):
+        lines.append("- 変動なし")
+        return "\n".join(lines)
+    for c in mc["seat_changes"]:
+        lines.append(
+            f"- {_md_cell(c['email'])}: {c['interval_label']} で "
+            f"{SEAT_LABELS.get(c['from'], c['from'])} → {SEAT_LABELS.get(c['to'], c['to'])}"
+        )
+    for j in mc["joined"]:
+        lines.append(
+            f"- {_md_cell(j['email'])}: {j['interval_label']} で追加"
+            f"（{SEAT_LABELS.get(j['seat'], j['seat'])}）"
+        )
+    for x in mc["left"]:
+        lines.append(
+            f"- {_md_cell(x['email'])}: {x['interval_label']} で削除"
+            f"（{SEAT_LABELS.get(x['seat'], x['seat'])}）"
+        )
     return "\n".join(lines)
 
 
@@ -450,13 +507,51 @@ def _snapshot_view(snapshot: dict | None) -> dict | None:
                   "cum_fmt": [_fmt_compact(c) for c in r["cum"]],
                   "delta_fmt": _fmt_delta(r["latest_delta"], compact=True)}
                  for r in snapshot["rows"]],
-        "stalled_capped": [{"email": x["email"], "cum_fmt": _fmt_compact(x["cum_at_stall"])}
+        "stalled_capped": [{"email": x["email"], "cum_fmt": _fmt_compact(x["cum_at_stall"]),
+                            "loc_note": x.get("loc_note", "")}
                            for x in snapshot["stalled_capped"]],
         "billed_emerged": [{"email": x["email"], "interval_label": x["interval_label"],
                             "prev_fmt": _fmt_compact(x["prev_cum"]),
                             "curr_fmt": _fmt_compact(x["curr_cum"]),
                             "billed_fmt": _fmt_compact(x["billed"])}
                            for x in snapshot["billed_emerged"]],
+    }
+
+
+def _code_diff_view(code_diff: dict | None) -> dict | None:
+    """dashboard.html / preview-dashboard.html 用に整形した code-analytics 差分（None なら None）。"""
+    if not code_diff:
+        return None
+    has_prs = code_diff["has_prs"]
+    return {
+        "labels": code_diff["labels"],
+        "has_prs": has_prs,
+        "rows": [{"email": r["email"],
+                  "loc_cum_fmt": [f"{c:,}" for c in r["loc_cum"]],
+                  "loc_delta_fmt": _fmt_delta_int(r["loc_delta"]),
+                  "prs_delta_fmt": (_fmt_delta_int(r["prs_delta"])
+                                    if has_prs and r["prs_delta"] is not None else "—")}
+                 for r in code_diff["rows"]],
+    }
+
+
+def _member_changes_view(mc: dict | None) -> dict | None:
+    """dashboard.html / preview-dashboard.html 用に整形したメンバー変動（None なら None）。"""
+    if not mc:
+        return None
+    return {
+        "snap_list": " / ".join(s["label"] for s in mc["snaps"]),
+        "empty": not (mc["seat_changes"] or mc["joined"] or mc["left"]),
+        "seat_changes": [{"email": c["email"], "interval_label": c["interval_label"],
+                          "from_label": SEAT_LABELS.get(c["from"], c["from"]),
+                          "to_label": SEAT_LABELS.get(c["to"], c["to"])}
+                         for c in mc["seat_changes"]],
+        "joined": [{"email": j["email"], "interval_label": j["interval_label"],
+                    "seat_label": SEAT_LABELS.get(j["seat"], j["seat"])}
+                   for j in mc["joined"]],
+        "left": [{"email": x["email"], "interval_label": x["interval_label"],
+                  "seat_label": SEAT_LABELS.get(x["seat"], x["seat"])}
+                 for x in mc["left"]],
     }
 
 
@@ -483,10 +578,11 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
     detail_block = _detail_table_md(users)
     warnings_md = nl.join(f"- {w}" for w in result.warnings) if result.warnings else "- なし"
 
-    # サマリ直後に置く追加セクション（前月からの変化 → 月中の利用推移）。無ければ空文字列で
-    # 従来出力と完全一致（後方互換）
+    # サマリ直後に置く追加セクション（前月からの変化 → 月中の利用推移 → Claude Code 活動
+    # → メンバー変動）。無ければ空文字列で従来出力と完全一致（後方互換）
     extra_sections = ""
-    for block in (_trend_md(result.trend), _snapshot_md(result.snapshot)):
+    for block in (_trend_md(result.trend), _snapshot_md(result.snapshot),
+                  _code_diff_md(result.code_diff), _member_changes_md(result.member_changes)):
         if block:
             extra_sections += nl + block + nl
 
@@ -660,11 +756,44 @@ _SNAPSHOT_HTML = r"""
 </table></div>
 {% if snapshot.stalled_capped or snapshot.billed_emerged %}
 <div class="card note"><ul>
-{% for x in snapshot.stalled_capped %}<li>{{ x.email }}: 上限停止の可能性。停止時点の累積 {{ x.cum_fmt }} は実効込み量の実測候補。</li>{% endfor %}
+{% for x in snapshot.stalled_capped %}<li>{{ x.email }}: 上限停止の可能性。停止時点の累積 {{ x.cum_fmt }} は実効込み量の実測候補{% if x.loc_note %}。{{ x.loc_note }}{% endif %}。</li>{% endfor %}
 {% for x in snapshot.billed_emerged %}<li>{{ x.email }}: {{ x.interval_label }} で従量課金 {{ x.billed_fmt }} が発生（実効込み量は累積需要 {{ x.prev_fmt }}〜{{ x.curr_fmt }} の間）。</li>{% endfor %}
 </ul></div>
 {% endif %}
 <div class="note">停止は休暇・案件の谷でも起こるため、上限到達の断定には本人確認が必要です。</div>
+{% endif %}
+"""
+
+# 「月中の Claude Code 活動（code-analytics 差分）」の HTML 断片（正式・速報の両方で共有）。
+_CODE_DIFF_HTML = r"""
+{% if code_diff %}
+<h2>月中の Claude Code 活動（code-analytics 差分）</h2>
+<div class="tablebox"><table>
+<tr><th>ユーザ</th>{% for l in code_diff.labels %}<th class="num">{{ l }}</th>{% endfor %}<th class="num">LoC 増分</th>{% if code_diff.has_prs %}<th class="num">PR 増分</th>{% endif %}</tr>
+{% for r in code_diff.rows %}
+<tr>
+  <td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td>
+  {% for c in r.loc_cum_fmt %}<td class="num">{{ c }}</td>{% endfor %}
+  <td class="num">{{ r.loc_delta_fmt }}</td>
+  {% if code_diff.has_prs %}<td class="num">{{ r.prs_delta_fmt }}</td>{% endif %}
+</tr>
+{% endfor %}
+</table></div>
+{% endif %}
+"""
+
+# 「月中のメンバー変動（スナップショット差分）」の HTML 断片（正式・速報の両方で共有）。
+_MEMBER_CHANGES_HTML = r"""
+{% if member_changes %}
+<h2>月中のメンバー変動（スナップショット差分）</h2>
+<div class="card note">
+  <p>スナップショット時点: {{ member_changes.snap_list }}</p>
+  {% if member_changes.empty %}<p>変動なし</p>{% else %}<ul>
+  {% for c in member_changes.seat_changes %}<li>{{ c.email }}: {{ c.interval_label }} で {{ c.from_label }} → {{ c.to_label }}</li>{% endfor %}
+  {% for j in member_changes.joined %}<li>{{ j.email }}: {{ j.interval_label }} で追加（{{ j.seat_label }}）</li>{% endfor %}
+  {% for x in member_changes.left %}<li>{{ x.email }}: {{ x.interval_label }} で削除（{{ x.seat_label }}）</li>{% endfor %}
+  </ul>{% endif %}
+</div>
 {% endif %}
 """
 
@@ -771,7 +900,7 @@ _HTML_TEMPLATE_SRC = r"""<!doctype html>
 
 _HTML_TEMPLATE = _HTML_ENV.from_string(
     _HTML_TEMPLATE_SRC.replace("<!--TREND_SECTION-->", _TREND_HTML)
-    .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML)
+    .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
 )
 
 
@@ -864,7 +993,8 @@ _PREVIEW_HTML_TEMPLATE_SRC = r"""<!doctype html>
 """
 
 _PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(
-    _PREVIEW_HTML_TEMPLATE_SRC.replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML)
+    _PREVIEW_HTML_TEMPLATE_SRC.replace(
+        "<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
 )
 
 
@@ -912,6 +1042,8 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
         scope=_scope_label(result),
         s=result.summary,
         snapshot=_snapshot_view(result.snapshot),
+        code_diff=_code_diff_view(result.code_diff),
+        member_changes=_member_changes_view(result.member_changes),
         users_sorted=users_sorted,
         label_counts=label_counts,
         has_dept=has_dept,
@@ -975,6 +1107,8 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         s=result.summary,
         trend=_trend_view(result.trend),
         snapshot=_snapshot_view(result.snapshot),
+        code_diff=_code_diff_view(result.code_diff),
+        member_changes=_member_changes_view(result.member_changes),
         users_sorted=users_sorted,
         group_summaries=group_summaries,
         has_team_summary=any(g["heading"] == "チーム別サマリ" for g in group_summaries),
@@ -1034,9 +1168,13 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> dict[str, Pa
         f"{lb} {counts[lb]} 名" for lb in PREVIEW_ORDER if counts.get(lb)
     ) or "対象なし"
     factor = result.days_in_month / result.days_observed
-    # 一次判断テーブルの後に置く月中推移（スナップショット差分）。無ければ空文字列で従来出力と一致
-    snap_md = _snapshot_md(result.snapshot)
-    snap_section = (nl + nl + snap_md) if snap_md else ""
+    # 一次判断テーブルの後に置く月中推移（利用推移 → Claude Code 活動 → メンバー変動）。
+    # 無ければ空文字列で従来出力と一致
+    snap_section = ""
+    for block in (_snapshot_md(result.snapshot), _code_diff_md(result.code_diff),
+                  _member_changes_md(result.member_changes)):
+        if block:
+            snap_section += nl + nl + block
 
     md = f"""# Claude Team シート速報プレビュー — {_scope_label(result)}
 

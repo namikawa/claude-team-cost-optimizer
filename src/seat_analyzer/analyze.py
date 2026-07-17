@@ -62,6 +62,10 @@ class AnalysisResult:
     trend: dict | None = None
     # 月中の利用推移（同一月の複数スナップショット差分。1つ以下なら None）
     snapshot: dict | None = None
+    # 月中の Claude Code 活動（code-analytics スナップショット差分。1つ以下なら None）
+    code_diff: dict | None = None
+    # 月中のメンバー変動（members 単日スナップショット差分。1つ以下なら None）
+    member_changes: dict | None = None
 
 
 def _seat_cost(api_cost: float, seat: str, scenario: str, cfg: dict) -> float:
@@ -304,6 +308,128 @@ def _compute_snapshot_diff(input_dir: Path, month: str, cfg: dict,
     return snapshot, warnings
 
 
+def _compute_member_changes(input_dir: Path, month: str, cfg: dict) -> tuple[dict | None, list[str]]:
+    """対象月の単日スナップショット members（2つ以上）の隣接差分から月中の変動を検出する。
+
+    シート変更・追加・削除を時系列順に列挙する。変動が1件も無くてもセクションは出す
+    （スナップショットを取って変動が無かったこと自体に情報価値があるため）。
+    スナップショットが1つ以下なら (None, []) を返す（既存出力と同一）。
+
+    判定ロジック・ヒステリシスには一切影響しない表示専用の情報。シート変更が1件以上
+    あれば、当月判定は最新スナップショット時点のシートで行う旨の参考警告を返す。
+    """
+    entries = ingest.member_snapshots(input_dir, month)
+    if len(entries) < 2:
+        return None, []
+
+    snaps = []
+    for period, path in entries:
+        df = ingest.load_members_file(path, cfg)
+        seat_by = {e: s for e, s in zip(df["email"], df["seat_type"], strict=False)}
+        snaps.append({"label": f"{period.start:%m-%d}", "seat_by": seat_by})
+
+    seat_changes, joined, left = [], [], []
+    for i in range(1, len(snaps)):
+        prev, curr = snaps[i - 1], snaps[i]
+        interval_label = f"{prev['label']}→{curr['label']}"
+        prev_emails, curr_emails = set(prev["seat_by"]), set(curr["seat_by"])
+        for email in sorted(prev_emails & curr_emails):
+            if prev["seat_by"][email] != curr["seat_by"][email]:
+                seat_changes.append({
+                    "email": email, "from": prev["seat_by"][email],
+                    "to": curr["seat_by"][email], "interval_label": interval_label,
+                })
+        for email in sorted(curr_emails - prev_emails):
+            joined.append({"email": email, "seat": curr["seat_by"][email],
+                           "interval_label": interval_label})
+        for email in sorted(prev_emails - curr_emails):
+            left.append({"email": email, "seat": prev["seat_by"][email],
+                         "interval_label": interval_label})
+
+    warnings: list[str] = []
+    if seat_changes:
+        emails = [c["email"] for c in seat_changes]
+        warnings.append(
+            f"月中にシート変更を検出した ユーザ {len(emails)} 名: {emails[:5]}"
+            "（当月の損益分岐判定は最新スナップショット時点のシートで行うため参考値）"
+        )
+
+    return {
+        "snaps": [{"label": s["label"]} for s in snaps],
+        "seat_changes": seat_changes,
+        "joined": joined,
+        "left": left,
+    }, warnings
+
+
+def _compute_code_diff(input_dir: Path, month: str, cfg: dict) -> tuple[dict | None, list[str]]:
+    """対象月の code-analytics スナップショット（2つ以上）から累積 LoC の月中推移を計算する。
+
+    各時点のユーザ別累積 loc_with_cc（あれば prs_with_cc も）を取り、最新区間の増分を出す。
+    全時点で LoC が 0 のユーザは表から省く。スナップショットが1つ以下なら (None, [])。
+    表示専用で判定・ヒステリシスには影響しない。
+    """
+    entries = ingest.code_snapshots(input_dir, month)
+    if len(entries) < 2:
+        return None, []
+
+    snaps = []
+    for period, path in entries:
+        df = ingest.load_code_analytics_file(path, month, cfg)
+        # 欠損セル（NaN）は 0 として扱う（累積・増分計算で int 化できるように）
+        loc = ({e: float(v) for e, v in zip(df["email"], df["loc_with_cc"].fillna(0.0), strict=False)}
+               if "loc_with_cc" in df.columns else {})
+        prs = ({e: float(v) for e, v in zip(df["email"], df["prs_with_cc"].fillna(0.0), strict=False)}
+               if "prs_with_cc" in df.columns else None)
+        snaps.append({"label": f"〜{period.end:%m-%d}", "loc": loc, "prs": prs})
+
+    has_prs = all(s["prs"] is not None for s in snaps)
+    emails = sorted({e for s in snaps for e in s["loc"]})
+    rows = []
+    for email in emails:
+        loc_cum = [int(round(s["loc"].get(email, 0.0))) for s in snaps]
+        if all(c == 0 for c in loc_cum):
+            continue   # 全時点で LoC 0 のユーザは省く
+        loc_delta = loc_cum[-1] - loc_cum[-2]
+        prs_delta = None
+        if has_prs:
+            prs_cum = [int(round(s["prs"].get(email, 0.0))) for s in snaps]
+            prs_delta = prs_cum[-1] - prs_cum[-2]
+        rows.append({"email": email, "loc_cum": loc_cum,
+                     "loc_delta": loc_delta, "prs_delta": prs_delta})
+    rows.sort(key=lambda r: -r["loc_cum"][-1])
+
+    return {
+        "labels": [s["label"] for s in snaps],
+        "rows": rows,
+        "has_prs": has_prs,
+    }, []
+
+
+def _attach_loc_corroboration(snapshot: dict | None, code_diff: dict | None) -> None:
+    """spend の停止疑いに、code-analytics の LoC 増分で傍証/食い違いの注記を付ける（email 突合）。
+
+    最新区間の LoC 増分が 0（または code diff に不在）なら「停止の傍証」、正なら
+    「利用継続の形跡あり（食い違い）」。spend と code のスナップショット日付は一致していなくてよい。
+    どちらかが無ければ何もしない（後方互換）。
+    """
+    if not snapshot or not code_diff:
+        return
+    delta_by_email = {r["email"]: r["loc_delta"] for r in code_diff["rows"]}
+
+    def note_for(email: str) -> str:
+        delta = delta_by_email.get(email)
+        if delta is None or delta <= 0:
+            return "LoC 増分も 0（停止の傍証）"
+        return f"一方で LoC は +{delta:,} 行 増加（利用継続の形跡あり。スペンドとの食い違いは要確認）"
+
+    for r in snapshot.get("rows", []):
+        if r.get("stall"):
+            r["loc_note"] = note_for(r["email"])
+    for x in snapshot.get("stalled_capped", []):
+        x["loc_note"] = note_for(x["email"])
+
+
 def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict, sources: dict) -> None:
     """任意ファイル members-info.csv の department/team/role/note を email で users に付与する。
 
@@ -341,6 +467,9 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
     # 主データの採用は現行どおり（期間の広い方）で、重複警告の文言だけ差し替える。
     snap_entries, _ = ingest.spend_snapshots(input_dir, month)
     snapshot_active = len(snap_entries) >= 2
+    # members / code-analytics の月中差分（発動時は重複警告の文言を差し替える）
+    member_diff_active = len(ingest.member_snapshots(input_dir, month)) >= 2
+    code_diff_active = len(ingest.code_snapshots(input_dir, month)) >= 2
 
     raw: dict[str, pd.DataFrame] = {}
     sources: dict = {"spend": {}}
@@ -391,12 +520,12 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             }
         monthly[m] = aggregate_month(df[is_user])
 
-    members_result = ingest.load_members(input_dir, month, cfg)
+    members_result = ingest.load_members(input_dir, month, cfg, snapshot_active=member_diff_active)
     warnings.extend(members_result.warnings)
     members = members_result.df
     sources["members"] = str(members_result.source)
 
-    code_result = ingest.load_code_analytics(input_dir, month, cfg)
+    code_result = ingest.load_code_analytics(input_dir, month, cfg, snapshot_active=code_diff_active)
     if code_result is not None:
         warnings.extend(code_result.warnings)
         sources["code_analytics"] = str(code_result.source)
@@ -411,6 +540,13 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
     # 月中の利用推移（同一月の複数スナップショット差分・1つ以下なら None）
     snapshot, snap_warns = _compute_snapshot_diff(input_dir, month, cfg, seat_by_email)
     warnings.extend(snap_warns)
+    # 月中の Claude Code 活動・メンバー変動（スナップショット差分・1つ以下なら None）
+    code_diff, code_warns = _compute_code_diff(input_dir, month, cfg)
+    warnings.extend(code_warns)
+    member_changes, member_warns = _compute_member_changes(input_dir, month, cfg)
+    warnings.extend(member_warns)
+    # spend の停止疑いに LoC 増分の傍証/食い違いを注記（email 突合・両方揃ったときのみ）
+    _attach_loc_corroboration(snapshot, code_diff)
 
     decision_cfg = cfg["decision"]
     n_hyst = int(decision_cfg["hysteresis_months"])
@@ -564,7 +700,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
     return AnalysisResult(
         month=month, users=users, summary=summary, org=org,
         warnings=warnings, months_used=months_used, sources=sources,
-        trend=trend, snapshot=snapshot,
+        trend=trend, snapshot=snapshot, code_diff=code_diff, member_changes=member_changes,
     )
 
 
@@ -657,6 +793,10 @@ class PreviewResult:
     sources: dict = field(default_factory=dict)
     # 月中の利用推移（同一月の複数スナップショット差分。1つ以下なら None）
     snapshot: dict | None = None
+    # 月中の Claude Code 活動（code-analytics スナップショット差分。1つ以下なら None）
+    code_diff: dict | None = None
+    # 月中のメンバー変動（members 単日スナップショット差分。1つ以下なら None）
+    member_changes: dict | None = None
 
 
 def _preview_label(seat: str, api_obs: float, api_proj: float, cfg: dict,
@@ -700,6 +840,7 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     # 月初開始スナップショットが2つ以上あれば月中推移の差分分析を発動する（重複警告の文言も変える）
     snap_entries, _ = ingest.spend_snapshots(input_dir, month)
     snapshot_active = len(snap_entries) >= 2
+    member_diff_active = len(ingest.member_snapshots(input_dir, month)) >= 2
 
     spend_result = ingest.load_spend(input_dir, month, cfg, snapshot_active=snapshot_active)
     warnings.extend(spend_result.warnings)
@@ -715,7 +856,7 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     org_service_obs = round(float(df[~is_user]["billed_usd"].sum()), 2)
     agg = aggregate_month(df[is_user]).set_index("email")
 
-    members_result = ingest.load_members(input_dir, month, cfg)
+    members_result = ingest.load_members(input_dir, month, cfg, snapshot_active=member_diff_active)
     warnings.extend(members_result.warnings)
     members = members_result.df
     sources["members"] = str(members_result.source)
@@ -724,6 +865,12 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     # 月中の利用推移（同一月の複数スナップショット差分・1つ以下なら None）
     snapshot, snap_warns = _compute_snapshot_diff(input_dir, month, cfg, seat_by_email)
     warnings.extend(snap_warns)
+    # 月中の Claude Code 活動・メンバー変動（スナップショット差分・1つ以下なら None）
+    code_diff, code_warns = _compute_code_diff(input_dir, month, cfg)
+    warnings.extend(code_warns)
+    member_changes, member_warns = _compute_member_changes(input_dir, month, cfg)
+    warnings.extend(member_warns)
+    _attach_loc_corroboration(snapshot, code_diff)
 
     seat_diff = float(cfg["seats"]["premium"]["price_usd"]) - float(cfg["seats"]["standard"]["price_usd"])
     min_saving = float(cfg["decision"]["buffer_ratio"]) * seat_diff
@@ -768,4 +915,5 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
         month=month, users=users, summary=summary,
         days_observed=days_observed, days_in_month=days_in_month,
         org=org, warnings=warnings, sources=sources, snapshot=snapshot,
+        code_diff=code_diff, member_changes=member_changes,
     )

@@ -157,7 +157,7 @@ def month_of_file(path: Path) -> str | None:
 
 def _resolve_duplicates(
     directory: Path, month: str, entries: list[tuple[FilePeriod, Path]],
-    snapshot_mode: bool = False,
+    snapshot_note: str | None = None,
 ) -> tuple[Path, str]:
     """同一月に複数ファイルがある場合の解決。
 
@@ -165,15 +165,18 @@ def _resolve_duplicates(
     - 期間の包含関係が一意（例: 全月分が部分月分を包含）→ 広い方を採用
     - どちらでもない → エラー（取り違え防止）
 
-    snapshot_mode=True は、広い方を主データに採る際「未使用」ではなく
-    「スナップショット差分にも使う」という文言にする（月中推移の差分分析が発動する場合）。
+    snapshot_note を渡すと、主データに採らなかったファイルを「未使用」ではなく
+    「<snapshot_note>に ... も使用」という文言にする（月中推移の差分分析が発動する場合）。
+    差分の種類ごとに文言を変えるため、呼び出し側が説明句（例: "スナップショット差分" /
+    "メンバー変動の検出"）を渡す。
     """
     if all(p.kind == "date" for p, _ in entries):
         period, path = max(entries, key=lambda e: e[0].end)
         others = ", ".join(f.name for p, f in entries if f != path)
+        tail = f"（{snapshot_note}に {others} も使用）" if snapshot_note else f"（未使用: {others}）"
         return path, (
             f"{directory.name}: {month} のスナップショットが複数あるため"
-            f"最新の {path.name} を使用（未使用: {others}）"
+            f"最新の {path.name} を使用{tail}"
         )
 
     intervals = [(p.interval(), path) for p, path in entries]
@@ -185,11 +188,11 @@ def _resolve_duplicates(
     if len(containing) == 1:
         (start, end), path = containing[0]
         others = ", ".join(f.name for _, f in intervals if f != path)
-        if snapshot_mode:
+        if snapshot_note:
             return path, (
-                f"{directory.name}: {month} のスペンドが複数あるため主データには期間の広い "
+                f"{directory.name}: {month} のファイルが複数あるため主データには期間の広い "
                 f"{path.name}（{start:%m-%d}〜{end:%m-%d}）を使用"
-                f"（スナップショット差分に {others} も使用）"
+                f"（{snapshot_note}に {others} も使用）"
             )
         return path, (
             f"{directory.name}: {month} のファイルが複数あるため期間の広い "
@@ -202,12 +205,12 @@ def _resolve_duplicates(
 
 
 def _files_by_month(
-    directory: Path, snapshot_month: str | None = None
+    directory: Path, snapshot_month: str | None = None, snapshot_note: str | None = None
 ) -> tuple[dict[str, Path], dict[str, str]]:
     """月→ファイルの対応と、同一月の重複を自動解決した際の警告（月別）を返す。
 
-    snapshot_month を渡すと、その月の重複解決の警告文言を「スナップショット差分にも使う」
-    向けに切り替える（月中推移の差分分析が発動する月のみ）。
+    snapshot_month を渡すと、その月の重複解決の警告文言を snapshot_note の説明句で
+    「差分にも使う」向けに切り替える（月中推移の差分分析が発動する月のみ）。
     """
     by_month: dict[str, list[tuple[FilePeriod, Path]]] = {}
     if not directory.exists():
@@ -223,7 +226,8 @@ def _files_by_month(
             result[month] = entries[0][1]
         else:
             result[month], warns[month] = _resolve_duplicates(
-                directory, month, entries, snapshot_mode=(month == snapshot_month)
+                directory, month, entries,
+                snapshot_note=snapshot_note if month == snapshot_month else None,
             )
     return result, warns
 
@@ -322,7 +326,9 @@ def load_spend(
     発動する場合で、重複解決の警告文言を「スナップショット差分にも使う」向けにする。
     """
     files, file_warns = _files_by_month(
-        Path(input_dir) / "spend", snapshot_month=month if snapshot_active else None
+        Path(input_dir) / "spend",
+        snapshot_month=month if snapshot_active else None,
+        snapshot_note="スナップショット差分",
     )
     if month not in files:
         raise FileNotFoundError(
@@ -367,6 +373,24 @@ def spend_snapshots(
     return entries, excluded
 
 
+def member_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod, Path]]:
+    """対象月の単日スナップショット members を日付昇順で返す（月中のメンバー変動の差分用）。
+
+    kind=date のファイルのみ対象（時点が特定できる）。kind=month（members_2026-07.csv）は
+    時点不明のため差分の起点にならず除外する。
+    """
+    directory = Path(input_dir) / "members"
+    entries: list[tuple[FilePeriod, Path]] = []
+    if directory.exists():
+        for p in sorted(directory.glob("*.csv")):
+            period = file_period(p)
+            if period is None or period.month != month or period.kind != "date":
+                continue
+            entries.append((period, p))
+    entries.sort(key=lambda e: e[0].start)
+    return entries
+
+
 def _normalize_seat(value: str) -> str:
     s = str(value).strip().lower()
     if "premium" in s:
@@ -379,9 +403,44 @@ def _normalize_seat(value: str) -> str:
     return "unknown"
 
 
-def load_members(input_dir: Path, month: str, cfg: dict) -> LoadResult:
-    """対象月のメンバー一覧。無ければ直近の過去月にフォールバック（警告付き）。"""
-    files, file_warns = _files_by_month(Path(input_dir) / "members")
+def _read_members_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
+    """1つの members CSV を読み、カラム正規化・email/seat 正規化・重複解決を施す。"""
+    df = _read_csv(path)
+    df, warnings = map_columns(
+        df,
+        cfg["columns"]["members"],
+        required=REQUIRED_COLUMNS["members"],
+        source=path,
+    )
+    df["email"] = df["email"].astype(str).str.strip().str.lower()
+    df["seat_type"] = df["seat_type"].map(_normalize_seat)
+    unknown = df[df["seat_type"] == "unknown"]
+    if not unknown.empty:
+        warnings.append(
+            f"members: シート種別を判別できないユーザ {len(unknown)} 名"
+            f"（値に premium/standard を含まない）: {unknown['email'].head(5).tolist()}"
+        )
+    df = df.drop_duplicates(subset="email", keep="last")
+    return df, warnings
+
+
+def load_members_file(path: Path, cfg: dict) -> pd.DataFrame:
+    """指定パスの members CSV を1つだけ読む（メンバー変動の差分用・重複解決や警告なし）。"""
+    df, _ = _read_members_df(Path(path), cfg)
+    return df
+
+
+def load_members(input_dir: Path, month: str, cfg: dict, snapshot_active: bool = False) -> LoadResult:
+    """対象月のメンバー一覧。無ければ直近の過去月にフォールバック（警告付き）。
+
+    snapshot_active=True は、対象月に単日スナップショットが複数ありメンバー変動の差分分析が
+    発動する場合で、重複解決の警告文言を「メンバー変動の検出にも使う」向けにする。
+    """
+    files, file_warns = _files_by_month(
+        Path(input_dir) / "members",
+        snapshot_month=month if snapshot_active else None,
+        snapshot_note="メンバー変動の検出",
+    )
     warnings: list[str] = []
     if not files:
         raise FileNotFoundError(
@@ -407,23 +466,8 @@ def load_members(input_dir: Path, month: str, cfg: dict) -> LoadResult:
     used_month = month_of_file(path)
     if used_month in file_warns:
         warnings.append(file_warns[used_month])
-    df = _read_csv(path)
-    df, w = map_columns(
-        df,
-        cfg["columns"]["members"],
-        required=REQUIRED_COLUMNS["members"],
-        source=path,
-    )
+    df, w = _read_members_df(path, cfg)
     warnings.extend(w)
-    df["email"] = df["email"].astype(str).str.strip().str.lower()
-    df["seat_type"] = df["seat_type"].map(_normalize_seat)
-    unknown = df[df["seat_type"] == "unknown"]
-    if not unknown.empty:
-        warnings.append(
-            f"members: シート種別を判別できないユーザ {len(unknown)} 名"
-            f"（値に premium/standard を含まない）: {unknown['email'].head(5).tolist()}"
-        )
-    df = df.drop_duplicates(subset="email", keep="last")
     return LoadResult(df=df, source=path, warnings=warnings)
 
 
@@ -453,12 +497,8 @@ def load_members_info(input_dir: Path, cfg: dict) -> LoadResult | None:
     return LoadResult(df=df, source=path, warnings=[])
 
 
-def load_code_analytics(input_dir: Path, month: str, cfg: dict) -> LoadResult | None:
-    """Claude Code 貢献データ（任意）。無ければ None。"""
-    files, file_warns = _files_by_month(Path(input_dir) / "code-analytics")
-    if month not in files:
-        return None
-    path = files[month]
+def _read_code_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
+    """1つの code-analytics CSV を読み、カラム正規化・数値化・email 正規化を施す。"""
     df = _read_csv(path)
     df, warnings = map_columns(
         df,
@@ -469,6 +509,54 @@ def load_code_analytics(input_dir: Path, month: str, cfg: dict) -> LoadResult | 
     _to_numeric(df, ["prs_with_cc", "prs_total", "loc_with_cc", "loc_total"])
     df["email"] = df["email"].astype(str).str.strip().str.lower()
     df = df.drop_duplicates(subset="email", keep="last")
+    return df, warnings
+
+
+def load_code_analytics_file(path: Path, month: str, cfg: dict) -> pd.DataFrame:
+    """指定パスの code-analytics CSV を1つだけ読む（活動の差分用・重複解決や警告なし）。
+
+    month は呼び出し側との整合のために受け取るが、code-analytics は月列を持たないため
+    読み込み自体には用いない（差分側でファイル名の期間から時点を判別する）。
+    """
+    df, _ = _read_code_df(Path(path), cfg)
+    return df
+
+
+def code_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod, Path]]:
+    """対象月の期間/単日スナップショット code-analytics を end 昇順で返す（活動の差分用）。
+
+    kind=date（時点=当日）または kind=range（時点=期間末）を対象にする。
+    kind=month（cc_2026-07.csv）は時点不明のため差分の起点にならず除外する。
+    """
+    directory = Path(input_dir) / "code-analytics"
+    entries: list[tuple[FilePeriod, Path]] = []
+    if directory.exists():
+        for p in sorted(directory.glob("*.csv")):
+            period = file_period(p)
+            if period is None or period.month != month or period.kind not in ("date", "range"):
+                continue
+            entries.append((period, p))
+    entries.sort(key=lambda e: e[0].end)
+    return entries
+
+
+def load_code_analytics(
+    input_dir: Path, month: str, cfg: dict, snapshot_active: bool = False
+) -> LoadResult | None:
+    """Claude Code 貢献データ（任意）。無ければ None。
+
+    snapshot_active=True は、対象月にスナップショットが複数あり活動の差分分析が発動する
+    場合で、重複解決の警告文言を「Claude Code 活動の差分にも使う」向けにする。
+    """
+    files, file_warns = _files_by_month(
+        Path(input_dir) / "code-analytics",
+        snapshot_month=month if snapshot_active else None,
+        snapshot_note="Claude Code 活動の差分",
+    )
+    if month not in files:
+        return None
+    path = files[month]
+    df, warnings = _read_code_df(path, cfg)
     if month in file_warns:
         warnings.append(file_warns[month])
     return LoadResult(df=df, source=path, warnings=warnings)

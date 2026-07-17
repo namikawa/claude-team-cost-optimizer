@@ -88,3 +88,46 @@ def make_snapshots(tmp_path: Path):
         return input_dir
 
     return _make
+
+
+@pytest.fixture
+def write_member_snapshots():
+    """members の単日スナップショット（日付命名）を既存 input_dir に追加するヘルパ。
+
+    snapshots は {日付 "YYYY-MM-DD": ["email,seat", ...]} で、日付付きのファイル名
+    （members-snap-YYYY-MM-DD.csv）で置く。kind=date として月中のメンバー変動差分に使う。
+    """
+
+    def _make(input_dir: Path, snapshots: dict[str, list[str]], org: str | None = None) -> None:
+        base = input_dir / org if org else input_dir
+        d = base / "members"
+        d.mkdir(parents=True, exist_ok=True)
+        for date, rows in snapshots.items():
+            (d / f"members-snap-{date}.csv").write_text(
+                "Email,Seat Type\n" + "\n".join(rows) + "\n", encoding="utf-8")
+
+    return _make
+
+
+@pytest.fixture
+def write_code_snapshots():
+    """code-analytics の単日スナップショット（日付命名）を既存 input_dir に追加するヘルパ。
+
+    snapshots は {日付 "YYYY-MM-DD": [(email, loc[, prs]), ...]} で、日付付きの
+    ファイル名（cc-snap-YYYY-MM-DD.csv）で置く。with_prs=False で PR 列を省く。
+    """
+
+    def _make(input_dir: Path, snapshots: dict[str, list[tuple]],
+              org: str | None = None, with_prs: bool = True) -> None:
+        base = input_dir / org if org else input_dir
+        d = base / "code-analytics"
+        d.mkdir(parents=True, exist_ok=True)
+        header = "Email,Lines with CC" + (",PRs with CC" if with_prs else "")
+        for date, rows in snapshots.items():
+            lines = []
+            for row in rows:
+                lines.append(",".join(str(x) for x in row))
+            (d / f"cc-snap-{date}.csv").write_text(
+                header + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+
+    return _make

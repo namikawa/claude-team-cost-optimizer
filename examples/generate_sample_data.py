@@ -5,9 +5,12 @@
 組織ごとに input/<組織名>/{spend,members,code-analytics}/ を作る
 （code-analytics は任意のため org-b では省略している）。
 
-org-b には 2026-07 の「同一月の複数スナップショット」（月初〜05 / 〜13 / 〜31 の
-累積エクスポート）も生成し、月中の利用推移（スナップショット差分）機能の
-デモに使えるようにしている。値はすべて架空。
+org-b には 2026-07 の月中差分デモ用に、次の3種のスナップショットも生成する（値は架空）:
+  - spend: 月初〜05 / 〜13 / 〜31 の累積エクスポート（月中の利用推移）
+  - members: 07-05 / 07-16 の単日スナップショット（月中のメンバー変動。ikeda が
+    Standard→Premium、tanabe が新規追加）
+  - code-analytics: 07-05 / 07-16 の単日スナップショット（月中の Claude Code 活動。
+    shimizu は LoC 横ばいで spend 停止疑いの傍証、他は増加）
 
     uv run python examples/generate_sample_data.py
 """
@@ -106,6 +109,48 @@ SNAPSHOTS_ORG_B = {
         ("ikeda@example.co.jp",  260.0,  90.0, "claude-opus-4-8"),
         ("shimizu@example.co.jp", 45.4,   0.0, "claude-sonnet-4-6"),
         ("abe@example.co.jp",      9.0,   0.0, "claude-haiku-4-5"),
+    ],
+}
+
+# org-b 2026-07 の members 単日スナップショット（月中のメンバー変動デモ）。
+# 07-05 → 07-16 で ikeda が Standard→Premium（シート変更）、tanabe が新規追加。
+# 主データ（当月判定）には最新の 07-16 が使われる（date スナップショットは最新採用）。
+# 日付 -> [(email, seat), ...]
+MEMBER_SNAPSHOTS_ORG_B = {
+    "2026-07-05": [
+        ("mori@example.co.jp",    "Premium"),
+        ("hayashi@example.co.jp", "Premium"),
+        ("ikeda@example.co.jp",   "Standard"),
+        ("shimizu@example.co.jp", "Standard"),
+        ("abe@example.co.jp",     "Standard"),
+        ("okada@example.co.jp",   "Unassigned"),
+    ],
+    "2026-07-16": [
+        ("mori@example.co.jp",    "Premium"),
+        ("hayashi@example.co.jp", "Premium"),
+        ("ikeda@example.co.jp",   "Premium"),     # Standard → Premium（シート変更）
+        ("shimizu@example.co.jp", "Standard"),
+        ("abe@example.co.jp",     "Standard"),
+        ("okada@example.co.jp",   "Unassigned"),
+        ("tanabe@example.co.jp",  "Standard"),    # 月中の新規追加（新規メンバー）
+    ],
+}
+
+# org-b 2026-07 の code-analytics 単日スナップショット（月中の Claude Code 活動デモ）。
+# 累積 LoC / PR。shimizu は横ばい（spend 停止疑いと突合して「停止の傍証」になる）。
+# 日付 -> [(email, 累積 LoC, 累積 PR), ...]
+CODE_SNAPSHOTS_ORG_B = {
+    "2026-07-05": [
+        ("mori@example.co.jp",    3200, 14),
+        ("ikeda@example.co.jp",   2100,  9),
+        ("shimizu@example.co.jp",  260,  2),
+        ("abe@example.co.jp",       40,  1),
+    ],
+    "2026-07-16": [
+        ("mori@example.co.jp",    6800, 27),
+        ("ikeda@example.co.jp",   4300, 18),
+        ("shimizu@example.co.jp",  260,  2),   # 横ばい → shimizu 停止疑いの傍証
+        ("abe@example.co.jp",       90,  1),
     ],
 }
 
@@ -230,6 +275,32 @@ def write_members(org: str, month: str, users: list) -> None:
     print(f"wrote {path}")
 
 
+def write_members_snapshot(org: str, date: str, entries: list) -> None:
+    """members の単日スナップショット1件を日付命名の CSV で書く（メンバー変動デモ用）。"""
+    name = f"members-{SNAPSHOT_UUID}-{date}.csv"
+    path = BASE / org / "members" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Email", "Name", "Role", "Seat Type"])
+        for email, seat in entries:
+            writer.writerow([email, email.split("@")[0].title(), "Member", seat])
+    print(f"wrote {path}")
+
+
+def write_code_snapshot(org: str, date: str, entries: list) -> None:
+    """code-analytics の単日スナップショット1件を日付命名の CSV で書く（活動の差分デモ用）。"""
+    name = f"code-analytics-{SNAPSHOT_UUID}-{date}.csv"
+    path = BASE / org / "code-analytics" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Email", "Lines with CC", "PRs with CC"])
+        for email, loc, prs in entries:
+            writer.writerow([email, loc, prs])
+    print(f"wrote {path}")
+
+
 def write_members_info(org: str, info: list) -> None:
     """任意ファイル members-info.csv（月情報なし・org ディレクトリ直下・固定ファイル名）。"""
     path = BASE / org / "members-info.csv"
@@ -262,7 +333,12 @@ if __name__ == "__main__":
     # 任意入力デモ: 部署・職種・備考は org-a のみ（org-b は生成しない）
     write_members_info("org-a", MEMBERS_INFO_ORG_A)
 
-    # org-b の 2026-07: 月中スナップショット（差分分析デモ）＋対応する members
+    # org-b の 2026-07: 月中スナップショット（差分分析デモ）。
+    # members は月中のメンバー変動デモのため単日スナップショット2件で置く
+    # （月次ファイルは作らない。当月判定には最新の 07-16 が使われる）。
     for date_suffix, entries in SNAPSHOTS_ORG_B.items():
         write_spend_snapshot("org-b", date_suffix, entries)
-    write_members("org-b", "2026-07", USERS_ORG_B)
+    for date, entries in MEMBER_SNAPSHOTS_ORG_B.items():
+        write_members_snapshot("org-b", date, entries)
+    for date, entries in CODE_SNAPSHOTS_ORG_B.items():
+        write_code_snapshot("org-b", date, entries)
