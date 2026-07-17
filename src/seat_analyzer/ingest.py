@@ -56,6 +56,40 @@ def normalize_affiliations(cell) -> str:
     return "; ".join(parse_affiliations(cell))
 
 
+# 追加クレジット上限「無制限」の表記ゆれ（有効・上限なしを表す）。
+# 「なし/無し/none」は「上限なし」とも「クレジットなし（無効）」とも読める多義語のため
+# 受け付けず、解釈不能の警告に倒す（無効は 0、無制限はこのトークンで明示させる）
+_UNLIMITED_TOKENS = {"無制限", "unlimited", "inf", "∞"}
+
+
+def parse_credit_limit(cell) -> tuple[float, str | None]:
+    """追加クレジット上限セルを (値, 警告) に解釈する。
+
+    値の意味は「クレジットモード」の導出（analyze.credits_mode）で使う:
+      - 正の数値（"$" やカンマ許容）→ その金額（有効・上限 κ）
+      - 0 → 0.0（無効）
+      - 無制限 / unlimited → inf（有効・上限なし）
+      - 空欄 / NaN → NaN（不明）
+      - 負値・解釈不能な文字列 → NaN + 警告（不明扱い。データ入力ミスの検出用）
+    """
+    if cell is None or (isinstance(cell, float) and pd.isna(cell)):
+        return float("nan"), None
+    s = str(cell).strip()
+    if s == "" or s.lower() == "nan":
+        return float("nan"), None
+    if s.lower() in _UNLIMITED_TOKENS:
+        return float("inf"), None
+    # "$1,500" のような通貨表記を許容する
+    cleaned = s.replace("$", "").replace("＄", "").replace("￥", "").replace(",", "").strip()
+    try:
+        value = float(cleaned)
+    except ValueError:
+        return float("nan"), f"追加クレジット上限を解釈できません: {s!r}（不明として扱います）"
+    if value < 0:
+        return float("nan"), f"追加クレジット上限が負値です: {s!r}（不明として扱います）"
+    return value, None
+
+
 @dataclass(frozen=True)
 class FilePeriod:
     """ファイル名から読み取った対象期間。kind: range=期間 / date=単日スナップショット / month=月のみ。"""
@@ -391,6 +425,29 @@ def member_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod, Path
     return entries
 
 
+def member_info_files(input_dir: Path) -> list[tuple[FilePeriod, Path]]:
+    """members-info-*.csv の日付つきスナップショット全件を日付昇順で返す（全月）。
+
+    固定名 members-info.csv（日付なし）は kind!=date のため除外される。
+    月末以前で最新の採用・フォールバックは load_members_info が担う。
+    """
+    directory = Path(input_dir)
+    entries: list[tuple[FilePeriod, Path]] = []
+    if directory.exists():
+        for p in sorted(directory.glob("members-info*.csv")):
+            period = file_period(p)
+            if period is None or period.kind != "date":
+                continue
+            entries.append((period, p))
+    entries.sort(key=lambda e: e[0].start)
+    return entries
+
+
+def member_info_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod, Path]]:
+    """対象月の日付つき members-info スナップショットを日付昇順で返す（月中の κ 変更の差分用）。"""
+    return [(p, path) for p, path in member_info_files(input_dir) if p.month == month]
+
+
 def _normalize_seat(value: str) -> str:
     s = str(value).strip().lower()
     if "premium" in s:
@@ -471,17 +528,53 @@ def load_members(input_dir: Path, month: str, cfg: dict, snapshot_active: bool =
     return LoadResult(df=df, source=path, warnings=warnings)
 
 
-def load_members_info(input_dir: Path, cfg: dict) -> LoadResult | None:
-    """部署・チーム・職種・備考のマッピング（任意ファイル members-info.csv）。無ければ None。
+def _resolve_members_info_path(input_dir: Path, month: str | None) -> tuple[Path | None, list[str]]:
+    """採用する members-info ファイルとロード警告を決める。
 
-    org の入力ディレクトリ直下にファイル名固定で置く（月情報なし・手動メンテ）。
-    email 列のみ必須。department/team/role/note が無くても警告は出さず、空文字列列で補完する。
+    日付つきスナップショットが1つでもあれば固定名は無視し、対象月 M の月末以前で最新の
+    日付を採用する。月末以前に無ければ最古へフォールバックして強警告を出す。
+    日付つきが無ければ従来どおり固定名 members-info.csv を使う。
     """
-    path = Path(input_dir) / "members-info.csv"
-    if not path.exists():
+    input_dir = Path(input_dir)
+    snapshots = member_info_files(input_dir)
+    fixed = input_dir / "members-info.csv"
+    warnings: list[str] = []
+    if snapshots and month is not None:
+        year, mon = (int(x) for x in month.split("-"))
+        month_end = dt.date(year, mon, calendar.monthrange(year, mon)[1])
+        on_or_before = [(p, path) for p, path in snapshots if p.start <= month_end]
+        if on_or_before:
+            path = on_or_before[-1][1]
+        else:
+            path = snapshots[0][1]
+            warnings.append(
+                f"members-info: {month} 月末以前のスナップショットが無いため最古の "
+                f"{path.name} を使用。対象月当時の設定と異なる可能性があります"
+            )
+        if fixed.exists():
+            warnings.append(
+                f"members-info: 日付つきスナップショットがあるため固定名 {fixed.name} は無視し "
+                f"{path.name} を使用します"
+            )
+        return path, warnings
+    if fixed.exists():
+        return fixed, warnings
+    return None, warnings
+
+
+def load_members_info(input_dir: Path, cfg: dict, month: str | None = None) -> LoadResult | None:
+    """部署・チーム・職種・備考・追加クレジット上限のマッピング（任意ファイル）。無ければ None。
+
+    固定名 members-info.csv に加え、日付つき members-info-*-YYYY-MM-DD.csv も受け付ける
+    （対象月の月末以前で最新を採用）。月情報なしの手動メンテファイルで email 列のみ必須。
+    department/team/role/note が無くても警告は出さず空文字列列で補完し、credit_limit_usd 列は
+    parse_credit_limit で float 化する（列が無ければ全 NaN で付与）。
+    """
+    path, warnings = _resolve_members_info_path(Path(input_dir), month)
+    if path is None:
         return None
     df = _read_csv(path)
-    # department/team/role/note が無い場合の「任意カラムなし」警告は捨てる（完全に任意のため）
+    # department/team/role/note/credit_limit_usd が無い場合の「任意カラムなし」警告は捨てる
     df, _ = map_columns(
         df,
         cfg["columns"]["members_info"],
@@ -493,8 +586,38 @@ def load_members_info(input_dir: Path, cfg: dict) -> LoadResult | None:
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].fillna("").astype(str)
+    if "credit_limit_usd" in df.columns:
+        parsed = df["credit_limit_usd"].map(parse_credit_limit)
+        for email, (_, warn) in zip(df["email"], parsed, strict=False):
+            if warn:
+                warnings.append(f"{email}: {warn}")
+        df["credit_limit_usd"] = parsed.map(lambda pair: pair[0]).astype(float)
+    else:
+        df["credit_limit_usd"] = float("nan")
     df = df.drop_duplicates(subset="email", keep="last")
-    return LoadResult(df=df, source=path, warnings=[])
+    return LoadResult(df=df, source=path, warnings=warnings)
+
+
+def load_members_info_file(path: Path, cfg: dict) -> pd.DataFrame:
+    """指定パスの members-info を1つ読む（月中の κ 変更の差分用・スナップショット解決なし）。
+
+    email と credit_limit_usd（無ければ全 NaN）だけを正規化して返す。
+    """
+    df = _read_csv(Path(path))
+    df, _ = map_columns(
+        df,
+        cfg["columns"]["members_info"],
+        required=REQUIRED_COLUMNS["members_info"],
+        source=Path(path),
+    )
+    df["email"] = df["email"].astype(str).str.strip().str.lower()
+    if "credit_limit_usd" in df.columns:
+        df["credit_limit_usd"] = df["credit_limit_usd"].map(
+            lambda c: parse_credit_limit(c)[0]
+        ).astype(float)
+    else:
+        df["credit_limit_usd"] = float("nan")
+    return df.drop_duplicates(subset="email", keep="last")
 
 
 def _read_code_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
