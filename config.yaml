@@ -109,6 +109,15 @@ columns:
     team:       ["team", "チーム", "グループ"]
     role:       ["role", "職種", "役割"]
     note:       ["note", "memo", "備考", "コメント"]
+    # 追加クレジット（usage credits）のユーザ上限 κ [USD/月]。管理画面で設定される値を手入力。
+    # 正数=有効（上限あり）/ 0=無効 / 無制限=有効（上限なし）/ 空欄=不明
+    credit_limit_usd: ["credit limit", "credit limit usd", "extra usage limit",
+                       "spending limit", "追加クレジット上限", "従量上限"]
+
+# 追加クレジット（usage credits）関連の表示閾値。判定・ヒステリシスには影響しない。
+usage_credits:
+  cap_tolerance_usd: 5.0        # 上限到達とみなす残額
+  grant_suggested_cap_usd: 150  # 付与候補に提示する推奨初期上限
 
 # キャッシュトークンの実効単価係数（入力単価に対する倍率）。
 # 実データで net_spend = uncached×1.0 + cache_read×0.1 + write_5m×1.25 + write_1h×2.0
