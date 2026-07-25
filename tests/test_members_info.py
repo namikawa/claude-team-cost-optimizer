@@ -4,7 +4,7 @@ from pathlib import Path
 
 from seat_analyzer import analyze as analyze_mod
 from seat_analyzer.analyze import analyze, preview
-from seat_analyzer.report import write_markdown
+from seat_analyzer.report import _group_summary_rows, write_markdown
 
 from .conftest import spend_row
 
@@ -214,8 +214,6 @@ def test_load_members_info_none_when_absent(make_input, cfg):
 
 
 # --- 兼務（複数所属）の按分 -----------------------------------------------
-
-from seat_analyzer.report import _group_summary_rows  # noqa: E402
 
 
 def test_dual_team_split_half_and_half(make_input, cfg):

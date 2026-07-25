@@ -92,7 +92,7 @@ def test_full_month_range_does_not_warn(cfg, tmp_path):
 
 # --- preview の観測日数自動判別 ---
 
-def test_preview_days_auto_detected_from_filename(cfg, tmp_path, capsys):
+def test_preview_days_auto_detected_from_filename(tmp_path, capsys):
     input_dir = tmp_path / "input" / "org-x"
     _write_spend(input_dir, f"spend-report-{UUID}-2026-07-01-to-2026-07-04.csv",
                  [spend_row("a@x.jp", 40.0, net=0.0)])
@@ -110,7 +110,7 @@ def test_preview_days_auto_detected_from_filename(cfg, tmp_path, capsys):
     assert "4日間の観測データ" in md
 
 
-def test_preview_without_days_or_range_errors(cfg, make_input, tmp_path, capsys):
+def test_preview_without_days_or_range_errors(make_input, tmp_path, capsys):
     input_dir = make_input({"2026-07": [spend_row("a@x.jp", 10.0)]},
                            members=["a@x.jp,Premium"], members_month="2026-07")
     rc = main([
