@@ -445,8 +445,13 @@ def _compute_member_changes(input_dir: Path, month: str, cfg: dict) -> tuple[dic
             "（変更月の課金は部分月のため、上限に基づく判定は翌月から行ってください）"
         )
 
+    # 表示用の時点ラベルと「変動なし」判定は md / HTML の両方が必要とするため、
+    # 表示側で二重に導出せずここで確定させる（members が無ければ members-info 側で代替）
+    labels = [s["label"] for s in snaps] or [s["label"] for s in credit_snaps]
     return {
         "snaps": [{"label": s["label"]} for s in snaps],
+        "labels": labels,
+        "empty": not (seat_changes or joined or left or credit_changes),
         "seat_changes": seat_changes,
         "joined": joined,
         "left": left,
@@ -468,7 +473,7 @@ def _compute_code_diff(input_dir: Path, month: str, cfg: dict) -> tuple[dict | N
 
     snaps = []
     for period, path in entries:
-        df = ingest.load_code_analytics_file(path, month, cfg)
+        df = ingest.load_code_analytics_file(path, cfg)
         # 欠損セル（NaN）は 0 として扱う（累積・増分計算で int 化できるように）
         loc = ({e: float(v) for e, v in zip(df["email"], df["loc_with_cc"].fillna(0.0), strict=False)}
                if "loc_with_cc" in df.columns else {})
@@ -521,6 +526,60 @@ def _attach_loc_corroboration(snapshot: dict | None, code_diff: dict | None) -> 
             r["loc_note"] = note_for(r["email"])
     for x in snapshot.get("stalled_capped", []):
         x["loc_note"] = note_for(x["email"])
+
+
+@dataclass(frozen=True)
+class _DiffActive:
+    """月中差分が発動するか（同一月に時点の違う入力が2つ以上あるか）のフラグ。
+
+    ロード側（load_spend / load_members / load_code_analytics）に渡し、同一月の重複解決の
+    警告文言を「差分にも使う」向けへ切り替えるために使う。
+    """
+
+    spend: bool
+    members: bool
+    code: bool
+
+
+def _diff_active(input_dir: Path, month: str) -> _DiffActive:
+    """対象月の月中差分の発動条件（各入力のスナップショットが2つ以上あるか）を判定する。"""
+    spend_entries, _ = ingest.spend_snapshots(input_dir, month)
+    return _DiffActive(
+        spend=len(spend_entries) >= 2,
+        members=len(ingest.member_snapshots(input_dir, month)) >= 2,
+        code=len(ingest.code_snapshots(input_dir, month)) >= 2,
+    )
+
+
+def _midmonth_diffs(
+    input_dir: Path, month: str, cfg: dict, seat_by_email: dict
+) -> tuple[dict | None, dict | None, dict | None, list[str]]:
+    """月中差分（利用推移・Claude Code 活動・メンバー変動）をまとめて計算する。
+
+    正式分析と速報が同じ手順（3種の差分を取り、最後に spend の停止疑いへ LoC 増分の
+    傍証/食い違いを注記する）を踏むため1箇所に集約する。差分の種類を増やすときも
+    ここだけを直せば両方に反映される。各差分はスナップショットが1つ以下なら None。
+    戻り値は (snapshot, code_diff, member_changes, warnings)。
+    """
+    snapshot, snap_warns = _compute_snapshot_diff(input_dir, month, cfg, seat_by_email)
+    code_diff, code_warns = _compute_code_diff(input_dir, month, cfg)
+    member_changes, member_warns = _compute_member_changes(input_dir, month, cfg)
+    _attach_loc_corroboration(snapshot, code_diff)
+    return snapshot, code_diff, member_changes, [*snap_warns, *code_warns, *member_warns]
+
+
+def _min_saving(cfg: dict) -> float:
+    """変更推奨に必要な最小削減額（シート差額 × decision.buffer_ratio）。"""
+    seat_diff = (float(cfg["seats"]["premium"]["price_usd"])
+                 - float(cfg["seats"]["standard"]["price_usd"]))
+    return float(cfg["decision"]["buffer_ratio"]) * seat_diff
+
+
+def _drop_unused_credit_columns(users: pd.DataFrame, summary: dict) -> pd.DataFrame:
+    """追加クレジット情報が無い入力では credit 列を落とす（出力を従来と一致させる後方互換）。"""
+    if summary.get("credit_shown"):
+        return users
+    return users.drop(columns=["credit_limit_usd", "credits_mode"], errors="ignore")
 
 
 def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict,
@@ -730,8 +789,8 @@ def _credit_reach_preview(users: pd.DataFrame, days_observed: int, days_in_month
                     d_star = days_observed + remaining / rate
                     if d_star <= days_in_month:
                         eta_day = int(math.ceil(d_star))
-            elif days_observed > 0 and billed > 0:
-                # 月初からの平均ペースへフォールバック
+            elif days_observed > 0:
+                # 月初からの平均ペースへフォールバック（billed > 0 は上で保証済み）
                 d_star = kappa * days_observed / billed
                 if d_star <= days_in_month:
                     eta_day = int(math.ceil(d_star))
@@ -758,19 +817,15 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             f"{month} のスペンドレポートがありません。存在する月: {available or 'なし'}"
         )
 
-    # 対象月に月初開始スナップショットが2つ以上あるなら月中推移の差分分析を発動する。
-    # 主データの採用は現行どおり（期間の広い方）で、重複警告の文言だけ差し替える。
-    snap_entries, _ = ingest.spend_snapshots(input_dir, month)
-    snapshot_active = len(snap_entries) >= 2
-    # members / code-analytics の月中差分（発動時は重複警告の文言を差し替える）
-    member_diff_active = len(ingest.member_snapshots(input_dir, month)) >= 2
-    code_diff_active = len(ingest.code_snapshots(input_dir, month)) >= 2
+    # 対象月に時点の違う入力が2つ以上あるなら月中差分を発動する。主データの採用は
+    # 現行どおり（期間の広い方）で、重複警告の文言だけ差し替える。
+    active = _diff_active(input_dir, month)
 
     raw: dict[str, pd.DataFrame] = {}
     sources: dict = {"spend": {}}
     for m in months_used:
         result = ingest.load_spend(
-            input_dir, m, cfg, snapshot_active=(snapshot_active and m == month)
+            input_dir, m, cfg, snapshot_active=(active.spend and m == month)
         )
         warnings.extend(result.warnings)
         sources["spend"][m] = str(result.source)
@@ -815,12 +870,12 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
             }
         monthly[m] = aggregate_month(df[is_user])
 
-    members_result = ingest.load_members(input_dir, month, cfg, snapshot_active=member_diff_active)
+    members_result = ingest.load_members(input_dir, month, cfg, snapshot_active=active.members)
     warnings.extend(members_result.warnings)
     members = members_result.df
     sources["members"] = str(members_result.source)
 
-    code_result = ingest.load_code_analytics(input_dir, month, cfg, snapshot_active=code_diff_active)
+    code_result = ingest.load_code_analytics(input_dir, month, cfg, snapshot_active=active.code)
     if code_result is not None:
         warnings.extend(code_result.warnings)
         sources["code_analytics"] = str(code_result.source)
@@ -832,23 +887,16 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
 
     # 前月からの変化・月次推移（ロード済み monthly から毎回計算・初月は None）
     trend = _compute_trend(monthly, months_used, set(members["email"]), cfg)
-    # 月中の利用推移（同一月の複数スナップショット差分・1つ以下なら None）
-    snapshot, snap_warns = _compute_snapshot_diff(input_dir, month, cfg, seat_by_email)
-    warnings.extend(snap_warns)
-    # 月中の Claude Code 活動・メンバー変動（スナップショット差分・1つ以下なら None）
-    code_diff, code_warns = _compute_code_diff(input_dir, month, cfg)
-    warnings.extend(code_warns)
-    member_changes, member_warns = _compute_member_changes(input_dir, month, cfg)
-    warnings.extend(member_warns)
-    # spend の停止疑いに LoC 増分の傍証/食い違いを注記（email 突合・両方揃ったときのみ）
-    _attach_loc_corroboration(snapshot, code_diff)
+    # 月中差分（利用推移・Claude Code 活動・メンバー変動。1つ以下なら None）
+    snapshot, code_diff, member_changes, diff_warns = _midmonth_diffs(
+        input_dir, month, cfg, seat_by_email
+    )
+    warnings.extend(diff_warns)
 
     decision_cfg = cfg["decision"]
     n_hyst = int(decision_cfg["hysteresis_months"])
-    buffer_ratio = float(decision_cfg["buffer_ratio"])
     censoring_margin = float(decision_cfg["censoring_margin"])
-    seat_diff = float(cfg["seats"]["premium"]["price_usd"]) - float(cfg["seats"]["standard"]["price_usd"])
-    min_saving = buffer_ratio * seat_diff
+    min_saving = _min_saving(cfg)
     s_allowance_mid = float(cfg["seats"]["standard"]["allowance_usd"]["mid"])
 
     def _costs_for(seat: str, api_cost: float, billed: float, scenario: str) -> tuple[str, float, float]:
@@ -1014,9 +1062,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None
     # 拘束後は常に Standard 推奨になり本命対象が漏れるため）
     upgrade = users["api_cost_usd"].map(lambda a: _recommend(float(a), "mid", cfg)[0] == "premium")
     grant_candidates = _grant_candidates(users, upgrade, cfg)
-    # 追加クレジット情報が無い入力では credit 列を落とし、出力を現行と完全一致させる（後方互換）
-    if not summary.get("credit_shown"):
-        users = users.drop(columns=["credit_limit_usd", "credits_mode"], errors="ignore")
+    users = _drop_unused_credit_columns(users, summary)
     return AnalysisResult(
         month=month, users=users, summary=summary, org=org,
         warnings=warnings, months_used=months_used, sources=sources,
@@ -1164,12 +1210,10 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
         raise ValueError(f"--days は 1〜{days_in_month}（{month} の暦日数）で指定してください")
     factor = days_in_month / days_observed
 
-    # 月初開始スナップショットが2つ以上あれば月中推移の差分分析を発動する（重複警告の文言も変える）
-    snap_entries, _ = ingest.spend_snapshots(input_dir, month)
-    snapshot_active = len(snap_entries) >= 2
-    member_diff_active = len(ingest.member_snapshots(input_dir, month)) >= 2
+    # 時点の違う入力が2つ以上あれば月中差分を発動する（重複警告の文言も変える）
+    active = _diff_active(input_dir, month)
 
-    spend_result = ingest.load_spend(input_dir, month, cfg, snapshot_active=snapshot_active)
+    spend_result = ingest.load_spend(input_dir, month, cfg, snapshot_active=active.spend)
     warnings.extend(spend_result.warnings)
     sources = {"spend": {month: str(spend_result.source)}}
     df = pricing.add_computed_cost(spend_result.df, cfg)
@@ -1183,24 +1227,19 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     org_service_obs = round(float(df[~is_user]["billed_usd"].sum()), 2)
     agg = aggregate_month(df[is_user]).set_index("email")
 
-    members_result = ingest.load_members(input_dir, month, cfg, snapshot_active=member_diff_active)
+    members_result = ingest.load_members(input_dir, month, cfg, snapshot_active=active.members)
     warnings.extend(members_result.warnings)
     members = members_result.df
     sources["members"] = str(members_result.source)
     seat_by_email = members.set_index("email")["seat_type"].to_dict()
 
-    # 月中の利用推移（同一月の複数スナップショット差分・1つ以下なら None）
-    snapshot, snap_warns = _compute_snapshot_diff(input_dir, month, cfg, seat_by_email)
-    warnings.extend(snap_warns)
-    # 月中の Claude Code 活動・メンバー変動（スナップショット差分・1つ以下なら None）
-    code_diff, code_warns = _compute_code_diff(input_dir, month, cfg)
-    warnings.extend(code_warns)
-    member_changes, member_warns = _compute_member_changes(input_dir, month, cfg)
-    warnings.extend(member_warns)
-    _attach_loc_corroboration(snapshot, code_diff)
+    # 月中差分（利用推移・Claude Code 活動・メンバー変動。1つ以下なら None）
+    snapshot, code_diff, member_changes, diff_warns = _midmonth_diffs(
+        input_dir, month, cfg, seat_by_email
+    )
+    warnings.extend(diff_warns)
 
-    seat_diff = float(cfg["seats"]["premium"]["price_usd"]) - float(cfg["seats"]["standard"]["price_usd"])
-    min_saving = float(cfg["decision"]["buffer_ratio"]) * seat_diff
+    min_saving = _min_saving(cfg)
 
     rows = []
     for email in sorted(set(members["email"]) | set(agg.index)):
@@ -1247,9 +1286,7 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     credit_reach = _credit_reach_preview(users, days_observed, days_in_month, cfg, snapshot)
     upgrade = users["label"].isin([LABEL_PREM_CONSIDER, LABEL_HOLD])
     grant_candidates = _grant_candidates(users, upgrade, cfg, demand_col="api_cost_projected_usd")
-    # 追加クレジット情報が無い入力では credit 列を落とし、出力を現行と完全一致させる（後方互換）
-    if not summary.get("credit_shown"):
-        users = users.drop(columns=["credit_limit_usd", "credits_mode"], errors="ignore")
+    users = _drop_unused_credit_columns(users, summary)
     return PreviewResult(
         month=month, users=users, summary=summary,
         days_observed=days_observed, days_in_month=days_in_month,

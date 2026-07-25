@@ -10,7 +10,19 @@ from seat_analyzer.cli import main
 from seat_analyzer.config import _validate
 from seat_analyzer.ingest import discover_months
 from seat_analyzer.pricing import unmatched_models
-from seat_analyzer.report import write_csv, write_html
+from seat_analyzer.report import (
+    _CODE_DIFF_HTML,
+    _CREDIT_REACH_HTML,
+    _E_DIST_HTML,
+    _GRANT_HTML,
+    _HTML_TEMPLATE_SRC,
+    _MEMBER_CHANGES_HTML,
+    _PREVIEW_HTML_TEMPLATE_SRC,
+    _SNAPSHOT_HTML,
+    _embed_shared_text,
+    write_csv,
+    write_html,
+)
 
 from .conftest import SPEND_HEADER, spend_row
 
@@ -28,6 +40,16 @@ def test_html_escapes_script_in_email(cfg, make_input, tmp_path):
     html = out.read_text(encoding="utf-8")
     assert "<script>alert" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_no_unresolved_shared_text_markers_in_templates():
+    # md/HTML 共有文言の <!--text:キー--> は組み立て時に全て置換されること。
+    # キー名を打ち間違えるとマーカーがそのままダッシュボードに出るため、機械的に防ぐ
+    for src in (_embed_shared_text(_HTML_TEMPLATE_SRC),
+                _embed_shared_text(_PREVIEW_HTML_TEMPLATE_SRC),
+                _embed_shared_text(_SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML
+                                   + _E_DIST_HTML + _GRANT_HTML + _CREDIT_REACH_HTML)):
+        assert "<!--text:" not in src
 
 
 def test_csv_formula_cells_are_sanitized(tmp_path):

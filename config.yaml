@@ -3,11 +3,6 @@
 # 単価・閾値はすべてここで管理する。実データが溜まったら allowance_usd を
 # キャリブレーションすること（README「allowanceのキャリブレーション」参照）。
 
-currency:
-  display: USD
-  # 円換算を併記したい場合にレートを設定（例: 155.0）。null なら USD のみ。
-  jpy_rate: null
-
 seats:
   standard:
     price_usd: 25.0        # 月払い

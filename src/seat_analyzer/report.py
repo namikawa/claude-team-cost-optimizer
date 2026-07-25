@@ -10,6 +10,7 @@ from jinja2 import Environment
 
 from .analyze import (
     CREDIT_DISABLED,
+    CREDIT_UNKNOWN,
     LABEL_EXCLUDED,
     LABEL_HOLD,
     LABEL_IDLE,
@@ -47,12 +48,56 @@ _STATUS_BADGE_CLASS = {
     STATUS_EXCLUDED: "b-keep",
 }
 
+# クレジットモード → 表示ラベル（付与候補の Markdown / HTML で共用）。
+# enabled は付与候補に現れないためラベルを持たない。
+_CREDIT_MODE_LABEL = {CREDIT_DISABLED: "無効", CREDIT_UNKNOWN: "不明"}
+
 # 部署/チーム軸の共通定義（col, 見出し, （未設定）行を含めるか）。
 # チームは（未設定）を除外する（チーム未設定は部署も異なる異質な集合のためまとめても意味がない）。
 GROUP_AXES = (
     ("department", "部署別サマリ", True),
     ("team", "チーム別サマリ", False),
 )
+
+# Markdown と HTML の両方に出る固定文言。同じ文を2箇所で保守すると片方だけ直す事故が
+# 起きるため、ここを唯一の定義とする。Markdown 側は _TEXT[...] を直接埋め、HTML 側は
+# テンプレート組み立て時に <!--text:キー--> を _embed_shared_text() が置換する。
+# 文中に Jinja/HTML の特殊文字（{ } % < > &）を含めないこと（そのまま出力される）。
+_TEXT = {
+    # セクション見出し（md は "## " を、HTML は <h2> を前後に付ける）
+    "h_snapshot": "月中の利用推移（スナップショット差分）",
+    "h_code_diff": "月中の Claude Code 活動（code-analytics 差分）",
+    "h_member_changes": "月中のメンバー変動（スナップショット差分）",
+    "h_e_dist": "込み枠の実測（E = API換算需要 − 実課金）",
+    "h_grant": "追加クレジット付与候補",
+    "h_credit_reach": "追加クレジット残額",
+    # 注記（末尾の句点は使う側で付ける。md は付けず HTML は付ける）
+    "note_stall_caveat": "停止は休暇・案件の谷でも起こるため、上限到達の断定には本人確認が必要です",
+    "note_credit_change": "追加クレジット上限を変更した月の課金は部分月のため、"
+                          "上限に基づく判定は翌月から行ってください",
+    "note_credit_eta": "到達見込みはスナップショットがある場合は直近区間の課金ペース、"
+                       "無い場合は月初からの平均ペースによる目安です。平均ペースの場合、"
+                       "課金は込み枠を使い切ってから始まるため実際の到達はこれより"
+                       "早くなりうる点に注意してください",
+    "note_team_total": "チーム別サマリはチーム未設定のユーザを除外しているため、"
+                       "縦合計は組織全体と一致しません",
+    "note_billed_nonlinear": "実課金は込み量を使い切ってから発生する非線形な値のため、"
+                             "月末ペース換算していません",
+    # 速報の凡例
+    "legend_idle": "遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨",
+    "legend_over": "⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）",
+    "legend_billed": "⚠️従量あり: Standard 等で従量課金が発生（Premium 検討の重要シグナル）",
+    "legend_excluded": "対象外（未割当）: 意図的にシートを割り当てていないメンバー"
+                       "（別組織でアサイン済み・管理者等）",
+}
+
+
+def _embed_shared_text(src: str) -> str:
+    """HTML テンプレート組み立て時に <!--text:キー--> を _TEXT の文言へ置換する。"""
+    for key, value in _TEXT.items():
+        src = src.replace(f"<!--text:{key}-->", value)
+    return src
+
 
 # CSV 由来の値（email 等）が HTML/JS として解釈されないよう autoescape を有効化
 _HTML_ENV = Environment(autoescape=True)
@@ -381,7 +426,7 @@ def _snapshot_md(snapshot: dict | None) -> str:
     if not snapshot:
         return ""
     snap_list = " / ".join(f"{s['label']}（{s['days']}日）" for s in snapshot["snaps"])
-    lines = ["## 月中の利用推移（スナップショット差分）", "", f"スナップショット: {snap_list}", ""]
+    lines = [f"## {_TEXT['h_snapshot']}", "", f"スナップショット: {snap_list}", ""]
     if not snapshot["judged"]:
         lines.append(
             f"- 最新区間が {snapshot['latest_interval_days']} 日と短いため停止判定は行っていません"
@@ -412,7 +457,7 @@ def _snapshot_md(snapshot: dict | None) -> str:
                 f"{_fmt_usd(x['billed'])} が発生（実効込み量は累積需要 "
                 f"{_fmt_usd(x['prev_cum'])}〜{_fmt_usd(x['curr_cum'])} の間）"
             )
-    lines += ["", "- 停止は休暇・案件の谷でも起こるため、上限到達の断定には本人確認が必要です"]
+    lines += ["", f"- {_TEXT['note_stall_caveat']}"]
     return "\n".join(lines)
 
 
@@ -430,7 +475,7 @@ def _code_diff_md(code_diff: dict | None) -> str:
     header = ("| ユーザ | " + " | ".join(labels)
               + " | LoC 増分（最新区間） |" + (" PR 増分 |" if has_prs else ""))
     sep = "|" + "---|" * (len(labels) + 2 + int(has_prs))
-    lines = ["## 月中の Claude Code 活動（code-analytics 差分）", "", header, sep]
+    lines = [f"## {_TEXT['h_code_diff']}", "", header, sep]
     for r in code_diff["rows"]:
         cums = " | ".join(f"{c:,}" for c in r["loc_cum"])
         cells = f"| {_md_cell(r['email'])} | {cums} | {_fmt_delta_int(r['loc_delta'])} |"
@@ -452,11 +497,9 @@ def _member_changes_md(mc: dict | None) -> str:
     if not mc:
         return ""
     credit_changes = mc.get("credit_changes") or []
-    labels = [s["label"] for s in mc["snaps"]] or [s["label"] for s in mc.get("credit_snaps", [])]
-    snap_list = " / ".join(labels)
-    lines = ["## 月中のメンバー変動（スナップショット差分）", "",
-             f"スナップショット時点: {snap_list}", ""]
-    if not (mc["seat_changes"] or mc["joined"] or mc["left"] or credit_changes):
+    lines = [f"## {_TEXT['h_member_changes']}", "",
+             f"スナップショット時点: {' / '.join(mc['labels'])}", ""]
+    if mc["empty"]:
         lines.append("- 変動なし")
         return "\n".join(lines)
     for c in mc["seat_changes"]:
@@ -480,9 +523,7 @@ def _member_changes_md(mc: dict | None) -> str:
             f"{c['from']} → {c['to']}（members-info スナップショット由来）"
         )
     if credit_changes:
-        lines.append(
-            "- 追加クレジット上限を変更した月の課金は部分月のため、上限に基づく判定は翌月から行ってください"
-        )
+        lines.append(f"- {_TEXT['note_credit_change']}")
     return "\n".join(lines)
 
 
@@ -501,7 +542,7 @@ def _e_distribution_md(edist: dict | None) -> str:
     """「## 込み枠の実測（E = API換算需要 − 実課金）」セクション（None なら空文字列）。"""
     if not edist:
         return ""
-    lines = ["## 込み枠の実測（E = API換算需要 − 実課金）", ""]
+    lines = [f"## {_TEXT['h_e_dist']}", ""]
     for g in edist["groups"]:
         seat_label = SEAT_LABELS.get(g["seat"], g["seat"])
         lines += [f"### {seat_label}（実課金発生 {g['count']} 名）", "",
@@ -534,11 +575,10 @@ def _grant_candidates_md(candidates: list, cap_usd) -> str:
     """「## 追加クレジット付与候補」セクション（該当なしなら空文字列）。正式・速報で共通。"""
     if not candidates:
         return ""
-    mode_label = {CREDIT_DISABLED: "無効", "unknown": "不明"}
-    lines = ["## 追加クレジット付与候補", ""]
+    lines = [f"## {_TEXT['h_grant']}", ""]
     for c in candidates:
         lines.append(
-            f"- {_md_cell(c['email'])}（クレジット{mode_label.get(c['mode'], c['mode'])}"
+            f"- {_md_cell(c['email'])}（クレジット{_CREDIT_MODE_LABEL.get(c['mode'], c['mode'])}"
             f"・モデル超過見込み {_fmt_usd(c['added'])}/月）"
         )
     lines += [
@@ -553,7 +593,7 @@ def _credit_reach_md(cr: dict | None) -> str:
     """速報の「## 追加クレジット残額」セクション（None なら空文字列）。"""
     if not cr:
         return ""
-    lines = ["## 追加クレジット残額", "",
+    lines = [f"## {_TEXT['h_credit_reach']}", "",
              "| ユーザ | 実課金(観測) | 上限 κ | 残額 | 到達見込み |", "|---|---|---|---|---|"]
     for r in cr["rows"]:
         if r["reached"]:
@@ -566,12 +606,7 @@ def _credit_reach_md(cr: dict | None) -> str:
             f"| {_md_cell(r['email'])} | {_fmt_usd(r['billed'])} | {_fmt_usd(r['kappa'])} "
             f"| {_fmt_usd(r['remaining'])} | {eta} |"
         )
-    lines += [
-        "",
-        "- 到達見込みはスナップショットがある場合は直近区間の課金ペース、無い場合は月初からの"
-        "平均ペースによる目安です。平均ペースの場合、課金は込み枠を使い切ってから始まるため"
-        "実際の到達はこれより早くなりうる点に注意してください",
-    ]
+    lines += ["", f"- {_TEXT['note_credit_eta']}"]
     return "\n".join(lines)
 
 
@@ -590,7 +625,7 @@ def _disabled_cost_note(users: pd.DataFrame) -> str:
             "請求されず、絞り負担のドル換算（需要が上限で抑えられる分の目安）です")
 
 
-def _cap_legend_supplement(users: pd.DataFrame, credit_shown: bool) -> str:
+def _cap_legend_supplement(credit_shown: bool) -> str:
     """⚠️上限? 凡例の補足（credit_shown のときのみ。無ければ空文字列）。"""
     if not credit_shown:
         return ""
@@ -668,10 +703,9 @@ def _member_changes_view(mc: dict | None) -> dict | None:
     if not mc:
         return None
     credit_changes = mc.get("credit_changes") or []
-    labels = [s["label"] for s in mc["snaps"]] or [s["label"] for s in mc.get("credit_snaps", [])]
     return {
-        "snap_list": " / ".join(labels),
-        "empty": not (mc["seat_changes"] or mc["joined"] or mc["left"] or credit_changes),
+        "snap_list": " / ".join(mc["labels"]),
+        "empty": mc["empty"],
         "seat_changes": [{"email": c["email"], "interval_label": c["interval_label"],
                           "from_label": SEAT_LABELS.get(c["from"], c["from"]),
                           "to_label": SEAT_LABELS.get(c["to"], c["to"])}
@@ -685,10 +719,6 @@ def _member_changes_view(mc: dict | None) -> dict | None:
         "credit_changes": [{"email": c["email"], "interval_label": c["interval_label"],
                             "from": c["from"], "to": c["to"]} for c in credit_changes],
     }
-
-
-# クレジットモード → 表示ラベル（付与候補の HTML/CSV 用）
-_CREDIT_MODE_LABEL = {CREDIT_DISABLED: "無効", "unknown": "不明"}
 
 
 def _e_distribution_view(edist: dict | None) -> dict | None:
@@ -749,9 +779,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
             group_md += nl + block
             if col == "team":
                 has_team_summary = True
-    team_note = (
-        "\n- チーム別サマリはチーム未設定のユーザを除外しているため、"
-        "縦合計は組織全体と一致しません。" if has_team_summary else "")
+    team_note = f"\n- {_TEXT['note_team_total']}。" if has_team_summary else ""
     detail_block = _detail_table_md(users)
     warnings_md = nl.join(f"- {w}" for w in result.warnings) if result.warnings else "- なし"
 
@@ -770,7 +798,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
     # 追加クレジット関連の凡例・注記（credit_shown / 無効ユーザの有無で条件付き）
     credit_row = _credit_summary_md_row(s)
     credit_row = (credit_row + nl) if credit_row else ""
-    cap_supplement = _cap_legend_supplement(users, s.get("credit_shown", False))
+    cap_supplement = _cap_legend_supplement(s.get("credit_shown", False))
     cap_supplement_line = f"{nl}- {cap_supplement}" if cap_supplement else ""
     disabled_note = _disabled_cost_note(users)
     disabled_note_line = f"{nl}- {disabled_note}。" if disabled_note else ""
@@ -927,7 +955,7 @@ _TREND_HTML = r"""
 # 「月中の利用推移（スナップショット差分）」の HTML 断片（正式・速報の両ダッシュボードで共有）。
 _SNAPSHOT_HTML = r"""
 {% if snapshot %}
-<h2>月中の利用推移（スナップショット差分）</h2>
+<h2><!--text:h_snapshot--></h2>
 <div class="card note">
   <p>スナップショット: {{ snapshot.snap_list }}</p>
   {% if not snapshot.judged %}<p>最新区間が {{ snapshot.latest_interval_days }} 日と短いため停止判定は行っていません。</p>{% endif %}
@@ -949,14 +977,14 @@ _SNAPSHOT_HTML = r"""
 {% for x in snapshot.billed_emerged %}<li>{{ x.email }}: {{ x.interval_label }} で従量課金 {{ x.billed_fmt }} が発生（実効込み量は累積需要 {{ x.prev_fmt }}〜{{ x.curr_fmt }} の間）。</li>{% endfor %}
 </ul></div>
 {% endif %}
-<div class="note">停止は休暇・案件の谷でも起こるため、上限到達の断定には本人確認が必要です。</div>
+<div class="note"><!--text:note_stall_caveat-->。</div>
 {% endif %}
 """
 
 # 「月中の Claude Code 活動（code-analytics 差分）」の HTML 断片（正式・速報の両方で共有）。
 _CODE_DIFF_HTML = r"""
 {% if code_diff %}
-<h2>月中の Claude Code 活動（code-analytics 差分）</h2>
+<h2><!--text:h_code_diff--></h2>
 <div class="tablebox"><table>
 <tr><th>ユーザ</th>{% for l in code_diff.labels %}<th class="num">{{ l }}</th>{% endfor %}<th class="num">LoC 増分</th>{% if code_diff.has_prs %}<th class="num">PR 増分</th>{% endif %}</tr>
 {% for r in code_diff.rows %}
@@ -974,7 +1002,7 @@ _CODE_DIFF_HTML = r"""
 # 「月中のメンバー変動（スナップショット差分）」の HTML 断片（正式・速報の両方で共有）。
 _MEMBER_CHANGES_HTML = r"""
 {% if member_changes %}
-<h2>月中のメンバー変動（スナップショット差分）</h2>
+<h2><!--text:h_member_changes--></h2>
 <div class="card note">
   <p>スナップショット時点: {{ member_changes.snap_list }}</p>
   {% if member_changes.empty %}<p>変動なし</p>{% else %}<ul>
@@ -982,7 +1010,7 @@ _MEMBER_CHANGES_HTML = r"""
   {% for j in member_changes.joined %}<li>{{ j.email }}: {{ j.interval_label }} で追加（{{ j.seat_label }}）</li>{% endfor %}
   {% for x in member_changes.left %}<li>{{ x.email }}: {{ x.interval_label }} で削除（{{ x.seat_label }}）</li>{% endfor %}
   {% for c in member_changes.credit_changes %}<li>{{ c.email }}: {{ c.interval_label }} で 追加クレジット上限 {{ c.from }} → {{ c.to }}（members-info 由来）</li>{% endfor %}
-  </ul>{% if member_changes.credit_changes %}<p>追加クレジット上限を変更した月の課金は部分月のため、上限に基づく判定は翌月から行ってください。</p>{% endif %}{% endif %}
+  </ul>{% if member_changes.credit_changes %}<p><!--text:note_credit_change-->。</p>{% endif %}{% endif %}
 </div>
 {% endif %}
 """
@@ -990,7 +1018,7 @@ _MEMBER_CHANGES_HTML = r"""
 # 「込み枠の実測（E 分布）」の HTML 断片（正式ダッシュボードのみ）。
 _E_DIST_HTML = r"""
 {% if e_distribution %}
-<h2>込み枠の実測（E = API換算需要 − 実課金）</h2>
+<h2><!--text:h_e_dist--></h2>
 {% for g in e_distribution.groups %}
 <div class="tablebox"><table>
 <tr><th>{{ g.seat_label }}（実課金発生 {{ g.count }} 名）</th><th class="num">需要</th><th class="num">実課金</th><th class="num">E</th></tr>
@@ -1007,7 +1035,7 @@ _E_DIST_HTML = r"""
 # 「追加クレジット付与候補」の HTML 断片（正式・速報の両方で共有）。
 _GRANT_HTML = r"""
 {% if grant_candidates %}
-<h2>追加クレジット付与候補</h2>
+<h2><!--text:h_grant--></h2>
 <div class="card note">
   <ul>{% for c in grant_candidates %}<li>{{ c.email }}（クレジット{{ c.mode_label }}・モデル超過見込み {{ c.added_fmt }}/月）</li>{% endfor %}</ul>
   <p>昇格の前に、まず上限つき追加クレジット（推奨初期上限 {{ grant_cap_fmt }}）を付与し、1ヶ月の課金実測で判断することを推奨します。</p>
@@ -1018,14 +1046,14 @@ _GRANT_HTML = r"""
 # 「追加クレジット残額」の HTML 断片（速報ダッシュボードのみ）。
 _CREDIT_REACH_HTML = r"""
 {% if credit_reach %}
-<h2>追加クレジット残額</h2>
+<h2><!--text:h_credit_reach--></h2>
 <div class="tablebox"><table>
 <tr><th>ユーザ</th><th class="num">実課金(観測)</th><th class="num">上限 κ</th><th class="num">残額</th><th>到達見込み</th></tr>
 {% for r in credit_reach.rows %}
 <tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td><td class="num">{{ r.billed_fmt }}</td><td class="num">{{ r.kappa_fmt }}</td><td class="num">{{ r.remaining_fmt }}</td><td>{% if r.reached %}<span class="cap">⚠️上限到達</span>{% else %}{{ r.eta }}{% endif %}</td></tr>
 {% endfor %}
 </table></div>
-<div class="note">到達見込みはスナップショットがある場合は直近区間の課金ペース、無い場合は月初からの平均ペースによる目安です。平均ペースの場合、課金は込み枠を使い切ってから始まるため実際の到達はこれより早くなりうる点に注意してください。</div>
+<div class="note"><!--text:note_credit_eta-->。</div>
 {% endif %}
 """
 
@@ -1132,7 +1160,7 @@ _HTML_TEMPLATE_SRC = r"""<!doctype html>
     <li>込み利用量は非公開のため low/mid/high 3シナリオの感度分析付き（判定横の「確度」）。</li>
     <li>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。{% if cap_supplement %}{{ cap_supplement }}。{% endif %}</li>
     {% if disabled_note %}<li>{{ disabled_note }}。</li>{% endif %}
-    {% if has_team_summary %}<li>チーム別サマリはチーム未設定のユーザを除外しているため、縦合計は組織全体と一致しません。</li>{% endif %}
+    {% if has_team_summary %}<li><!--text:note_team_total-->。</li>{% endif %}
     <li>判定に使用した月: {{ s.months_used | join(', ') }}（{{ s.hysteresis_months }}ヶ月ヒステリシス）。</li>
   </ul>
 </div>
@@ -1141,10 +1169,12 @@ _HTML_TEMPLATE_SRC = r"""<!doctype html>
 """
 
 _HTML_TEMPLATE = _HTML_ENV.from_string(
-    _HTML_TEMPLATE_SRC.replace("<!--TREND_SECTION-->", _TREND_HTML)
-    .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
-    .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
-    .replace("<!--CREDIT_SECTION-->", _E_DIST_HTML + _GRANT_HTML)
+    _embed_shared_text(
+        _HTML_TEMPLATE_SRC.replace("<!--TREND_SECTION-->", _TREND_HTML)
+        .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
+        .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
+        .replace("<!--CREDIT_SECTION-->", _E_DIST_HTML + _GRANT_HTML)
+    )
 )
 
 
@@ -1225,15 +1255,15 @@ _PREVIEW_HTML_TEMPLATE_SRC = r"""<!doctype html>
 <div class="card note">
   <ul>
     <li>日割り換算（×{{ '%.1f' % factor }}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません。</li>
-    <li>実課金は込み量を使い切ってから発生する非線形な値のため、月末ペース換算していません。</li>
+    <li><!--text:note_billed_nonlinear-->。</li>
     <li>変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（analyze）で行ってください。</li>
     {% if disabled_note %}<li>{{ disabled_note }}。</li>{% endif %}
   </ul>
   <ul>
-    <li>遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨。</li>
-    <li>⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）。</li>
-    <li>⚠️従量あり: Standard 等で従量課金が発生（Premium 検討の重要シグナル）。</li>
-    <li>対象外（未割当）: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。</li>
+    <li><!--text:legend_idle-->。</li>
+    <li><!--text:legend_over-->。</li>
+    <li><!--text:legend_billed-->。</li>
+    <li><!--text:legend_excluded-->。</li>
   </ul>
 </div>
 
@@ -1241,11 +1271,13 @@ _PREVIEW_HTML_TEMPLATE_SRC = r"""<!doctype html>
 """
 
 _PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(
-    _PREVIEW_HTML_TEMPLATE_SRC.replace(
-        "<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
-    .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
-    .replace("<!--CREDIT_REACH-->", _CREDIT_REACH_HTML)
-    .replace("<!--GRANT_SECTION-->", _GRANT_HTML)
+    _embed_shared_text(
+        _PREVIEW_HTML_TEMPLATE_SRC.replace(
+            "<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
+        .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
+        .replace("<!--CREDIT_REACH-->", _CREDIT_REACH_HTML)
+        .replace("<!--GRANT_SECTION-->", _GRANT_HTML)
+    )
 )
 
 
@@ -1311,8 +1343,7 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
         total_obs_fmt=_fmt_compact(result.summary["total_api_observed_usd"]),
         total_proj_fmt=_fmt_compact(result.summary["total_api_projected_usd"]),
         max_proj=max_proj,
-        seat_short={"standard": "Standard", "premium": "Premium",
-                    "unassigned": "未割当", "unknown": "不明"},
+        seat_short=SEAT_LABELS,
     )
     path.write_text(html, encoding="utf-8")
 
@@ -1369,7 +1400,7 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         e_distribution=_e_distribution_view(result.e_distribution),
         grant_candidates=_grant_candidates_view(result.grant_candidates),
         grant_cap_fmt=_fmt_compact(cap_usd),
-        cap_supplement=_cap_legend_supplement(result.users, result.summary.get("credit_shown", False)),
+        cap_supplement=_cap_legend_supplement(result.summary.get("credit_shown", False)),
         disabled_note=_disabled_cost_note(result.users),
         users_sorted=users_sorted,
         group_summaries=group_summaries,
@@ -1377,8 +1408,7 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         detail_rows=detail_rows,
         detail_has_loc=detail_has_loc,
         max_cost=max_cost,
-        seat_short={"standard": "Standard", "premium": "Premium",
-                    "unassigned": "未割当", "unknown": "不明"},
+        seat_short=SEAT_LABELS,
     )
     path.write_text(html, encoding="utf-8")
 
@@ -1467,15 +1497,15 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> dict[str, Pa
 {(nl + notes_block) if notes_block else ''}
 - 一次判断: 月末ペース換算需要を損益分岐モデル（allowance 3シナリオ）にかけた参考判定。
   境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒しています
-- 遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨
-- ⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）
-- ⚠️従量あり: Standard 等で従量課金が発生（Premium 検討の重要シグナル）
-- 対象外（未割当）: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）{snap_section}
+- {_TEXT['legend_idle']}
+- {_TEXT['legend_over']}
+- {_TEXT['legend_billed']}
+- {_TEXT['legend_excluded']}{snap_section}
 
 ## 注意事項
 
 - 日割り換算（×{factor:.1f}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません
-- 実課金は込み量を使い切ってから発生する非線形な値のため、月末ペース換算していません
+- {_TEXT['note_billed_nonlinear']}
 - 変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（`analyze`）で行ってください{disabled_note_line}
 
 ## データ検証・警告

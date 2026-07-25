@@ -164,7 +164,7 @@ def test_summary_counts(cfg, make_input):
     assert s["est_monthly_saving_usd"] == 100.0
 
 
-def test_org_service_rows_excluded_from_seat_table(cfg, make_input, tmp_path):
+def test_org_service_rows_excluded_from_seat_table(cfg, make_input):
     # "(org service usage)" のような @ を含まない行はシート判定から除外し別枠計上
     input_dir = make_input(
         {

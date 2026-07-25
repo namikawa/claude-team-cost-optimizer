@@ -205,7 +205,7 @@ def _resolve_duplicates(
     "メンバー変動の検出"）を渡す。
     """
     if all(p.kind == "date" for p, _ in entries):
-        period, path = max(entries, key=lambda e: e[0].end)
+        _, path = max(entries, key=lambda e: e[0].end)
         others = ", ".join(f.name for p, f in entries if f != path)
         tail = f"（{snapshot_note}に {others} も使用）" if snapshot_note else f"（未使用: {others}）"
         return path, (
@@ -635,11 +635,11 @@ def _read_code_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
     return df, warnings
 
 
-def load_code_analytics_file(path: Path, month: str, cfg: dict) -> pd.DataFrame:
+def load_code_analytics_file(path: Path, cfg: dict) -> pd.DataFrame:
     """指定パスの code-analytics CSV を1つだけ読む（活動の差分用・重複解決や警告なし）。
 
-    month は呼び出し側との整合のために受け取るが、code-analytics は月列を持たないため
-    読み込み自体には用いない（差分側でファイル名の期間から時点を判別する）。
+    code-analytics は月列を持たないため対象月は受け取らない（差分側でファイル名の期間から
+    時点を判別する）。
     """
     df, _ = _read_code_df(Path(path), cfg)
     return df
