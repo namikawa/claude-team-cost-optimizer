@@ -1,6 +1,10 @@
 import pandas as pd
 
-from seat_analyzer import pricing
+from seat_analyzer import ingest, pricing
+
+
+def test_spend_optional_columns_do_not_overlap_cache_columns():
+    assert set(ingest.SPEND_OPTIONAL_COLUMNS).isdisjoint(pricing.CACHE_COLS)
 
 
 def test_price_for_model_matching(cfg):
