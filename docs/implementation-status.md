@@ -279,25 +279,33 @@
 - Spendの`account_uuid`、`user_id`、`gross_spend`、`web_search_count`を正準化
 - 現行形式のunderscore区切りと従来形式のspace区切りを同じaliasで処理
 - 4列が存在しない旧CSVでは列を`NA`で追加
-- ID列の前後空白を除去
+- Spend CSVを文字列として読み、ID列の先頭ゼロを保持したまま前後空白を除去
 - 金額・件数列を数値化
+- 現行形式を示す列がある場合、4列の部分欠損を警告
+- 4列のalias設定欠損を起動時に検出
+- キャッシュ内訳列を誤って`NA`補完対象へ追加しない不変条件テストを追加
 
 確認したこと:
 
 - 新形式CSVを読み込める
 - 4つの任意列がない旧形式CSVを読み込める
+- ID列に空セルが混在しても、数値形式IDの先頭ゼロと欠損を保持できる
 - 旧形式と新形式でV1が参照する列の値・型が一致する
 - 旧CSVの既存警告へ新しい任意列名を追加しない
+- 現行形式の4列が部分的に欠けた場合は、欠損列名を警告する
 - report追加、`subject_id`生成、既存判定の変更を行っていない
 
 コード・ファイル変更:
 
 - `config.yaml`
+- `src/seat_analyzer/config.py`
 - `src/seat_analyzer/ingest.py`
+- `tests/test_hardening.py`
 - `tests/test_ingest.py`
+- `tests/test_pricing.py`
 
 テスト:
 
-- `uv run pytest tests/test_ingest.py`（9件成功）
+- `uv run pytest tests/test_ingest.py tests/test_hardening.py tests/test_pricing.py`（31件成功）
 - `uv run ruff check .`
-- `uv run pytest`（170件成功）
+- `uv run pytest`（174件成功）
