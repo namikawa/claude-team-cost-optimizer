@@ -76,12 +76,16 @@ snapshot_diff:
 columns:
   spend:
     email:            ["email", "user email", "user"]
+    account_uuid:     ["account uuid", "account id"]
+    user_id:          ["user id"]
     product:          ["product", "product type", "surface"]
     model:            ["model", "model name"]
     requests:         ["request count", "requests", "num requests", "total requests"]
     prompt_tokens:    ["prompt tokens", "input tokens", "total prompt tokens"]
     completion_tokens: ["completion tokens", "output tokens", "total completion tokens"]
+    gross_spend:      ["total gross spend usd", "gross spend usd", "gross spend"]
     net_spend:        ["total net spend usd", "net spend usd", "net spend"]
+    web_search_count: ["total web search count", "web search count", "web searches"]
     # キャッシュ内訳（実スペンドレポートに存在。あると spend 検算の精度が上がる）
     uncached_input_tokens: ["total uncached input tokens", "uncached input tokens"]
     cache_read_tokens:     ["total cache read tokens", "cache read tokens"]

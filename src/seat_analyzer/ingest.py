@@ -28,6 +28,15 @@ REQUIRED_COLUMNS = {
     "members_info": ["email"],
 }
 
+# Step 1で正準化するSpend任意列。既存の任意列は「列なし」を利用する処理があるため、
+# 一律には補完せず、この4列だけを欠損時にNAで追加する。
+SPEND_OPTIONAL_COLUMNS = (
+    "account_uuid",
+    "user_id",
+    "gross_spend",
+    "web_search_count",
+)
+
 _DAY = r"(?:0[1-9]|[12]\d|3[01])"
 _RANGE_RE = re.compile(
     rf"(20\d{{2}})[-_](0[1-9]|1[0-2])[-_]({_DAY})[-_]to[-_](20\d{{2}})[-_](0[1-9]|1[0-2])[-_]({_DAY})"
@@ -158,8 +167,9 @@ def map_columns(
     aliases: dict[str, list[str]],
     required: list[str],
     source: Path,
+    optional_na: tuple[str, ...] = (),
 ) -> tuple[pd.DataFrame, list[str]]:
-    """正規化ヘッダをエイリアス表で正準名にリネームする。"""
+    """正規化ヘッダを正準名にリネームし、指定された任意列をNAで補完する。"""
     warnings: list[str] = []
     normalized = {col: normalize_header(col) for col in df.columns}
     rename: dict[str, str] = {}
@@ -178,7 +188,14 @@ def map_columns(
             f"  実ファイルのヘッダ: {list(df.columns)}\n"
             f"  config.yaml > columns にエイリアスを追記してください"
         )
-    optional_missing = [c for c in aliases if c not in out.columns and c not in required]
+    for column in optional_na:
+        if column not in out.columns:
+            out[column] = pd.NA
+    optional_missing = [
+        c
+        for c in aliases
+        if c not in out.columns and c not in required and c not in optional_na
+    ]
     if optional_missing:
         warnings.append(f"{source.name}: 任意カラムなし: {optional_missing}")
     return out, warnings
@@ -340,12 +357,16 @@ def _read_spend_df(path: Path, month: str, cfg: dict) -> tuple[pd.DataFrame, lis
         cfg["columns"]["spend"],
         required=REQUIRED_COLUMNS["spend"],
         source=path,
+        optional_na=SPEND_OPTIONAL_COLUMNS,
     )
     _to_numeric(df, [
-        "requests", "prompt_tokens", "completion_tokens", "net_spend",
+        "requests", "prompt_tokens", "completion_tokens", "gross_spend", "net_spend",
+        "web_search_count",
         "uncached_input_tokens", "cache_read_tokens",
         "cache_write_5m_tokens", "cache_write_1h_tokens",
     ])
+    for column in ("account_uuid", "user_id"):
+        df[column] = df[column].astype("string").str.strip()
     df["email"] = df["email"].astype(str).str.strip().str.lower()
     df["month"] = month
     return df, warnings
