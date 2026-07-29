@@ -28,6 +28,19 @@ REQUIRED_COLUMNS = {
     "members_info": ["email"],
 }
 
+# Step 1で正準化するSpend任意列。既存の任意列は「列なし」を利用する処理があるため、
+# 一律には補完せず、この4列だけを欠損時にNAで追加する。
+SPEND_OPTIONAL_COLUMNS = (
+    "account_uuid",
+    "user_id",
+    "gross_spend",
+    "web_search_count",
+)
+
+# 旧形式の公開サンプルにも account_uuid / gross_spend は存在するため、現行形式を
+# 識別できる追加列だけをマーカーにする。いずれかがあれば4列の部分欠損を警告する。
+SPEND_CURRENT_SCHEMA_MARKERS = ("user_id", "web_search_count")
+
 _DAY = r"(?:0[1-9]|[12]\d|3[01])"
 _RANGE_RE = re.compile(
     rf"(20\d{{2}})[-_](0[1-9]|1[0-2])[-_]({_DAY})[-_]to[-_](20\d{{2}})[-_](0[1-9]|1[0-2])[-_]({_DAY})"
@@ -158,8 +171,14 @@ def map_columns(
     aliases: dict[str, list[str]],
     required: list[str],
     source: Path,
+    fill_na_columns: tuple[str, ...] = (),
+    partial_schema_markers: tuple[str, ...] = (),
 ) -> tuple[pd.DataFrame, list[str]]:
-    """正規化ヘッダをエイリアス表で正準名にリネームする。"""
+    """正規化ヘッダを正準名にリネームし、指定された任意列をNAで補完する。
+
+    partial_schema_markers のいずれかが入力にあれば、fill_na_columns の部分欠損も
+    警告する。マーカーがない旧形式は、後方互換のため補完だけ行い警告しない。
+    """
     warnings: list[str] = []
     normalized = {col: normalize_header(col) for col in df.columns}
     rename: dict[str, str] = {}
@@ -170,15 +189,25 @@ def map_columns(
                 rename[col] = canonical
                 break
     out = df.rename(columns=rename)
+    mapped_columns = set(out.columns)
 
-    missing = [c for c in required if c not in out.columns]
+    missing = [c for c in required if c not in mapped_columns]
     if missing:
         raise ValueError(
             f"{source}: 必須カラムが見つかりません: {missing}\n"
             f"  実ファイルのヘッダ: {list(df.columns)}\n"
             f"  config.yaml > columns にエイリアスを追記してください"
         )
-    optional_missing = [c for c in aliases if c not in out.columns and c not in required]
+    fill_missing = [c for c in fill_na_columns if c not in mapped_columns]
+    optional_missing = [
+        c
+        for c in aliases
+        if c not in mapped_columns and c not in required and c not in fill_na_columns
+    ]
+    if any(marker in mapped_columns for marker in partial_schema_markers):
+        optional_missing.extend(fill_missing)
+    for column in fill_missing:
+        out[column] = pd.NA
     if optional_missing:
         warnings.append(f"{source.name}: 任意カラムなし: {optional_missing}")
     return out, warnings
@@ -313,11 +342,11 @@ def validate_org_name(org: str) -> None:
         )
 
 
-def _read_csv(path: Path) -> pd.DataFrame:
+def _read_csv(path: Path, *, dtype=None) -> pd.DataFrame:
     # utf-8-sig は BOM 無しの UTF-8 も読めるため、utf-8-sig と cp932 の2種で足りる
     for encoding in ("utf-8-sig", "cp932"):
         try:
-            return pd.read_csv(path, encoding=encoding)
+            return pd.read_csv(path, encoding=encoding, dtype=dtype)
         except UnicodeDecodeError:
             continue
     raise ValueError(f"{path}: 文字コードを判別できません（utf-8 / cp932 を試行）")
@@ -334,18 +363,25 @@ def _to_numeric(df: pd.DataFrame, cols: list[str]) -> None:
 
 def _read_spend_df(path: Path, month: str, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
     """1つのスペンド CSV を読み、カラム正規化・数値化・email 正規化を施す。"""
-    df = _read_csv(path)
+    # IDの先頭ゼロや、欠損混在時の ".0" 付与を防ぐため、Spendはまず文字列で読む。
+    # 数値列は正準化後に _to_numeric で明示的に変換する。
+    df = _read_csv(path, dtype=str)
     df, warnings = map_columns(
         df,
         cfg["columns"]["spend"],
         required=REQUIRED_COLUMNS["spend"],
         source=path,
+        fill_na_columns=SPEND_OPTIONAL_COLUMNS,
+        partial_schema_markers=SPEND_CURRENT_SCHEMA_MARKERS,
     )
     _to_numeric(df, [
-        "requests", "prompt_tokens", "completion_tokens", "net_spend",
+        "requests", "prompt_tokens", "completion_tokens", "gross_spend", "net_spend",
+        "web_search_count",
         "uncached_input_tokens", "cache_read_tokens",
         "cache_write_5m_tokens", "cache_write_1h_tokens",
     ])
+    for column in ("account_uuid", "user_id"):
+        df[column] = df[column].astype("string").str.strip()
     df["email"] = df["email"].astype(str).str.strip().str.lower()
     df["month"] = month
     return df, warnings

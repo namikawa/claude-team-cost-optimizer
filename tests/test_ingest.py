@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from seat_analyzer import ingest
@@ -19,9 +20,132 @@ def test_discover_months_and_load_spend(cfg, make_input):
 
     result = ingest.load_spend(input_dir, "2026-06", cfg)
     df = result.df
-    assert set(["email", "model", "prompt_tokens", "completion_tokens", "net_spend"]) <= set(df.columns)
+    assert {
+        "email",
+        "account_uuid",
+        "model",
+        "prompt_tokens",
+        "completion_tokens",
+        "gross_spend",
+        "net_spend",
+    } <= set(df.columns)
     assert df["email"].iloc[0] == "a@x.jp"
+    assert df["account_uuid"].iloc[0] == "uuid-x"
+    assert df["gross_spend"].iloc[0] == pytest.approx(20.0)
     assert df["month"].iloc[0] == "2026-06"
+
+
+def test_load_spend_maps_current_optional_columns(cfg, tmp_path: Path):
+    path = tmp_path / "input" / "spend" / "spend_2026-06.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "user_email,account_uuid,product,model,total_requests,total_prompt_tokens,"
+        "total_completion_tokens,total_net_spend_usd,total_gross_spend_usd,user_id,"
+        "total_web_search_count\n"
+        "A@X.JP, 00001234 ,Claude Code,claude-sonnet-4-6,10,1000,100,1.25,2.50,"
+        " 00123456 ,3\n",
+        encoding="utf-8",
+    )
+
+    df = ingest.load_spend(tmp_path / "input", "2026-06", cfg).df
+
+    assert df.loc[0, "email"] == "a@x.jp"
+    assert df.loc[0, "account_uuid"] == "00001234"
+    assert df.loc[0, "user_id"] == "00123456"
+    assert df.loc[0, "gross_spend"] == pytest.approx(2.50)
+    assert df.loc[0, "web_search_count"] == 3
+
+
+def test_load_spend_preserves_id_with_missing_value_in_same_column(cfg, tmp_path: Path):
+    path = tmp_path / "input" / "spend" / "spend_2026-06.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "Email,Model,Prompt Tokens,Completion Tokens,User ID\n"
+        "a@x.jp,claude-sonnet-4-6,1000,100,00123456\n"
+        "b@x.jp,claude-sonnet-4-6,2000,200,\n",
+        encoding="utf-8",
+    )
+
+    df = ingest.load_spend(tmp_path / "input", "2026-06", cfg).df
+
+    assert df.loc[0, "user_id"] == "00123456"
+    assert pd.isna(df.loc[1, "user_id"])
+    assert df["prompt_tokens"].tolist() == [1000, 2000]
+
+
+def test_load_spend_adds_na_for_missing_new_optional_columns(cfg, tmp_path: Path):
+    path = tmp_path / "input" / "spend" / "spend_2026-06.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "Email,Model,Prompt Tokens,Completion Tokens\n"
+        "a@x.jp,claude-sonnet-4-6,1000,100\n",
+        encoding="utf-8",
+    )
+
+    result = ingest.load_spend(tmp_path / "input", "2026-06", cfg)
+
+    assert result.df[list(ingest.SPEND_OPTIONAL_COLUMNS)].isna().all().all()
+    assert any("任意カラムなし" in warning for warning in result.warnings)
+    assert not any(
+        column in warning
+        for column in ingest.SPEND_OPTIONAL_COLUMNS
+        for warning in result.warnings
+    )
+
+
+def test_load_spend_warns_when_current_optional_columns_are_partially_missing(
+    cfg, tmp_path: Path
+):
+    path = tmp_path / "input" / "spend" / "spend_2026-06.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "Email,Account UUID,User ID,Model,Prompt Tokens,Completion Tokens,"
+        "Total Gross Spend USD\n"
+        "a@x.jp,account-1,user-1,claude-sonnet-4-6,1000,100,2.50\n",
+        encoding="utf-8",
+    )
+
+    result = ingest.load_spend(tmp_path / "input", "2026-06", cfg)
+
+    assert any("web_search_count" in warning for warning in result.warnings)
+
+
+def test_spend_optional_columns_do_not_change_v1_fields(cfg, tmp_path: Path):
+    legacy = tmp_path / "legacy_2026-06.csv"
+    current = tmp_path / "current_2026-06.csv"
+    legacy.write_text(
+        "Email,Product,Model,Request Count,Prompt Tokens,Completion Tokens,"
+        "Total Net Spend USD\n"
+        "a@x.jp,Claude Code,claude-sonnet-4-6,10,1000,100,1.25\n",
+        encoding="utf-8",
+    )
+    current.write_text(
+        "Email,Account UUID,User ID,Product,Model,Request Count,Prompt Tokens,"
+        "Completion Tokens,Total Gross Spend USD,Total Net Spend USD,"
+        "Total Web Search Count\n"
+        "a@x.jp,account-1,user-1,Claude Code,claude-sonnet-4-6,10,1000,100,"
+        "2.50,1.25,3\n",
+        encoding="utf-8",
+    )
+    v1_columns = [
+        "email",
+        "product",
+        "model",
+        "requests",
+        "prompt_tokens",
+        "completion_tokens",
+        "net_spend",
+        "month",
+    ]
+
+    legacy_df = ingest.load_spend_file(legacy, "2026-06", cfg)
+    current_df = ingest.load_spend_file(current, "2026-06", cfg)
+
+    pd.testing.assert_frame_equal(
+        legacy_df[v1_columns],
+        current_df[v1_columns],
+        check_dtype=True,
+    )
 
 
 def test_load_spend_missing_month(cfg, make_input):
