@@ -42,18 +42,35 @@ def test_load_spend_maps_current_optional_columns(cfg, tmp_path: Path):
         "user_email,account_uuid,product,model,total_requests,total_prompt_tokens,"
         "total_completion_tokens,total_net_spend_usd,total_gross_spend_usd,user_id,"
         "total_web_search_count\n"
-        "A@X.JP, account-1 ,Claude Code,claude-sonnet-4-6,10,1000,100,1.25,2.50,"
-        " user-1 ,3\n",
+        "A@X.JP, 00001234 ,Claude Code,claude-sonnet-4-6,10,1000,100,1.25,2.50,"
+        " 00123456 ,3\n",
         encoding="utf-8",
     )
 
     df = ingest.load_spend(tmp_path / "input", "2026-06", cfg).df
 
     assert df.loc[0, "email"] == "a@x.jp"
-    assert df.loc[0, "account_uuid"] == "account-1"
-    assert df.loc[0, "user_id"] == "user-1"
+    assert df.loc[0, "account_uuid"] == "00001234"
+    assert df.loc[0, "user_id"] == "00123456"
     assert df.loc[0, "gross_spend"] == pytest.approx(2.50)
     assert df.loc[0, "web_search_count"] == 3
+
+
+def test_load_spend_preserves_id_with_missing_value_in_same_column(cfg, tmp_path: Path):
+    path = tmp_path / "input" / "spend" / "spend_2026-06.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "Email,Model,Prompt Tokens,Completion Tokens,User ID\n"
+        "a@x.jp,claude-sonnet-4-6,1000,100,00123456\n"
+        "b@x.jp,claude-sonnet-4-6,2000,200,\n",
+        encoding="utf-8",
+    )
+
+    df = ingest.load_spend(tmp_path / "input", "2026-06", cfg).df
+
+    assert df.loc[0, "user_id"] == "00123456"
+    assert pd.isna(df.loc[1, "user_id"])
+    assert df["prompt_tokens"].tolist() == [1000, 2000]
 
 
 def test_load_spend_adds_na_for_missing_new_optional_columns(cfg, tmp_path: Path):
@@ -74,6 +91,23 @@ def test_load_spend_adds_na_for_missing_new_optional_columns(cfg, tmp_path: Path
         for column in ingest.SPEND_OPTIONAL_COLUMNS
         for warning in result.warnings
     )
+
+
+def test_load_spend_warns_when_current_optional_columns_are_partially_missing(
+    cfg, tmp_path: Path
+):
+    path = tmp_path / "input" / "spend" / "spend_2026-06.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "Email,Account UUID,User ID,Model,Prompt Tokens,Completion Tokens,"
+        "Total Gross Spend USD\n"
+        "a@x.jp,account-1,user-1,claude-sonnet-4-6,1000,100,2.50\n",
+        encoding="utf-8",
+    )
+
+    result = ingest.load_spend(tmp_path / "input", "2026-06", cfg)
+
+    assert any("web_search_count" in warning for warning in result.warnings)
 
 
 def test_spend_optional_columns_do_not_change_v1_fields(cfg, tmp_path: Path):
