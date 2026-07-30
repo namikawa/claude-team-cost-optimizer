@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from .ingest import REQUIRED_COLUMNS, SPEND_OPTIONAL_COLUMNS
+from .ingest import MEMBERS_OPTIONAL_COLUMNS, REQUIRED_COLUMNS, SPEND_OPTIONAL_COLUMNS
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 
@@ -80,7 +80,7 @@ def _validate(cfg: dict) -> None:
         errors.append("model_prices.default には input/output の数値が必要です")
 
     # 入力処理が参照するカラムエイリアスが columns セクションに定義されているか。
-    # Spend任意列は入力CSV上では省略可能だが、正準化の設定自体は必須とする。
+    # 任意列は入力CSV上では省略可能だが、正準化の設定自体は必須とする。
     columns = cfg["columns"]
     if not isinstance(columns, dict):
         errors.append("columns セクションが辞書ではありません")
@@ -93,6 +93,8 @@ def _validate(cfg: dict) -> None:
             configured_columns = list(required)
             if section == "spend":
                 configured_columns.extend(SPEND_OPTIONAL_COLUMNS)
+            elif section == "members":
+                configured_columns.extend(MEMBERS_OPTIONAL_COLUMNS)
             for canonical in configured_columns:
                 aliases = sec.get(canonical)
                 if not isinstance(aliases, list) or not aliases:

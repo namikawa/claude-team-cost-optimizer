@@ -173,6 +173,69 @@ def test_members_seat_normalization(cfg, make_input):
     assert any("判別できない" in w for w in result.warnings)
 
 
+def test_load_members_maps_current_optional_columns(cfg, tmp_path: Path):
+    path = tmp_path / "input" / "members" / "members_2026-06.csv"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "Email,Account UUID,User ID,Seat Tier,Status\n"
+        "A@X.JP, 00001234 , 00123456 ,Premium,Active\n"
+        "b@x.jp,,,Standard,Awaiting verification\n",
+        encoding="utf-8",
+    )
+
+    result = ingest.load_members(tmp_path / "input", "2026-06", cfg)
+    df = result.df.set_index("email")
+
+    assert df.loc["a@x.jp", "account_uuid"] == "00001234"
+    assert df.loc["a@x.jp", "user_id"] == "00123456"
+    assert df.loc["a@x.jp", "member_status"] == "Active"
+    assert pd.isna(df.loc["b@x.jp", "account_uuid"])
+    assert pd.isna(df.loc["b@x.jp", "user_id"])
+    assert df.loc["b@x.jp", "member_status"] == "Awaiting verification"
+    assert df["seat_type"].to_dict() == {"a@x.jp": "premium", "b@x.jp": "standard"}
+
+
+def test_load_members_adds_na_for_missing_optional_columns(cfg, make_input):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 1.0)]},
+        members=["a@x.jp,Premium"],
+    )
+
+    result = ingest.load_members(input_dir, "2026-06", cfg)
+
+    assert result.df[list(ingest.MEMBERS_OPTIONAL_COLUMNS)].isna().all().all()
+    assert not any(
+        column in warning
+        for column in ingest.MEMBERS_OPTIONAL_COLUMNS
+        for warning in result.warnings
+    )
+    assert result.df.loc[0, "seat_type"] == "premium"
+
+
+def test_members_optional_columns_do_not_change_v1_fields(cfg, tmp_path: Path):
+    legacy = tmp_path / "members-legacy_2026-06.csv"
+    current = tmp_path / "members-current_2026-06.csv"
+    legacy.write_text(
+        "Email,Seat Type\n"
+        "a@x.jp,Premium\n",
+        encoding="utf-8",
+    )
+    current.write_text(
+        "Email,Account UUID,User ID,Seat Tier,Status\n"
+        "a@x.jp,account-1,user-1,Premium,Active\n",
+        encoding="utf-8",
+    )
+
+    legacy_df = ingest.load_members_file(legacy, cfg)
+    current_df = ingest.load_members_file(current, cfg)
+
+    pd.testing.assert_frame_equal(
+        legacy_df[["email", "seat_type"]],
+        current_df[["email", "seat_type"]],
+        check_dtype=True,
+    )
+
+
 def test_members_fallback_to_earlier_month(cfg, make_input):
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 1.0)]},

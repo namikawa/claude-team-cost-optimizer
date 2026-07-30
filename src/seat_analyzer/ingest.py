@@ -41,6 +41,14 @@ SPEND_OPTIONAL_COLUMNS = (
 # 識別できる追加列だけをマーカーにする。いずれかがあれば4列の部分欠損を警告する。
 SPEND_CURRENT_SCHEMA_MARKERS = ("user_id", "web_search_count")
 
+# Step 2で正準化するMembers任意列。既存CSVとの互換性を保つため、
+# 列がない場合は警告を増やさずNAで補完する。
+MEMBERS_OPTIONAL_COLUMNS = (
+    "account_uuid",
+    "user_id",
+    "member_status",
+)
+
 _DAY = r"(?:0[1-9]|[12]\d|3[01])"
 _RANGE_RE = re.compile(
     rf"(20\d{{2}})[-_](0[1-9]|1[0-2])[-_]({_DAY})[-_]to[-_](20\d{{2}})[-_](0[1-9]|1[0-2])[-_]({_DAY})"
@@ -498,14 +506,18 @@ def _normalize_seat(value: str) -> str:
 
 def _read_members_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
     """1つの members CSV を読み、カラム正規化・email/seat 正規化・重複解決を施す。"""
-    df = _read_csv(path)
+    # 数値形式IDの先頭ゼロを保持するため、Membersはまず文字列で読む。
+    df = _read_csv(path, dtype=str)
     df, warnings = map_columns(
         df,
         cfg["columns"]["members"],
         required=REQUIRED_COLUMNS["members"],
         source=path,
+        fill_na_columns=MEMBERS_OPTIONAL_COLUMNS,
     )
     df["email"] = df["email"].astype(str).str.strip().str.lower()
+    for column in MEMBERS_OPTIONAL_COLUMNS:
+        df[column] = df[column].astype("string").str.strip()
     df["seat_type"] = df["seat_type"].map(_normalize_seat)
     unknown = df[df["seat_type"] == "unknown"]
     if not unknown.empty:
