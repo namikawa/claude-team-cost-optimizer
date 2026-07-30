@@ -369,7 +369,10 @@
 - email変更があっても同じstable IDなら同じsubjectになる
 - stable IDがないemailの履歴十分性を証拠行数から推測しない
 - conflict時は`subject_id`を確定しない
+- conflictの影響範囲を成分内のemail・stable IDから確認できる
 - 空白・欠損だけの証拠は`unresolved`になる
+- unresolvedを含めても入力証拠の先頭位置に基づく決定的な順序になる
+- 非スカラーのIdentity証拠を明確なエラーで拒否する
 - V1のemail join、report、シート判定を変更していない
 
 コード・ファイル変更:
@@ -380,6 +383,6 @@
 
 テスト:
 
-- `uv run pytest tests/test_identity.py`（8件成功）
+- `uv run pytest tests/test_identity.py`（13件成功）
 - `uv run ruff check .`
-- `uv run pytest`（186件成功）
+- `uv run pytest`（191件成功）

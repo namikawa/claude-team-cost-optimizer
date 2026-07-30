@@ -6,8 +6,9 @@ V1のemail joinには接続せず、後続機能が利用するsubject_id・品�
 
 from __future__ import annotations
 
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
-from typing import Collection, Iterable, Literal
+from typing import Literal
 
 import pandas as pd
 
@@ -24,7 +25,7 @@ _Node = tuple[str, str]
 
 @dataclass(frozen=True)
 class IdentityEvidence:
-    """1入力行から得られるIdentity証拠。値の正規化はresolve時に行う。"""
+    """1入力行から得られるIdentity証拠。各値はスカラーに限り、正規化はresolve時に行う。"""
 
     email: object = None
     account_uuid: object = None
@@ -44,6 +45,10 @@ class ResolvedIdentity:
 
 
 def _normalize(value: object, *, lowercase: bool = False) -> str | None:
+    if not pd.api.types.is_scalar(value):
+        raise TypeError(
+            "IdentityEvidenceのemail/account_uuid/user_idにはスカラー値が必要です"
+        )
     if value is None or pd.isna(value):
         return None
     text = str(value).strip()
@@ -100,6 +105,9 @@ def resolve_identities(
 
     email_consistentは履歴十分性を呼び出し側が確認したemailに限る。指定がなければ、
     stable IDのないemailはemail_fallbackとなる。
+
+    全Identity値が欠損した証拠は互いの同一性を判断できないため、入力行ごとに
+    unresolvedを返す。したがって戻り値の件数はsubject数と一致するとは限らない。
     """
     graph: dict[_Node, set[_Node]] = {}
     node_order: dict[_Node, int] = {}
