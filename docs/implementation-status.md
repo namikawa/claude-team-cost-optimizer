@@ -2,7 +2,7 @@
 
 - 最終更新: 2026-07-30
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 3 subject_id
+- 次のタスク: Step 4 QualityIssue
 
 ## 1. この文書の目的
 
@@ -68,7 +68,7 @@
 | Track | 内容 | 完了 | 進行中 | ブロック | 未着手 | 見送り |
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
-| 1 | 入力と品質 | 2 | 0 | 0 | 3 | 0 |
+| 1 | 入力と品質 | 3 | 0 | 0 | 2 | 0 |
 | 2 | Code中心の利用可視化 | 0 | 0 | 0 | 3 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
@@ -76,7 +76,7 @@
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **5** | **0** | **0** | **40** | **0** |
+| **合計** |  | **6** | **0** | **0** | **39** | **0** |
 
 ## 5. Step一覧
 
@@ -94,7 +94,7 @@
 |---|---|---|---|
 | 1 | Spend任意カラム | `完了` | 2026-07-30 |
 | 2 | Members任意カラム | `完了` | 2026-07-30 |
-| 3 | subject_id | `未着手` |  |
+| 3 | subject_id | `完了` | 2026-07-30 |
 | 4 | QualityIssue | `未着手` |  |
 | 5 | doctorの既存入力検査 | `未着手` |  |
 
@@ -348,3 +348,38 @@
 - `uv run pytest tests/test_ingest.py tests/test_hardening.py tests/test_member_changes.py tests/test_members_info_snapshots.py`（44件成功）
 - `uv run ruff check .`
 - `uv run pytest`（178件成功）
+
+### 2026-07-30 — Step 3 subject_id
+
+ステータス: `完了`
+
+実装したこと:
+
+- Identity証拠をemail・`account_uuid`・`user_id`で連結する独立モジュールを追加
+- `account:<account_uuid>`、`user:<user_id>`、`email:<normalized_email>`の優先順位で
+  `subject_id`を生成
+- stable IDを共有する複数emailを同一subjectとして解決
+- 同じemailだけがstable IDを持つ別入力へIDを伝播
+- `stable`、`email_consistent`、`email_fallback`、`conflict`、`unresolved`の品質を実装
+- 同一identity内で同種stable IDが複数に分岐した場合をconflictとして検出
+
+確認したこと:
+
+- `account_uuid`と`user_id`が1つずつ併存してもconflictにしない
+- email変更があっても同じstable IDなら同じsubjectになる
+- stable IDがないemailの履歴十分性を証拠行数から推測しない
+- conflict時は`subject_id`を確定しない
+- 空白・欠損だけの証拠は`unresolved`になる
+- V1のemail join、report、シート判定を変更していない
+
+コード・ファイル変更:
+
+- `docs/implementation-design.md`
+- `src/seat_analyzer/identity.py`
+- `tests/test_identity.py`
+
+テスト:
+
+- `uv run pytest tests/test_identity.py`（8件成功）
+- `uv run ruff check .`
+- `uv run pytest`（186件成功）
