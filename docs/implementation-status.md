@@ -290,6 +290,7 @@
 - 新形式CSVを読み込める
 - 4つの任意列がない旧形式CSVを読み込める
 - ID列に空セルが混在しても、数値形式IDの先頭ゼロと欠損を保持できる
+- 空白のみのIDセルを欠損として扱う
 - 旧形式と新形式でV1が参照する列の値・型が一致する
 - 旧CSVの既存警告へ新しい任意列名を追加しない
 - 現行形式の4列が部分的に欠けた場合は、欠損列名を警告する
@@ -319,13 +320,15 @@
 - Membersの`account_uuid`、`user_id`、`member_status`を正準化
 - 3列が存在しない既存CSVでは列を`NA`で追加
 - Members CSVを文字列として読み、数値形式IDの先頭ゼロを保持
-- IDとstatusの前後空白を除去し、未知のstatus値を変換せず保持
+- IDとstatusの前後空白を除去し、空白のみの値を`NA`へ統一
+- 未知のstatus値は大小文字を含めて変換せず保持
 - 3列のalias設定欠損を起動時に検出
 
 確認したこと:
 
 - 新形式と既存形式のMembers CSVを読み込める
-- ID列に空セルが混在しても、数値形式IDの先頭ゼロと欠損を保持できる
+- ID列に空セル・空白のみセルが混在しても、数値形式IDの先頭ゼロと欠損を保持できる
+- 空白のみのmember statusを欠損として扱う
 - 未知のmember statusを入力値のまま保持できる
 - 既存CSVの警告へ新しい任意列名を追加しない
 - 任意列の有無によらずV1のemailとseat判定の値・型が一致する
@@ -334,6 +337,7 @@
 コード・ファイル変更:
 
 - `config.yaml`
+- `docs/implementation-design.md`
 - `src/seat_analyzer/config.py`
 - `src/seat_analyzer/ingest.py`
 - `tests/test_hardening.py`

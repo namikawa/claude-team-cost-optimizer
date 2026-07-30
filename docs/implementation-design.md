@@ -322,6 +322,9 @@ OSの通常download directory
 | `snapshot_date` | No | snapshot日 |
 | `source_file` | Yes | 原本 |
 
+`member_status`は前後空白だけを除去し、大小文字を含む入力値を保持する。
+既知statusとの比較が必要な場合は、入力値を失わないよう利用側で正規化する。
+
 ### 7.3 GitHub members
 
 `input/<org>/github-members.csv`
