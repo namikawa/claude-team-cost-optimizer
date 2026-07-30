@@ -92,8 +92,11 @@ columns:
     cache_write_5m_tokens: ["total cache write 5m tokens", "cache write 5m tokens"]
     cache_write_1h_tokens: ["total cache write 1h tokens", "cache write 1h tokens"]
   members:
-    email:     ["email", "user email"]
-    seat_type: ["seat", "seat type", "seat tier", "plan", "subscription"]
+    email:         ["email", "user email"]
+    account_uuid:  ["account uuid", "account id"]
+    user_id:       ["user id"]
+    seat_type:     ["seat", "seat type", "seat tier", "plan", "subscription"]
+    member_status: ["status", "member status"]
   code_analytics:
     email:       ["email", "user", "user email", "member"]
     prs_with_cc: ["prs with cc", "prs with claude code", "cc prs"]

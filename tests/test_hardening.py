@@ -159,6 +159,14 @@ def test_config_validation_missing_spend_optional_alias(cfg):
     assert "columns.spend.user_id" in str(e.value)
 
 
+def test_config_validation_missing_members_optional_alias(cfg):
+    broken = copy.deepcopy(cfg)
+    del broken["columns"]["members"]["member_status"]
+    with pytest.raises(ValueError) as e:
+        _validate(broken)
+    assert "columns.members.member_status" in str(e.value)
+
+
 # --- 組織名バリデーション（共通） ---
 
 def test_org_name_validation():

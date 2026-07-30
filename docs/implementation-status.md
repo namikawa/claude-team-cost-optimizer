@@ -2,7 +2,7 @@
 
 - 最終更新: 2026-07-30
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 2 Members任意カラム
+- 次のタスク: Step 3 subject_id
 
 ## 1. この文書の目的
 
@@ -68,7 +68,7 @@
 | Track | 内容 | 完了 | 進行中 | ブロック | 未着手 | 見送り |
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
-| 1 | 入力と品質 | 1 | 0 | 0 | 4 | 0 |
+| 1 | 入力と品質 | 2 | 0 | 0 | 3 | 0 |
 | 2 | Code中心の利用可視化 | 0 | 0 | 0 | 3 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
@@ -76,7 +76,7 @@
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **4** | **0** | **0** | **41** | **0** |
+| **合計** |  | **5** | **0** | **0** | **40** | **0** |
 
 ## 5. Step一覧
 
@@ -93,7 +93,7 @@
 | Step | タスク | ステータス | 完了日 |
 |---|---|---|---|
 | 1 | Spend任意カラム | `完了` | 2026-07-30 |
-| 2 | Members任意カラム | `未着手` |  |
+| 2 | Members任意カラム | `完了` | 2026-07-30 |
 | 3 | subject_id | `未着手` |  |
 | 4 | QualityIssue | `未着手` |  |
 | 5 | doctorの既存入力検査 | `未着手` |  |
@@ -309,3 +309,38 @@
 - `uv run pytest tests/test_ingest.py tests/test_hardening.py tests/test_pricing.py`（31件成功）
 - `uv run ruff check .`
 - `uv run pytest`（174件成功）
+
+### 2026-07-30 — Step 2 Members任意カラム
+
+ステータス: `完了`
+
+実装したこと:
+
+- Membersの`account_uuid`、`user_id`、`member_status`を正準化
+- 3列が存在しない既存CSVでは列を`NA`で追加
+- Members CSVを文字列として読み、数値形式IDの先頭ゼロを保持
+- IDとstatusの前後空白を除去し、未知のstatus値を変換せず保持
+- 3列のalias設定欠損を起動時に検出
+
+確認したこと:
+
+- 新形式と既存形式のMembers CSVを読み込める
+- ID列に空セルが混在しても、数値形式IDの先頭ゼロと欠損を保持できる
+- 未知のmember statusを入力値のまま保持できる
+- 既存CSVの警告へ新しい任意列名を追加しない
+- 任意列の有無によらずV1のemailとseat判定の値・型が一致する
+- ID join変更、report追加を行っていない
+
+コード・ファイル変更:
+
+- `config.yaml`
+- `src/seat_analyzer/config.py`
+- `src/seat_analyzer/ingest.py`
+- `tests/test_hardening.py`
+- `tests/test_ingest.py`
+
+テスト:
+
+- `uv run pytest tests/test_ingest.py tests/test_hardening.py tests/test_member_changes.py tests/test_members_info_snapshots.py`（44件成功）
+- `uv run ruff check .`
+- `uv run pytest`（178件成功）
