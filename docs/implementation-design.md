@@ -434,6 +434,15 @@ repository + "#" + PR number
 
 conflictはシート判断を保留する。
 
+- 1つの`account_uuid`と1つの`user_id`の併存は正常とする
+- 同一identity内で同種stable IDが複数に分岐した場合をconflictとする
+- conflictは矛盾した連結成分全体を保留し、部分的なsubject確定を行わない
+- conflictをQualityIssueへ変換する際は、影響件数と影響したemail・stable IDを
+  `scope`へ含める
+- conflictのレポートセクションはissueが存在するときだけ表示する
+- `email_consistent`は必要期間の履歴を呼び出し側が確認した場合だけ使用し、
+  証拠行数から自動推測しない
+
 ## 9. Product usage
 
 ### 9.1 Policy
