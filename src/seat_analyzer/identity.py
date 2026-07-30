@@ -44,11 +44,17 @@ class ResolvedIdentity:
     user_ids: tuple[str, ...]
 
 
-def _normalize(value: object, *, lowercase: bool = False) -> str | None:
+def _normalize(
+    value: object,
+    *,
+    field_name: str,
+    lowercase: bool = False,
+) -> str | None:
     if not pd.api.types.is_scalar(value):
-        raise TypeError(
-            "IdentityEvidenceのemail/account_uuid/user_idにはスカラー値が必要です"
-        )
+        value_repr = repr(value)
+        if len(value_repr) > 160:
+            value_repr = f"{value_repr[:157]}..."
+        raise TypeError(f"{field_name}にはスカラー値が必要です: {value_repr}")
     if value is None or pd.isna(value):
         return None
     text = str(value).strip()
@@ -114,9 +120,19 @@ def resolve_identities(
     unresolved: list[tuple[int, ResolvedIdentity]] = []
 
     for index, item in enumerate(evidence):
-        email = _normalize(item.email, lowercase=True)
-        account_uuid = _normalize(item.account_uuid)
-        user_id = _normalize(item.user_id)
+        email = _normalize(
+            item.email,
+            field_name="IdentityEvidence.email",
+            lowercase=True,
+        )
+        account_uuid = _normalize(
+            item.account_uuid,
+            field_name="IdentityEvidence.account_uuid",
+        )
+        user_id = _normalize(
+            item.user_id,
+            field_name="IdentityEvidence.user_id",
+        )
         nodes = [
             node
             for node in (
@@ -141,7 +157,14 @@ def resolve_identities(
     normalized_consistent_emails = {
         normalized
         for value in consistent_emails
-        if (normalized := _normalize(value, lowercase=True)) is not None
+        if (
+            normalized := _normalize(
+                value,
+                field_name="consistent_emailsの要素",
+                lowercase=True,
+            )
+        )
+        is not None
     }
     results: list[tuple[int, ResolvedIdentity]] = []
     seen: set[_Node] = set()

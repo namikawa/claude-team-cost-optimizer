@@ -147,5 +147,16 @@ def test_missing_and_whitespace_values_are_unresolved():
 
 
 def test_non_scalar_evidence_is_rejected():
-    with pytest.raises(TypeError, match="スカラー値"):
+    with pytest.raises(TypeError) as exc_info:
         resolve_identities([IdentityEvidence(email=["a@x.jp"])])
+    message = str(exc_info.value)
+    assert "IdentityEvidence.email" in message
+    assert "['a@x.jp']" in message
+
+
+def test_non_scalar_consistent_email_error_identifies_source_and_value():
+    with pytest.raises(TypeError) as exc_info:
+        resolve_identities([], consistent_emails=[["a@x.jp"]])
+    message = str(exc_info.value)
+    assert "consistent_emails" in message
+    assert "['a@x.jp']" in message
