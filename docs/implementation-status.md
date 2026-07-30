@@ -372,7 +372,7 @@
 - conflictの影響範囲を成分内のemail・stable IDから確認できる
 - 空白・欠損だけの証拠は`unresolved`になる
 - unresolvedを含めても入力証拠の先頭位置に基づく決定的な順序になる
-- 非スカラーのIdentity証拠を明確なエラーで拒否する
+- 非スカラーのIdentity証拠を入力元名・問題値付きの明確なエラーで拒否する
 - V1のemail join、report、シート判定を変更していない
 
 コード・ファイル変更:
@@ -383,6 +383,6 @@
 
 テスト:
 
-- `uv run pytest tests/test_identity.py`（13件成功）
+- `uv run pytest tests/test_identity.py`（14件成功）
 - `uv run ruff check .`
-- `uv run pytest`（191件成功）
+- `uv run pytest`（192件成功）
