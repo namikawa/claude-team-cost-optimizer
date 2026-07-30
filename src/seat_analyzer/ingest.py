@@ -369,6 +369,13 @@ def _to_numeric(df: pd.DataFrame, cols: list[str]) -> None:
             )
 
 
+def _clean_string_columns(df: pd.DataFrame, columns: tuple[str, ...]) -> None:
+    """文字列列の前後空白を除去し、空白だけの値を欠損へ統一する。"""
+    for column in columns:
+        values = df[column].astype("string").str.strip()
+        df[column] = values.mask(values == "")
+
+
 def _read_spend_df(path: Path, month: str, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
     """1つのスペンド CSV を読み、カラム正規化・数値化・email 正規化を施す。"""
     # IDの先頭ゼロや、欠損混在時の ".0" 付与を防ぐため、Spendはまず文字列で読む。
@@ -388,8 +395,7 @@ def _read_spend_df(path: Path, month: str, cfg: dict) -> tuple[pd.DataFrame, lis
         "uncached_input_tokens", "cache_read_tokens",
         "cache_write_5m_tokens", "cache_write_1h_tokens",
     ])
-    for column in ("account_uuid", "user_id"):
-        df[column] = df[column].astype("string").str.strip()
+    _clean_string_columns(df, ("account_uuid", "user_id"))
     df["email"] = df["email"].astype(str).str.strip().str.lower()
     df["month"] = month
     return df, warnings
@@ -516,8 +522,7 @@ def _read_members_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
         fill_na_columns=MEMBERS_OPTIONAL_COLUMNS,
     )
     df["email"] = df["email"].astype(str).str.strip().str.lower()
-    for column in MEMBERS_OPTIONAL_COLUMNS:
-        df[column] = df[column].astype("string").str.strip()
+    _clean_string_columns(df, MEMBERS_OPTIONAL_COLUMNS)
     df["seat_type"] = df["seat_type"].map(_normalize_seat)
     unknown = df[df["seat_type"] == "unknown"]
     if not unknown.empty:
