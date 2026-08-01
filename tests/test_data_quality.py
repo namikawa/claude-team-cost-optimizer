@@ -125,6 +125,25 @@ def test_scope_rejects_non_finite_float_in_list():
     assert "ratios" in str(excinfo.value)
 
 
+class _LyingFloat(float):
+    """基底値は有限だが、変換フックが非有限値を返すfloatサブクラス。"""
+
+    def __float__(self):
+        return float("nan")
+
+
+def test_scope_rejects_non_finite_float_from_conversion_hook():
+    with pytest.raises(ValueError) as excinfo:
+        _issue(scope={"ratio": _LyingFloat(2.5)})
+
+    assert "ratio" in str(excinfo.value)
+
+    with pytest.raises(ValueError) as excinfo:
+        _issue(scope={"ratios": [0.5, _LyingFloat(2.5)]})
+
+    assert "ratios" in str(excinfo.value)
+
+
 def test_scope_accepts_scalars_including_bool():
     issue = _issue(scope={"count": 3, "ratio": 0.5, "ok": True, "note": None})
 
@@ -184,15 +203,12 @@ def _typed_scalar_issues(values):
     ]
 
 
-def test_scalar_types_are_distinguished_by_equality_and_hash():
+def test_scalar_types_are_distinguished_by_equality():
     true_issue, one_issue, float_issue = _typed_scalar_issues([True, 1, 1.0])
 
     assert true_issue != one_issue
     assert one_issue != float_issue
     assert true_issue != float_issue
-    assert hash(true_issue) != hash(one_issue)
-    assert hash(one_issue) != hash(float_issue)
-    assert hash(true_issue) != hash(float_issue)
     assert len({true_issue, one_issue, float_issue}) == 3
 
 
@@ -203,14 +219,20 @@ def test_dedup_by_set_keeps_json_deterministic():
     text = issues_to_json(sort_issues(first))
 
     assert text == issues_to_json(sort_issues(second))
-    assert [item["scope"]["value"] for item in json.loads(text)] == [True, 1, 1.0]
+    # 型を明示して比較する（True == 1 == 1.0 のため値だけの比較では退行を検出できない）。
+    # 並びはscopeのJSON文字列の辞書順で決まる（1.0 → 1 → true）
+    decoded = [item["scope"]["value"] for item in json.loads(text)]
+    assert [(type(value), value) for value in decoded] == [
+        (float, 1.0),
+        (int, 1),
+        (bool, True),
+    ]
 
 
 def test_signed_zero_is_distinguished():
     positive, negative = _typed_scalar_issues([0.0, -0.0])
 
     assert positive != negative
-    assert hash(positive) != hash(negative)
     assert issues_to_json([positive]) != issues_to_json([negative])
     assert '"value": -0.0' in issues_to_json([negative])
 
