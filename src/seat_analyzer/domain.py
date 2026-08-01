@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 
 
+@enum.unique
 class Severity(enum.StrEnum):
     """issueの深刻度。宣言順がそのまま深刻な順を表す。
 
@@ -26,6 +27,7 @@ class Severity(enum.StrEnum):
     WARNING = "warning"
 
 
+@enum.unique
 class IssueCode(enum.StrEnum):
     """構造化issueの確定語彙。値は名前と同一で、機械可読なキーとして扱う。"""
 
@@ -80,14 +82,25 @@ def _normalize_scalar(
     key: str,
     index: int | None = None,
 ) -> ScopeScalar:
+    """スカラー値を検証し、組み込み型の値へ写して返す。
+
+    許可型のサブクラス（ハッシュ不可のint等）をそのまま保持すると等価性や
+    ハッシュが定義側の実装に左右されるため、必ず組み込み型へコピーする。
+    """
     where = f"scope[{key!r}]" if index is None else f"scope[{key!r}][{index}]"
-    # boolはintのサブクラスなので、数値としての検査より先に通す
-    if value is None or isinstance(value, (bool, int, str)):
+    if value is None:
+        return None
+    # boolはintのサブクラスなので、数値としての検査より先に判定する
+    if isinstance(value, bool):
         return value
+    if isinstance(value, int):
+        return int(value)
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError(f"{where}に有限でない数値は指定できません: {value!r}")
-        return value
+        return float(value)
+    if isinstance(value, str):
+        return str(value)
     raise TypeError(f"{where}にはスカラー値が必要です: {type(value).__name__}")
 
 
@@ -100,11 +113,13 @@ def _normalize_scope(scope: object) -> Mapping[str, _NormalizedValue]:
         raise TypeError(f"scopeにはマッピングが必要です: {type(scope).__name__}")
 
     normalized: dict[str, _NormalizedValue] = {}
-    for key, value in scope.items():
-        if not isinstance(key, str):
+    for raw_key, value in scope.items():
+        if not isinstance(raw_key, str):
             raise TypeError(
-                f"scopeのキーはstrである必要があります: {key!r} ({type(key).__name__})"
+                f"scopeのキーはstrである必要があります: "
+                f"{raw_key!r} ({type(raw_key).__name__})"
             )
+        key = str(raw_key)
         if isinstance(value, (list, tuple)):
             normalized[key] = tuple(
                 _normalize_scalar(item, key=key, index=index)
@@ -115,12 +130,41 @@ def _normalize_scope(scope: object) -> Mapping[str, _NormalizedValue]:
     return MappingProxyType(normalized)
 
 
-@dataclass(frozen=True)
+def _scalar_key(value: ScopeScalar) -> tuple[str, str]:
+    """スカラーの正準キー。型タグを付けてTrue・1・1.0・"1"を区別する。"""
+    if value is None:
+        return ("null", "")
+    if isinstance(value, bool):
+        return ("bool", "true" if value else "false")
+    if isinstance(value, int):
+        return ("int", repr(value))
+    if isinstance(value, float):
+        # reprは0.0と-0.0を区別する
+        return ("float", repr(value))
+    return ("str", value)
+
+
+def _value_key(value: _NormalizedValue) -> tuple[str, object]:
+    if isinstance(value, tuple):
+        return ("list", tuple(_scalar_key(item) for item in value))
+    return ("scalar", _scalar_key(value))
+
+
+def _scope_key(scope: Mapping[str, _NormalizedValue]) -> tuple:
+    """scope全体の正準キー。キーの辞書順で並べ、値は型を区別して表現する。"""
+    return tuple((key, _value_key(value)) for key, value in sorted(scope.items()))
+
+
+@dataclass(frozen=True, eq=False)
 class QualityIssue:
     """機械可読な品質issue1件。
 
     scopeは影響範囲（件数・対象email・stable ID等）を表す不変のマッピングで、
     値はスカラーかスカラーの組に限る。構築時に検証と正準化を行う。
+
+    等価性とハッシュは正準表現で定義する（2つのissueが等価であることと、
+    直列化した表現が一致することを同義にする）。したがって値の型が違えば
+    別のissueとして扱い、True・1・1.0や0.0・-0.0は区別する。
     """
 
     severity: Severity
@@ -137,11 +181,24 @@ class QualityIssue:
             raise TypeError(f"codeにはIssueCodeが必要です: {type(self.code).__name__}")
         if not isinstance(self.message, str):
             raise TypeError(f"messageにはstrが必要です: {type(self.message).__name__}")
+        object.__setattr__(self, "message", str(self.message))
         object.__setattr__(self, "scope", _normalize_scope(self.scope))
 
-    def __hash__(self) -> int:
-        # frozenな値オブジェクトとして集合・辞書キーに使えるようにする。
-        # scopeのマッピング自体はハッシュ不可のため、正準化した組で代用する
-        return hash(
-            (self.severity, self.code, self.message, tuple(sorted(self.scope.items())))
+    def _key(self) -> tuple:
+        """等価性・ハッシュの基準となる正準キー。"""
+        return (
+            self.severity.value,
+            self.code.value,
+            self.message,
+            _scope_key(self.scope),
         )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, QualityIssue):
+            return NotImplemented
+        return self._key() == other._key()
+
+    def __hash__(self) -> int:
+        # frozenな値オブジェクトとして集合・辞書キーに使えるようにする
+        # （scopeのマッピング自体はハッシュ不可のため正準キーで代用する）
+        return hash(self._key())

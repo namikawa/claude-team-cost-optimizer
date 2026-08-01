@@ -43,17 +43,25 @@ EXPECTED_CODES = {
 
 
 def test_issue_code_vocabulary_is_fixed():
-    assert {code.name for code in IssueCode} == EXPECTED_CODES
+    # __members__はaliasも列挙するため、別名の紛れ込みも検出できる
+    members = IssueCode.__members__
+    assert set(members) == EXPECTED_CODES
+    assert len(members) == 25
     assert len(EXPECTED_CODES) == 25
 
 
 def test_issue_code_value_equals_name():
-    for code in IssueCode:
-        assert code.value == code.name
+    for name, member in IssueCode.__members__.items():
+        assert name == member.name
+        assert name == member.value
 
 
 def test_severity_has_only_error_and_warning():
-    assert [severity.name for severity in Severity] == ["ERROR", "WARNING"]
+    members = Severity.__members__
+    assert list(members) == ["ERROR", "WARNING"]
+    assert len(members) == 2
+    for name, member in members.items():
+        assert name == member.name
     assert [severity.value for severity in Severity] == ["error", "warning"]
 
 
@@ -164,6 +172,80 @@ def test_equal_issues_are_hashable_and_equal():
     assert len({left, right}) == 1
 
 
+def _typed_scalar_issues(values):
+    return [
+        QualityIssue(
+            severity=Severity.WARNING,
+            code=IssueCode.NUMERIC_PARSE_FAILED,
+            message="値の型で区別する",
+            scope={"value": value},
+        )
+        for value in values
+    ]
+
+
+def test_scalar_types_are_distinguished_by_equality_and_hash():
+    true_issue, one_issue, float_issue = _typed_scalar_issues([True, 1, 1.0])
+
+    assert true_issue != one_issue
+    assert one_issue != float_issue
+    assert true_issue != float_issue
+    assert hash(true_issue) != hash(one_issue)
+    assert hash(one_issue) != hash(float_issue)
+    assert hash(true_issue) != hash(float_issue)
+    assert len({true_issue, one_issue, float_issue}) == 3
+
+
+def test_dedup_by_set_keeps_json_deterministic():
+    first = set(_typed_scalar_issues([True, 1, 1.0]))
+    second = set(_typed_scalar_issues([1.0, 1, True]))
+
+    text = issues_to_json(sort_issues(first))
+
+    assert text == issues_to_json(sort_issues(second))
+    assert [item["scope"]["value"] for item in json.loads(text)] == [True, 1, 1.0]
+
+
+def test_signed_zero_is_distinguished():
+    positive, negative = _typed_scalar_issues([0.0, -0.0])
+
+    assert positive != negative
+    assert hash(positive) != hash(negative)
+    assert issues_to_json([positive]) != issues_to_json([negative])
+    assert '"value": -0.0' in issues_to_json([negative])
+
+
+class _UnhashableInt(int):
+    __hash__ = None
+
+
+class _TaggedStr(str):
+    pass
+
+
+def test_subclass_values_are_copied_to_builtin_types():
+    issue = QualityIssue(
+        severity=Severity.WARNING,
+        code=IssueCode.NUMERIC_PARSE_FAILED,
+        message=_TaggedStr("サブクラスのメッセージ"),
+        scope={
+            _TaggedStr("count"): _UnhashableInt(3),
+            "values": [_UnhashableInt(1), _TaggedStr("x")],
+        },
+    )
+
+    assert type(issue.message) is str
+    assert [type(key) for key in issue.scope] == [str, str]
+    assert type(issue.scope["count"]) is int
+    assert [type(item) for item in issue.scope["values"]] == [int, str]
+    # 組み込み型へ写しているので、ハッシュとJSON化が定義側の実装に左右されない
+    assert isinstance(hash(issue), int)
+    assert json.loads(issues_to_json([issue]))[0]["scope"] == {
+        "count": 3,
+        "values": [1, "x"],
+    }
+
+
 def test_issue_to_dict_key_order_and_scope_sorting():
     issue = _issue(
         severity=Severity.ERROR,
@@ -221,6 +303,19 @@ def test_json_output_is_byte_identical_regardless_of_input_order():
     second = list(reversed(_sample_issues(reverse_scope_keys=True)))
 
     assert issues_to_json(sort_issues(first)) == issues_to_json(sort_issues(second))
+
+
+def test_issues_to_json_preserves_input_order():
+    ordered = sort_issues(_sample_issues())
+    reversed_issues = list(reversed(ordered))
+
+    payload = json.loads(issues_to_json(reversed_issues))
+
+    assert [item["code"] for item in payload] == [
+        issue.code.value for issue in reversed_issues
+    ]
+    assert payload == [issue_to_dict(issue) for issue in reversed_issues]
+    assert payload != json.loads(issues_to_json(ordered))
 
 
 def test_sort_issues_is_stable_against_shuffling():
