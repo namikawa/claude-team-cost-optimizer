@@ -1,8 +1,8 @@
 # 実装ステータス
 
-- 最終更新: 2026-07-30
+- 最終更新: 2026-08-01
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 4 QualityIssue
+- 次のタスク: Step 5 doctorの既存入力検査
 
 ## 1. この文書の目的
 
@@ -68,7 +68,7 @@
 | Track | 内容 | 完了 | 進行中 | ブロック | 未着手 | 見送り |
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
-| 1 | 入力と品質 | 3 | 0 | 0 | 2 | 0 |
+| 1 | 入力と品質 | 4 | 0 | 0 | 1 | 0 |
 | 2 | Code中心の利用可視化 | 0 | 0 | 0 | 3 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
@@ -76,7 +76,7 @@
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **6** | **0** | **0** | **39** | **0** |
+| **合計** |  | **7** | **0** | **0** | **38** | **0** |
 
 ## 5. Step一覧
 
@@ -95,7 +95,7 @@
 | 1 | Spend任意カラム | `完了` | 2026-07-30 |
 | 2 | Members任意カラム | `完了` | 2026-07-30 |
 | 3 | subject_id | `完了` | 2026-07-30 |
-| 4 | QualityIssue | `未着手` |  |
+| 4 | QualityIssue | `完了` | 2026-08-01 |
 | 5 | doctorの既存入力検査 | `未着手` |  |
 
 ### Track 2: Code中心の利用可視化
@@ -386,3 +386,40 @@
 - `uv run pytest tests/test_identity.py`（14件成功）
 - `uv run ruff check .`
 - `uv run pytest`（192件成功）
+
+### 2026-08-01 — Step 4 QualityIssue
+
+ステータス: `完了`
+
+実装したこと:
+
+- 構造化品質issueの語彙を独立モジュールとして追加（severity・code・scope・JSON serializer）
+- Severityはerror/warningの2値のみ（doctorのexit code意味論から確定。info等は設けない）
+- IssueCodeは設計書§17の25 codeをvalue == nameで過不足なく定義
+- QualityIssueはfrozen dataclass。scopeは構築時に検証・正準化し読み取り専用で保持
+  （スカラーとスカラー列のみ許可、list→tuple化、非スカラー・非strキー・NaN/infは
+  キー名・型名入りエラーで拒否）
+- 決定的なJSON直列化（ensure_ascii=False・allow_nan=False・キー順固定）と
+  全順序整列を追加
+- messageの決定性制約（タイムスタンプ・乱数・実行環境依存値の禁止）をdocstringへ明記
+
+確認したこと:
+
+- 同一issue集合から構築順・scopeキー挿入順によらずバイト一致のJSONになる
+- 日本語messageがエスケープされず出力される
+- 入力Mappingの後続変更がissueへ波及しない
+- 等価なissueのhashが一致し、set/dictキーとして使える
+- 既存ファイルの変更ゼロで「既存warning不変」を構造的に担保
+- CLI配線・既存warningからの変換は行っていない（Step 5の担当）
+
+コード・ファイル変更:
+
+- `src/seat_analyzer/domain.py`
+- `src/seat_analyzer/data_quality.py`
+- `tests/test_data_quality.py`
+
+テスト:
+
+- `uv run pytest tests/test_data_quality.py`（23件成功）
+- `uv run ruff check .`
+- `uv run pytest`（215件成功）
