@@ -49,7 +49,9 @@ def issues_to_json(issues: Iterable[QualityIssue]) -> str:
 
 
 def _sort_key(issue: QualityIssue) -> tuple[int, str, str, str]:
-    # scopeはissue_to_dictの時点でキー順が確定しているため、そのまま文字列化する
+    # scopeはissue_to_dictの時点でキー順が確定しているため、そのまま文字列化する。
+    # JSON表現はtrue・1・1.0・-0.0を書き分けるため、QualityIssueの等価性と
+    # 同じ粒度になる（等価なissueだけが同じ整列キーを持つ）
     scope_repr = json.dumps(
         issue_to_dict(issue)["scope"],
         ensure_ascii=False,
