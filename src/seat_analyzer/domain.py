@@ -96,9 +96,11 @@ def _normalize_scalar(
     if isinstance(value, int):
         return int(value)
     if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"{where}に有限でない数値は指定できません: {value!r}")
-        return float(value)
+        # サブクラスの__float__が別の値を返し得るため、変換後の値を検査して格納する
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError(f"{where}に有限でない数値は指定できません: {result!r}")
+        return result
     if isinstance(value, str):
         return str(value)
     raise TypeError(f"{where}にはスカラー値が必要です: {type(value).__name__}")
