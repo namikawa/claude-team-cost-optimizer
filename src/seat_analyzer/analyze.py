@@ -588,7 +588,8 @@ def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict,
 
     未登録メンバーは空文字列（credit_limit_usd は NaN）。members-info にだけ居るメールは
     行を追加しない。ファイルが読めた場合のみ sources["members_info"] にパスを記録し、
-    ロード時の警告（スナップショット解決・不正な上限値）を返す。
+    ロード時の警告（スナップショット解決・不正な上限値）と未登録ユーザの警告を返す。
+    未登録の警告はファイルが読めた場合のみ（任意ファイルのため未使用の組織では出さない）。
     """
     info_result = ingest.load_members_info(input_dir, cfg, month=month)
     if info_result is None:
@@ -607,7 +608,16 @@ def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict,
         users["credit_limit_usd"] = users["email"].map(info["credit_limit_usd"]).astype(float)
     else:
         users["credit_limit_usd"] = float("nan")
-    return info_result.warnings
+    # 管理画面へのメンバー追加に members-info の追記が追従していないと部署別サマリの
+    # 人数が実態とズレるため、分析対象なのに members-info に行が無いユーザを通知する
+    unregistered = sorted(set(users["email"]) - set(info.index))
+    if not unregistered:
+        return info_result.warnings
+    return [
+        *info_result.warnings,
+        f"members-info.csv に未登録のユーザ {len(unregistered)} 名: {unregistered}"
+        "（部署・チーム・職種が空欄で集計されるため追記を推奨）",
+    ]
 
 
 def _attach_credits_mode(users: pd.DataFrame, billed_ever: set[str]) -> None:
