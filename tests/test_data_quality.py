@@ -470,3 +470,29 @@ def test_reason_is_identical_across_different_absolute_locations(tmp_path):
 
 def test_reason_flattens_multiline_messages():
     assert _reason(ValueError("1行目\n  2行目\t3行目"), Path("input")) == "1行目 2行目 3行目"
+
+
+def test_reason_relativizes_lexical_absolute_path_of_symlinked_input(tmp_path, monkeypatch):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "link").symlink_to("data", target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    base = Path("link")
+    # 相対symlinkでは absolute()（未解決）と resolve()（解決後）が一致しない
+    assert str(base.absolute()) != str(base.resolve())
+
+    for variant in (base.absolute(), base.resolve()):
+        reason = _reason(ValueError(f"{variant}/spend/x.csv: 必須カラムなし"), base)
+        assert reason == "spend/x.csv: 必須カラムなし"
+        assert str(tmp_path) not in reason
+
+
+def test_reason_relativizes_parent_relative_input_dir(tmp_path, monkeypatch):
+    (tmp_path / "input").mkdir()
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    base = Path("../input")
+
+    reason = _reason(ValueError(f"{base.absolute()}/spend: 読めません"), base)
+
+    assert reason == "spend: 読めません"
+    assert str(tmp_path) not in reason

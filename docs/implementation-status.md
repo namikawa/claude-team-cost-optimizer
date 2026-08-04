@@ -594,3 +594,20 @@ Round 4では、Round 2・3で追加した経路の退行有無も回帰テス�
 - `uv run ruff check .`
 - `uv run pytest`（274件成功）
 - 実データ3組織・サンプル2組織のsmoke testで出力が初回から不変。サンプルの`analyze`も従来どおり
+
+外部レビュー Round 5（指摘2件・ともに競合状態と経路の取りこぼし。high・lowなし）:
+
+1. `_reason`の置換候補が`str(input_dir)`と`resolve()`だけだったため、相対symlinkを
+   `--input-dir`に渡すと、symlinkを解決しない絶対表記（`absolute()`相当）が例外文に現れた
+   場合に置換されなかった。`absolute()`も候補に加えた（相対symlinkや`..`を含む指定では
+   `absolute()`と`resolve()`が一致しない）
+2. Round 4で`spend_file_period`の例外は捕捉したが、同じ再走査で`None`が返る経路
+   （一覧取得後にファイルが消えた・名前が解釈不能になった）を`continue`で黙って通していた。
+   対象月は`load_spend`が捕捉するため、過去月だけが無言で欠落し「問題なし・exit 0」に
+   なり得た。一覧にあった月の`None`もerrorへ変換した
+
+テスト（Round 5 修正後）:
+
+- `uv run ruff check .`
+- `uv run pytest`（277件成功）
+- 実データ3組織・サンプル2組織のsmoke testで出力が初回から不変
