@@ -1,8 +1,8 @@
 # 実装ステータス
 
-- 最終更新: 2026-08-01
+- 最終更新: 2026-08-04
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 5 doctorの既存入力検査
+- 次のタスク: Step 6 product policy config
 
 ## 1. この文書の目的
 
@@ -68,7 +68,7 @@
 | Track | 内容 | 完了 | 進行中 | ブロック | 未着手 | 見送り |
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
-| 1 | 入力と品質 | 4 | 0 | 0 | 1 | 0 |
+| 1 | 入力と品質 | 5 | 0 | 0 | 0 | 0 |
 | 2 | Code中心の利用可視化 | 0 | 0 | 0 | 3 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
@@ -76,7 +76,7 @@
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **7** | **0** | **0** | **38** | **0** |
+| **合計** |  | **8** | **0** | **0** | **37** | **0** |
 
 ## 5. Step一覧
 
@@ -96,7 +96,7 @@
 | 2 | Members任意カラム | `完了` | 2026-07-30 |
 | 3 | subject_id | `完了` | 2026-07-30 |
 | 4 | QualityIssue | `完了` | 2026-08-01 |
-| 5 | doctorの既存入力検査 | `未着手` |  |
+| 5 | doctorの既存入力検査 | `完了` | 2026-08-04 |
 
 ### Track 2: Code中心の利用可視化
 
@@ -423,3 +423,52 @@
 - `uv run pytest tests/test_data_quality.py`（23件成功）
 - `uv run ruff check .`
 - `uv run pytest`（215件成功）
+
+### 2026-08-04 — Step 5 doctorの既存入力検査
+
+ステータス: `完了`
+
+実装したこと:
+
+- `doctor`サブコマンドを追加（`--org`複数指定・`--month`省略時は最新月・`--format text|json`）
+- 検査本体を`data_quality.inspect_input`として追加（1組織・1対象月で読み取り専用）
+- Spendの検査: 対象月の欠損、ファイル名から採用ファイルを決められない、読めない（必須カラム
+  欠落・文字コード）、部分月、ヒステリシス窓の欠月、単価表に無いモデル、必須数値列の解釈失敗
+- Membersの検査: 1件も無い、読めない、対象月が無く別月へフォールバック、シート種別の判別不能
+- Spend×Membersの突き合わせ: spendに行があるがmembersに居ない、未割当なのに利用実績がある
+- errorが1件でもあればexit 1、warningのみ・問題なしはexit 0
+- json出力はstdoutをJSONのみに保ち、対象月の通知はstderrへ出す
+- IssueCodeへ3 code追加（`MEMBER_ROW_MISSING`・`SEAT_TYPE_UNKNOWN`・`UNASSIGNED_WITH_USAGE`）。
+  設計書§17は「最低限のcode」の規定であり、Step 5で検出対象が確定したため追記した
+
+確認したこと:
+
+- 問題の無い入力では issue ゼロ・exit 0 になる
+- 警告だけなら exit 0、errorがあれば exit 1 になる
+- ingestの例外メッセージに含まれる入力ディレクトリのパスをmessageへ持ち込まない
+  （入力ディレクトリからの相対表記へ落とし、同一入力で常に同じ文字列になる）
+- 同じ入力を2回検査するとJSON出力がバイト一致する
+- 複数組織で組織ごとに検査し、scopeのorgで識別できる。旧レイアウト（単一組織）では
+  scopeにorgを入れない
+- doctorはファイルを作成・変更しない（実行前後でツリーが一致）
+- `analyze`・`report`・`ingest`・`pricing`のコードを変更していない
+- GitHub・browser・admin設定・code-analytics・members-infoは検査していない
+
+コード・ファイル変更:
+
+- `README.md`
+- `docs/implementation-design.md`
+- `src/seat_analyzer/cli.py`
+- `src/seat_analyzer/data_quality.py`
+- `src/seat_analyzer/domain.py`
+- `tests/test_cli.py`
+- `tests/test_data_quality.py`
+
+テスト:
+
+- `uv run pytest tests/test_cli.py tests/test_data_quality.py`（58件成功）
+- `uv run ruff check .`
+- `uv run pytest`（243件成功）
+- 実データ3組織でのsmoke test（exit 0）。既知の状態（観測月が1ヶ月のみの組織で履歴月欠落、
+  対象月当時のメンバー一覧が無い組織でフォールバック）をwarningとして検出し、
+  それ以外の組織ではissueが出ないことを確認
