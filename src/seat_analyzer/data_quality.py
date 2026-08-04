@@ -139,12 +139,16 @@ def _reason(exc: Exception, input_dir: Path) -> str:
 
     置換対象は絶対パスだけにする。相対指定（`input`・`.`・`a` 等）はそれ自体が実行環境に
     依存せず決定的で、素朴な部分文字列置換だと例外文中の無関係な語（列名・英単語・
-    ピリオド）まで壊すため触らない。
+    ピリオド）まで壊すため触らない。ただし相対指定でも絶対表記が例外文に現れ得るため、
+    symlinkを解決しない `absolute()` と解決後の `resolve()` の両方を候補に入れる
+    （相対symlinkや `..` を含む指定で両者は一致しない）。
     """
     flat = " ".join(str(exc).split())
     bases = sorted(
         (
-            base for base in {str(input_dir), str(input_dir.resolve())}
+            base for base in {
+                str(input_dir), str(input_dir.absolute()), str(input_dir.resolve())
+            }
             if Path(base).is_absolute()
         ),
         key=len, reverse=True,
@@ -193,6 +197,14 @@ def _partial_month_issues(
             ))
             continue
         if period is None:
+            # 一覧にあった月が引き当てられない = 検査中にファイルが消えた・名前が変わった。
+            # 黙って通すと「問題なし」に見えるため、状態の不整合として報告する
+            issues.append(_issue(
+                Severity.ERROR, IssueCode.MISSING_SPEND,
+                f"{m} のスペンドが検査中に見つからなくなりました"
+                "（月の一覧を得た後にファイルが変化した可能性）。再実行してください",
+                org, m,
+            ))
             continue
         days_in_month = _days_in_month(m)
         if period.kind == "date":

@@ -4,7 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from seat_analyzer import analyze
+from seat_analyzer import analyze, ingest
 from seat_analyzer.cli import main
 from seat_analyzer.ingest import discover_orgs
 
@@ -580,6 +580,22 @@ def test_doctor_reports_spend_rescan_failure_as_issue(make_input, monkeypatch, c
     issues = json.loads(capsys.readouterr().out)   # traceback で落ちず JSON が出る
     assert ("error", "MISSING_SPEND") in [(i["severity"], i["code"]) for i in issues]
     assert any("再確認できません" in i["message"] for i in issues)
+
+
+def test_doctor_reports_vanished_history_month_as_issue(make_input, monkeypatch, capsys):
+    input_dir = _clean_org(make_input)
+    original = ingest.spend_file_period
+
+    def _vanished(directory, month):
+        # 対象月は正常、過去月だけ引き当てられない（検査中に消えた）状況を再現する
+        return None if month == "2026-05" else original(directory, month)
+
+    monkeypatch.setattr("seat_analyzer.ingest.spend_file_period", _vanished)
+    assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 1
+    errors = [i for i in json.loads(capsys.readouterr().out) if i["severity"] == "error"]
+    assert [(i["code"], i["scope"]["month"]) for i in errors] == [
+        ("MISSING_SPEND", "2026-05"),
+    ]
 
 
 def test_init_org_creates_scaffold(tmp_path):
