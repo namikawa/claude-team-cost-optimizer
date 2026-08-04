@@ -303,6 +303,129 @@ def test_doctor_output_is_deterministic(make_input, capsys):
     assert str(input_dir) not in outputs[0]
 
 
+def test_doctor_history_gap_message_matches_analyze_behavior(make_input, capsys):
+    # analyze は欠月を飛ばした過去月で連続同推奨を判定するため、欠月があっても
+    # 「変更推奨」は出る。doctor が「要観察に留まる」と案内してはいけない
+    input_dir = make_input(
+        {"2026-04": [spend_row("a@x.jp", 10.0)], "2026-06": [spend_row("a@x.jp", 12.0)]},
+        members=["a@x.jp,Premium"], org="org-a",
+    )
+    assert _doctor(input_dir, "--month", "2026-06") == 0
+    out = capsys.readouterr().out
+    assert "[warning] MISSING_HISTORY_MONTH" in out
+    assert "要観察" not in out
+    assert "変更推奨が出ることがあります" in out
+
+
+def test_doctor_inspects_org_without_spend_dir(make_input, capsys):
+    input_dir = _clean_org(make_input)
+    (input_dir / "org-b" / "members").mkdir(parents=True)
+    (input_dir / "org-b" / "members" / "members_2026-06.csv").write_text(
+        "Email,Seat Type\nb@y.jp,Premium\n", encoding="utf-8")
+    # 全組織モードで spend/ の無い組織を黙って除外しない
+    assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 1
+    issues = json.loads(capsys.readouterr().out)
+    assert [(i["scope"]["org"], i["code"]) for i in issues] == [("org-b", "MISSING_SPEND")]
+    # --org での明示指定でもエラー終了せず JSON を返す
+    assert _doctor(input_dir, "--month", "2026-06", "--org", "org-b", "--format", "json") == 1
+    assert json.loads(capsys.readouterr().out)[0]["code"] == "MISSING_SPEND"
+
+
+def test_doctor_errors_on_members_with_no_rows(make_input, capsys):
+    input_dir = _clean_org(make_input)
+    (input_dir / "org-a" / "members" / "members_2026-06.csv").write_text(
+        "Email,Seat Type\n", encoding="utf-8")
+    assert _doctor(input_dir, "--month", "2026-06") == 1
+    out = capsys.readouterr().out
+    assert "[error] MISSING_MEMBERS" in out
+    assert "データ行がありません" in out
+    # 空のメンバー一覧との突き合わせ（全員が「members に居ない」）は行わない
+    assert "MEMBER_ROW_MISSING" not in out
+
+
+def test_doctor_reports_unreadable_csv_as_structured_issue(make_input, capsys):
+    input_dir = _clean_org(make_input)
+    # .csv という名前のディレクトリ（read_csv が OSError を投げる）
+    (input_dir / "org-a" / "spend" / "spend_2026-07.csv").mkdir()
+    assert _doctor(input_dir, "--month", "2026-07", "--format", "json") == 1
+    issues = json.loads(capsys.readouterr().out)  # traceback で落ちず JSON が出る
+    assert [(i["severity"], i["code"]) for i in issues][0] == ("error", "MISSING_SPEND")
+    assert "読めません" in issues[0]["message"]
+
+
+def test_doctor_json_order_is_independent_of_org_option_order(make_input, capsys):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 10.0)]},
+        members=["a@x.jp,Enterprise"], org="org-a",   # warning のみ
+    )
+    make_input({"2026-06": [spend_row("b@y.jp", 20.0)]}, org="org-b")  # members なし=error
+    outputs = []
+    for orgs in (("org-a", "org-b"), ("org-b", "org-a")):
+        args = [a for org in orgs for a in ("--org", org)]
+        assert _doctor(input_dir, "--month", "2026-06", "--format", "json", *args) == 1
+        outputs.append(capsys.readouterr().out)
+    assert outputs[0] == outputs[1]
+    assert json.loads(outputs[0])[0]["severity"] == "error"
+
+
+def test_doctor_warns_blank_model_cell(make_input, capsys):
+    blank = "a@x.jp,uuid-x,Claude Code,,,10,1000000,100000,0.0,0.0"
+    input_dir = make_input(
+        {"2026-05": [spend_row("a@x.jp", 10.0)], "2026-06": [blank]},
+        members=["a@x.jp,Premium"], org="org-a",
+    )
+    assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 0
+    issue = next(i for i in json.loads(capsys.readouterr().out) if i["code"] == "UNKNOWN_MODEL")
+    assert "model が空の 1行" in issue["message"]
+    assert issue["scope"]["blank_model_rows"] == 1
+    assert issue["scope"]["models"] == []
+
+
+def test_doctor_checks_members_even_without_target_month(make_input, tmp_path, capsys):
+    input_dir = tmp_path / "input"
+    (input_dir / "org-a" / "spend").mkdir(parents=True)   # 空の spend/、members/ なし
+    assert _doctor(input_dir, "--format", "json") == 1
+    assert [i["code"] for i in json.loads(capsys.readouterr().out)] == [
+        "MISSING_MEMBERS", "MISSING_SPEND",
+    ]
+
+
+def test_doctor_distinguishes_unresolvable_filenames_from_absence(make_input, capsys):
+    input_dir = _clean_org(make_input)
+    # 月をまたぐ期間のファイル名（ingest はエラーにする）。--month は省略する
+    (input_dir / "org-a" / "spend" / "spend-2026-06-01-to-2026-07-05.csv").write_text(
+        "Email,Seat Type\n", encoding="utf-8")
+    assert _doctor(input_dir, "--format", "json") == 1
+    issue = next(i for i in json.loads(capsys.readouterr().out) if i["code"] == "MISSING_SPEND")
+    assert "ファイル名から解決できない" in issue["message"]
+    assert "期間が月をまたぐ" in issue["message"]
+
+
+def test_doctor_warns_single_date_named_spend(make_input, tmp_path, capsys):
+    input_dir = _clean_org(make_input)
+    spend = input_dir / "org-a" / "spend"
+    (spend / "spend_2026-06.csv").rename(spend / "spend-report-2026-06-15.csv")
+    assert _doctor(input_dir, "--month", "2026-06") == 0
+    out = capsys.readouterr().out
+    assert "[warning] PARTIAL_MONTH" in out
+    assert "全月データであることを確認できません" in out
+
+
+def test_doctor_numeric_failure_counts_affected_rows(make_input, capsys):
+    both = "a@x.jp,uuid-x,Claude Code,claude-sonnet-4-6,claude,10,N/A,bad,0.0,0.0"
+    input_dir = make_input(
+        {"2026-05": [spend_row("a@x.jp", 10.0)], "2026-06": [both]},
+        members=["a@x.jp,Premium"], org="org-a",
+    )
+    assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 0
+    issue = next(
+        i for i in json.loads(capsys.readouterr().out) if i["code"] == "NUMERIC_PARSE_FAILED"
+    )
+    # 1行で2列とも失敗しても影響行数は1（セル数は別キー）
+    assert issue["scope"]["rows"] == 1
+    assert issue["scope"]["cells"] == 2
+
+
 def test_doctor_writes_no_files(make_input, tmp_path):
     input_dir = _clean_org(make_input)
     before = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
