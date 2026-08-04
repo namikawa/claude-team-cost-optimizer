@@ -4,7 +4,12 @@ import random
 
 import pytest
 
-from seat_analyzer.data_quality import issue_to_dict, issues_to_json, sort_issues
+from seat_analyzer.data_quality import (
+    issue_to_dict,
+    issues_to_canonical_json,
+    issues_to_json,
+    sort_issues,
+)
 from seat_analyzer.domain import IssueCode, QualityIssue, Severity
 
 EXPECTED_CODES = {
@@ -328,6 +333,15 @@ def test_json_output_is_byte_identical_regardless_of_input_order():
     second = list(reversed(_sample_issues(reverse_scope_keys=True)))
 
     assert issues_to_json(sort_issues(first)) == issues_to_json(sort_issues(second))
+
+
+def test_canonical_json_is_identical_regardless_of_input_order():
+    first = _sample_issues()
+    second = list(reversed(_sample_issues(reverse_scope_keys=True)))
+
+    # 呼び出し側が整列しなくても、正準出力APIは入力順に依存しない
+    assert issues_to_canonical_json(first) == issues_to_canonical_json(second)
+    assert issues_to_canonical_json(first) == issues_to_json(sort_issues(first))
 
 
 def test_issues_to_json_preserves_input_order():
