@@ -423,6 +423,58 @@ def test_doctor_reports_unreadable_input_dir_as_json(tmp_path, capsys):
     issues = json.loads(capsys.readouterr().out)   # stdout は JSON のまま
     assert [i["code"] for i in issues] == ["MISSING_SPEND"]
     assert "org" not in issues[0]["scope"]         # 組織を特定できない
+    # 入力ディレクトリの絶対パスを message へ持ち込まない
+    assert str(missing) not in issues[0]["message"]
+
+
+def test_doctor_input_dir_message_is_environment_independent(tmp_path, capsys):
+    messages = []
+    for name in ("a", "bbbbbbbbbb"):     # 長さの違う別パスでも同じ message になる
+        target = tmp_path / name / "input"
+        assert _doctor(target, "--format", "json") == 1
+        issue = json.loads(capsys.readouterr().out)[0]
+        messages.append(issue["message"])
+        assert str(target) not in issue["message"]
+        assert str(tmp_path) not in issue["message"]
+    assert messages[0] == messages[1]
+
+
+def test_doctor_reports_missing_input_dir_with_org_option(tmp_path, capsys):
+    # 入力ディレクトリが無い場合は組織名の検証より先に構造化 issue にする
+    assert _doctor(tmp_path / "nope", "--org", "org-a", "--format", "json") == 1
+    assert [i["code"] for i in json.loads(capsys.readouterr().out)] == ["MISSING_SPEND"]
+
+
+def test_doctor_heading_without_org_and_month(tmp_path, capsys):
+    assert _doctor(tmp_path / "nope") == 1
+    assert "=== 入力検査 ===" in capsys.readouterr().out
+
+
+def test_doctor_treats_root_spend_as_legacy_layout(tmp_path, capsys):
+    # 組織名 spend + 直下の旧形式CSV は判別できないため analyze と同じく混在エラー
+    org = tmp_path / "input" / "spend"
+    (org / "spend").mkdir(parents=True)
+    (org / "spend" / "spend_2026-06.csv").write_text(
+        "Email,Model,Prompt Tokens,Completion Tokens\na@x.jp,claude-sonnet-4-6,1000,100\n",
+        encoding="utf-8")
+    assert _doctor(tmp_path / "input", "--month", "2026-06") == 1
+    assert "混在" in capsys.readouterr().err
+
+
+def test_doctor_picks_latest_members_snapshot_without_target_month(
+    tmp_path, write_member_snapshots, capsys
+):
+    # 同一月に複数ある場合、ファイル名順ではなくスナップショット日付の新しい方を採る
+    input_dir = tmp_path / "input"
+    (input_dir / "org-a" / "spend").mkdir(parents=True)
+    members = input_dir / "org-a" / "members"
+    members.mkdir(parents=True)
+    (members / "members-z-2026-06-01.csv").write_text("Email,Seat Type\n", encoding="utf-8")
+    (members / "members-a-2026-06-30.csv").write_text(
+        "Email,Seat Type\na@x.jp,Premium\n", encoding="utf-8")
+    assert _doctor(input_dir, "--format", "json") == 1
+    # 新しい 06-30 にはデータ行があるため MISSING_MEMBERS は出ない
+    assert [i["code"] for i in json.loads(capsys.readouterr().out)] == ["MISSING_SPEND"]
 
 
 def test_doctor_accepts_org_named_like_input_subdir(tmp_path, capsys):
