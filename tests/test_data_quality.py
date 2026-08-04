@@ -1,10 +1,17 @@
 import dataclasses
 import json
 import random
+from pathlib import Path
 
 import pytest
 
-from seat_analyzer.data_quality import issue_to_dict, issues_to_json, sort_issues
+from seat_analyzer.data_quality import (
+    _reason,
+    issue_to_dict,
+    issues_to_canonical_json,
+    issues_to_json,
+    sort_issues,
+)
 from seat_analyzer.domain import IssueCode, QualityIssue, Severity
 
 EXPECTED_CODES = {
@@ -15,12 +22,15 @@ EXPECTED_CODES = {
     "MISSING_HISTORY_MONTH",
     "UNKNOWN_MODEL",
     "NUMERIC_PARSE_FAILED",
+    "MEMBER_ROW_MISSING",
     # Identity
     "IDENTITY_EMAIL_FALLBACK",
     "IDENTITY_CONFLICT",
     "GITHUB_MAPPING_MISSING",
     "GITHUB_MAPPING_DUPLICATE",
     # Seat/credit
+    "SEAT_TYPE_UNKNOWN",
+    "UNASSIGNED_WITH_USAGE",
     "SEAT_CHANGE_DETECTED",
     "RECENT_SEAT_CHANGE",
     "CREDIT_SETTING_UNKNOWN",
@@ -46,8 +56,8 @@ def test_issue_code_vocabulary_is_fixed():
     # __members__はaliasも列挙するため、別名の紛れ込みも検出できる
     members = IssueCode.__members__
     assert set(members) == EXPECTED_CODES
-    assert len(members) == 25
-    assert len(EXPECTED_CODES) == 25
+    assert len(members) == 28
+    assert len(EXPECTED_CODES) == 28
 
 
 def test_issue_code_value_equals_name():
@@ -327,6 +337,15 @@ def test_json_output_is_byte_identical_regardless_of_input_order():
     assert issues_to_json(sort_issues(first)) == issues_to_json(sort_issues(second))
 
 
+def test_canonical_json_is_identical_regardless_of_input_order():
+    first = _sample_issues()
+    second = list(reversed(_sample_issues(reverse_scope_keys=True)))
+
+    # 呼び出し側が整列しなくても、正準出力APIは入力順に依存しない
+    assert issues_to_canonical_json(first) == issues_to_canonical_json(second)
+    assert issues_to_canonical_json(first) == issues_to_json(sort_issues(first))
+
+
 def test_issues_to_json_preserves_input_order():
     ordered = sort_issues(_sample_issues())
     reversed_issues = list(reversed(ordered))
@@ -402,3 +421,78 @@ def test_identity_conflict_scope_round_trips_through_json():
             },
         }
     ]
+
+
+# --- 例外メッセージの正規化（doctor の message 決定性） ---
+
+
+@pytest.mark.parametrize(
+    ("input_dir", "text"),
+    [
+        (".", "data.csv: 列がありません"),
+        ("a", "cannot parse header"),
+        ("input", "spend.csv: 実ファイルのヘッダ: ['input tokens']"),
+        ("入力", "入力ディレクトリの扱いを確認してください"),
+    ],
+)
+def test_reason_keeps_relative_input_dir_text_intact(input_dir, text):
+    # 相対指定はそれ自体が実行環境に依存しないため置換しない
+    # （素朴な部分文字列置換だと無関係な語・ピリオドまで壊れる）
+    assert _reason(ValueError(text), Path(input_dir)) == text
+
+
+def test_reason_relativizes_absolute_paths(tmp_path):
+    base = tmp_path / "input"
+    reason = _reason(
+        ValueError(f"{base}/spend/spend_2026-06.csv: 必須カラムが見つかりません"),
+        base,
+    )
+
+    assert reason == "spend/spend_2026-06.csv: 必須カラムが見つかりません"
+    assert str(base) not in reason
+
+
+def test_reason_replaces_bare_absolute_path_with_fixed_label(tmp_path):
+    base = tmp_path / "input"
+    reason = _reason(FileNotFoundError(f"{base} に入力データがありません"), base)
+
+    assert reason == "入力ディレクトリ に入力データがありません"
+
+
+def test_reason_is_identical_across_different_absolute_locations(tmp_path):
+    def _render(name: str) -> str:
+        base = tmp_path / name / "input"
+        return _reason(ValueError(f"{base}/spend: 読めません"), base)
+
+    # 置換後に固定語が再置換されないことも兼ねて確認する
+    assert _render("a") == _render("bbbbbbbbbb") == "spend: 読めません"
+
+
+def test_reason_flattens_multiline_messages():
+    assert _reason(ValueError("1行目\n  2行目\t3行目"), Path("input")) == "1行目 2行目 3行目"
+
+
+def test_reason_relativizes_lexical_absolute_path_of_symlinked_input(tmp_path, monkeypatch):
+    (tmp_path / "data").mkdir()
+    (tmp_path / "link").symlink_to("data", target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    base = Path("link")
+    # 相対symlinkでは absolute()（未解決）と resolve()（解決後）が一致しない
+    assert str(base.absolute()) != str(base.resolve())
+
+    for variant in (base.absolute(), base.resolve()):
+        reason = _reason(ValueError(f"{variant}/spend/x.csv: 必須カラムなし"), base)
+        assert reason == "spend/x.csv: 必須カラムなし"
+        assert str(tmp_path) not in reason
+
+
+def test_reason_relativizes_parent_relative_input_dir(tmp_path, monkeypatch):
+    (tmp_path / "input").mkdir()
+    (tmp_path / "work").mkdir()
+    monkeypatch.chdir(tmp_path / "work")
+    base = Path("../input")
+
+    reason = _reason(ValueError(f"{base.absolute()}/spend: 読めません"), base)
+
+    assert reason == "spend: 読めません"
+    assert str(tmp_path) not in reason
