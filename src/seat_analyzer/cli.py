@@ -180,12 +180,12 @@ def _resolve_input_targets(
             "（README の月次運用手順に従いデータを配置してください）"
         )
     orgs = _discover_inspect_orgs(input_dir)
-    # 直下の spend/ は analyze と同じく常に旧レイアウトの目印として扱う。
-    # members/ と code-analytics/ は、それ自体が組織候補なら目印に数えない
-    # （組織名が members / code-analytics の場合に混在と誤認しないため）
-    legacy = (input_dir / "spend").is_dir() or any(
-        (input_dir / sub).is_dir()
-        for sub in INPUT_SUBDIRS if sub != "spend" and sub not in orgs
+    # 組織があるなら混在判定は analyze と同じく直下 spend/ のみで行う（残骸の
+    # members/ 等で検査を止めない）。組織が無いときだけ、spend/ を欠いた旧レイアウトも
+    # 単一組織として拾って欠損を検査する
+    legacy = (
+        (input_dir / "spend").is_dir() if orgs
+        else any((input_dir / sub).is_dir() for sub in INPUT_SUBDIRS)
     )
     return [(org, org_input) for org, org_input, _ in
             _resolve_targets(input_dir, input_dir, org_args, orgs=orgs, legacy=legacy)]

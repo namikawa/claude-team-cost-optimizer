@@ -136,10 +136,18 @@ def _reason(exc: Exception, input_dir: Path) -> str:
     ingestの例外は呼び出し時の入力ディレクトリをそのまま含むため、そのままでは
     messageが実行環境に依存する（domain.QualityIssueの決定性制約）。配下のパスは
     入力ディレクトリからの相対表記へ、入力ディレクトリ自身は固定の語へ置き換える。
+
+    置換対象は絶対パスだけにする。相対指定（`input`・`.`・`a` 等）はそれ自体が実行環境に
+    依存せず決定的で、素朴な部分文字列置換だと例外文中の無関係な語（列名・英単語・
+    ピリオド）まで壊すため触らない。
     """
     flat = " ".join(str(exc).split())
     bases = sorted(
-        {str(input_dir), str(input_dir.resolve())}, key=len, reverse=True
+        (
+            base for base in {str(input_dir), str(input_dir.resolve())}
+            if Path(base).is_absolute()
+        ),
+        key=len, reverse=True,
     )
     for base in bases:
         flat = flat.replace(base + "/", "")
@@ -175,7 +183,15 @@ def _partial_month_issues(
     """
     issues: list[QualityIssue] = []
     for m in [x for x in spend_months if x <= month]:
-        period = ingest.spend_file_period(input_dir, m)
+        try:
+            period = ingest.spend_file_period(input_dir, m)
+        except (OSError, ValueError) as exc:
+            # 月の一覧を得た後にファイルが変化した場合。例外を外へ出さず issue にする
+            issues.append(_issue(
+                Severity.ERROR, IssueCode.MISSING_SPEND,
+                f"{m} のスペンドを再確認できません: {_reason(exc, input_dir)}", org, m,
+            ))
+            continue
         if period is None:
             continue
         days_in_month = _days_in_month(m)

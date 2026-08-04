@@ -1,10 +1,12 @@
 import dataclasses
 import json
 import random
+from pathlib import Path
 
 import pytest
 
 from seat_analyzer.data_quality import (
+    _reason,
     issue_to_dict,
     issues_to_canonical_json,
     issues_to_json,
@@ -419,3 +421,52 @@ def test_identity_conflict_scope_round_trips_through_json():
             },
         }
     ]
+
+
+# --- 例外メッセージの正規化（doctor の message 決定性） ---
+
+
+@pytest.mark.parametrize(
+    ("input_dir", "text"),
+    [
+        (".", "data.csv: 列がありません"),
+        ("a", "cannot parse header"),
+        ("input", "spend.csv: 実ファイルのヘッダ: ['input tokens']"),
+        ("入力", "入力ディレクトリの扱いを確認してください"),
+    ],
+)
+def test_reason_keeps_relative_input_dir_text_intact(input_dir, text):
+    # 相対指定はそれ自体が実行環境に依存しないため置換しない
+    # （素朴な部分文字列置換だと無関係な語・ピリオドまで壊れる）
+    assert _reason(ValueError(text), Path(input_dir)) == text
+
+
+def test_reason_relativizes_absolute_paths(tmp_path):
+    base = tmp_path / "input"
+    reason = _reason(
+        ValueError(f"{base}/spend/spend_2026-06.csv: 必須カラムが見つかりません"),
+        base,
+    )
+
+    assert reason == "spend/spend_2026-06.csv: 必須カラムが見つかりません"
+    assert str(base) not in reason
+
+
+def test_reason_replaces_bare_absolute_path_with_fixed_label(tmp_path):
+    base = tmp_path / "input"
+    reason = _reason(FileNotFoundError(f"{base} に入力データがありません"), base)
+
+    assert reason == "入力ディレクトリ に入力データがありません"
+
+
+def test_reason_is_identical_across_different_absolute_locations(tmp_path):
+    def _render(name: str) -> str:
+        base = tmp_path / name / "input"
+        return _reason(ValueError(f"{base}/spend: 読めません"), base)
+
+    # 置換後に固定語が再置換されないことも兼ねて確認する
+    assert _render("a") == _render("bbbbbbbbbb") == "spend: 読めません"
+
+
+def test_reason_flattens_multiline_messages():
+    assert _reason(ValueError("1行目\n  2行目\t3行目"), Path("input")) == "1行目 2行目 3行目"

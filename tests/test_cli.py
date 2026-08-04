@@ -1,5 +1,6 @@
 """CLI のマルチ組織対応（組織解決・--org・横断サマリ・旧レイアウト互換）と doctor のテスト。"""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -536,12 +537,49 @@ def test_doctor_numeric_failure_counts_affected_rows(make_input, capsys):
     assert issue["scope"]["cells"] == 2
 
 
+def _tree_state(root: Path) -> list[tuple]:
+    """ツリーの状態（パス・種類・サイズ・更新時刻・内容ハッシュ）。読み取り専用の検証用。"""
+    state = []
+    for path in sorted(root.rglob("*")):
+        stat = path.stat()
+        digest = (
+            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+        )
+        state.append((
+            str(path.relative_to(root)), path.is_dir(),
+            stat.st_size, stat.st_mtime_ns, digest,
+        ))
+    return state
+
+
 def test_doctor_writes_no_files(make_input, tmp_path):
     input_dir = _clean_org(make_input)
-    before = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
+    before = _tree_state(tmp_path)
     assert _doctor(input_dir, "--month", "2026-06") == 0
-    after = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
-    assert before == after
+    # ファイルの増減だけでなく、既存ファイルの内容・更新時刻も変わらない
+    assert _tree_state(tmp_path) == before
+
+
+def test_doctor_ignores_leftover_legacy_dir_when_orgs_exist(make_input, capsys):
+    input_dir = _clean_org(make_input)
+    (input_dir / "members").mkdir()          # 旧レイアウトから移行し損ねた残骸
+    # analyze は直下 spend/ が無ければ組織を処理する。doctor も止まらない
+    assert _doctor(input_dir, "--month", "2026-06") == 0
+    assert "問題は見つかりませんでした" in capsys.readouterr().out
+
+
+def test_doctor_reports_spend_rescan_failure_as_issue(make_input, monkeypatch, capsys):
+    input_dir = _clean_org(make_input)
+
+    def _boom(*_args, **_kwargs):
+        # 月の一覧を得た後にファイルが差し替わった状況を再現する
+        raise ValueError("spend: 2026-06 のCSVが複数あり期間から優先順を判断できません")
+
+    monkeypatch.setattr("seat_analyzer.ingest.spend_file_period", _boom)
+    assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 1
+    issues = json.loads(capsys.readouterr().out)   # traceback で落ちず JSON が出る
+    assert ("error", "MISSING_SPEND") in [(i["severity"], i["code"]) for i in issues]
+    assert any("再確認できません" in i["message"] for i in issues)
 
 
 def test_init_org_creates_scaffold(tmp_path):
