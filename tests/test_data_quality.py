@@ -15,12 +15,15 @@ EXPECTED_CODES = {
     "MISSING_HISTORY_MONTH",
     "UNKNOWN_MODEL",
     "NUMERIC_PARSE_FAILED",
+    "MEMBER_ROW_MISSING",
     # Identity
     "IDENTITY_EMAIL_FALLBACK",
     "IDENTITY_CONFLICT",
     "GITHUB_MAPPING_MISSING",
     "GITHUB_MAPPING_DUPLICATE",
     # Seat/credit
+    "SEAT_TYPE_UNKNOWN",
+    "UNASSIGNED_WITH_USAGE",
     "SEAT_CHANGE_DETECTED",
     "RECENT_SEAT_CHANGE",
     "CREDIT_SETTING_UNKNOWN",
@@ -46,8 +49,8 @@ def test_issue_code_vocabulary_is_fixed():
     # __members__はaliasも列挙するため、別名の紛れ込みも検出できる
     members = IssueCode.__members__
     assert set(members) == EXPECTED_CODES
-    assert len(members) == 25
-    assert len(EXPECTED_CODES) == 25
+    assert len(members) == 28
+    assert len(EXPECTED_CODES) == 28
 
 
 def test_issue_code_value_equals_name():

@@ -1,4 +1,4 @@
-"""CLI エントリポイント: seat-analyzer {analyze,init-org}"""
+"""CLI エントリポイント: seat-analyzer {analyze,doctor,init-org}"""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import analyze, ingest, report
+from . import analyze, data_quality, ingest, report
 from .config import load_config
+from .domain import QualityIssue, Severity
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,6 +33,20 @@ def main(argv: list[str] | None = None) -> int:
         help="速報モードの観測日数。省略時はスペンドレポートのファイル名の期間から自動判別",
     )
     p.set_defaults(func=_run_analyze)
+
+    pdoc = sub.add_parser("doctor", help="入力データ（スペンド・メンバー一覧）の品質を検査")
+    pdoc.add_argument("--month", help="対象月 (YYYY-MM)。省略時は対象組織の spend の最新月")
+    pdoc.add_argument(
+        "--org", action="append",
+        help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織を検査",
+    )
+    pdoc.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pdoc.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
+    pdoc.add_argument(
+        "--format", choices=("text", "json"), default="text",
+        help="出力形式。json は構造化issueの配列を stdout へ出す (default: text)",
+    )
+    pdoc.set_defaults(func=_run_doctor)
 
     pi = sub.add_parser("init-org", help="新しい組織の入力/出力ディレクトリの雛形を作成")
     pi.add_argument("orgs", nargs="+", metavar="組織名",
@@ -122,6 +137,68 @@ def _resolve_targets(
     for org in selected:
         ingest.validate_org_name(org)
     return [(org, input_dir / org, output_dir / org) for org in selected]
+
+
+def _resolve_input_targets(
+    input_dir: Path, org_args: list[str] | None
+) -> list[tuple[str | None, Path]]:
+    """検査対象の (組織名, 入力dir)。出力を書かないコマンド用に出力dirを落とす。"""
+    return [(org, org_input) for org, org_input, _ in
+            _resolve_targets(input_dir, input_dir, org_args)]
+
+
+def _latest_month(org_input: Path) -> str | None:
+    """対象組織のスペンドの最新月。ファイル名を解決できない場合は None（doctor が検査する）。"""
+    try:
+        months = ingest.discover_months(org_input)
+    except ValueError:
+        return None
+    return months[-1] if months else None
+
+
+def _notice(message: str, as_json: bool) -> None:
+    """JSON 出力時は stdout を JSON だけに保つため、通知は stderr へ出す。"""
+    print(message, file=sys.stderr if as_json else sys.stdout)
+
+
+def _run_doctor(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    input_dir = Path(args.input_dir)
+    as_json = args.format == "json"
+    targets = _resolve_input_targets(input_dir, args.org)
+
+    # 対象月: 未指定なら対象組織全体での最新月。1件も無ければ None のまま検査に渡す
+    month = args.month
+    if month is None:
+        latest = [m for _, org_input in targets if (m := _latest_month(org_input))]
+        month = max(latest) if latest else None
+        if month is not None:
+            _notice(f"対象月未指定のため最新月を使用: {month}", as_json)
+
+    all_issues: list[QualityIssue] = []
+    for org, org_input in targets:
+        issues = data_quality.inspect_input(org_input, month, cfg, org=org)
+        all_issues.extend(issues)
+        if not as_json:
+            _print_issues(org, month, issues)
+
+    n_error = sum(1 for i in all_issues if i.severity is Severity.ERROR)
+    if as_json:
+        print(data_quality.issues_to_json(all_issues))
+    else:
+        n_warning = len(all_issues) - n_error
+        print(f"\n検査結果: エラー {n_error} 件 / 警告 {n_warning} 件")
+    return 1 if n_error else 0
+
+
+def _print_issues(org: str | None, month: str | None, issues: list[QualityIssue]) -> None:
+    scope = " ".join(x for x in (org, month) if x) or "入力"
+    print(f"\n=== {scope} 入力検査 ===")
+    if not issues:
+        print("  問題は見つかりませんでした")
+        return
+    for issue in issues:
+        print(f"  [{issue.severity.value}] {issue.code.value}: {issue.message}")
 
 
 def _run_analyze(args: argparse.Namespace) -> int:

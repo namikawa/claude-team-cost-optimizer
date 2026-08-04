@@ -918,7 +918,7 @@ uv run seat-analyzer init-org <org>
 ### 16.2 段階追加
 
 ```sh
-uv run seat-analyzer doctor --org <org> --month YYYY-MM
+uv run seat-analyzer doctor --org <org> --month YYYY-MM --format text|json
 
 uv run seat-analyzer analyze \
   --org <org> \
@@ -953,6 +953,7 @@ V2が安定するまで既定値は`v1`。
 - `MISSING_HISTORY_MONTH`
 - `UNKNOWN_MODEL`
 - `NUMERIC_PARSE_FAILED`
+- `MEMBER_ROW_MISSING`
 
 ### Identity
 
@@ -963,6 +964,8 @@ V2が安定するまで既定値は`v1`。
 
 ### Seat/credit
 
+- `SEAT_TYPE_UNKNOWN`
+- `UNASSIGNED_WITH_USAGE`
 - `SEAT_CHANGE_DETECTED`
 - `RECENT_SEAT_CHANGE`
 - `CREDIT_SETTING_UNKNOWN`
