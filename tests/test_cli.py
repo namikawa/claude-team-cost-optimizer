@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from seat_analyzer import analyze
 from seat_analyzer.cli import main
 from seat_analyzer.ingest import discover_orgs
 
@@ -303,13 +304,18 @@ def test_doctor_output_is_deterministic(make_input, capsys):
     assert str(input_dir) not in outputs[0]
 
 
-def test_doctor_history_gap_message_matches_analyze_behavior(make_input, capsys):
+def test_doctor_history_gap_message_matches_analyze_behavior(make_input, cfg, capsys):
     # analyze は欠月を飛ばした過去月で連続同推奨を判定するため、欠月があっても
     # 「変更推奨」は出る。doctor が「要観察に留まる」と案内してはいけない
     input_dir = make_input(
         {"2026-04": [spend_row("a@x.jp", 10.0)], "2026-06": [spend_row("a@x.jp", 12.0)]},
         members=["a@x.jp,Premium"], org="org-a",
     )
+    # analyze 側の実挙動を同じ入力で固定する（将来 analyze が変わればこのテストが落ちる）
+    result = analyze.analyze(input_dir / "org-a", "2026-06", cfg)
+    assert result.months_used == ["2026-04", "2026-06"]      # 2026-05 は欠月
+    assert result.users.iloc[0]["status"] == "変更推奨"
+
     assert _doctor(input_dir, "--month", "2026-06") == 0
     out = capsys.readouterr().out
     assert "[warning] MISSING_HISTORY_MONTH" in out
@@ -390,6 +396,58 @@ def test_doctor_checks_members_even_without_target_month(make_input, tmp_path, c
     ]
 
 
+def test_doctor_checks_members_content_without_target_month(tmp_path, capsys):
+    # 対象月が決まらない経路でも、ヘッダのみのメンバー一覧を error にする
+    input_dir = tmp_path / "input"
+    (input_dir / "org-a" / "spend").mkdir(parents=True)
+    members = input_dir / "org-a" / "members"
+    members.mkdir(parents=True)
+    (members / "members_2026-06.csv").write_text("Email,Seat Type\n", encoding="utf-8")
+    assert _doctor(input_dir, "--format", "json") == 1
+    issues = json.loads(capsys.readouterr().out)
+    assert [i["code"] for i in issues] == ["MISSING_MEMBERS", "MISSING_SPEND"]
+    assert "データ行がありません" in issues[0]["message"]
+
+
+def test_doctor_uses_latest_month_when_month_is_omitted(make_input, cfg):
+    from seat_analyzer import data_quality
+    input_dir = _clean_org(make_input)
+    # month=None は「最新月を対象にする」意味。月が存在するのに MISSING_SPEND にしない
+    issues = data_quality.inspect_input(input_dir / "org-a", None, cfg, org="org-a")
+    assert issues == []
+
+
+def test_doctor_reports_unreadable_input_dir_as_json(tmp_path, capsys):
+    missing = tmp_path / "nope"
+    assert _doctor(missing, "--format", "json") == 1
+    issues = json.loads(capsys.readouterr().out)   # stdout は JSON のまま
+    assert [i["code"] for i in issues] == ["MISSING_SPEND"]
+    assert "org" not in issues[0]["scope"]         # 組織を特定できない
+
+
+def test_doctor_accepts_org_named_like_input_subdir(tmp_path, capsys):
+    # 組織名が members でも旧レイアウトと誤認しない（analyze は組織として扱える）
+    org = tmp_path / "input" / "members"
+    (org / "spend").mkdir(parents=True)
+    (org / "spend" / "spend_2026-06.csv").write_text(
+        "Email,Model,Prompt Tokens,Completion Tokens\na@x.jp,claude-sonnet-4-6,1000,100\n",
+        encoding="utf-8")
+    (org / "members").mkdir(parents=True)
+    (org / "members" / "members_2026-06.csv").write_text(
+        "Email,Seat Type\na@x.jp,Premium\n", encoding="utf-8")
+    assert _doctor(tmp_path / "input", "--month", "2026-06", "--format", "json") == 0
+    assert [i["code"] for i in json.loads(capsys.readouterr().out)] == [
+        "MISSING_HISTORY_MONTH",
+    ]
+
+
+def test_doctor_rejects_invalid_org_name_like_analyze(make_input, capsys):
+    input_dir = _clean_org(make_input)
+    (input_dir / ".hidden" / "spend").mkdir(parents=True)   # 入力構造を持つ不正名
+    assert _doctor(input_dir, "--month", "2026-06") == 1
+    assert "組織名が不正です" in capsys.readouterr().err
+
+
 def test_doctor_distinguishes_unresolvable_filenames_from_absence(make_input, capsys):
     input_dir = _clean_org(make_input)
     # 月をまたぐ期間のファイル名（ingest はエラーにする）。--month は省略する
@@ -397,7 +455,7 @@ def test_doctor_distinguishes_unresolvable_filenames_from_absence(make_input, ca
         "Email,Seat Type\n", encoding="utf-8")
     assert _doctor(input_dir, "--format", "json") == 1
     issue = next(i for i in json.loads(capsys.readouterr().out) if i["code"] == "MISSING_SPEND")
-    assert "ファイル名から解決できない" in issue["message"]
+    assert "ファイル名から解決できません" in issue["message"]
     assert "期間が月をまたぐ" in issue["message"]
 
 

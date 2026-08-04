@@ -157,8 +157,9 @@ def _discover_inspect_orgs(input_dir: Path) -> list[str]:
         return []
     orgs = []
     for path in sorted(input_dir.iterdir()):
-        if not path.is_dir() or path.name.startswith("."):
+        if not path.is_dir():
             continue
+        # 先頭ドット等の不正名も候補に含め、analyze と同じ validate_org_name で拒否する
         if any((path / sub).is_dir() for sub in INPUT_SUBDIRS) or (
             path / "members-info.csv"
         ).exists():
@@ -171,7 +172,11 @@ def _resolve_input_targets(
 ) -> list[tuple[str | None, Path]]:
     """検査対象の (組織名, 入力dir)。出力を書かないコマンド用に出力dirを落とす。"""
     orgs = _discover_inspect_orgs(input_dir)
-    legacy = any((input_dir / sub).is_dir() for sub in INPUT_SUBDIRS)
+    # 組織候補として発見したディレクトリは旧レイアウトの目印に数えない
+    # （組織名が members / code-analytics の場合に混在と誤認しないため）
+    legacy = any(
+        (input_dir / sub).is_dir() for sub in INPUT_SUBDIRS if sub not in orgs
+    )
     return [(org, org_input) for org, org_input, _ in
             _resolve_targets(input_dir, input_dir, org_args, orgs=orgs, legacy=legacy)]
 
@@ -194,28 +199,36 @@ def _run_doctor(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     input_dir = Path(args.input_dir)
     as_json = args.format == "json"
-    targets = _resolve_input_targets(input_dir, args.org)
+    all_issues: list[QualityIssue] = []
+    month = args.month
+    try:
+        targets = _resolve_input_targets(input_dir, args.org)
+    except OSError as exc:
+        # 入力ディレクトリ自体が読めない・存在しない。使い方の誤り（組織名の誤り・
+        # レイアウト混在）は ValueError のまま main で扱う
+        targets = []
+        all_issues.extend(data_quality.input_unavailable_issues(input_dir, exc))
 
     # 対象月: 未指定なら対象組織全体での最新月。1件も無ければ None のまま検査に渡す
-    month = args.month
-    if month is None:
+    if month is None and targets:
         latest = [m for _, org_input in targets if (m := _latest_month(org_input))]
         month = max(latest) if latest else None
         if month is not None:
             _notice(f"対象月未指定のため最新月を使用: {month}", as_json)
 
-    all_issues: list[QualityIssue] = []
     for org, org_input in targets:
         issues = data_quality.inspect_input(org_input, month, cfg, org=org)
         all_issues.extend(issues)
         if not as_json:
             _print_issues(org, month, issues)
+    if not targets and not as_json:
+        _print_issues(None, month, all_issues)
 
     n_error = sum(1 for i in all_issues if i.severity is Severity.ERROR)
     if as_json:
         # 組織ごとの検査結果を連結したままでは --org の指定順で並びが変わるため、
-        # JSON 化の直前に全体を整列して同一issue集合なら常にバイト一致にする
-        print(data_quality.issues_to_json(data_quality.sort_issues(all_issues)))
+        # 正準順序で直列化する（同一のissue多重集合なら常に同一の文字列になる）
+        print(data_quality.issues_to_canonical_json(all_issues))
     else:
         n_warning = len(all_issues) - n_error
         print(f"\n検査結果: エラー {n_error} 件 / 警告 {n_warning} 件")

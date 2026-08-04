@@ -4,6 +4,12 @@
 だけの純粋な関数（出力整形と終了コードは cli が担当）。同じ入力からは常にバイト
 一致の出力を得られるよう、messageには絶対パス・時刻・乱数を入れない。
 
+整列と直列化は別の関心事として分けてある。`issues_to_json` は渡された順をそのまま
+保持するため、「同一のissue多重集合なら常に同一の文字列」は `sort_issues` を通した
+場合に成立する不変条件であり、直列化関数単体の性質ではない。機械可読出力は整列を
+呼び出し側の記述に依存させないよう、正準順序で直列化する
+`issues_to_canonical_json` を境界として使う。
+
 `analyze` の文字列warningはこの検査とは独立に従来どおり出る。両者を統合するのは
 このStepでは行わない。
 """
@@ -43,10 +49,11 @@ def issue_to_dict(issue: QualityIssue) -> dict[str, object]:
 
 
 def issues_to_json(issues: Iterable[QualityIssue]) -> str:
-    """issue列を決定的なJSON文字列にする。
+    """issue列を反復順のままJSON文字列へ直列化する（入力順の正準化はしない）。
 
-    並び順は渡された順のまま（整列が必要ならsort_issuesを先に通す）。日本語の
-    messageはエスケープせずそのまま出力し、NaN・inf はJSON側でも拒否する。
+    同値のissueが同じ順序・同じ件数で与えられれば、返る文字列は一致する。並び順を
+    入力に依存させたくない場合は issues_to_canonical_json を使う。日本語のmessageは
+    エスケープせずそのまま出力し、NaN・inf はJSON側でも拒否する。
     """
     return json.dumps(
         [issue_to_dict(issue) for issue in issues],
@@ -55,6 +62,16 @@ def issues_to_json(issues: Iterable[QualityIssue]) -> str:
         indent=2,
         separators=(",", ": "),
     )
+
+
+def issues_to_canonical_json(issues: Iterable[QualityIssue]) -> str:
+    """issue列を正準順序で直列化する（機械可読出力はこちらを使う）。
+
+    同一のissue多重集合からは、構築順・検出順・scopeキーの挿入順によらず同一の文字列
+    が返る。低水準の issues_to_json は指定順を保持するため、整列を呼び出し側の記述に
+    依存させないための境界としてこの関数を通す。
+    """
+    return issues_to_json(sort_issues(issues))
 
 
 def _sort_key(issue: QualityIssue) -> tuple[int, str, str, str]:
@@ -299,51 +316,77 @@ def _join_issues(
     return issues
 
 
-def _members_presence_issues(input_dir: Path, org: str | None) -> list[QualityIssue]:
-    """対象月が決まらない場合でも確認できる、メンバー一覧の有無だけを検査する。"""
+def input_unavailable_issues(input_dir: Path | str, exc: OSError) -> list[QualityIssue]:
+    """入力ディレクトリ自体を読めない場合のissue（対象組織を解決する前の失敗）。
+
+    組織が特定できないためscopeにorgを持たない。cli が対象解決の失敗をJSONへ載せるために使う。
+    """
+    return [_issue(
+        Severity.ERROR, IssueCode.MISSING_SPEND,
+        f"入力データを検査できません: {_reason(exc, Path(input_dir))}", None,
+    )]
+
+
+def _members_presence_issues(
+    input_dir: Path, cfg: dict, org: str | None
+) -> list[QualityIssue]:
+    """対象月が決まらない場合の、メンバー一覧の有無と可読性の検査。
+
+    最新の候補を実際にロードし、対象月ありの経路と同じ「読めない」「データ行が無い」を
+    errorにする（この経路だけ検査が緩くならないようにする）。
+    """
     directory = input_dir / "members"
     try:
-        found = directory.is_dir() and any(
-            ingest.file_period(path) is not None
-            for path in sorted(directory.glob("*.csv"))
-        )
+        candidates = [
+            path for path in sorted(directory.glob("*.csv"))
+            if path.is_file() and ingest.file_period(path) is not None
+        ] if directory.is_dir() else []
     except (OSError, ValueError) as exc:
         return [_issue(
             Severity.ERROR, IssueCode.MISSING_MEMBERS,
             f"メンバー一覧を確認できません: {_reason(exc, input_dir)}", org,
         )]
-    if found:
-        return []
-    return [_issue(
-        Severity.ERROR, IssueCode.MISSING_MEMBERS,
-        "members/ にメンバー一覧がありません"
-        "（例: members_YYYY-MM.csv。最低限 email,seat_type の2列で可）", org,
-    )]
-
-
-def _no_target_month_issues(input_dir: Path, org: str | None) -> list[QualityIssue]:
-    """対象月を決められない場合の検査。Spendの解決可否とMembersの有無は独立に見る。"""
-    issues: list[QualityIssue] = []
+    if not candidates:
+        return [_issue(
+            Severity.ERROR, IssueCode.MISSING_MEMBERS,
+            "members/ にメンバー一覧がありません"
+            "（例: members_YYYY-MM.csv。最低限 email,seat_type の2列で可）", org,
+        )]
+    path = max(candidates, key=lambda p: (ingest.file_period(p).month, p.name))
     try:
-        available = ingest.discover_months(input_dir)
+        members = ingest.load_members_file(path, cfg)
     except (OSError, ValueError) as exc:
-        issues.append(_issue(
-            Severity.ERROR, IssueCode.MISSING_SPEND,
-            f"spend/ のCSVをファイル名から解決できないため対象月を特定できません: "
-            f"{_reason(exc, input_dir)}", org,
-        ))
-    else:
-        detail = (
-            "spend/ にスペンドレポートがありません" if not available
-            else f"存在する月: {'/'.join(available)}"
-        )
-        issues.append(_issue(
-            Severity.ERROR, IssueCode.MISSING_SPEND,
-            f"対象月を特定できません（{detail}）。"
-            "README の月次運用手順に従いエクスポートしてください",
-            org, available_months=available,
-        ))
-    issues.extend(_members_presence_issues(input_dir, org))
+        return [_issue(
+            Severity.ERROR, IssueCode.MISSING_MEMBERS,
+            f"メンバー一覧を読めません: {_reason(exc, input_dir)}", org,
+        )]
+    if members.empty:
+        return [_issue(
+            Severity.ERROR, IssueCode.MISSING_MEMBERS,
+            f"メンバー一覧 {path.name} にデータ行がありません"
+            "（全ユーザがシート不明になり、シート判定ができません）",
+            org, file=path.name,
+        )]
+    return []
+
+
+def _no_spend_month_issues(
+    input_dir: Path, cfg: dict, org: str | None, reason: str | None
+) -> list[QualityIssue]:
+    """対象月を確定できない場合の検査。Spendの状況とMembersの有無を独立に見る。
+
+    reason はSpendのファイル名を解決できなかった理由（Noneなら1件も無い）。
+    """
+    detail = (
+        f"spend/ のCSVをファイル名から解決できません: {reason}" if reason
+        else "spend/ にスペンドレポートがありません"
+        "（README の月次運用手順に従いエクスポートしてください）"
+    )
+    issues = [_issue(
+        Severity.ERROR, IssueCode.MISSING_SPEND,
+        f"対象月を確定できないため月単位の検査を行えません（{detail}）", org,
+    )]
+    issues.extend(_members_presence_issues(input_dir, cfg, org))
     return sort_issues(issues)
 
 
@@ -353,13 +396,12 @@ def inspect_input(
     """1組織分の Spend / Members を検査し、整列済みのissueを返す。
 
     月の存在・部分月・欠月はファイル名から、モデル単価・数値解釈・突き合わせは対象月の
-    CSVを読んで判定する。code-analytics・members-info・GitHub・browser・admin設定は
-    このStepでは検査しない。判定や既存レポートには一切影響しない読み取り専用の検査。
+    CSVを読んで判定する。month=None は「スペンドの最新月を対象にする」意味で、月を
+    確定できない場合だけ月単位の検査を省く。code-analytics・members-info・GitHub・
+    browser・admin設定はこのStepでは検査しない。
+    判定や既存レポートには一切影響しない読み取り専用の検査。
     """
     input_dir = Path(input_dir)
-    if month is None:
-        return _no_target_month_issues(input_dir, org)
-
     issues: list[QualityIssue] = []
     spend_df: pd.DataFrame | None = None
     spend_months: list[str] | None = None
@@ -367,11 +409,18 @@ def inspect_input(
         spend_months = ingest.discover_months(input_dir)
     except (OSError, ValueError) as exc:
         # 月をまたぐ期間・同一月の重複など、ファイル名から採用ファイルを決められない
+        reason = _reason(exc, input_dir)
+        if month is None:
+            return _no_spend_month_issues(input_dir, cfg, org, reason)
         issues.append(_issue(
             Severity.ERROR, IssueCode.MISSING_SPEND,
-            f"spend/ のCSVをファイル名から解決できません: {_reason(exc, input_dir)}",
-            org, month,
+            f"spend/ のCSVをファイル名から解決できません: {reason}", org, month,
         ))
+
+    if month is None:
+        if not spend_months:
+            return _no_spend_month_issues(input_dir, cfg, org, None)
+        month = spend_months[-1]
 
     if spend_months is not None:
         if month not in spend_months:
