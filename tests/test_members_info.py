@@ -92,7 +92,7 @@ def test_no_file_no_error(make_input, cfg):
     write_markdown(result, input_dir / "report.md")
 
 
-def test_unmapped_member_is_blank_no_warning(make_input, cfg):
+def test_unmapped_member_is_blank(make_input, cfg):
     input_dir = make_input(
         {"2026-06": [spend_row("a@example.com", 10.0), spend_row("c@example.com", 5.0)]},
         members=["a@example.com,Standard", "c@example.com,Standard"],
@@ -105,8 +105,6 @@ def test_unmapped_member_is_blank_no_warning(make_input, cfg):
     by_email = result.users.set_index("email")
     assert by_email.loc["c@example.com", "department"] == ""
     assert by_email.loc["c@example.com", "team"] == ""
-    # マッピング漏れは正常系のため members-info 由来の警告は出ない
-    assert not any("members-info" in w or "members_info" in w for w in result.warnings)
 
 
 def test_preview_merges(make_input, cfg):
@@ -211,6 +209,86 @@ def test_load_members_info_none_when_absent(make_input, cfg):
         members=["a@example.com,Standard"],
     )
     assert analyze_mod.ingest.load_members_info(input_dir, cfg) is None
+
+
+# --- 未登録ユーザの警告 -----------------------------------------------------
+
+UNREGISTERED = "members-info.csv に未登録のユーザ"
+
+
+def _unregistered(warnings: list[str]) -> list[str]:
+    return [w for w in warnings if UNREGISTERED in w]
+
+
+def test_unregistered_users_warned(make_input, cfg):
+    """分析対象なのに members-info に行が無いユーザは1件の警告にまとめて出る。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0), spend_row("c@example.com", 5.0)]},
+        members=["a@example.com,Standard", "b@example.com,Premium", "c@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,,\n",
+    )
+    warns = _unregistered(analyze(input_dir, "2026-06", cfg).warnings)
+    assert len(warns) == 1
+    assert "2 名" in warns[0]
+    # 出力の安定のためメールは昇順（全件・打ち切りなし）
+    assert "['b@example.com', 'c@example.com']" in warns[0]
+
+
+def test_all_registered_no_warning(make_input, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard", "b@example.com,Premium"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,チーム,職種,備考\n"
+        "a@example.com,開発部,基盤チーム,,\n"
+        "b@example.com,営業部,西日本チーム,,\n",
+    )
+    assert _unregistered(analyze(input_dir, "2026-06", cfg).warnings) == []
+
+
+def test_no_info_file_no_unregistered_warning(make_input, cfg):
+    """members-info を使っていない組織には警告を出さない（任意ファイルのため）。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"],
+    )
+    assert _unregistered(analyze(input_dir, "2026-06", cfg).warnings) == []
+
+
+def test_unregistered_users_warned_in_preview(make_input, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0), spend_row("c@example.com", 5.0)]},
+        members=["a@example.com,Standard", "c@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,,\n",
+    )
+    warns = _unregistered(preview(input_dir, "2026-06", cfg, days_observed=15).warnings)
+    assert len(warns) == 1
+    assert "c@example.com" in warns[0]
+
+
+def test_unregistered_warning_in_markdown(make_input, cfg, tmp_path):
+    """既存の警告フローに乗り report.md の警告節に出る（追加配線は不要）。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0), spend_row("c@example.com", 5.0)]},
+        members=["a@example.com,Standard", "c@example.com,Standard"],
+    )
+    _write_info(
+        input_dir, None,
+        "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,,\n",
+    )
+    out = tmp_path / "report.md"
+    write_markdown(analyze(input_dir, "2026-06", cfg), out)
+    text = out.read_text(encoding="utf-8")
+    assert "## データ検証・警告" in text
+    assert UNREGISTERED in text
 
 
 # --- 兼務（複数所属）の按分 -----------------------------------------------
