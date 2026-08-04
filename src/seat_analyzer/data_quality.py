@@ -142,14 +142,29 @@ def _sample(emails: Iterable[str]) -> list[str]:
 def _partial_month_issues(
     input_dir: Path, month: str, spend_months: list[str], org: str | None
 ) -> list[QualityIssue]:
-    """対象月までの各月で、ファイル名の期間が暦の全月に満たないものを警告する。"""
+    """対象月までの各月で、全月データと確認できないスペンドを警告する。
+
+    kind=range は期間の日数で判定する。kind=date（単日日付の命名）は実際の集計期間が
+    ファイル名から分からないため、日数を断定せず「確認できない」として警告する。
+    kind=month（spend_YYYY-MM.csv）は全月の指定として扱い警告しない。
+    """
     issues: list[QualityIssue] = []
     for m in [x for x in spend_months if x <= month]:
         period = ingest.spend_file_period(input_dir, m)
-        if period is None or period.days is None:
+        if period is None:
             continue
         days_in_month = _days_in_month(m)
-        if period.days >= days_in_month:
+        if period.kind == "date":
+            issues.append(_issue(
+                Severity.WARNING, IssueCode.PARTIAL_MONTH,
+                f"{m} のスペンドはファイル名が単日日付（{period.start:%m-%d}）のため、"
+                f"暦上 {days_in_month}日の全月データであることを確認できません。"
+                "部分月であれば月額前提の判定で需要が過小評価されます"
+                "（月中の一次判断は analyze --preview を使ってください）",
+                org, m, snapshot_date=f"{period.start:%Y-%m-%d}", days_in_month=days_in_month,
+            ))
+            continue
+        if period.days is None or period.days >= days_in_month:
             continue
         issues.append(_issue(
             Severity.WARNING, IssueCode.PARTIAL_MONTH,
@@ -178,8 +193,10 @@ def _history_gap_issues(
     return [_issue(
         Severity.WARNING, IssueCode.MISSING_HISTORY_MONTH,
         f"ヒステリシス判定に必要な直近 {n_hyst} ヶ月のうち "
-        f"{'/'.join(missing)} のスペンドレポートがありません"
-        "（連続同推奨を確認できないため「要観察」に留まります）",
+        f"{'/'.join(missing)} のスペンドレポートがありません。"
+        "暦上の連続性が確認できないため判定の質が下がります"
+        "（欠月は飛ばして存在する過去月で連続同推奨を判定するため、"
+        "実質1ヶ月の裏付けでも変更推奨が出ることがあります）",
         org, month, missing_months=missing, hysteresis_months=n_hyst,
     )]
 
@@ -189,14 +206,25 @@ def _spend_content_issues(
 ) -> list[QualityIssue]:
     """対象月スペンドの中身（モデル単価・数値解釈）を検査する。"""
     issues: list[QualityIssue] = []
-    unknown_models = pricing.unmatched_models(spend["model"].unique(), cfg)
-    if unknown_models:
+    # 空のmodelセルは str(nan) として単価表に一致せず default 単価が当たるが、
+    # unmatched_models は欠損を一覧から除くため、空セルは行数として別に数える
+    stripped = spend["model"].astype("string").str.strip()
+    blank_model = (stripped.isna() | (stripped == "")).fillna(True).astype(bool)
+    blank_rows = int(blank_model.sum())
+    unknown_models = pricing.unmatched_models(spend.loc[~blank_model, "model"].unique(), cfg)
+    if unknown_models or blank_rows:
+        detail = "、".join(
+            part for part in (
+                "/".join(unknown_models),
+                f"model が空の {blank_rows}行" if blank_rows else "",
+            ) if part
+        )
         issues.append(_issue(
             Severity.WARNING, IssueCode.UNKNOWN_MODEL,
-            f"単価表に一致せず default 単価が適用されるモデルがあります: "
-            f"{'/'.join(unknown_models)}。config.yaml > model_prices にパターンを"
-            "追記してください",
-            org, month, models=unknown_models,
+            f"単価表に一致せず default 単価が適用されます: {detail}。"
+            "config.yaml > model_prices にパターンを追記してください"
+            "（model が空の行は入力側の欠損を確認してください）",
+            org, month, models=unknown_models, blank_model_rows=blank_rows,
         ))
     failed = {
         column: int(spend[column].isna().sum())
@@ -206,11 +234,13 @@ def _spend_content_issues(
     failed = {column: count for column, count in failed.items() if count}
     if failed:
         detail = ", ".join(f"{column} {count}行" for column, count in sorted(failed.items()))
+        # 1行で複数列が失敗し得るため、影響行数はセル数の合計と別に数える
+        rows = int(spend[sorted(failed)].isna().any(axis=1).sum())
         issues.append(_issue(
             Severity.WARNING, IssueCode.NUMERIC_PARSE_FAILED,
-            f"数値として解釈できない値があります（{detail}）。"
+            f"数値として解釈できない値があります（{detail} / 影響 {rows}行）。"
             "0 として集計されるため需要が過小評価されます",
-            org, month, columns=sorted(failed), rows=sum(failed.values()),
+            org, month, columns=sorted(failed), rows=rows, cells=sum(failed.values()),
         ))
     return issues
 
@@ -269,6 +299,54 @@ def _join_issues(
     return issues
 
 
+def _members_presence_issues(input_dir: Path, org: str | None) -> list[QualityIssue]:
+    """対象月が決まらない場合でも確認できる、メンバー一覧の有無だけを検査する。"""
+    directory = input_dir / "members"
+    try:
+        found = directory.is_dir() and any(
+            ingest.file_period(path) is not None
+            for path in sorted(directory.glob("*.csv"))
+        )
+    except (OSError, ValueError) as exc:
+        return [_issue(
+            Severity.ERROR, IssueCode.MISSING_MEMBERS,
+            f"メンバー一覧を確認できません: {_reason(exc, input_dir)}", org,
+        )]
+    if found:
+        return []
+    return [_issue(
+        Severity.ERROR, IssueCode.MISSING_MEMBERS,
+        "members/ にメンバー一覧がありません"
+        "（例: members_YYYY-MM.csv。最低限 email,seat_type の2列で可）", org,
+    )]
+
+
+def _no_target_month_issues(input_dir: Path, org: str | None) -> list[QualityIssue]:
+    """対象月を決められない場合の検査。Spendの解決可否とMembersの有無は独立に見る。"""
+    issues: list[QualityIssue] = []
+    try:
+        available = ingest.discover_months(input_dir)
+    except (OSError, ValueError) as exc:
+        issues.append(_issue(
+            Severity.ERROR, IssueCode.MISSING_SPEND,
+            f"spend/ のCSVをファイル名から解決できないため対象月を特定できません: "
+            f"{_reason(exc, input_dir)}", org,
+        ))
+    else:
+        detail = (
+            "spend/ にスペンドレポートがありません" if not available
+            else f"存在する月: {'/'.join(available)}"
+        )
+        issues.append(_issue(
+            Severity.ERROR, IssueCode.MISSING_SPEND,
+            f"対象月を特定できません（{detail}）。"
+            "README の月次運用手順に従いエクスポートしてください",
+            org, available_months=available,
+        ))
+    issues.extend(_members_presence_issues(input_dir, org))
+    return sort_issues(issues)
+
+
 def inspect_input(
     input_dir: Path | str, month: str | None, cfg: dict, org: str | None = None
 ) -> list[QualityIssue]:
@@ -280,20 +358,14 @@ def inspect_input(
     """
     input_dir = Path(input_dir)
     if month is None:
-        # 対象月を決められない（スペンドが1件も無い）。他の検査は定義できない
-        return [_issue(
-            Severity.ERROR, IssueCode.MISSING_SPEND,
-            "spend/ にスペンドレポートがないため対象月を特定できません"
-            "（README の月次運用手順に従いエクスポートしてください）",
-            org,
-        )]
+        return _no_target_month_issues(input_dir, org)
 
     issues: list[QualityIssue] = []
     spend_df: pd.DataFrame | None = None
     spend_months: list[str] | None = None
     try:
         spend_months = ingest.discover_months(input_dir)
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         # 月をまたぐ期間・同一月の重複など、ファイル名から採用ファイルを決められない
         issues.append(_issue(
             Severity.ERROR, IssueCode.MISSING_SPEND,
@@ -314,7 +386,7 @@ def inspect_input(
             issues.extend(_history_gap_issues(month, spend_months, cfg, org))
             try:
                 spend_df = ingest.load_spend(input_dir, month, cfg).df
-            except (FileNotFoundError, ValueError) as exc:
+            except (OSError, ValueError) as exc:
                 issues.append(_issue(
                     Severity.ERROR, IssueCode.MISSING_SPEND,
                     f"{month} のスペンドレポートを読めません: {_reason(exc, input_dir)}",
@@ -327,27 +399,37 @@ def inspect_input(
     try:
         members_result = ingest.load_members(input_dir, month, cfg)
     except FileNotFoundError as exc:
+        # ingest が「1件も無い」ときに投げる。読み取り失敗は次節のOSErrorで扱う
         issues.append(_issue(
             Severity.ERROR, IssueCode.MISSING_MEMBERS,
             f"メンバー一覧がありません: {_reason(exc, input_dir)}", org, month,
         ))
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         issues.append(_issue(
             Severity.ERROR, IssueCode.MISSING_MEMBERS,
             f"メンバー一覧を読めません: {_reason(exc, input_dir)}", org, month,
         ))
     else:
-        members_df = members_result.df
-        used_month = ingest.month_of_file(members_result.source)
-        if used_month != month:
+        if members_result.df.empty:
+            # ヘッダのみ・空行のみ。全ユーザがシート不明になり判定が成立しない
             issues.append(_issue(
-                Severity.WARNING, IssueCode.MISSING_MEMBERS,
-                f"{month} のメンバー一覧が無いため {used_month} のファイルを使用しています"
-                "（対象月当時のシート構成と異なる可能性があります）",
-                org, month,
-                used_month=used_month, file=members_result.source.name,
+                Severity.ERROR, IssueCode.MISSING_MEMBERS,
+                f"メンバー一覧 {members_result.source.name} にデータ行がありません"
+                "（全ユーザがシート不明になり、シート判定ができません）",
+                org, month, file=members_result.source.name,
             ))
-        issues.extend(_seat_type_issues(members_df, org, month))
+        else:
+            members_df = members_result.df
+            used_month = ingest.month_of_file(members_result.source)
+            if used_month != month:
+                issues.append(_issue(
+                    Severity.WARNING, IssueCode.MISSING_MEMBERS,
+                    f"{month} のメンバー一覧が無いため {used_month} のファイルを使用しています"
+                    "（対象月当時のシート構成と異なる可能性があります）",
+                    org, month,
+                    used_month=used_month, file=members_result.source.name,
+                ))
+            issues.extend(_seat_type_issues(members_df, org, month))
 
     if spend_df is not None and members_df is not None:
         issues.extend(_join_issues(spend_df, members_df, cfg, org, month))

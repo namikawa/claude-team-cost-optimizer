@@ -58,7 +58,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (FileNotFoundError, ValueError) as e:
+    except (OSError, ValueError) as e:
+        # 入力の読み取りに由来する失敗（欠損・権限・不正な値）は traceback を出さない
         print(f"エラー: {e}", file=sys.stderr)
         return 1
 
@@ -99,15 +100,21 @@ def _run_init_org(args: argparse.Namespace) -> int:
 
 
 def _resolve_targets(
-    input_dir: Path, output_dir: Path, org_args: list[str] | None
+    input_dir: Path, output_dir: Path, org_args: list[str] | None,
+    orgs: list[str] | None = None, legacy: bool | None = None,
 ) -> list[tuple[str | None, Path, Path]]:
     """分析対象の (組織名, 入力dir, 出力dir) を解決する。
 
     input/<org>/spend/ 型のマルチ組織レイアウトを基本とし、
     input/spend/ 直下型の旧レイアウトは単一組織（org=None）として扱う。
+
+    orgs / legacy を渡すと組織の発見条件を差し替えられる（doctor は spend/ が
+    欠けた組織も検査対象にするため、より広い条件で発見する）。
     """
-    orgs = ingest.discover_orgs(input_dir)
-    legacy = (input_dir / "spend").is_dir()
+    if orgs is None:
+        orgs = ingest.discover_orgs(input_dir)
+    if legacy is None:
+        legacy = (input_dir / "spend").is_dir()
     if orgs and legacy:
         raise ValueError(
             f"{input_dir} に組織ディレクトリ（{orgs}）と直下の spend/ が混在しています。"
@@ -139,19 +146,41 @@ def _resolve_targets(
     return [(org, input_dir / org, output_dir / org) for org in selected]
 
 
+def _discover_inspect_orgs(input_dir: Path) -> list[str]:
+    """検査対象の組織候補（昇順）。
+
+    分析用の discover_orgs は spend/ を持つディレクトリだけを組織とするが、doctor は
+    spend/ が欠けていること自体を検査するため、入力ディレクトリらしさ（既知の入力
+    サブディレクトリか members-info.csv を持つ）で判定する。
+    """
+    if not input_dir.is_dir():
+        return []
+    orgs = []
+    for path in sorted(input_dir.iterdir()):
+        if not path.is_dir() or path.name.startswith("."):
+            continue
+        if any((path / sub).is_dir() for sub in INPUT_SUBDIRS) or (
+            path / "members-info.csv"
+        ).exists():
+            orgs.append(path.name)
+    return orgs
+
+
 def _resolve_input_targets(
     input_dir: Path, org_args: list[str] | None
 ) -> list[tuple[str | None, Path]]:
     """検査対象の (組織名, 入力dir)。出力を書かないコマンド用に出力dirを落とす。"""
+    orgs = _discover_inspect_orgs(input_dir)
+    legacy = any((input_dir / sub).is_dir() for sub in INPUT_SUBDIRS)
     return [(org, org_input) for org, org_input, _ in
-            _resolve_targets(input_dir, input_dir, org_args)]
+            _resolve_targets(input_dir, input_dir, org_args, orgs=orgs, legacy=legacy)]
 
 
 def _latest_month(org_input: Path) -> str | None:
     """対象組織のスペンドの最新月。ファイル名を解決できない場合は None（doctor が検査する）。"""
     try:
         months = ingest.discover_months(org_input)
-    except ValueError:
+    except (OSError, ValueError):
         return None
     return months[-1] if months else None
 
@@ -184,7 +213,9 @@ def _run_doctor(args: argparse.Namespace) -> int:
 
     n_error = sum(1 for i in all_issues if i.severity is Severity.ERROR)
     if as_json:
-        print(data_quality.issues_to_json(all_issues))
+        # 組織ごとの検査結果を連結したままでは --org の指定順で並びが変わるため、
+        # JSON 化の直前に全体を整列して同一issue集合なら常にバイト一致にする
+        print(data_quality.issues_to_json(data_quality.sort_issues(all_issues)))
     else:
         n_warning = len(all_issues) - n_error
         print(f"\n検査結果: エラー {n_error} 件 / 警告 {n_warning} 件")
