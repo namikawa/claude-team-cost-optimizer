@@ -127,17 +127,25 @@ def _issue(
     return QualityIssue(severity=severity, code=code, message=message, scope=base)
 
 
+_INPUT_DIR_LABEL = "入力ディレクトリ"
+
+
 def _reason(exc: Exception, input_dir: Path) -> str:
     """例外メッセージを1行かつ実行環境に依存しない文字列へ整える。
 
     ingestの例外は呼び出し時の入力ディレクトリをそのまま含むため、そのままでは
-    messageが実行環境に依存する（domain.QualityIssueの決定性制約）。
+    messageが実行環境に依存する（domain.QualityIssueの決定性制約）。配下のパスは
+    入力ディレクトリからの相対表記へ、入力ディレクトリ自身は固定の語へ置き換える。
     """
     flat = " ".join(str(exc).split())
-    bases = {str(input_dir), str(input_dir.resolve())}
-    for base in sorted(bases, key=len, reverse=True):
+    bases = sorted(
+        {str(input_dir), str(input_dir.resolve())}, key=len, reverse=True
+    )
+    for base in bases:
         flat = flat.replace(base + "/", "")
-    return flat.strip()
+    for base in bases:
+        flat = flat.replace(base, _INPUT_DIR_LABEL)
+    return " ".join(flat.split()).strip()
 
 
 def _prev_month(month: str) -> str:
@@ -332,40 +340,41 @@ def _members_presence_issues(
 ) -> list[QualityIssue]:
     """対象月が決まらない場合の、メンバー一覧の有無と可読性の検査。
 
-    最新の候補を実際にロードし、対象月ありの経路と同じ「読めない」「データ行が無い」を
-    errorにする（この経路だけ検査が緩くならないようにする）。
+    最新月の候補を実際にロードし、対象月ありの経路と同じ「読めない」「データ行が無い」を
+    errorにする（この経路だけ検査が緩くならないようにする）。同一月に複数ある場合の採用は
+    ingest.load_members に委ねて、対象月ありの経路と同じ規則で選ぶ。
     """
     directory = input_dir / "members"
     try:
-        candidates = [
-            path for path in sorted(directory.glob("*.csv"))
-            if path.is_file() and ingest.file_period(path) is not None
-        ] if directory.is_dir() else []
+        months = sorted({
+            period.month
+            for path in sorted(directory.glob("*.csv"))
+            if path.is_file() and (period := ingest.file_period(path)) is not None
+        }) if directory.is_dir() else []
     except (OSError, ValueError) as exc:
         return [_issue(
             Severity.ERROR, IssueCode.MISSING_MEMBERS,
             f"メンバー一覧を確認できません: {_reason(exc, input_dir)}", org,
         )]
-    if not candidates:
+    if not months:
         return [_issue(
             Severity.ERROR, IssueCode.MISSING_MEMBERS,
             "members/ にメンバー一覧がありません"
             "（例: members_YYYY-MM.csv。最低限 email,seat_type の2列で可）", org,
         )]
-    path = max(candidates, key=lambda p: (ingest.file_period(p).month, p.name))
     try:
-        members = ingest.load_members_file(path, cfg)
+        result = ingest.load_members(input_dir, months[-1], cfg)
     except (OSError, ValueError) as exc:
         return [_issue(
             Severity.ERROR, IssueCode.MISSING_MEMBERS,
             f"メンバー一覧を読めません: {_reason(exc, input_dir)}", org,
         )]
-    if members.empty:
+    if result.df.empty:
         return [_issue(
             Severity.ERROR, IssueCode.MISSING_MEMBERS,
-            f"メンバー一覧 {path.name} にデータ行がありません"
+            f"メンバー一覧 {result.source.name} にデータ行がありません"
             "（全ユーザがシート不明になり、シート判定ができません）",
-            org, file=path.name,
+            org, file=result.source.name,
         )]
     return []
 

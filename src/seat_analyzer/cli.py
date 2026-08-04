@@ -171,11 +171,21 @@ def _resolve_input_targets(
     input_dir: Path, org_args: list[str] | None
 ) -> list[tuple[str | None, Path]]:
     """検査対象の (組織名, 入力dir)。出力を書かないコマンド用に出力dirを落とす。"""
+    if not input_dir.is_dir():
+        # 組織名の検証より先に入力ディレクトリ自体の可否を判定する
+        # （--org 指定時も構造化 issue として JSON へ出せるようにするため）
+        # message の決定性のためパスは埋め込まない（実行環境依存値を持ち込まないため）
+        raise FileNotFoundError(
+            "--input-dir に指定されたディレクトリがありません"
+            "（README の月次運用手順に従いデータを配置してください）"
+        )
     orgs = _discover_inspect_orgs(input_dir)
-    # 組織候補として発見したディレクトリは旧レイアウトの目印に数えない
+    # 直下の spend/ は analyze と同じく常に旧レイアウトの目印として扱う。
+    # members/ と code-analytics/ は、それ自体が組織候補なら目印に数えない
     # （組織名が members / code-analytics の場合に混在と誤認しないため）
-    legacy = any(
-        (input_dir / sub).is_dir() for sub in INPUT_SUBDIRS if sub not in orgs
+    legacy = (input_dir / "spend").is_dir() or any(
+        (input_dir / sub).is_dir()
+        for sub in INPUT_SUBDIRS if sub != "spend" and sub not in orgs
     )
     return [(org, org_input) for org, org_input, _ in
             _resolve_targets(input_dir, input_dir, org_args, orgs=orgs, legacy=legacy)]
@@ -236,8 +246,8 @@ def _run_doctor(args: argparse.Namespace) -> int:
 
 
 def _print_issues(org: str | None, month: str | None, issues: list[QualityIssue]) -> None:
-    scope = " ".join(x for x in (org, month) if x) or "入力"
-    print(f"\n=== {scope} 入力検査 ===")
+    scope = " ".join(x for x in (org, month) if x)
+    print(f"\n=== {scope + ' ' if scope else ''}入力検査 ===")
     if not issues:
         print("  問題は見つかりませんでした")
         return
