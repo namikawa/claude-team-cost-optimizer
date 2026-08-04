@@ -1,5 +1,11 @@
 ---
 description: Claude Team シート最適化分析を実行し、レポートに考察を追記する
+# 判定の妥当性検証と考察の執筆に高い推論品質が必要なため、セッション設定に依存せず固定する。
+# 指定はこのコマンド実行ターンのみ有効で、セッションの /model・/effort 設定は変更しない。
+# model: opus は最新の Opus に自動追従する（特定版に固定したい場合は claude-opus-5 等の完全IDに変更）。
+# 変更する場合はこの2行を編集する。effort に指定できる値は low / medium / high / xhigh / max。
+model: opus
+effort: xhigh
 ---
 
 Claude Team プランのシート最適化分析を実行してください。手順:
