@@ -94,7 +94,22 @@ uv run seat-analyzer init-org <組織名>
 - 同一月にファイルが複数ある場合、期間が包含関係なら広い方を自動採用（members の
   スナップショットは最新日付を採用）し、警告を表示する。判断できない場合はエラー
 - 期間が1ヶ月に満たないスペンドレポートを通常分析に使うと警告が出る（速報モードを案内）
-4. 分析実行
+4. 入力データの検査（任意）
+
+   分析の前に、配置した CSV に不足や不整合がないかを確認できる。
+
+   ```sh
+   uv run seat-analyzer doctor                           # 全組織を検査（最新月）
+   uv run seat-analyzer doctor --org <組織名> --month YYYY-MM
+   uv run seat-analyzer doctor --format json             # 機械可読な構造化 issue
+   ```
+
+   検査するのはスペンドレポートとメンバー一覧で、対象月の欠損・部分月・ヒステリシス窓の
+   欠月・単価表に無いモデル・数値として読めない値・メンバー一覧との突き合わせ不整合
+   （spend にいるが members にいない、シート種別が判別できない、未割当なのに利用実績がある）
+   を検出する。分析を止めるべき問題（error）があれば終了コード 1 を返し、警告だけなら 0 を返す。
+   レポートは書き換えず、判定にも影響しない読み取り専用の検査
+5. 分析実行
    - Claude Code で `/seat-analysis` を実行（推奨。数値検証と考察執筆まで行う）
    - または CLI 直接実行:
 
@@ -104,7 +119,7 @@ uv run seat-analyzer init-org <組織名>
    uv run seat-analyzer analyze --org <組織名>           # 特定組織のみ（複数指定可）
    ```
 
-5. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される
+6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される
    - `report.md` — 前月からの変化 + 推奨テーブル + 部署別/チーム別サマリ + 詳細利用状況 + 感度分析 + 考察
    - `dashboard.html` — 経営層共有用ダッシュボード（自己完結 HTML）
    - `recommendations.csv` — スプレッドシート二次加工用
