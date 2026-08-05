@@ -1,12 +1,13 @@
-"""CLI エントリポイント: seat-analyzer {analyze,doctor,init-org}"""
+"""CLI エントリポイント: seat-analyzer {analyze,discuss,doctor,init-org}"""
 
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
-from . import analyze, data_quality, ingest, report
+from . import analyze, data_quality, discussion, ingest, report
 from .config import load_config
 from .domain import QualityIssue, Severity
 
@@ -32,7 +33,55 @@ def main(argv: list[str] | None = None) -> int:
         "--days", type=int,
         help="速報モードの観測日数。省略時はスペンドレポートのファイル名の期間から自動判別",
     )
+    p.add_argument(
+        "--with-discussion", action="store_true",
+        help="レポート生成後に考察の執筆まで行う（discuss と同じ処理。ヘッドレス Claude CLI を使用）",
+    )
+    p.add_argument(
+        "--force-discussion", action="store_true",
+        help="--with-discussion で記入済みの考察も上書きする",
+    )
+    p.add_argument(
+        "--allow-term", action="append", metavar="語",
+        help="--with-discussion の混入チェックで許可する語（discuss --allow-term と同じ）",
+    )
+    p.add_argument(
+        "--with-previous-discussion", action="store_true",
+        help="--with-discussion で前月の考察も資料に渡す（discuss と同じ。既定では渡さない）",
+    )
     p.set_defaults(func=_run_analyze)
+
+    pdis = sub.add_parser(
+        "discuss", help="生成済みレポートの「## 考察」をヘッドレス Claude CLI に執筆させる")
+    pdis.add_argument("--month", help="対象月 (YYYY-MM)。省略時は対象組織の spend の最新月")
+    pdis.add_argument(
+        "--org", action="append",
+        help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織",
+    )
+    pdis.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pdis.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
+    pdis.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    pdis.add_argument(
+        "--preview", action="store_true", help="report.md ではなく preview.md の考察を対象にする")
+    pdis.add_argument(
+        "--force", action="store_true",
+        help="記入済みの考察を上書きする（既定では手書きの考察を守るため書き換えない）",
+    )
+    pdis.add_argument(
+        "--dry-run", action="store_true",
+        help="組み立てたプロンプトを標準出力へ出して終了する（Claude は呼ばない）",
+    )
+    pdis.add_argument(
+        "--allow-term", action="append", metavar="語",
+        help="混入チェックで検出された語のうち、内容を確認して無害と判断したものを許可する"
+             "（複数指定可）。チェック全体を無効化する手段は用意しない",
+    )
+    pdis.add_argument(
+        "--with-previous-discussion", action="store_true",
+        help="前月レポートの考察も資料としてモデルに渡す。既定では渡さない"
+             "（人手の文書で内容を検証できず、過去の混入を引き写す経路になるため）",
+    )
+    pdis.set_defaults(func=_run_discuss)
 
     pdoc = sub.add_parser("doctor", help="入力データ（スペンド・メンバー一覧）の品質を検査")
     pdoc.add_argument("--month", help="対象月 (YYYY-MM)。省略時は対象組織の spend の最新月")
@@ -64,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-INPUT_SUBDIRS = ("spend", "members", "code-analytics")
+INPUT_SUBDIRS = ingest.INPUT_SUBDIRS
 
 
 def _run_init_org(args: argparse.Namespace) -> int:
@@ -264,20 +313,16 @@ def _run_analyze(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
 
     targets = _resolve_targets(input_dir, output_dir, args.org)
+    # 使い方の誤りは分析を走らせる前に落とす（3組織の分析を完走してから失敗させない）
+    if args.with_discussion:
+        _check_allow_scope(tuple(args.allow_term or ()), len(targets))
 
     # 対象月: 未指定なら対象組織全体での最新月。その月のデータが無い組織はスキップ
-    month = args.month
-    if month is None:
-        latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_months(d))]
-        if not latest:
-            raise FileNotFoundError(
-                "スペンドレポートがありません。README の月次運用手順に従いエクスポートしてください。"
-            )
-        month = max(latest)
-        print(f"対象月未指定のため最新月を使用: {month}")
+    month = _resolve_month(targets, args.month)
 
     results: list[analyze.AnalysisResult] = []
     skipped: list[str] = []
+    written: list[tuple[str | None, Path]] = []
     n_previewed = 0
     for org, org_input, org_output in targets:
         if month not in ingest.discover_months(org_input):
@@ -301,11 +346,13 @@ def _run_analyze(args: argparse.Namespace) -> int:
             pv = analyze.preview(org_input, month, cfg, days, org=org)
             paths = report.write_preview(pv, org_output)
             _print_preview(pv, paths)
+            written.append((org, org_output))
             n_previewed += 1
             continue
         result = analyze.analyze(org_input, month, cfg, org=org)
         paths = report.write_all(result, org_output)
         results.append(result)
+        written.append((org, org_output))
         _print_result(result, paths)
 
     if skipped:
@@ -316,7 +363,146 @@ def _run_analyze(args: argparse.Namespace) -> int:
     if len(results) > 1:
         summary_path = report.write_org_summary(results, output_dir)
         _print_totals(results, summary_path)
+
+    if args.with_discussion:
+        return _run_discussions(
+            written, month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
+            preview=args.preview, force=args.force_discussion, dry_run=False,
+            allow=tuple(args.allow_term or ()),
+            include_previous=args.with_previous_discussion,
+        )
     return 0
+
+
+# ASCII 数字のみ・全体一致で検証する（`\d` は全角数字にも一致し、`$` は末尾改行を許す）
+_MONTH_RE = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
+
+
+def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | None) -> str:
+    """対象月。未指定なら対象組織全体での spend の最新月。
+
+    対象月は出力パスの一部（reports/<組織名>/<月>/）になるため形式を厳密に検証する。
+    検証しないと `--month ../<他組織>/<月>` で別組織のレポートを読み書きできてしまう。
+    """
+    if month is not None:
+        if not _MONTH_RE.fullmatch(month):
+            raise ValueError(f"対象月の形式が不正です: {month!r}（YYYY-MM 形式で指定してください）")
+        return month
+    latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_months(d))]
+    if not latest:
+        raise FileNotFoundError(
+            "スペンドレポートがありません。README の月次運用手順に従いエクスポートしてください。"
+        )
+    month = max(latest)
+    print(f"対象月未指定のため最新月を使用: {month}")
+    return month
+
+
+def _check_allow_scope(allow: tuple[str, ...], n_targets: int) -> None:
+    """--allow-term は「その組織の生成物を人が確認した」ことに基づくため単一組織限定。
+
+    恒久的に許可したい語は config.yaml > discussion.allow_terms を使う。
+    """
+    if allow and n_targets > 1:
+        raise ValueError(
+            "--allow-term は単一組織に対してのみ指定できます（--org で対象を絞るか、"
+            "恒久的に許可する語は config.yaml > discussion.allow_terms に書いてください）"
+        )
+
+
+def _run_discuss(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    input_dir = Path(args.input_dir)
+    output_dir = Path(args.output_dir)
+    targets = _resolve_targets(input_dir, output_dir, args.org)
+    month = _resolve_month(targets, args.month)
+    return _run_discussions(
+        [(org, org_output) for org, _, org_output in targets],
+        month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
+        preview=args.preview, force=args.force, dry_run=args.dry_run,
+        allow=tuple(args.allow_term or ()),
+        include_previous=args.with_previous_discussion,
+    )
+
+
+def _run_discussions(
+    items: list[tuple[str | None, Path]], *, month: str, input_dir: Path, output_dir: Path,
+    cfg: dict, preview: bool, force: bool, dry_run: bool, allow: tuple[str, ...] = (),
+    include_previous: bool = False,
+) -> int:
+    """組織ごとに考察を生成する。1組織の失敗で他組織を止めない。"""
+    _check_allow_scope(allow, len(items))
+
+    # 対象月のレポートが無い組織はスキップする（analyze と同じ扱い）。組織ごとに
+    # spend の月がずれるため、月未指定の実行で他組織が毎回ハードエラーになるのを避ける。
+    # 単一組織のときは generate のエラーで理由を示す
+    skipped: list[str] = []
+    if len(items) > 1:
+        targets = []
+        for org, org_output in items:
+            if discussion.document_path(org_output, month, preview).exists():
+                targets.append((org, org_output))
+            else:
+                skipped.append(org or str(org_output))
+        items = targets
+
+    if not dry_run:
+        print(f"\n=== 考察の執筆（{len(items)} 組織） ===")
+    failed: list[str] = []
+    blocked: list[str] = []
+    for org, org_output in items:
+        scope = f"{org} {month}" if org else month
+        try:
+            outcome = discussion.generate(
+                org=org, month=month, input_dir=input_dir, output_dir=output_dir,
+                org_output=org_output, cfg=cfg, preview=preview, force=force, dry_run=dry_run,
+                allow=allow, include_previous=include_previous,
+                notify=lambda m, scope=scope: print(f"  {scope}: {m}", file=sys.stderr),
+            )
+        except (discussion.DiscussionError, OSError, ValueError) as exc:
+            print(f"  ! {scope}: 考察を生成できませんでした: {exc}", file=sys.stderr)
+            failed.append(scope)
+            continue
+        if outcome.status == "blocked":
+            blocked.append(scope)
+        _print_discussion(outcome, scope)
+
+    if skipped:
+        # --dry-run は stdout をプロンプトだけに保つ契約なので通知は stderr へ回す
+        print(f"\n! {month} のレポートが無いためスキップした組織: {', '.join(skipped)}"
+              f"（先に analyze を実行してください）",
+              file=sys.stderr if dry_run else sys.stdout)
+    if blocked:
+        print(
+            f"\n! 他組織情報の混入が解消しなかったため書き込みを中止した組織: {', '.join(blocked)}",
+            file=sys.stderr,
+        )
+    if failed:
+        print(f"! 考察の生成に失敗した組織: {', '.join(failed)}", file=sys.stderr)
+    return 1 if (blocked or failed) else 0
+
+
+def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None:
+    if outcome.status == "dry-run":
+        print(f"===== プロンプト: {scope} =====", file=sys.stderr)
+        print(outcome.prompt)
+        return
+    if outcome.status == "kept":
+        print(f"  {scope}: 記入済みの考察があるため変更しません（上書きは --force）")
+    elif outcome.status == "written":
+        print(f"  {scope}: 考察を書き込みました "
+              f"（{outcome.chars} 文字 / 試行 {outcome.attempts} 回）→ {outcome.path}")
+    elif outcome.status == "blocked":
+        print(f"  {scope}: 混入チェックで他組織の語を検出したため書き込みを中止しました "
+              f"（試行 {outcome.attempts} 回）", file=sys.stderr)
+        for hit in outcome.leaks:
+            # 一致箇所の文脈を出す。誤検出（他組織の短い部署名が無関係な複合語に
+            # 一致した等）かどうかを人が判断できるようにするため
+            note = "" if hit.allowable else "・--allow-term では許可できません"
+            print(f"    検出語: {hit.term}（{hit.kind}{note}） … {hit.context} …",
+                  file=sys.stderr)
+        if any(h.allowable for h in outcome.leaks):
+            print("    誤検出と判断した語は --allow-term <語> で許可できます", file=sys.stderr)
 
 
 def _print_preview(pv, paths: dict[str, Path]) -> None:
