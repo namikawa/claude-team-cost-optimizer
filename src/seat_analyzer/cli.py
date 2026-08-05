@@ -1,4 +1,4 @@
-"""CLI エントリポイント: seat-analyzer {analyze,doctor,init-org}"""
+"""CLI エントリポイント: seat-analyzer {analyze,discuss,doctor,init-org}"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import analyze, data_quality, ingest, report
+from . import analyze, data_quality, discussion, ingest, report
 from .config import load_config
 from .domain import QualityIssue, Severity
 
@@ -32,7 +32,37 @@ def main(argv: list[str] | None = None) -> int:
         "--days", type=int,
         help="速報モードの観測日数。省略時はスペンドレポートのファイル名の期間から自動判別",
     )
+    p.add_argument(
+        "--with-discussion", action="store_true",
+        help="レポート生成後に考察の執筆まで行う（discuss と同じ処理。ヘッドレス Claude CLI を使用）",
+    )
+    p.add_argument(
+        "--force-discussion", action="store_true",
+        help="--with-discussion で記入済みの考察も上書きする",
+    )
     p.set_defaults(func=_run_analyze)
+
+    pdis = sub.add_parser(
+        "discuss", help="生成済みレポートの「## 考察」をヘッドレス Claude CLI に執筆させる")
+    pdis.add_argument("--month", help="対象月 (YYYY-MM)。省略時は対象組織の spend の最新月")
+    pdis.add_argument(
+        "--org", action="append",
+        help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織",
+    )
+    pdis.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pdis.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
+    pdis.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    pdis.add_argument(
+        "--preview", action="store_true", help="report.md ではなく preview.md の考察を対象にする")
+    pdis.add_argument(
+        "--force", action="store_true",
+        help="記入済みの考察を上書きする（既定では手書きの考察を守るため書き換えない）",
+    )
+    pdis.add_argument(
+        "--dry-run", action="store_true",
+        help="組み立てたプロンプトを標準出力へ出して終了する（Claude は呼ばない）",
+    )
+    pdis.set_defaults(func=_run_discuss)
 
     pdoc = sub.add_parser("doctor", help="入力データ（スペンド・メンバー一覧）の品質を検査")
     pdoc.add_argument("--month", help="対象月 (YYYY-MM)。省略時は対象組織の spend の最新月")
@@ -266,18 +296,11 @@ def _run_analyze(args: argparse.Namespace) -> int:
     targets = _resolve_targets(input_dir, output_dir, args.org)
 
     # 対象月: 未指定なら対象組織全体での最新月。その月のデータが無い組織はスキップ
-    month = args.month
-    if month is None:
-        latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_months(d))]
-        if not latest:
-            raise FileNotFoundError(
-                "スペンドレポートがありません。README の月次運用手順に従いエクスポートしてください。"
-            )
-        month = max(latest)
-        print(f"対象月未指定のため最新月を使用: {month}")
+    month = _resolve_month(targets, args.month)
 
     results: list[analyze.AnalysisResult] = []
     skipped: list[str] = []
+    written: list[tuple[str | None, Path]] = []
     n_previewed = 0
     for org, org_input, org_output in targets:
         if month not in ingest.discover_months(org_input):
@@ -301,11 +324,13 @@ def _run_analyze(args: argparse.Namespace) -> int:
             pv = analyze.preview(org_input, month, cfg, days, org=org)
             paths = report.write_preview(pv, org_output)
             _print_preview(pv, paths)
+            written.append((org, org_output))
             n_previewed += 1
             continue
         result = analyze.analyze(org_input, month, cfg, org=org)
         paths = report.write_all(result, org_output)
         results.append(result)
+        written.append((org, org_output))
         _print_result(result, paths)
 
     if skipped:
@@ -316,7 +341,91 @@ def _run_analyze(args: argparse.Namespace) -> int:
     if len(results) > 1:
         summary_path = report.write_org_summary(results, output_dir)
         _print_totals(results, summary_path)
+
+    if args.with_discussion:
+        return _run_discussions(
+            written, month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
+            preview=args.preview, force=args.force_discussion, dry_run=False,
+        )
     return 0
+
+
+def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | None) -> str:
+    """対象月。未指定なら対象組織全体での spend の最新月。"""
+    if month is not None:
+        return month
+    latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_months(d))]
+    if not latest:
+        raise FileNotFoundError(
+            "スペンドレポートがありません。README の月次運用手順に従いエクスポートしてください。"
+        )
+    month = max(latest)
+    print(f"対象月未指定のため最新月を使用: {month}")
+    return month
+
+
+def _run_discuss(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    input_dir = Path(args.input_dir)
+    output_dir = Path(args.output_dir)
+    targets = _resolve_targets(input_dir, output_dir, args.org)
+    month = _resolve_month(targets, args.month)
+    return _run_discussions(
+        [(org, org_output) for org, _, org_output in targets],
+        month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
+        preview=args.preview, force=args.force, dry_run=args.dry_run,
+    )
+
+
+def _run_discussions(
+    items: list[tuple[str | None, Path]], *, month: str, input_dir: Path, output_dir: Path,
+    cfg: dict, preview: bool, force: bool, dry_run: bool,
+) -> int:
+    """組織ごとに考察を生成する。1組織の失敗で他組織を止めない。"""
+    if not dry_run:
+        print(f"\n=== 考察の執筆（{len(items)} 組織） ===")
+    failed: list[str] = []
+    blocked: list[str] = []
+    for org, org_output in items:
+        scope = f"{org} {month}" if org else month
+        try:
+            outcome = discussion.generate(
+                org=org, month=month, input_dir=input_dir, output_dir=output_dir,
+                org_output=org_output, cfg=cfg, preview=preview, force=force, dry_run=dry_run,
+                notify=lambda m, scope=scope: print(f"  {scope}: {m}", file=sys.stderr),
+            )
+        except (discussion.DiscussionError, OSError, ValueError) as exc:
+            print(f"  ! {scope}: 考察を生成できませんでした: {exc}", file=sys.stderr)
+            failed.append(scope)
+            continue
+        if outcome.status == "blocked":
+            blocked.append(scope)
+        _print_discussion(outcome, scope)
+
+    if blocked:
+        print(
+            f"\n! 他組織情報の混入が解消しなかったため書き込みを中止した組織: {', '.join(blocked)}",
+            file=sys.stderr,
+        )
+    if failed:
+        print(f"! 考察の生成に失敗した組織: {', '.join(failed)}", file=sys.stderr)
+    return 1 if (blocked or failed) else 0
+
+
+def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None:
+    if outcome.status == "dry-run":
+        print(f"===== プロンプト: {scope} =====", file=sys.stderr)
+        print(outcome.prompt)
+        return
+    if outcome.status == "kept":
+        print(f"  {scope}: 記入済みの考察があるため変更しません（上書きは --force）")
+    elif outcome.status == "written":
+        print(f"  {scope}: 考察を書き込みました "
+              f"（{outcome.chars} 文字 / 試行 {outcome.attempts} 回）→ {outcome.path}")
+    elif outcome.status == "blocked":
+        print(f"  {scope}: 混入チェックで他組織の語を検出したため書き込みを中止しました "
+              f"（試行 {outcome.attempts} 回）", file=sys.stderr)
+        print(f"    検出語: {', '.join(outcome.leaks)}", file=sys.stderr)
 
 
 def _print_preview(pv, paths: dict[str, Path]) -> None:

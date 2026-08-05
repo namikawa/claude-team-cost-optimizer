@@ -854,12 +854,15 @@ allowance（シート込み利用量のUSD換算・非公開のため推定）�
 
 ## 考察
 
-<!-- /seat-analysis 実行時に Claude が記入するセクション -->
-（未記入 — `/seat-analysis` を実行すると考察が追記されます）
+<!-- /seat-analysis または seat-analyzer discuss 実行時に Claude が記入するセクション -->
+（未記入 — `/seat-analysis` または `seat-analyzer discuss` を実行すると考察が追記されます）
 """
     md = _preserve_discussion(md, path)
     path.write_text(md, encoding="utf-8")
 
+
+# 考察セクションの開始位置。本文の分割・差し替えはすべてこの文字列を境界に行う。
+_DISCUSSION_MARKER = "\n## 考察\n"
 
 # 未記入プレースホルダ行の判定。考察本文に「未記入」という語（例: 「部署未記入」）が
 # 含まれても誤判定しないよう、行アンカーで「（未記入 — ...）」形式の行のみを対象にする。
@@ -873,16 +876,39 @@ def _is_placeholder_discussion(tail: str) -> bool:
 
 def _preserve_discussion(md: str, path: Path) -> str:
     """再生成時、既存 report.md の記入済み「## 考察」セクションを引き継ぐ。"""
-    marker = "\n## 考察\n"
     if not path.exists():
         return md
     existing = path.read_text(encoding="utf-8")
-    if marker not in existing:
+    if _DISCUSSION_MARKER not in existing:
         return md
-    tail = existing.split(marker, 1)[1]
+    tail = existing.split(_DISCUSSION_MARKER, 1)[1]
     if _is_placeholder_discussion(tail):
         return md
-    return md.split(marker, 1)[0] + marker + tail
+    return md.split(_DISCUSSION_MARKER, 1)[0] + _DISCUSSION_MARKER + tail
+
+
+def document_body(md: str) -> str:
+    """考察セクションを除いたレポート本文。考察執筆へ渡す資料はこの範囲に限る。"""
+    return md.split(_DISCUSSION_MARKER, 1)[0] if _DISCUSSION_MARKER in md else md
+
+
+def discussion_body(md: str) -> str | None:
+    """記入済みの考察本文。セクションが無い / 未記入プレースホルダのままなら None。"""
+    if _DISCUSSION_MARKER not in md:
+        return None
+    tail = md.split(_DISCUSSION_MARKER, 1)[1]
+    if _is_placeholder_discussion(tail):
+        return None
+    return tail.strip() or None
+
+
+def write_discussion(path: Path, body: str) -> None:
+    """考察セクションの中身を body に差し替えて書き戻す。本文側は一切変更しない。"""
+    md = path.read_text(encoding="utf-8")
+    if _DISCUSSION_MARKER not in md:
+        raise ValueError(f"{path} に「## 考察」セクションがありません")
+    head = md.split(_DISCUSSION_MARKER, 1)[0]
+    path.write_text(head + _DISCUSSION_MARKER + "\n" + body.strip() + "\n", encoding="utf-8")
 
 
 # dashboard.html / preview-dashboard.html で共有する CSS（二重メンテを避けるため定数化）。
@@ -1514,8 +1540,8 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> dict[str, Pa
 
 ## 考察
 
-<!-- /seat-analysis 実行時に Claude が記入するセクション -->
-（未記入 — `/seat-analysis preview <日数>` を実行すると考察が追記されます）
+<!-- /seat-analysis または seat-analyzer discuss --preview 実行時に Claude が記入するセクション -->
+（未記入 — `/seat-analysis preview <日数>` または `seat-analyzer discuss --preview` を実行すると考察が追記されます）
 """
     md = _preserve_discussion(md, path)
     path.write_text(md, encoding="utf-8")

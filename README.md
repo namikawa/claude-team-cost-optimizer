@@ -110,14 +110,15 @@ uv run seat-analyzer init-org <組織名>
    を検出する。分析を止めるべき問題（error）があれば終了コード 1 を返し、警告だけなら 0 を返す。
    レポートは書き換えず、判定にも影響しない読み取り専用の検査
 5. 分析実行
-   - Claude Code で `/seat-analysis` を実行（推奨。数値検証と考察執筆まで行う）
-   - または CLI 直接実行:
 
    ```sh
    uv run seat-analyzer analyze                          # 全組織を一括分析（最新月）
    uv run seat-analyzer analyze --month YYYY-MM          # 月を指定
    uv run seat-analyzer analyze --org <組織名>           # 特定組織のみ（複数指定可）
+   uv run seat-analyzer analyze --with-discussion        # 考察の執筆まで行う（下記）
    ```
+
+   Claude Code から `/seat-analysis` を実行しても同じ処理を対話的に行える。
 
 6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される
    - `report.md` — 前月からの変化 + 推奨テーブル + 部署別/チーム別サマリ + 詳細利用状況 + 感度分析 + 考察
@@ -130,6 +131,45 @@ uv run seat-analyzer init-org <組織名>
 
    複数組織を一括分析した場合は `reports/summary/YYYY-MM.md` に組織横断サマリ
    （組織別のシート費用・削減見込みと合計）も生成される
+
+## 考察の自動執筆
+
+`analyze` が生成する report.md の「## 考察」は未記入のプレースホルダで、数値の検証と考察の
+執筆は分析者（人または LLM）の仕事になる。この工程も CLI から完結させられる。
+
+```sh
+uv run seat-analyzer discuss                             # 全組織（最新月）の考察を執筆
+uv run seat-analyzer discuss --org <組織名> --month YYYY-MM
+uv run seat-analyzer discuss --preview                   # preview.md の考察を執筆
+uv run seat-analyzer discuss --dry-run                   # プロンプトを表示するだけ（LLM を呼ばない）
+uv run seat-analyzer analyze --with-discussion            # 分析と考察を一度に
+```
+
+ローカルにインストールされた Claude Code CLI をヘッドレス（`claude -p`）で呼び出す。
+Anthropic API キーは不要で、Claude のサブスクリプション枠を消費する。設定は
+`config.yaml > discussion`（モデル・推論レベル・タイムアウト・再試行回数）。
+
+処理の流れと設計上の約束:
+
+- 資料（report.md 本文・recommendations.csv・前月の考察）はすべてプロンプトへ埋め込み、
+  LLM にはツールを一切与えない。出力は考察本文のテキストのみで、ファイルへの書き込みは
+  ツール側が行う。生成側がレポート以外を触ることはない
+- `--safe-mode` と空の作業ディレクトリで呼ぶため、ローカルの CLAUDE.md・メモリ・hooks・
+  MCP サーバはモデルのコンテキストに入らない。組織ごとに独立したプロンプトで実行する
+- 生成された考察は、対象組織以外の組織名・メールアドレス・人名・部署名を含まないか機械的に
+  照合する（対象組織の資料に現れない語を検出する方式）。検出したら一度書き直しを求め、
+  それでも残る場合は report.md を書き換えずに終了コード 1 を返す
+- API の一時エラーやタイムアウトは自動で再試行する。空の出力・エラー文・異常に短い出力を
+  考察として書き込むことはない
+- すでに記入済みの考察は上書きしない（手で書き足した内容を守るため）。上書きするには
+  `--force`、`analyze` からは `--force-discussion` を指定する
+
+考察の指示文（執筆の原則・観点）は `src/seat_analyzer/prompts/` にある。書かせる内容を
+変えたい場合はここを編集する。`/seat-analysis` スラッシュコマンドも同じ指示文を参照する。
+
+複数の組織を扱う場合、組織別の成果物には他組織の情報を書かないという制約が重要になる。
+report.md はその組織の担当者に共有される前提の文書で、組織横断の比較は
+`reports/summary/YYYY-MM.md` にのみ出力される。上記の照合はこの制約を機械的に担保するもの。
 
 ## 前月からの変化（正式分析のみ）
 
