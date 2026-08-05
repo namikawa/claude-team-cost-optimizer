@@ -66,8 +66,10 @@ DISALLOWED_TOOLS = (
     "Glob", "Grep", "WebFetch", "WebSearch",
     # 外向きの送信・共有
     "SendMessage", "PushNotification", "RemoteTrigger", "ShareOnboardingGuide",
-    # ツールの発見・追い足し、他エージェントの起動
+    # ツールの発見・追い足し、他エージェントの起動、新しい実行コンテキストの作成
+    # （この argv の制約が及ばない実行を後から作れる経路も塞ぐ）
     "ToolSearch", "Skill", "Task", "Agent", "Workflow", "TodoWrite",
+    "CronCreate", "TaskCreate",
 )
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
