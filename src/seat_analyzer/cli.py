@@ -468,8 +468,10 @@ def _run_discussions(
         _print_discussion(outcome, scope)
 
     if skipped:
+        # --dry-run は stdout をプロンプトだけに保つ契約なので通知は stderr へ回す
         print(f"\n! {month} のレポートが無いためスキップした組織: {', '.join(skipped)}"
-              f"（先に analyze を実行してください）")
+              f"（先に analyze を実行してください）",
+              file=sys.stderr if dry_run else sys.stdout)
     if blocked:
         print(
             f"\n! 他組織情報の混入が解消しなかったため書き込みを中止した組織: {', '.join(blocked)}",

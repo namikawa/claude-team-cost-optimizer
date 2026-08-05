@@ -786,6 +786,20 @@ def test_cli_discuss_dry_run_prints_prompt(two_orgs, tmp_path, capsys):
     assert report.discussion_body(md) is None
 
 
+def test_cli_dry_run_keeps_stdout_to_prompt_only(two_orgs, tmp_path, capsys):
+    """--dry-run の stdout はプロンプトだけに保つ（ファイルへ落として確認する使い方のため）。"""
+    out = _analyze(two_orgs, tmp_path)
+    (out / "org-a" / "2026-06" / "report.md").unlink()  # スキップ通知を発生させる
+    capsys.readouterr()
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06", "--dry-run"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "スキップした組織" in captured.err
+    assert "スキップした組織" not in captured.out
+    assert "執筆の原則" in captured.out
+
+
 def test_cli_discuss_blocked_returns_nonzero(two_orgs, tmp_path, monkeypatch):
     out = _analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "他組織の bernard.holloway と比べる。" * 8
@@ -980,6 +994,23 @@ def test_atomic_write_preserves_permissions(two_orgs, tmp_path):
     path.chmod(0o644)
     report.write_discussion(path, BODY)
     assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_new_report_permissions_match_other_outputs(two_orgs, tmp_path):
+    """新規作成される report.md / preview.md も他の成果物と同じ権限になる。
+
+    一時ファイルは mkstemp 由来で 0600 なので、新規作成時に umask 既定を適用しないと
+    レポートだけ dashboard.html より狭い権限になる（共有できなくなる）。
+    """
+    out = _analyze(two_orgs, tmp_path)
+    d = out / "org-a" / "2026-06"
+    reference = (d / "dashboard.html").stat().st_mode & 0o777
+    assert (d / "report.md").stat().st_mode & 0o777 == reference
+
+    pv = _analyze(two_orgs, tmp_path / "pv", "--preview", "--days", "10")
+    pvd = pv / "org-a" / "2026-06"
+    assert (pvd / "preview.md").stat().st_mode & 0o777 == (
+        pvd / "preview-dashboard.html").stat().st_mode & 0o777
 
 
 def test_atomic_write_leaves_original_on_failure(two_orgs, tmp_path, monkeypatch):

@@ -926,20 +926,32 @@ def write_discussion(path: Path, body: str, *, only_if_unwritten: bool = False) 
     )
 
 
+def _default_file_mode() -> int:
+    """umask を反映した新規ファイルの権限。write_text（open の既定）と同じ意味にする。
+
+    os.umask には読み取り専用の API が無いため 0 を設定して即戻す。単一スレッドの
+    CLI 前提の手法（この2行の間に別スレッドがファイルを作ると 0666 になる）。
+    """
+    current = os.umask(0)
+    os.umask(current)
+    return 0o666 & ~current
+
+
 def _atomic_write(path: Path, text: str, *, expect: str | None = None) -> bool:
     """同一ディレクトリの一時ファイル経由で置換する。
 
     write_text は書き込み前にファイルを切り詰めるため、ディスク不足や中断で
     手書きの考察だけでなくレポート本文まで失われる。置換なら失敗しても元の内容が残る。
-    一時ファイルは mkstemp 由来で 0600 になるため、元ファイルの権限を引き継がせる
-    （引き継がないと共有用に緩めた権限が実行のたびに落ちる）。
+    一時ファイルは mkstemp 由来で 0600 になるため、既存ファイルはその権限を引き継がせ、
+    新規作成時は umask 既定を使う（どちらも行わないとレポートだけ dashboard.html 等より
+    狭い権限になる）。
 
     expect を渡すと、置換の直前に現在の内容と一致するかを確認し、変わっていれば
     置換せず False を返す。判定から置換までの窓を詰めるための照合で、厳密な排他ではない
     （照合と os.replace の間に書き込まれた場合は検出できない）。単一の実行者が使う前提で、
     ロックは導入していない。
     """
-    mode = (path.stat().st_mode & 0o7777) if path.exists() else None
+    mode = (path.stat().st_mode & 0o7777) if path.exists() else _default_file_mode()
     tmp: Path | None = None
     try:
         f = tempfile.NamedTemporaryFile(
@@ -951,8 +963,7 @@ def _atomic_write(path: Path, text: str, *, expect: str | None = None) -> bool:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        if mode is not None:
-            os.chmod(tmp, mode)
+        os.chmod(tmp, mode)
         if expect is not None and path.read_text(encoding="utf-8") != expect:
             return False
         os.replace(tmp, path)
