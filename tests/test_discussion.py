@@ -4,6 +4,7 @@
 subprocess.run の monkeypatch で置き換える。
 """
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -310,6 +311,20 @@ def test_forbidden_terms_fails_closed_on_broken_members_info(two_orgs, tmp_path)
             target_org="org-a", cfg=load_config(CONFIG))
 
 
+def test_forbidden_terms_harvested_from_reports_only_org(two_orgs, tmp_path):
+    """入力が無く reports にだけ残っている組織からも語を集める。
+
+    集めないと組織名1件だけの禁止語になり、その組織のユーザ名が素通りする。
+    """
+    out = _analyze(two_orgs, tmp_path)
+    # org-b の入力を消し、生成済みレポートだけ残す
+    shutil.rmtree(two_orgs / "org-b")
+    texts = _texts(discussion.forbidden_terms(
+        input_dir=two_orgs, output_dir=out, target_org="org-a", cfg=load_config(CONFIG)))
+    assert "org-b" in texts
+    assert "bernard.holloway@y.jp" in texts and "holloway" in texts
+
+
 def test_legacy_layout_has_no_forbidden_terms(make_input, tmp_path):
     """旧レイアウト（input/spend 直下）では他組織が存在しないため禁止語は空。
 
@@ -387,6 +402,45 @@ def test_generate_retries_once_then_accepts(two_orgs, tmp_path):
     assert "差し戻し" in runner.calls[1]
     assert "bernard" in runner.calls[1]
     assert "bernard" not in outcome.path.read_text(encoding="utf-8")
+
+
+def test_generate_reports_leaks_even_when_rewrite_succeeds(two_orgs, tmp_path):
+    """書き直しで解消しても検出語を運用者に残す。
+
+    残さないと、誤検出なら「正当な記述が静かに削られた」ことに気づけず、真の混入なら
+    「モデルが他組織名を出そうとした」という兆候の記録が消える。
+    """
+    out = _analyze(two_orgs, tmp_path)
+    leaky = "### 変更推奨の妥当性\n\n" + "他組織の bernard.holloway と比べると小さい。" * 6
+    notices: list[str] = []
+    outcome = discussion.generate(
+        org="org-a", month="2026-06", input_dir=two_orgs, output_dir=out,
+        org_output=out / "org-a", cfg=load_config(CONFIG),
+        runner=_runner(leaky, BODY), notify=notices.append)
+
+    assert outcome.status == "written"
+    joined = "\n".join(notices)
+    assert "混入を検出" in joined
+    assert "bernard.holloway" in joined
+    assert "他組織の bernard.holloway と比べる" in joined  # 一致箇所の文脈も残す
+
+
+def test_config_allow_terms_apply_to_all_orgs(two_orgs, tmp_path, monkeypatch):
+    """config の allow_terms は全組織実行でも効く（--allow-term は単一組織限定のため）。"""
+    out = _analyze(two_orgs, tmp_path)
+    leaky = "### 変更推奨の妥当性\n\n" + "holloway 相当の水準にある。" * 10
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: leaky)
+
+    import yaml
+    cfg = yaml.safe_load(Path(CONFIG).read_text(encoding="utf-8"))
+    cfg["discussion"] = {**cfg["discussion"],
+                         "allow_terms": ["holloway", "bernard.holloway"]}
+    path = tmp_path / "config-allow.yaml"
+    path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+
+    rc = main(["discuss", "--config", str(path), "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06"])
+    assert rc == 0
 
 
 def test_generate_blocks_persistent_leak(two_orgs, tmp_path):
@@ -639,6 +693,39 @@ def test_run_claude_rejects_bad_output(stub_claude, proc_kw, message):
         discussion.run_claude("prompt", s)
 
 
+def test_run_claude_rejects_api_error_after_body(stub_claude):
+    """API エラーは出力の先頭に限らない（ストリーミング途中で失敗すると本文の後に付く）。"""
+    stub_claude(stdout=BODY + "\nAPI Error: 500 Internal Server Error")
+    s = discussion.settings(load_config(CONFIG))
+    with pytest.raises(discussion.DiscussionError, match="API エラー") as exc:
+        discussion.run_claude("prompt", s)
+    assert exc.value.transient is True
+
+
+@pytest.mark.parametrize("stdout, message", [
+    # 前置き + 捏造されたツール呼び出し + 本文。長さの門は通ってしまう
+    ("承知しました。以下が考察です。\n\n<function_calls>\n<invoke name=\"Read\">\n"
+     "</function_calls>\n\n" + BODY, "ツール呼び出し"),
+    # 小見出しが無い（拒否文・前置きだけ・途中で切れた出力）
+    ("申し訳ありませんが、この依頼にはお答えできません。" * 20, "小見出し"),
+])
+def test_run_claude_rejects_malformed_output(stub_claude, stdout, message):
+    """長さだけでは弾けない「形の崩れた出力」を肯定的な検査で落とす。"""
+    stub_claude(stdout=stdout)
+    s = discussion.settings(load_config(CONFIG))
+    with pytest.raises(discussion.DiscussionError, match=message) as exc:
+        discussion.run_claude("prompt", s)
+    assert exc.value.transient is True  # 再試行で救えるため
+
+
+def test_run_claude_isolates_mcp_and_session(stub_claude):
+    """MCP サーバも二重防御で遮断し、レポート全文をトランスクリプトに残さない。"""
+    captured = stub_claude(stdout=BODY)
+    discussion.run_claude("prompt", discussion.settings(load_config(CONFIG)))
+    assert "--strict-mcp-config" in captured["cmd"]
+    assert "--no-session-persistence" in captured["cmd"]
+
+
 @pytest.mark.parametrize("proc_kw, transient", [
     ({"stdout": "API Error: 529 Overloaded."}, True),      # 5xx は再実行で解消しうる
     ({"stdout": "API Error: 429 Rate limited."}, True),
@@ -712,14 +799,42 @@ def test_cli_discuss_blocked_returns_nonzero(two_orgs, tmp_path, monkeypatch):
 
 def test_cli_discuss_failure_does_not_stop_other_orgs(two_orgs, tmp_path, monkeypatch):
     out = _analyze(two_orgs, tmp_path)
-    # org-a のレポートだけ消して失敗させる
-    (out / "org-a" / "2026-06" / "report.md").unlink()
-    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
+
+    def fail_for_org_a(prompt: str, s: dict) -> str:
+        if "org-a" in prompt:
+            raise discussion.DiscussionError("claude が見つかりません")
+        return BODY
+
+    monkeypatch.setattr(discussion, "run_claude", fail_for_org_a)
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "2026-06"])
     assert rc == 1
     md = (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8")
     assert report.discussion_body(md) == BODY.strip()
+
+
+def test_cli_discuss_skips_orgs_without_report(two_orgs, tmp_path, monkeypatch, capsys):
+    """レポートが無い組織はスキップする（組織ごとに spend の月がずれるため）。"""
+    out = _analyze(two_orgs, tmp_path)
+    (out / "org-a" / "2026-06" / "report.md").unlink()
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
+    capsys.readouterr()
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06"])
+    assert rc == 0
+    assert "スキップした組織: org-a" in capsys.readouterr().out
+    md = (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8")
+    assert report.discussion_body(md) == BODY.strip()
+
+
+def test_cli_discuss_single_org_without_report_is_an_error(two_orgs, tmp_path, monkeypatch):
+    """単一組織指定でレポートが無い場合は理由を示して失敗する（黙って何もしない、にしない）。"""
+    out = _analyze(two_orgs, tmp_path)
+    (out / "org-a" / "2026-06" / "report.md").unlink()
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"])
+    assert rc == 1
 
 
 def test_cli_analyze_with_discussion(two_orgs, tmp_path, monkeypatch):
@@ -755,6 +870,19 @@ def test_cli_allow_term_requires_single_org(two_orgs, tmp_path, monkeypatch):
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "2026-06", "--allow-term", "holloway"])
     assert rc == 1
+
+
+def test_analyze_rejects_allow_term_before_running(two_orgs, tmp_path, capsys):
+    """使い方の誤りは分析を走らせる前に落とす（全組織の分析を完走してから失敗させない）。"""
+    out = tmp_path / "reports"
+    capsys.readouterr()
+    rc = main(["analyze", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06",
+               "--with-discussion", "--allow-term", "holloway"])
+    assert rc == 1
+    # レポートを1つも作らずに落ちている
+    assert not (out / "org-a" / "2026-06" / "report.md").exists()
+    assert "分析結果" not in capsys.readouterr().out
 
 
 def test_cli_blocked_output_includes_context(two_orgs, tmp_path, monkeypatch, capsys):

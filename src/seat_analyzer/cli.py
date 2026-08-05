@@ -313,6 +313,9 @@ def _run_analyze(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
 
     targets = _resolve_targets(input_dir, output_dir, args.org)
+    # 使い方の誤りは分析を走らせる前に落とす（3組織の分析を完走してから失敗させない）
+    if args.with_discussion:
+        _check_allow_scope(tuple(args.allow_term or ()), len(targets))
 
     # 対象月: 未指定なら対象組織全体での最新月。その月のデータが無い組織はスキップ
     month = _resolve_month(targets, args.month)
@@ -395,6 +398,18 @@ def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | No
     return month
 
 
+def _check_allow_scope(allow: tuple[str, ...], n_targets: int) -> None:
+    """--allow-term は「その組織の生成物を人が確認した」ことに基づくため単一組織限定。
+
+    恒久的に許可したい語は config.yaml > discussion.allow_terms を使う。
+    """
+    if allow and n_targets > 1:
+        raise ValueError(
+            "--allow-term は単一組織に対してのみ指定できます（--org で対象を絞るか、"
+            "恒久的に許可する語は config.yaml > discussion.allow_terms に書いてください）"
+        )
+
+
 def _run_discuss(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     input_dir = Path(args.input_dir)
@@ -416,11 +431,21 @@ def _run_discussions(
     include_previous: bool = False,
 ) -> int:
     """組織ごとに考察を生成する。1組織の失敗で他組織を止めない。"""
-    if allow and len(items) > 1:
-        # 許可は「その組織の生成物を人が確認した」ことに基づく。全組織へ一括適用させない
-        raise ValueError(
-            "--allow-term は単一組織に対してのみ指定できます（--org で対象を絞ってください）"
-        )
+    _check_allow_scope(allow, len(items))
+
+    # 対象月のレポートが無い組織はスキップする（analyze と同じ扱い）。組織ごとに
+    # spend の月がずれるため、月未指定の実行で他組織が毎回ハードエラーになるのを避ける。
+    # 単一組織のときは generate のエラーで理由を示す
+    skipped: list[str] = []
+    if len(items) > 1:
+        targets = []
+        for org, org_output in items:
+            if discussion.document_path(org_output, month, preview).exists():
+                targets.append((org, org_output))
+            else:
+                skipped.append(org or str(org_output))
+        items = targets
+
     if not dry_run:
         print(f"\n=== 考察の執筆（{len(items)} 組織） ===")
     failed: list[str] = []
@@ -442,6 +467,9 @@ def _run_discussions(
             blocked.append(scope)
         _print_discussion(outcome, scope)
 
+    if skipped:
+        print(f"\n! {month} のレポートが無いためスキップした組織: {', '.join(skipped)}"
+              f"（先に analyze を実行してください）")
     if blocked:
         print(
             f"\n! 他組織情報の混入が解消しなかったため書き込みを中止した組織: {', '.join(blocked)}",
