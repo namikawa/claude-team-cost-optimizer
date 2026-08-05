@@ -48,14 +48,26 @@ DEFAULTS: dict = {
     "allow_terms": (),
 }
 
-# ヘッドレス実行で禁止するツール。資料はプロンプトに埋め込むためツールは一切不要で、
-# ファイル・Web の読み取りは他組織情報の混入経路になるため落とす。
-# 主たる保証は `--tools ""`（組み込みツールを空集合にする許可リスト方式）で、
-# 列挙漏れや将来追加されるツールに対して denylist は原理的に不完全なため。
-# 以下は許可リストが効かなくなった場合に残る追加防御。
+# ヘッドレス実行で禁止するツール。資料はプロンプトに埋め込むためツールは一切不要。
+#
+# 主たる保証は `--tools ""`（組み込みツールを空集合にする許可リスト方式）で、以下は
+# それが効かなくなった場合に残る追加防御にすぎない。**denylist は網羅していない**:
+# 実測（`--tools default` で init イベントのツール一覧を確認）では、この列挙を通した
+# 後も 20件以上のツールが残る。ツール名は環境とバージョンに依存するため網羅は諦め、
+# 混入・外部送信に直接つながる種類だけを挙げている。
+# - ファイル・Web の読み取り: 他組織情報をモデルへ持ち込む経路
+# - 外向きの送信・共有: 対象組織のデータを外へ出す経路
+# - ツールの発見・追い足し: 上記2種を後から呼べるようにする経路
+# 存在しない名前を渡しても CLI は警告のみで正常終了する（実測）ため、環境差で名前が
+# 消えても壊れない。
 DISALLOWED_TOOLS = (
+    # ファイル・Web の読み取り
     "Bash", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
-    "Glob", "Grep", "WebFetch", "WebSearch", "Task", "Agent", "TodoWrite",
+    "Glob", "Grep", "WebFetch", "WebSearch",
+    # 外向きの送信・共有
+    "SendMessage", "PushNotification", "RemoteTrigger", "ShareOnboardingGuide",
+    # ツールの発見・追い足し、他エージェントの起動
+    "ToolSearch", "Skill", "Task", "Agent", "Workflow", "TodoWrite",
 )
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -569,8 +581,10 @@ def run_claude(prompt: str, s: dict) -> str:
         # 組み込みツールを空集合にする（許可リスト方式が主たる保証）
         "--tools", "",
         "--disallowedTools", *DISALLOWED_TOOLS,
-        # MCP サーバも --safe-mode 単独に頼らず遮断する（--mcp-config を渡さないので
-        # サーバはゼロになる）。組み込みツールと同じ形の二重防御にするため
+        # 設定ファイル由来の MCP 設定を無視する。空の作業ディレクトリに .mcp.json を
+        # 置かれた場合の保険。claude.ai 管理の MCP サーバには効かず、それを落として
+        # いるのは --safe-mode（実測: --safe-mode を外すと claude mcp list に3件残る）。
+        # つまり MCP は組み込みツールのような二重防御になっていない
         "--strict-mcp-config",
         # 対象組織のレポート全文が ~/.claude のトランスクリプトに残らないようにする
         "--no-session-persistence",
@@ -692,10 +706,12 @@ def generate(
         if leaks:
             # 検出語は必ず運用者に残す。書き直しで解消した場合に何も出さないと、
             # 誤検出なら「正当な記述が静かに削られた」ことに気づけず、真の混入なら
-            # 「モデルが他組織名を出力しようとした」という兆候の記録が消える
-            notify(f"試行 {attempt}: 混入を検出したため書き直しを求めます")
-            for hit in leaks:
-                notify(f"  検出語: {hit.term}（{hit.kind}） … {hit.context} …")
+            # 「モデルが他組織名を出力しようとした」という兆候の記録が消える。
+            # 最終試行分は blocked として呼び出し側が表示するため、ここでは出さない
+            if attempt < max_attempts:
+                notify(f"試行 {attempt}: 混入を検出したため書き直しを求めます")
+                for hit in leaks:
+                    notify(f"  検出語: {hit.term}（{hit.kind}） … {hit.context} …")
             continue
         # 生成には最大で timeout_seconds かかる。その間に人が考察を書いた場合や
         # 並行する analyze が本文を更新した場合に、それを巻き戻さないよう書き込み側で
