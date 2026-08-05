@@ -121,7 +121,7 @@ def test_forbidden_terms_splits_short_name_segments(make_input, tmp_path):
 
 
 def test_find_leaks_flags_only_terms_absent_from_source():
-    terms = _terms(("org-b", "org"), ("bernard.holloway@y.jp", "email"),
+    terms = _terms(("org-b", "org"), ("bernard.holloway@y.jp", "address"),
                    ("holloway", "person"), ("架空推進3部", "group"))
     source = "org-a のユーザ alice.morgan@x.jp は Premium。"
 
@@ -191,13 +191,31 @@ def test_find_leaks_reports_context_and_kind():
 
 
 def test_find_leaks_allow_overrides_detection():
-    terms = _terms(("開発部", "group"), ("org-b", "org"))
-    text = "開発部と org-b について。"
-    assert _hit_terms(discussion.find_leaks(text, terms, source="")) == ("org-b", "開発部")
-    # 人が確認して無害と判断した語は許可できる。組織名も対象
+    terms = _terms(("開発部", "group"), ("holloway", "person"))
+    text = "開発部と holloway について。"
+    assert _hit_terms(discussion.find_leaks(text, terms, source="")) == ("holloway", "開発部")
+    # 人が確認して無害と判断した語は許可できる（大文字小文字は問わない）
     assert _hit_terms(discussion.find_leaks(
-        text, terms, source="", allow=("開発部",))) == ("org-b",)
-    assert discussion.find_leaks(text, terms, source="", allow=("開発部", "ORG-B")) == ()
+        text, terms, source="", allow=("開発部",))) == ("holloway",)
+    assert discussion.find_leaks(text, terms, source="", allow=("開発部", "HOLLOWAY")) == ()
+
+
+def test_allow_cannot_override_org_names_or_addresses():
+    """組織名とメールアドレスは --allow-term の対象外（誤検出の余地が実質なく影響が大きい）。"""
+    terms = _terms(("org-b", "org"), ("x@y.jp", "address"), ("y.jp", "domain"))
+    text = "org-b の x@y.jp（y.jp）について。"
+    hits = discussion.find_leaks(
+        text, terms, source="", allow=("org-b", "x@y.jp", "y.jp"))
+    assert _hit_terms(hits) == ("org-b", "x@y.jp")
+    assert all(h.allowable is False for h in hits)
+
+
+def test_find_leaks_org_names_use_aggressive_boundary():
+    """短い日本語の緩い規則を組織名に適用すると取りこぼす（影響が最大の種類なので例外扱い）。"""
+    assert _hit_terms(discussion.find_leaks(
+        "東京支社の利用状況。", _terms(("東京", "org")), source="")) == ("東京",)
+    # 同じ長さでも部署名なら複合語の一部としては拾わない
+    assert discussion.find_leaks("東京支社の利用状況。", _terms(("東京", "group")), source="") == ()
 
 
 def test_group_names_from_members_info(two_orgs, tmp_path):
@@ -210,6 +228,42 @@ def test_group_names_from_members_info(two_orgs, tmp_path):
     assert "架空推進3部" in texts and "Nebula-AI" in texts
     # 職種は一般語のため禁止語に含めない
     assert "エンジニア" not in texts
+
+
+def test_org_named_like_input_subdir_is_still_collected(make_input, tmp_path):
+    """入力サブディレクトリと同名の組織（組織名として許される）も禁止語を集める。
+
+    名前で除外すると、その組織のユーザ名・部署名が丸ごと照合対象から抜ける。
+    """
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-a")
+    make_input({"2026-06": [spend_row("bernard.holloway@y.jp", 10.0)]},
+               members=["bernard.holloway@y.jp,Premium"], org="members")
+    texts = _texts(discussion.forbidden_terms(
+        input_dir=input_dir, output_dir=tmp_path / "reports",
+        target_org="org-a", cfg=load_config(CONFIG)))
+    assert "members" in texts and "holloway" in texts
+
+
+def test_forbidden_terms_fails_closed_on_unreadable_input(two_orgs, tmp_path, monkeypatch):
+    """収集元が読めない場合、不完全な禁止語集合で通さず中止する。"""
+    def boom(self, *a, **kw):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    with pytest.raises(discussion.DiscussionError, match="混入チェックを保証できません"):
+        discussion.forbidden_terms(
+            input_dir=two_orgs, output_dir=tmp_path / "reports",
+            target_org="org-a", cfg=load_config(CONFIG))
+
+
+def test_forbidden_terms_fails_closed_on_broken_members_info(two_orgs, tmp_path):
+    (two_orgs / "org-b" / "members-info.csv").write_text(
+        "部署,チーム\n架空推進3部,Nebula-AI\n", encoding="utf-8")  # email 列が無い
+    with pytest.raises(discussion.DiscussionError, match="混入チェックを保証できません"):
+        discussion.forbidden_terms(
+            input_dir=two_orgs, output_dir=tmp_path / "reports",
+            target_org="org-a", cfg=load_config(CONFIG))
 
 
 def test_legacy_layout_has_no_forbidden_terms(make_input, tmp_path):
@@ -495,11 +549,16 @@ def test_run_claude_strips_code_fence(stub_claude):
     assert discussion.run_claude("prompt", s) == BODY.strip()
 
 
-def test_run_claude_strips_discussion_heading(stub_claude):
+@pytest.mark.parametrize("stdout", [
+    "## 考察\n\n{body}",                      # 先頭にある場合
+    "以下が考察です。\n\n## 考察\n\n{body}",    # 前置きの後にある場合
+    "##考察\n{body}",                         # 空白なし
+])
+def test_run_claude_strips_discussion_heading(stub_claude, stdout):
     """出力に「## 考察」が付いてきても差し込み時に H2 が重複しないよう落とす。"""
-    stub_claude(stdout="## 考察\n\n" + BODY)
+    stub_claude(stdout=stdout.format(body=BODY))
     s = discussion.settings(load_config(CONFIG))
-    assert discussion.run_claude("prompt", s) == BODY.strip()
+    assert "## 考察" not in discussion.run_claude("prompt", s)
 
 
 @pytest.mark.parametrize("proc_kw, message", [
@@ -624,6 +683,15 @@ def test_cli_discuss_allow_term(two_orgs, tmp_path, monkeypatch):
                  "--allow-term", "bernard.holloway"]) == 0
 
 
+def test_cli_allow_term_requires_single_org(two_orgs, tmp_path, monkeypatch):
+    """許可はその組織の生成物を人が確認した結果なので、全組織へ一括適用させない。"""
+    out = _analyze(two_orgs, tmp_path)
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06", "--allow-term", "holloway"])
+    assert rc == 1
+
+
 def test_cli_blocked_output_includes_context(two_orgs, tmp_path, monkeypatch, capsys):
     out = _analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "他組織の bernard.holloway と比べる。" * 8
@@ -646,6 +714,8 @@ def test_cli_blocked_output_includes_context(two_orgs, tmp_path, monkeypatch, ca
     "2026-13",
     "2026-6",
     "2026-06/../../x",
+    "2026-06\n",              # 末尾改行（$ は許してしまう）
+    "２０２６-06",              # 全角数字（\d は許してしまう）
 ])
 def test_month_format_is_validated(two_orgs, tmp_path, month):
     """対象月は出力パスの一部になるため、形式外の値を受け付けない。"""
@@ -664,6 +734,30 @@ def test_traversal_month_does_not_touch_other_org(two_orgs, tmp_path, monkeypatc
                "--output-dir", str(out), "--month", "../org-b/2026-06", "--org", "org-a"])
     assert rc == 1
     assert (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8") == before
+
+
+def test_write_discussion_only_if_unwritten_guard(two_orgs, tmp_path):
+    """判定と置換を1回の読み取りに畳む（呼び出し側の事前確認より競合の窓が狭い）。"""
+    out = _analyze(two_orgs, tmp_path)
+    path = out / "org-a" / "2026-06" / "report.md"
+
+    assert report.write_discussion(path, BODY, only_if_unwritten=True) is True
+    # 記入済みになったので2回目は何もしない
+    other = "### 別の考察\n\n" + "上書きされるべきではない。" * 20
+    assert report.write_discussion(path, other, only_if_unwritten=True) is False
+    assert report.discussion_body(path.read_text(encoding="utf-8")) == BODY.strip()
+    # only_if_unwritten=False なら上書きする
+    assert report.write_discussion(path, other) is True
+    assert report.discussion_body(path.read_text(encoding="utf-8")) == other.strip()
+
+
+def test_atomic_write_preserves_permissions(two_orgs, tmp_path):
+    """一時ファイル経由の置換で元ファイルの権限を落とさない（共有用に緩めた権限を守る）。"""
+    out = _analyze(two_orgs, tmp_path)
+    path = out / "org-a" / "2026-06" / "report.md"
+    path.chmod(0o644)
+    report.write_discussion(path, BODY)
+    assert path.stat().st_mode & 0o777 == 0o644
 
 
 def test_atomic_write_leaves_original_on_failure(two_orgs, tmp_path, monkeypatch):
@@ -689,6 +783,7 @@ def test_atomic_write_leaves_original_on_failure(two_orgs, tmp_path, monkeypatch
     {"min_output_chars": 100.5},
     {"retry_wait_seconds": float("inf")},
     {"timeout_seconds": float("nan")},
+    {"timeout_seconds": 10 ** 4000},  # float 変換で OverflowError になる巨大整数
     {"max_attempts": 0},
     {"retries": -1},
     {"effort": "extreme"},

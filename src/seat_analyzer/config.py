@@ -37,7 +37,11 @@ def _validate(cfg: dict) -> None:
         return isinstance(v, int) and not isinstance(v, bool)
 
     def _finite(v) -> bool:
-        return _num(v) and math.isfinite(v)
+        # 巨大な int は float 変換で OverflowError になる。設定ミスとして扱う
+        try:
+            return _num(v) and math.isfinite(v)
+        except OverflowError:
+            return False
 
     for seat in ("standard", "premium"):
         s = cfg["seats"].get(seat)

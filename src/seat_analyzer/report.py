@@ -904,13 +904,21 @@ def discussion_body(md: str) -> str | None:
     return tail.strip() or None
 
 
-def write_discussion(path: Path, body: str) -> None:
-    """考察セクションの中身を body に差し替えて書き戻す。本文側は一切変更しない。"""
+def write_discussion(path: Path, body: str, *, only_if_unwritten: bool = False) -> bool:
+    """考察セクションの中身を body に差し替えて書き戻す。本文側は一切変更しない。
+
+    only_if_unwritten=True なら、記入済みの考察を見つけた時点で何もせず False を返す。
+    判定と書き込みを1回の読み取りに畳むため、呼び出し側で事前確認するより競合の窓が狭い
+    （生成に時間がかかる間に人が考察を書いた場合に上書きしないための保護）。
+    """
     md = path.read_text(encoding="utf-8")
     if _DISCUSSION_MARKER not in md:
         raise ValueError(f"{path} に「## 考察」セクションがありません")
+    if only_if_unwritten and discussion_body(md) is not None:
+        return False
     head = md.split(_DISCUSSION_MARKER, 1)[0]
     _atomic_write(path, head + _DISCUSSION_MARKER + "\n" + body.strip() + "\n")
+    return True
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -918,24 +926,28 @@ def _atomic_write(path: Path, text: str) -> None:
 
     write_text は書き込み前にファイルを切り詰めるため、ディスク不足や中断で
     手書きの考察だけでなくレポート本文まで失われる。置換なら失敗しても元の内容が残る。
+    一時ファイルは mkstemp 由来で 0600 になるため、元ファイルの権限を引き継がせる
+    （引き継がないと共有用に緩めた権限が実行のたびに落ちる）。
     """
-    with tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent,
-        prefix=path.name + ".", suffix=".tmp", delete=False,
-    ) as f:
+    mode = (path.stat().st_mode & 0o7777) if path.exists() else None
+    tmp: Path | None = None
+    try:
+        f = tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent,
+            prefix=path.name + ".", suffix=".tmp", delete=False,
+        )
         tmp = Path(f.name)
-        try:
+        with f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
-    try:
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+        tmp = None
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 # dashboard.html / preview-dashboard.html で共有する CSS（二重メンテを避けるため定数化）。
