@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -40,6 +41,10 @@ def main(argv: list[str] | None = None) -> int:
         "--force-discussion", action="store_true",
         help="--with-discussion で記入済みの考察も上書きする",
     )
+    p.add_argument(
+        "--allow-term", action="append", metavar="語",
+        help="--with-discussion の混入チェックで許可する語（discuss --allow-term と同じ）",
+    )
     p.set_defaults(func=_run_analyze)
 
     pdis = sub.add_parser(
@@ -61,6 +66,11 @@ def main(argv: list[str] | None = None) -> int:
     pdis.add_argument(
         "--dry-run", action="store_true",
         help="組み立てたプロンプトを標準出力へ出して終了する（Claude は呼ばない）",
+    )
+    pdis.add_argument(
+        "--allow-term", action="append", metavar="語",
+        help="混入チェックで検出された語のうち、内容を確認して無害と判断したものを許可する"
+             "（複数指定可）。チェック全体を無効化する手段は用意しない",
     )
     pdis.set_defaults(func=_run_discuss)
 
@@ -94,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
 
-INPUT_SUBDIRS = ("spend", "members", "code-analytics")
+INPUT_SUBDIRS = ingest.INPUT_SUBDIRS
 
 
 def _run_init_org(args: argparse.Namespace) -> int:
@@ -346,13 +356,23 @@ def _run_analyze(args: argparse.Namespace) -> int:
         return _run_discussions(
             written, month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
             preview=args.preview, force=args.force_discussion, dry_run=False,
+            allow=tuple(args.allow_term or ()),
         )
     return 0
 
 
+_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
 def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | None) -> str:
-    """対象月。未指定なら対象組織全体での spend の最新月。"""
+    """対象月。未指定なら対象組織全体での spend の最新月。
+
+    対象月は出力パスの一部（reports/<組織名>/<月>/）になるため形式を厳密に検証する。
+    検証しないと `--month ../<他組織>/<月>` で別組織のレポートを読み書きできてしまう。
+    """
     if month is not None:
+        if not _MONTH_RE.match(month):
+            raise ValueError(f"対象月の形式が不正です: {month!r}（YYYY-MM 形式で指定してください）")
         return month
     latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_months(d))]
     if not latest:
@@ -374,12 +394,13 @@ def _run_discuss(args: argparse.Namespace) -> int:
         [(org, org_output) for org, _, org_output in targets],
         month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
         preview=args.preview, force=args.force, dry_run=args.dry_run,
+        allow=tuple(args.allow_term or ()),
     )
 
 
 def _run_discussions(
     items: list[tuple[str | None, Path]], *, month: str, input_dir: Path, output_dir: Path,
-    cfg: dict, preview: bool, force: bool, dry_run: bool,
+    cfg: dict, preview: bool, force: bool, dry_run: bool, allow: tuple[str, ...] = (),
 ) -> int:
     """組織ごとに考察を生成する。1組織の失敗で他組織を止めない。"""
     if not dry_run:
@@ -392,6 +413,7 @@ def _run_discussions(
             outcome = discussion.generate(
                 org=org, month=month, input_dir=input_dir, output_dir=output_dir,
                 org_output=org_output, cfg=cfg, preview=preview, force=force, dry_run=dry_run,
+                allow=allow,
                 notify=lambda m, scope=scope: print(f"  {scope}: {m}", file=sys.stderr),
             )
         except (discussion.DiscussionError, OSError, ValueError) as exc:
@@ -425,7 +447,11 @@ def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None
     elif outcome.status == "blocked":
         print(f"  {scope}: 混入チェックで他組織の語を検出したため書き込みを中止しました "
               f"（試行 {outcome.attempts} 回）", file=sys.stderr)
-        print(f"    検出語: {', '.join(outcome.leaks)}", file=sys.stderr)
+        for hit in outcome.leaks:
+            # 一致箇所の文脈を出す。誤検出（他組織の短い部署名が無関係な複合語に
+            # 一致した等）かどうかを人が判断できるようにするため
+            print(f"    検出語: {hit.term}（{hit.kind}） … {hit.context} …", file=sys.stderr)
+        print("    誤検出と判断した語は --allow-term <語> で許可できます", file=sys.stderr)
 
 
 def _print_preview(pv, paths: dict[str, Path]) -> None:

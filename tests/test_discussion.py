@@ -81,44 +81,123 @@ def test_write_discussion_requires_section(tmp_path):
 # ---------------------------------------------------------------- 混入チェック
 
 
+def _terms(*specs: tuple[str, str]) -> tuple[discussion.Term, ...]:
+    return tuple(discussion.Term(text, kind) for text, kind in specs)
+
+
+def _texts(terms) -> set[str]:
+    return {t.text for t in terms}
+
+
+def _hit_terms(hits) -> tuple[str, ...]:
+    return tuple(h.term for h in hits)
+
+
 def test_forbidden_terms_excludes_target_org(two_orgs, tmp_path):
     cfg = load_config(CONFIG)
     terms = discussion.forbidden_terms(
         input_dir=two_orgs, output_dir=tmp_path / "reports", target_org="org-a", cfg=cfg)
-    assert "org-b" in terms
-    assert "bernard.holloway@y.jp" in terms
-    assert "bernard" in terms and "holloway" in terms
+    texts = _texts(terms)
+    assert "org-b" in texts
+    assert "bernard.holloway@y.jp" in texts
+    assert "bernard" in texts and "holloway" in texts
+    # 組織名は kind=org として常時禁止の扱いになる
+    assert discussion.Term("org-b", "org") in terms
     # 対象組織自身の語は禁止語に入らない
-    assert "org-a" not in terms
-    assert not any("alice" in t for t in terms)
+    assert "org-a" not in texts
+    assert not any("alice" in t for t in texts)
+
+
+def test_forbidden_terms_splits_short_name_segments(make_input, tmp_path):
+    """ドット・アンダースコア区切りの短い姓名も禁止語に含める（実運用の命名に合わせる）。"""
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-a")
+    make_input({"2026-06": [spend_row("taro.sato@y.jp", 10.0)]},
+               members=["taro.sato@y.jp,Premium", "hana_kato@y.jp,Standard"], org="org-b")
+    texts = _texts(discussion.forbidden_terms(
+        input_dir=input_dir, output_dir=tmp_path / "reports",
+        target_org="org-a", cfg=load_config(CONFIG)))
+    assert {"taro", "sato", "hana", "kato"} <= texts
 
 
 def test_find_leaks_flags_only_terms_absent_from_source():
-    terms = ("org-b", "bernard.holloway@y.jp", "holloway", "開発推進4部")
+    terms = _terms(("org-b", "org"), ("bernard.holloway@y.jp", "email"),
+                   ("holloway", "person"), ("開発推進4部", "group"))
     source = "org-a のユーザ alice.morgan@x.jp は Premium。"
 
-    assert discussion.find_leaks(
-        "holloway さんは Standard で足りている。", terms, source=source) == ("holloway",)
-    assert discussion.find_leaks(
-        "開発推進4部の削減余地は小さい。", terms, source=source) == ("開発推進4部",)
+    assert _hit_terms(discussion.find_leaks(
+        "holloway さんは Standard で足りている。", terms, source=source)) == ("holloway",)
+    assert _hit_terms(discussion.find_leaks(
+        "開発推進4部の削減余地は小さい。", terms, source=source)) == ("開発推進4部",)
     assert discussion.find_leaks("alice.morgan の需要は妥当。", terms, source=source) == ()
 
 
 def test_find_leaks_ignores_terms_present_in_source():
     # 対象組織の資料に現れる語は、出力に出てきても混入ではない
-    terms = ("holloway",)
+    terms = _terms(("holloway", "person"))
     source = "holloway@x.jp は対象組織のユーザ。"
     assert discussion.find_leaks("holloway は Premium 継続。", terms, source=source) == ()
 
 
+def test_find_leaks_always_forbids_other_org_names():
+    """組織名は対象組織の資料に現れても混入として扱う（資料側の混入を許可根拠にしない）。"""
+    source = "備考: org-b から異動。"
+    assert _hit_terms(discussion.find_leaks(
+        "org-b と比べると小さい。", _terms(("org-b", "org")), source=source)) == ("org-b",)
+    # 人名・部署名は従来どおり資料に現れれば除外する
+    assert discussion.find_leaks(
+        "holloway は継続。", _terms(("holloway", "person")), source=source + " holloway@x.jp") == ()
+
+
 def test_find_leaks_respects_word_boundaries():
     # 英単語の一部として現れる出現は拾わない（detail の中の etai 等の誤検出防止）
-    assert discussion.find_leaks("detail を確認する。", ("etai",), source="") == ()
+    assert discussion.find_leaks("detail を確認する。", _terms(("etai", "person")), source="") == ()
     # メールのローカル部・ドメインの構成要素として現れる出現は拾う
-    assert discussion.find_leaks("bernard.holloway", ("bernard",), source="") == ("bernard",)
-    assert discussion.find_leaks("holloway@y.jp", ("holloway",), source="") == ("holloway",)
+    assert _hit_terms(discussion.find_leaks(
+        "bernard.holloway", _terms(("bernard", "person")), source="")) == ("bernard",)
+    assert _hit_terms(discussion.find_leaks(
+        "holloway@y.jp", _terms(("holloway", "person")), source="")) == ("holloway",)
     # 日本語が隣接する出現は拾う
-    assert discussion.find_leaks("org-b組織では", ("org-b",), source="") == ("org-b",)
+    assert _hit_terms(discussion.find_leaks(
+        "org-b組織では", _terms(("org-b", "org")), source="")) == ("org-b",)
+
+
+def test_find_leaks_short_japanese_terms_need_non_kanji_boundary():
+    """短い日本語の語は漢字・カタカナの連結を語の一部とみなす（一般語の誤検出を防ぐ）。"""
+    short = _terms(("開発部", "group"), ("人事", "group"))
+    # 無関係な複合語の一部としての出現は拾わない
+    assert discussion.find_leaks("製品開発部門の需要が大きい。", short, source="") == ()
+    assert discussion.find_leaks("人事評価制度を見直す。", short, source="") == ()
+    # 助詞・記号が続く出現は拾う
+    assert _hit_terms(discussion.find_leaks("開発部の削減余地は小さい。", short, source="")) \
+        == ("開発部",)
+    assert _hit_terms(discussion.find_leaks("人事、総務の2部署。", short, source="")) == ("人事",)
+
+
+def test_find_leaks_long_japanese_terms_match_inside_compounds():
+    """長い日本語の語は固有性が高いため、複合語に埋め込まれても検出する。"""
+    long_term = _terms(("開発推進4部", "group"))
+    assert _hit_terms(discussion.find_leaks(
+        "開発推進4部第2チームの需要。", long_term, source="")) == ("開発推進4部",)
+
+
+def test_find_leaks_reports_context_and_kind():
+    hits = discussion.find_leaks(
+        "前段の説明。製品開発部の削減余地は小さい。後段の説明。",
+        _terms(("製品開発部", "group")), source="")
+    assert len(hits) == 1
+    assert hits[0].kind == "group"
+    assert "製品開発部の削減余地" in hits[0].context
+
+
+def test_find_leaks_allow_overrides_detection():
+    terms = _terms(("開発部", "group"), ("org-b", "org"))
+    text = "開発部と org-b について。"
+    assert _hit_terms(discussion.find_leaks(text, terms, source="")) == ("org-b", "開発部")
+    # 人が確認して無害と判断した語は許可できる。組織名も対象
+    assert _hit_terms(discussion.find_leaks(
+        text, terms, source="", allow=("開発部",))) == ("org-b",)
+    assert discussion.find_leaks(text, terms, source="", allow=("開発部", "ORG-B")) == ()
 
 
 def test_group_names_from_members_info(two_orgs, tmp_path):
@@ -126,11 +205,25 @@ def test_group_names_from_members_info(two_orgs, tmp_path):
         "email,部署,チーム,職種\nbernard.holloway@y.jp,開発推進4部,Sophia-AI,エンジニア\n",
         encoding="utf-8")
     cfg = load_config(CONFIG)
-    terms = discussion.forbidden_terms(
-        input_dir=two_orgs, output_dir=tmp_path / "reports", target_org="org-a", cfg=cfg)
-    assert "開発推進4部" in terms and "Sophia-AI" in terms
+    texts = _texts(discussion.forbidden_terms(
+        input_dir=two_orgs, output_dir=tmp_path / "reports", target_org="org-a", cfg=cfg))
+    assert "開発推進4部" in texts and "Sophia-AI" in texts
     # 職種は一般語のため禁止語に含めない
-    assert "エンジニア" not in terms
+    assert "エンジニア" not in texts
+
+
+def test_legacy_layout_has_no_forbidden_terms(make_input, tmp_path):
+    """旧レイアウト（input/spend 直下）では他組織が存在しないため禁止語は空。
+
+    入力サブディレクトリ名を組織名と誤認すると、考察が「spend」「members」に触れる
+    だけでブロックされ、自組織のユーザ名まで禁止語に入ってしまう。
+    """
+    input_dir = make_input({"2026-06": [spend_row("alice.morgan@x.jp", 10.0)]},
+                           members=["alice.morgan@x.jp,Premium"])
+    terms = discussion.forbidden_terms(
+        input_dir=input_dir, output_dir=tmp_path / "reports",
+        target_org=None, cfg=load_config(CONFIG))
+    assert terms == ()
 
 
 # ---------------------------------------------------------------- generate()
@@ -206,9 +299,20 @@ def test_generate_blocks_persistent_leak(two_orgs, tmp_path):
 
     assert outcome.status == "blocked"
     assert outcome.attempts == 2
-    assert "bernard.holloway" in outcome.leaks and "holloway" in outcome.leaks
+    leaked = _hit_terms(outcome.leaks)
+    assert "bernard.holloway" in leaked and "holloway" in leaked
+    # 検出語には一致箇所の文脈が付く（誤検出かどうかを人が判断するため）
+    assert all(h.context for h in outcome.leaks)
     # 書き込まれていない（プレースホルダのまま）
     assert report.discussion_body(outcome.path.read_text(encoding="utf-8")) is None
+
+
+def test_generate_allow_term_lets_verified_text_through(two_orgs, tmp_path):
+    out = _analyze(two_orgs, tmp_path)
+    leaky = "### 変更推奨の妥当性\n\n" + "holloway 相当の水準にある。" * 10
+    outcome = _generate(two_orgs, out, _runner(leaky),
+                        allow=("holloway", "bernard.holloway"))
+    assert outcome.status == "written"
 
 
 def test_generate_dry_run_does_not_call_claude(two_orgs, tmp_path):
@@ -220,6 +324,36 @@ def test_generate_dry_run_does_not_call_claude(two_orgs, tmp_path):
     assert not runner.calls
     assert "執筆の原則" in outcome.prompt
     assert report.discussion_body(outcome.path.read_text(encoding="utf-8")) is None
+
+
+def test_generate_dry_run_shows_prompt_even_when_already_written(two_orgs, tmp_path):
+    """--dry-run はプロンプト確認用なので、記入済みでもプロンプトを返す。"""
+    out = _analyze(two_orgs, tmp_path)
+    report.write_discussion(out / "org-a" / "2026-06" / "report.md", BODY)
+    outcome = _generate(two_orgs, out, _runner(BODY), dry_run=True)
+    assert outcome.status == "dry-run"
+    assert "執筆の原則" in outcome.prompt
+
+
+def test_generate_does_not_overwrite_discussion_written_during_generation(two_orgs, tmp_path):
+    """生成中に人が考察を書いた場合は上書きしない（判定と書き込みの間の競合）。"""
+    out = _analyze(two_orgs, tmp_path)
+    path = out / "org-a" / "2026-06" / "report.md"
+    handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
+
+    def writes_meanwhile(prompt: str, s: dict) -> str:
+        report.write_discussion(path, handwritten)
+        return BODY
+
+    notices: list[str] = []
+    outcome = discussion.generate(
+        org="org-a", month="2026-06", input_dir=two_orgs, output_dir=out,
+        org_output=out / "org-a", cfg=load_config(CONFIG),
+        runner=writes_meanwhile, notify=notices.append)
+
+    assert outcome.status == "kept"
+    assert report.discussion_body(path.read_text(encoding="utf-8")) == handwritten.strip()
+    assert any("生成中" in n for n in notices)
 
 
 def test_generate_retries_transient_failure(two_orgs, tmp_path):
@@ -287,6 +421,28 @@ def test_previous_month_discussion_is_included(two_orgs, tmp_path):
     assert "2026-05" in runner.calls[0]
 
 
+def test_previous_month_discussion_with_leak_is_excluded(two_orgs, tmp_path):
+    """前月の考察に他組織の語があれば資料に含めない（過去の混入を引き写す経路を塞ぐ）。"""
+    out = tmp_path / "reports"
+    main(["analyze", "--config", CONFIG, "--input-dir", str(two_orgs),
+          "--output-dir", str(out), "--month", "2026-05", "--org", "org-a"])
+    report.write_discussion(
+        out / "org-a" / "2026-05" / "report.md",
+        "### 前月の所見\n\n" + "org-b の bernard.holloway と比べると小さい。" * 6)
+
+    _analyze(two_orgs, tmp_path)
+    runner = _runner(BODY)
+    notices: list[str] = []
+    discussion.generate(
+        org="org-a", month="2026-06", input_dir=two_orgs, output_dir=out,
+        org_output=out / "org-a", cfg=load_config(CONFIG),
+        runner=runner, notify=notices.append)
+
+    assert "前月の所見" not in runner.calls[0]
+    assert "bernard" not in runner.calls[0]
+    assert any("前月" in n and "除外" in n for n in notices)
+
+
 # ---------------------------------------------------------------- run_claude のガード
 
 
@@ -322,7 +478,9 @@ def test_run_claude_returns_body_and_isolates_context(stub_claude):
     assert cmd[0] == "claude" and "-p" in cmd
     # プロジェクトの CLAUDE.md・hooks・MCP を読み込ませない
     assert "--safe-mode" in cmd
-    # ツールを与えない（ファイル・Web 読み取りが混入経路になるため）
+    # 組み込みツールを空集合にする許可リストが主たる保証
+    assert cmd[cmd.index("--tools") + 1] == ""
+    # denylist は追加防御として残す
     for tool in ("Read", "Bash", "WebFetch"):
         assert tool in cmd
     assert cmd[cmd.index("--model") + 1] == "opus"
@@ -333,6 +491,13 @@ def test_run_claude_returns_body_and_isolates_context(stub_claude):
 
 def test_run_claude_strips_code_fence(stub_claude):
     stub_claude(stdout="```markdown\n" + BODY + "\n```\n")
+    s = discussion.settings(load_config(CONFIG))
+    assert discussion.run_claude("prompt", s) == BODY.strip()
+
+
+def test_run_claude_strips_discussion_heading(stub_claude):
+    """出力に「## 考察」が付いてきても差し込み時に H2 が重複しないよう落とす。"""
+    stub_claude(stdout="## 考察\n\n" + BODY)
     s = discussion.settings(load_config(CONFIG))
     assert discussion.run_claude("prompt", s) == BODY.strip()
 
@@ -348,6 +513,23 @@ def test_run_claude_rejects_bad_output(stub_claude, proc_kw, message):
     s = discussion.settings(load_config(CONFIG))
     with pytest.raises(discussion.DiscussionError, match=message):
         discussion.run_claude("prompt", s)
+
+
+@pytest.mark.parametrize("proc_kw, transient", [
+    ({"stdout": "API Error: 529 Overloaded."}, True),      # 5xx は再実行で解消しうる
+    ({"stdout": "API Error: 429 Rate limited."}, True),
+    ({"stdout": "API Error: 401 Unauthorized."}, False),   # 認証は再試行しても同じ
+    ({"stdout": "API Error: 400 Bad request."}, False),
+    ({"stdout": "API Error: connection reset"}, True),     # 状態不明なら一時扱い
+    # claude -p は API エラーでも 0 を返すため、非ゼロ終了は使い方・設定の誤りとみなす
+    ({"stdout": "", "stderr": "unknown option", "returncode": 2}, False),
+])
+def test_run_claude_transient_classification(stub_claude, proc_kw, transient):
+    stub_claude(**proc_kw)
+    s = discussion.settings(load_config(CONFIG))
+    with pytest.raises(discussion.DiscussionError) as exc:
+        discussion.run_claude("prompt", s)
+    assert exc.value.transient is transient
 
 
 def test_run_claude_timeout(monkeypatch):
@@ -429,3 +611,102 @@ def test_cli_analyze_without_discussion_leaves_placeholder(two_orgs, tmp_path):
     md = (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")
     assert report.discussion_body(md) is None
     assert "未記入" in md
+
+
+def test_cli_discuss_allow_term(two_orgs, tmp_path, monkeypatch):
+    out = _analyze(two_orgs, tmp_path)
+    leaky = "### 変更推奨の妥当性\n\n" + "holloway 相当の水準にある。" * 10
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: leaky)
+    args = ["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+            "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"]
+    assert main(args) == 1
+    assert main([*args, "--allow-term", "holloway",
+                 "--allow-term", "bernard.holloway"]) == 0
+
+
+def test_cli_blocked_output_includes_context(two_orgs, tmp_path, monkeypatch, capsys):
+    out = _analyze(two_orgs, tmp_path)
+    leaky = "### 変更推奨の妥当性\n\n" + "他組織の bernard.holloway と比べる。" * 8
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: leaky)
+    capsys.readouterr()
+    main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+          "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"])
+    err = capsys.readouterr().err
+    assert "検出語: bernard.holloway" in err
+    assert "他組織の bernard.holloway と比べる" in err
+    assert "--allow-term" in err
+
+
+# ---------------------------------------------------------------- 入力検証
+
+
+@pytest.mark.parametrize("month", [
+    "../org-b/2026-06",       # 別組織のレポートへの逸脱
+    "/etc/2026-06",
+    "2026-13",
+    "2026-6",
+    "2026-06/../../x",
+])
+def test_month_format_is_validated(two_orgs, tmp_path, month):
+    """対象月は出力パスの一部になるため、形式外の値を受け付けない。"""
+    out = _analyze(two_orgs, tmp_path)
+    for command in ("analyze", "discuss"):
+        rc = main([command, "--config", CONFIG, "--input-dir", str(two_orgs),
+                   "--output-dir", str(out), "--month", month, "--org", "org-a"])
+        assert rc == 1
+
+
+def test_traversal_month_does_not_touch_other_org(two_orgs, tmp_path, monkeypatch):
+    out = _analyze(two_orgs, tmp_path)
+    before = (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8")
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "../org-b/2026-06", "--org", "org-a"])
+    assert rc == 1
+    assert (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8") == before
+
+
+def test_atomic_write_leaves_original_on_failure(two_orgs, tmp_path, monkeypatch):
+    """書き込みが途中で失敗しても、レポート本体は元の内容が残る。"""
+    out = _analyze(two_orgs, tmp_path)
+    path = out / "org-a" / "2026-06" / "report.md"
+    before = path.read_text(encoding="utf-8")
+
+    def boom(src, dst):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(report.os, "replace", boom)
+    with pytest.raises(OSError):
+        report.write_discussion(path, BODY)
+    assert path.read_text(encoding="utf-8") == before
+    # 一時ファイルを残さない
+    assert not list(path.parent.glob("report.md.*.tmp"))
+
+
+@pytest.mark.parametrize("bad", [
+    {"max_attempts": 1.9},
+    {"retries": 1.9},
+    {"min_output_chars": 100.5},
+    {"retry_wait_seconds": float("inf")},
+    {"timeout_seconds": float("nan")},
+    {"max_attempts": 0},
+    {"retries": -1},
+    {"effort": "extreme"},
+    {"command": ""},
+])
+def test_config_rejects_bad_discussion_settings(tmp_path, bad):
+    import yaml
+    cfg = yaml.safe_load(Path(CONFIG).read_text(encoding="utf-8"))
+    cfg["discussion"] = {**cfg["discussion"], **bad}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="discussion"):
+        load_config(path)
+
+
+def test_render_does_not_resubstitute_inserted_values(two_orgs, tmp_path):
+    """挿入した値の中の {{KEY}} が再置換されない（組織名には波括弧が使える）。"""
+    prompt = discussion.build_prompt(
+        org="{{MATERIALS}}", scope="s", materials=[("資料1", "MATERIAL-MARKER")], preview=False)
+    assert "{{MATERIALS}}" in prompt                 # ORG 位置にそのまま残る
+    assert prompt.count("MATERIAL-MARKER") == 1      # 資料が二重に展開されない

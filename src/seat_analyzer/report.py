@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -908,7 +910,32 @@ def write_discussion(path: Path, body: str) -> None:
     if _DISCUSSION_MARKER not in md:
         raise ValueError(f"{path} に「## 考察」セクションがありません")
     head = md.split(_DISCUSSION_MARKER, 1)[0]
-    path.write_text(head + _DISCUSSION_MARKER + "\n" + body.strip() + "\n", encoding="utf-8")
+    _atomic_write(path, head + _DISCUSSION_MARKER + "\n" + body.strip() + "\n")
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """同一ディレクトリの一時ファイル経由で置換する。
+
+    write_text は書き込み前にファイルを切り詰めるため、ディスク不足や中断で
+    手書きの考察だけでなくレポート本文まで失われる。置換なら失敗しても元の内容が残る。
+    """
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent,
+        prefix=path.name + ".", suffix=".tmp", delete=False,
+    ) as f:
+        tmp = Path(f.name)
+        try:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # dashboard.html / preview-dashboard.html で共有する CSS（二重メンテを避けるため定数化）。
