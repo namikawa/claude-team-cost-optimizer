@@ -143,6 +143,7 @@ uv run seat-analyzer discuss --org <組織名> --month YYYY-MM
 uv run seat-analyzer discuss --preview                   # preview.md の考察を執筆
 uv run seat-analyzer discuss --dry-run                   # プロンプトを表示するだけ（LLM を呼ばない）
 uv run seat-analyzer discuss --allow-term <語>           # 混入チェックの誤検出を許可する（下記）
+uv run seat-analyzer discuss --with-previous-discussion  # 前月の考察も資料に渡す（既定は渡さない）
 uv run seat-analyzer analyze --with-discussion            # 分析と考察を一度に
 ```
 
@@ -152,9 +153,9 @@ Anthropic API キーは不要で、Claude のサブスクリプション枠を�
 
 処理の流れと設計上の約束:
 
-- 資料（report.md 本文・recommendations.csv・前月の考察）はすべてプロンプトへ埋め込み、
-  LLM にはツールを一切与えない。出力は考察本文のテキストのみで、ファイルへの書き込みは
-  ツール側が行う。生成側がレポート以外を触ることはない
+- 資料（report.md 本文・recommendations.csv）はすべてプロンプトへ埋め込み、LLM にはツールを
+  一切与えない。出力は考察本文のテキストのみで、ファイルへの書き込みはツール側が行う。
+  生成側がレポート以外を触ることはない
 - `--safe-mode` と空の作業ディレクトリで呼ぶため、ローカルの CLAUDE.md・メモリ・hooks・
   MCP サーバはモデルのコンテキストに入らない。組織ごとに独立したプロンプトで実行する
 - 生成された考察は、対象組織以外の組織名・メールアドレス・人名・部署名を含まないか機械的に
@@ -174,7 +175,11 @@ Anthropic API キーは不要で、Claude のサブスクリプション枠を�
   `--force`、`analyze` からは `--force-discussion` を指定する。生成中に人が考察を書いた
   場合も上書きしない
 - 書き込みは同一ディレクトリの一時ファイル経由で置換する。中断してもレポート本文は残り、
-  元ファイルの権限も引き継ぐ
+  元ファイルの権限も引き継ぐ。置換の直前に内容が変わっていないかを照合し、変わっていれば
+  書き込まない（ロックは使っていないため、照合と置換の間の書き込みは検出できない）
+- 前月レポートの考察は既定ではモデルに渡さない。内容を検証できない人手の文書であり、
+  過去のレポートに混入があった場合にそれを引き写す経路になるため。渡したい場合は
+  `--with-previous-discussion` を指定する（渡す前に混入チェックを通し、落ちたら除外する）
 
 考察の指示文（執筆の原則・観点）は `src/seat_analyzer/prompts/` にある。書かせる内容を
 変えたい場合はここを編集する。`/seat-analysis` スラッシュコマンドも同じ指示文を参照する。

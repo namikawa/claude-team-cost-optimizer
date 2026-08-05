@@ -45,6 +45,10 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-term", action="append", metavar="語",
         help="--with-discussion の混入チェックで許可する語（discuss --allow-term と同じ）",
     )
+    p.add_argument(
+        "--with-previous-discussion", action="store_true",
+        help="--with-discussion で前月の考察も資料に渡す（discuss と同じ。既定では渡さない）",
+    )
     p.set_defaults(func=_run_analyze)
 
     pdis = sub.add_parser(
@@ -71,6 +75,11 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-term", action="append", metavar="語",
         help="混入チェックで検出された語のうち、内容を確認して無害と判断したものを許可する"
              "（複数指定可）。チェック全体を無効化する手段は用意しない",
+    )
+    pdis.add_argument(
+        "--with-previous-discussion", action="store_true",
+        help="前月レポートの考察も資料としてモデルに渡す。既定では渡さない"
+             "（人手の文書で内容を検証できず、過去の混入を引き写す経路になるため）",
     )
     pdis.set_defaults(func=_run_discuss)
 
@@ -357,6 +366,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
             written, month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
             preview=args.preview, force=args.force_discussion, dry_run=False,
             allow=tuple(args.allow_term or ()),
+            include_previous=args.with_previous_discussion,
         )
     return 0
 
@@ -396,12 +406,14 @@ def _run_discuss(args: argparse.Namespace) -> int:
         month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
         preview=args.preview, force=args.force, dry_run=args.dry_run,
         allow=tuple(args.allow_term or ()),
+        include_previous=args.with_previous_discussion,
     )
 
 
 def _run_discussions(
     items: list[tuple[str | None, Path]], *, month: str, input_dir: Path, output_dir: Path,
     cfg: dict, preview: bool, force: bool, dry_run: bool, allow: tuple[str, ...] = (),
+    include_previous: bool = False,
 ) -> int:
     """組織ごとに考察を生成する。1組織の失敗で他組織を止めない。"""
     if allow and len(items) > 1:
@@ -419,7 +431,7 @@ def _run_discussions(
             outcome = discussion.generate(
                 org=org, month=month, input_dir=input_dir, output_dir=output_dir,
                 org_output=org_output, cfg=cfg, preview=preview, force=force, dry_run=dry_run,
-                allow=allow,
+                allow=allow, include_previous=include_previous,
                 notify=lambda m, scope=scope: print(f"  {scope}: {m}", file=sys.stderr),
             )
         except (discussion.DiscussionError, OSError, ValueError) as exc:
