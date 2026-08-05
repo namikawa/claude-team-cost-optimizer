@@ -860,7 +860,9 @@ allowance（シート込み利用量のUSD換算・非公開のため推定）�
 （未記入 — `/seat-analysis` または `seat-analyzer discuss` を実行すると考察が追記されます）
 """
     md = _preserve_discussion(md, path)
-    path.write_text(md, encoding="utf-8")
+    # 引き継いだ手書きの考察は他のどこにも無い。切り詰めてから書く write_text では
+    # 中断時に本文ごと失うため、考察の差し替えと同じく置換で書く
+    _atomic_write(path, md)
 
 
 # 考察セクションの開始位置。本文の分割・差し替えはすべてこの文字列を境界に行う。
@@ -1594,7 +1596,9 @@ def write_preview(result: PreviewResult, output_dir: str | Path) -> dict[str, Pa
 （未記入 — `/seat-analysis preview <日数>` または `seat-analyzer discuss --preview` を実行すると考察が追記されます）
 """
     md = _preserve_discussion(md, path)
-    path.write_text(md, encoding="utf-8")
+    # 引き継いだ手書きの考察は他のどこにも無い。切り詰めてから書く write_text では
+    # 中断時に本文ごと失うため、考察の差し替えと同じく置換で書く
+    _atomic_write(path, md)
 
     html_path = out / "preview-dashboard.html"
     write_preview_html(result, html_path)

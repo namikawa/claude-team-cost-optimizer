@@ -45,6 +45,7 @@ DEFAULTS: dict = {
     "min_output_chars": 200,
     "retries": 2,
     "retry_wait_seconds": 30,
+    "allow_terms": (),
 }
 
 # ヘッドレス実行で禁止するツール。資料はプロンプトに埋め込むためツールは一切不要で、
@@ -206,6 +207,11 @@ def build_prompt(
     })
 
 
+def document_path(org_output: Path, month: str, preview: bool) -> Path:
+    """考察を書き込む対象ファイル。"""
+    return org_output / month / ("preview.md" if preview else "report.md")
+
+
 def _prev_month_dir(org_output: Path, month: str) -> Path | None:
     """対象月より前で最も新しい出力月のディレクトリ。"""
     if not org_output.is_dir():
@@ -233,8 +239,7 @@ def collect_materials(
     include_previous=True のときも渡す前に混入チェックを通し、落ちたら除外する。
     """
     notify = notify or (lambda _message: None)
-    doc_name = "preview.md" if preview else "report.md"
-    doc_path = org_output / month / doc_name
+    doc_path = document_path(org_output, month, preview)
     if not doc_path.exists():
         raise DiscussionError(
             f"{doc_path} がありません。先に "
@@ -329,8 +334,8 @@ def _org_dir_names(base: Path, is_org) -> set[str]:
     }
 
 
-def _csv_paths(root: Path) -> list[Path]:
-    """root 以下の CSV を再帰的に集める。列挙できないディレクトリがあれば中止する。
+def _files_under(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
+    """root 以下の該当ファイルを再帰的に集める。列挙できないディレクトリがあれば中止する。
 
     Path.rglob は走査中の OSError を抑制するため使わない。
     """
@@ -340,9 +345,13 @@ def _csv_paths(root: Path) -> list[Path]:
         for entry in _scandir(stack.pop()):
             if entry.is_dir():
                 stack.append(Path(entry.path))
-            elif entry.name.lower().endswith(".csv"):
+            elif entry.name.lower().endswith(suffixes):
                 found.append(Path(entry.path))
     return sorted(found)
+
+
+def _csv_paths(root: Path) -> list[Path]:
+    return _files_under(root, (".csv",))
 
 
 def _emails_in_text(text: str) -> set[str]:
@@ -407,7 +416,10 @@ def forbidden_terms(
     terms: set[Term] = {Term(o, "org") for o in others}
     for org in sorted(others):
         org_input = input_dir / org
-        for path in _csv_paths(org_input):
+        # 入力が消えている（reports 側にだけ残っている）組織でも、生成済みレポートから
+        # メール・人名を拾えるようにする。拾えないと組織名1件だけの禁止語になる
+        sources = _csv_paths(org_input) + _files_under(output_dir / org, (".csv", ".md"))
+        for path in sources:
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:
@@ -497,8 +509,18 @@ def find_leaks(
 
 
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\n(.*)\n```$", re.DOTALL)
-_API_ERROR_RE = re.compile(r"^\s*API Error:?\s*(?P<status>\d{3})?", re.IGNORECASE)
+# API エラーは出力の先頭に限らない（ストリーミング途中で失敗すると本文の後に付く）。
+# 行頭一致を全行に対して探す
+_API_ERROR_RE = re.compile(
+    r"^[ \t]*API Error:?[ \t]*(?P<status>\d{3})?", re.IGNORECASE | re.MULTILINE)
 _DISCUSSION_HEADING_RE = re.compile(r"^##[ \t]*考察[ \t]*$\n?", re.MULTILINE)
+# 考察として最低限備えるべき形。プロンプトで `###` の小見出しを指示しているため、
+# 1つも無い出力は指示に従っていない（前置きだけ・拒否文・途中で切れた出力等）
+_HEADING_RE = re.compile(r"^###[ \t]*\S", re.MULTILINE)
+# ツール呼び出しのマークアップ。ツールは渡していないが、モデルがテキストとして
+# 捏造することがある。そのまま書き込むとレポートにマークアップが残る
+_TOOL_MARKUP_RE = re.compile(
+    r"</?\s*(?:function_calls|function_results|invoke|antml:[a-z_]+)\b", re.IGNORECASE)
 
 
 def _strip_fence(text: str) -> str:
@@ -517,15 +539,13 @@ def _strip_discussion_heading(text: str) -> str:
     return _DISCUSSION_HEADING_RE.sub("", text.strip()).strip()
 
 
-def _api_error_is_transient(line: str) -> bool:
-    """API エラー行が再実行で解消しうるものか（429 と 5xx のみ）。
+def _api_error_is_transient(status: str | None) -> bool:
+    """API エラーが再実行で解消しうるものか（429 と 5xx のみ）。
 
     認証・引数・コンテキスト長などの 4xx を再試行しても同じ結果になり、待ち時間だけ増える。
+    ステータスが読めない場合は一時扱いにする（通信断のメッセージ等）。
     """
-    m = _API_ERROR_RE.match(line)
-    status = m.group("status") if m else None
     if status is None:
-        # ステータスが読めない場合は一時扱いにする（通信断のメッセージ等）
         return True
     code = int(status)
     return code == 429 or 500 <= code < 600
@@ -549,6 +569,11 @@ def run_claude(prompt: str, s: dict) -> str:
         # 組み込みツールを空集合にする（許可リスト方式が主たる保証）
         "--tools", "",
         "--disallowedTools", *DISALLOWED_TOOLS,
+        # MCP サーバも --safe-mode 単独に頼らず遮断する（--mcp-config を渡さないので
+        # サーバはゼロになる）。組み込みツールと同じ形の二重防御にするため
+        "--strict-mcp-config",
+        # 対象組織のレポート全文が ~/.claude のトランスクリプトに残らないようにする
+        "--no-session-persistence",
     ]
     # 空の作業ディレクトリで実行し、リポジトリのファイルを起点にさせない
     with tempfile.TemporaryDirectory(prefix="seat-analyzer-discuss-") as workdir:
@@ -572,20 +597,31 @@ def run_claude(prompt: str, s: dict) -> str:
             f"{command} が異常終了しました (exit {proc.returncode}): "
             f"{detail[0][:300] if detail else '出力なし'}"
         )
-    # API エラー・空出力・異常に短い出力をそのまま考察として書き込まないための門
+    # API エラー・空出力・形の崩れた出力をそのまま考察として書き込まないための門。
+    # いずれも再実行で解消しうるため transient として扱う（4xx の API エラーを除く）
     if not out:
         raise DiscussionError(f"{command} の出力が空でした", transient=True)
-    first_line = out.splitlines()[0]
-    if _API_ERROR_RE.match(out):
+    if m := _API_ERROR_RE.search(out):
+        line = out[m.start():].splitlines()[0].strip()
         raise DiscussionError(
-            f"{command} が API エラーを返しました: {first_line[:300]}",
-            transient=_api_error_is_transient(first_line),
+            f"{command} が API エラーを返しました: {line[:300]}",
+            transient=_api_error_is_transient(m.group("status")),
         )
     body = _strip_discussion_heading(_strip_fence(out))
     if len(body) < int(s["min_output_chars"]):
         raise DiscussionError(
             f"生成された考察が短すぎます（{len(body)} 文字 < "
             f"{s['min_output_chars']} 文字）: {body[:200]}", transient=True,
+        )
+    # 長さだけでは前置き・拒否文・捏造されたツール呼び出しを弾けないため、
+    # 「考察の形をしているか」を肯定的に検査する
+    if mk := _TOOL_MARKUP_RE.search(body):
+        raise DiscussionError(
+            f"出力にツール呼び出しのマークアップが含まれます: {mk.group(0)}", transient=True)
+    if not _HEADING_RE.search(body):
+        raise DiscussionError(
+            f"出力に `###` の小見出しがありません（考察の形になっていません）: {body[:200]}",
+            transient=True,
         )
     return body
 
@@ -624,7 +660,10 @@ def generate(
     runner = runner or run_claude
     notify = notify or (lambda _message: None)
     s = settings(cfg)
-    doc_path = org_output / month / ("preview.md" if preview else "report.md")
+    # config の allow_terms は「恒久的に無害と確認済みの語」。--allow-term は単一組織
+    # 実行に限られるため、全組織実行でも効く許可の置き場としてこちらを使う
+    allow = tuple(allow) + tuple(s.get("allow_terms") or ())
+    doc_path = document_path(org_output, month, preview)
     scope = f"{org} {month}" if org else month
 
     terms = forbidden_terms(
@@ -651,6 +690,12 @@ def generate(
         )
         leaks = find_leaks(body, terms, source=source, allow=allow)
         if leaks:
+            # 検出語は必ず運用者に残す。書き直しで解消した場合に何も出さないと、
+            # 誤検出なら「正当な記述が静かに削られた」ことに気づけず、真の混入なら
+            # 「モデルが他組織名を出力しようとした」という兆候の記録が消える
+            notify(f"試行 {attempt}: 混入を検出したため書き直しを求めます")
+            for hit in leaks:
+                notify(f"  検出語: {hit.term}（{hit.kind}） … {hit.context} …")
             continue
         # 生成には最大で timeout_seconds かかる。その間に人が考察を書いた場合や
         # 並行する analyze が本文を更新した場合に、それを巻き戻さないよう書き込み側で
