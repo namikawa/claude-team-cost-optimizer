@@ -257,6 +257,50 @@ def test_forbidden_terms_fails_closed_on_unreadable_input(two_orgs, tmp_path, mo
             target_org="org-a", cfg=load_config(CONFIG))
 
 
+@pytest.mark.parametrize("target", ["input", "org", "subdir"])
+def test_forbidden_terms_fails_closed_on_unlistable_dir(two_orgs, tmp_path, target):
+    """列挙できないディレクトリも中止扱いにする。
+
+    pathlib の is_dir()/glob() は権限エラーを False や空リストとして飲み込むため、
+    それに頼ると「他組織が読めなかった」ことが検出漏れと区別できない。
+    """
+    victim = {
+        "input": two_orgs,
+        "org": two_orgs / "org-b",
+        "subdir": two_orgs / "org-b" / "spend",
+    }[target]
+    victim.chmod(0o000)
+    try:
+        with pytest.raises(discussion.DiscussionError, match="混入チェックを保証できません"):
+            discussion.forbidden_terms(
+                input_dir=two_orgs, output_dir=tmp_path / "reports",
+                target_org="org-a", cfg=load_config(CONFIG))
+    finally:
+        victim.chmod(0o755)
+
+
+def test_single_character_org_name_is_detected(make_input, tmp_path):
+    """1文字の組織名も禁止語に残す（長さ下限は派生語の誤検出対策で、識別子には適用しない）。"""
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-a")
+    make_input({"2026-06": [spend_row("z@y.jp", 10.0)]}, members=["z@y.jp,Premium"], org="A")
+    terms = discussion.forbidden_terms(
+        input_dir=input_dir, output_dir=tmp_path / "reports",
+        target_org="org-a", cfg=load_config(CONFIG))
+    assert discussion.Term("A", "org") in terms
+    assert _hit_terms(discussion.find_leaks("A社の状況は…", terms, source="")) == ("A",)
+
+
+def test_duplicate_text_merges_to_stricter_kind():
+    """同一文字列が複数 kind にあるとき、厳しい側（許可できない側）に寄せる。"""
+    terms = _terms(("acme", "domain"), ("acme", "org"))
+    hits = discussion.find_leaks("acme の状況。", terms, source="")
+    assert [(h.kind, h.allowable) for h in hits] == [("org", False)]
+    # 許可指定を付けても org として残る（案内と実挙動が一致する）
+    assert _hit_terms(discussion.find_leaks(
+        "acme の状況。", terms, source="", allow=("acme",))) == ("acme",)
+
+
 def test_forbidden_terms_fails_closed_on_broken_members_info(two_orgs, tmp_path):
     (two_orgs / "org-b" / "members-info.csv").write_text(
         "部署,チーム\n架空推進3部,Nebula-AI\n", encoding="utf-8")  # email 列が無い
@@ -469,8 +513,15 @@ def test_previous_month_discussion_is_included(two_orgs, tmp_path):
     report.write_discussion(out / "org-a" / "2026-05" / "report.md", prev)
 
     _analyze(two_orgs, tmp_path)
+
+    # 既定では前月の考察を渡さない（検証できない人手の文書のため）
+    default_runner = _runner(BODY)
+    _generate(two_orgs, out, default_runner)
+    assert "前月の所見" not in default_runner.calls[0]
+
+    # 明示的に有効化したときだけ渡す
     runner = _runner(BODY)
-    _generate(two_orgs, out, runner)
+    _generate(two_orgs, out, runner, include_previous=True, force=True)
     assert "前月の所見" in runner.calls[0]
     assert "2026-05" in runner.calls[0]
 
@@ -490,7 +541,7 @@ def test_previous_month_discussion_with_leak_is_excluded(two_orgs, tmp_path):
     discussion.generate(
         org="org-a", month="2026-06", input_dir=two_orgs, output_dir=out,
         org_output=out / "org-a", cfg=load_config(CONFIG),
-        runner=runner, notify=notices.append)
+        include_previous=True, runner=runner, notify=notices.append)
 
     assert "前月の所見" not in runner.calls[0]
     assert "bernard" not in runner.calls[0]
@@ -550,15 +601,29 @@ def test_run_claude_strips_code_fence(stub_claude):
 
 
 @pytest.mark.parametrize("stdout", [
-    "## 考察\n\n{body}",                      # 先頭にある場合
-    "以下が考察です。\n\n## 考察\n\n{body}",    # 前置きの後にある場合
-    "##考察\n{body}",                         # 空白なし
+    "## 考察\n\n{body}",                        # 先頭にある場合
+    "以下が考察です。\n\n## 考察\n\n{body}",      # 前置きの後にある場合
+    "##考察\n{body}",                           # 見出し記号の後に空白がない場合
+    "## 考察 \n{body}",                         # 行末に空白がある場合
+    "```markdown\n## 考察\n\n{body}\n```",      # コードフェンスと併用
 ])
 def test_run_claude_strips_discussion_heading(stub_claude, stdout):
     """出力に「## 考察」が付いてきても差し込み時に H2 が重複しないよう落とす。"""
     stub_claude(stdout=stdout.format(body=BODY))
     s = discussion.settings(load_config(CONFIG))
-    assert "## 考察" not in discussion.run_claude("prompt", s)
+    result = discussion.run_claude("prompt", s)
+    assert result.endswith(BODY.strip())
+    for heading in ("## 考察", "##考察"):
+        assert heading not in result
+
+
+def test_run_claude_strips_every_discussion_heading(stub_claude):
+    """1つの出力に複数の考察見出しがあってもすべて落とす。"""
+    stub_claude(stdout=f"## 考察\n\n{BODY}\n\n## 考察\n\n{BODY}")
+    s = discussion.settings(load_config(CONFIG))
+    result = discussion.run_claude("prompt", s)
+    assert "## 考察" not in result
+    assert result.count("### 変更推奨の妥当性") == 2
 
 
 @pytest.mark.parametrize("proc_kw, message", [
@@ -749,6 +814,35 @@ def test_write_discussion_only_if_unwritten_guard(two_orgs, tmp_path):
     # only_if_unwritten=False なら上書きする
     assert report.write_discussion(path, other) is True
     assert report.discussion_body(path.read_text(encoding="utf-8")) == other.strip()
+
+
+def test_write_discussion_aborts_when_file_changes_before_replace(two_orgs, tmp_path,
+                                                                  monkeypatch):
+    """置換直前に内容が変わっていたら書き込まない（判定〜置換の窓を詰める）。"""
+    out = _analyze(two_orgs, tmp_path)
+    path = out / "org-a" / "2026-06" / "report.md"
+    handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
+
+    original_chmod = report.os.chmod
+    injected: list[int] = []
+
+    def chmod_with_concurrent_write(target, mode):
+        # 一時ファイルを作った後・置換直前の照合より前に、別プロセスの書き込みを模す
+        if not injected:
+            injected.append(1)
+            path.write_text(_with_discussion(path, handwritten), encoding="utf-8")
+        return original_chmod(target, mode)
+
+    monkeypatch.setattr(report.os, "chmod", chmod_with_concurrent_write)
+    assert report.write_discussion(path, BODY, only_if_unwritten=True) is False
+    assert report.discussion_body(path.read_text(encoding="utf-8")) == handwritten.strip()
+    assert not list(path.parent.glob("report.md.*.tmp"))
+
+
+def _with_discussion(path: Path, body: str) -> str:
+    md = path.read_text(encoding="utf-8")
+    head = md.split("\n## 考察\n", 1)[0]
+    return head + "\n## 考察\n\n" + body.strip() + "\n"
 
 
 def test_atomic_write_preserves_permissions(two_orgs, tmp_path):

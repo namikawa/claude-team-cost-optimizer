@@ -23,6 +23,7 @@ CLI から完結させるためのモジュール。ローカルの Claude Code 
 from __future__ import annotations
 
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -218,14 +219,18 @@ def _prev_month_dir(org_output: Path, month: str) -> Path | None:
 
 def collect_materials(
     *, org_output: Path, month: str, preview: bool,
-    terms: tuple[Term, ...] = (), notify=None,
+    terms: tuple[Term, ...] = (), include_previous: bool = False, notify=None,
 ) -> tuple[list[tuple[str, str]], str]:
     """(プロンプトへ渡す資料, 混入チェックの照合元テキスト) を返す。
 
     照合元には機械生成された当月の資料だけを入れる。前月の考察は人・LLM の散文で、
     そこに混入があった場合に今月の混入を見逃す照合元になってしまうため含めない。
-    前月の考察は資料としては渡すが、渡す前に混入チェックを通し、他組織の語を含む場合は
-    除外する（過去の混入をモデルが引き写す経路を塞ぐ）。
+
+    前月の考察は既定では資料に含めない（include_previous=False）。これは検証できない
+    人手の文書であり、含めるとモデルへ渡す資料が「機械生成された対象組織のデータのみ」
+    という前提が崩れる。過去のレポートに混入があった場合、それを引き写す経路になる
+    （混入チェックには 2文字の姓や金額のような死角があり、そこは塞げない）。
+    include_previous=True のときも渡す前に混入チェックを通し、落ちたら除外する。
     """
     notify = notify or (lambda _message: None)
     doc_name = "preview.md" if preview else "report.md"
@@ -247,7 +252,7 @@ def collect_materials(
             source.append(csv_text)
 
     source_text = "\n".join(source)
-    prev_dir = _prev_month_dir(org_output, month)
+    prev_dir = _prev_month_dir(org_output, month) if include_previous else None
     if prev_dir is not None:
         prev_report = prev_dir / "report.md"
         if prev_report.exists():
@@ -272,6 +277,24 @@ def collect_materials(
 # ---------------------------------------------------------------- 混入チェック
 
 
+def _scandir(path: Path) -> list[os.DirEntry]:
+    """ディレクトリの列挙。読めない場合は DiscussionError にする。
+
+    pathlib の is_dir()/exists()/glob() は権限エラーを False や空リストとして飲み込む。
+    それでは「他組織のディレクトリが読めなかった」ことが検出漏れと区別できないため、
+    禁止語の収集に使う列挙はすべてここを通し、失敗を明示的な中止に変える。
+    """
+    try:
+        with os.scandir(path) as it:
+            return list(it)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise DiscussionError(
+            f"{path} を列挙できないため混入チェックを保証できません: {exc}"
+        ) from exc
+
+
 def _is_org_input_dir(path: Path) -> bool:
     """入力側の組織ディレクトリか。既知の入力サブディレクトリを持つかで構造的に判定する。
 
@@ -280,9 +303,12 @@ def _is_org_input_dir(path: Path) -> bool:
     組織名の検証（ingest.validate_org_name）はこれらの名前を許すため、構造で判定する。
     旧レイアウトの `input/spend/` は CSV しか持たないのでここで除外される。
     """
-    return any((path / sub).is_dir() for sub in ingest.INPUT_SUBDIRS) or (
-        path / "members-info.csv"
-    ).exists()
+    for entry in _scandir(path):
+        if entry.is_dir() and entry.name in ingest.INPUT_SUBDIRS:
+            return True
+        if entry.is_file() and entry.name == "members-info.csv":
+            return True
+    return False
 
 
 def _is_org_output_dir(path: Path) -> bool:
@@ -291,19 +317,32 @@ def _is_org_output_dir(path: Path) -> bool:
     旧レイアウトの `reports/YYYY-MM/` と横断サマリの `reports/summary/` は月ディレクトリを
     持たないため除外される。組織名が月の形式でも `reports/<月>/<月>/` になるので拾える。
     """
-    try:
-        return any(c.is_dir() and _MONTH_DIR_RE.match(c.name) for c in path.iterdir())
-    except OSError:
-        return False
+    return any(
+        e.is_dir() and _MONTH_DIR_RE.match(e.name) for e in _scandir(path)
+    )
 
 
 def _org_dir_names(base: Path, is_org) -> set[str]:
-    if not base.is_dir():
-        return set()
     return {
-        p.name for p in base.iterdir()
-        if p.is_dir() and not p.name.startswith(".") and is_org(p)
+        e.name for e in _scandir(base)
+        if e.is_dir() and not e.name.startswith(".") and is_org(Path(e.path))
     }
+
+
+def _csv_paths(root: Path) -> list[Path]:
+    """root 以下の CSV を再帰的に集める。列挙できないディレクトリがあれば中止する。
+
+    Path.rglob は走査中の OSError を抑制するため使わない。
+    """
+    found: list[Path] = []
+    stack = [root]
+    while stack:
+        for entry in _scandir(stack.pop()):
+            if entry.is_dir():
+                stack.append(Path(entry.path))
+            elif entry.name.lower().endswith(".csv"):
+                found.append(Path(entry.path))
+    return sorted(found)
 
 
 def _emails_in_text(text: str) -> set[str]:
@@ -333,7 +372,9 @@ def _group_terms(org_input: Path, cfg: dict) -> set[Term]:
     職種（role）は「エンジニア」等の一般語が多く、一般論の記述を誤検出するため含めない。
     """
     terms: set[Term] = set()
-    for path in sorted(org_input.glob("members-info*.csv")):
+    infos = [p for p in _csv_paths(org_input)
+             if p.parent == org_input and p.name.startswith("members-info")]
+    for path in infos:
         try:
             df = ingest.load_members_info_file(path, cfg)
         except (OSError, ValueError) as exc:
@@ -366,9 +407,7 @@ def forbidden_terms(
     terms: set[Term] = {Term(o, "org") for o in others}
     for org in sorted(others):
         org_input = input_dir / org
-        if not org_input.is_dir():
-            continue
-        for path in sorted(org_input.rglob("*.csv")):
+        for path in _csv_paths(org_input):
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:
@@ -378,10 +417,29 @@ def forbidden_terms(
             for email in _emails_in_text(text):
                 terms |= _terms_from_email(email)
         terms |= _group_terms(org_input, cfg)
+    # 長さの下限は「メールや部署名から派生した語」の誤検出対策。組織名は派生語ではなく
+    # 明示的な識別子なので対象外にする（1文字の組織名も許される）
     return tuple(sorted(
-        (t for t in terms if len(t.text) >= _MIN_TERM_LEN),
+        (t for t in terms if t.kind == "org" or len(t.text) >= _MIN_TERM_LEN),
         key=lambda t: (t.text, t.kind),
     ))
+
+
+# 同じ文字列が複数の kind で登録されたときにどれを採るかの優先順（小さいほど厳しい）。
+# 組織名とドメインが `acme` / `acme.com` のように重なる場合、緩い側（domain）を採ると
+# 「--allow-term で許可できます」と誤って案内してしまうため、常に厳しい側へ寄せる。
+_KIND_RANK = {"org": 0, "address": 1, "domain": 2, "person": 3, "group": 4}
+
+
+def _merge_terms(terms: tuple[Term, ...]) -> list[Term]:
+    """同一文字列（大文字小文字を無視）を、より厳しい kind に寄せて1件にまとめる。"""
+    best: dict[str, Term] = {}
+    for term in terms:
+        low = term.text.lower()
+        current = best.get(low)
+        if current is None or _KIND_RANK.get(term.kind, 99) < _KIND_RANK.get(current.kind, 99):
+            best[low] = term
+    return [best[k] for k in sorted(best)]
 
 
 def _boundary(term: str, kind: str) -> str:
@@ -421,7 +479,7 @@ def find_leaks(
     lowered, source_lower = text.lower(), source.lower()
     allowed = {a.strip().lower() for a in allow if a.strip()}
     hits: dict[str, LeakHit] = {}
-    for term in terms:
+    for term in _merge_terms(terms):
         low = term.text.lower()
         if term.allowable and low in allowed:
             continue
@@ -555,7 +613,7 @@ def _call_with_retry(runner, prompt: str, s: dict, notify) -> str:
 def generate(
     *, org: str | None, month: str, input_dir: Path, output_dir: Path, org_output: Path,
     cfg: dict, preview: bool = False, force: bool = False, dry_run: bool = False,
-    allow: tuple[str, ...] = (), runner=None, notify=None,
+    allow: tuple[str, ...] = (), include_previous: bool = False, runner=None, notify=None,
 ) -> DiscussionOutcome:
     """1組織1月ぶんの考察を生成して書き込む。
 
@@ -572,7 +630,8 @@ def generate(
     terms = forbidden_terms(
         input_dir=input_dir, output_dir=output_dir, target_org=org, cfg=cfg)
     materials, source = collect_materials(
-        org_output=org_output, month=month, preview=preview, terms=terms, notify=notify)
+        org_output=org_output, month=month, preview=preview, terms=terms,
+        include_previous=include_previous, notify=notify)
     prompt = build_prompt(org=org, scope=scope, materials=materials, preview=preview)
 
     # --dry-run はプロンプトの確認用なので、上書き可否に関係なく必ずプロンプトを返す
@@ -593,10 +652,11 @@ def generate(
         leaks = find_leaks(body, terms, source=source, allow=allow)
         if leaks:
             continue
-        # 生成には最大で timeout_seconds かかる。その間に人が考察を書いた場合に
-        # 上書きしないよう、書き込み側で判定と置換を1回の読み取りに畳んで確認する
+        # 生成には最大で timeout_seconds かかる。その間に人が考察を書いた場合や
+        # 並行する analyze が本文を更新した場合に、それを巻き戻さないよう書き込み側で
+        # 判定と置換を畳み、置換直前にも内容が変わっていないか確認する
         if not report.write_discussion(doc_path, body, only_if_unwritten=not force):
-            notify("生成中に考察が記入されたため書き込みません（上書きは --force）")
+            notify("生成中にレポートが変更されたため書き込みません（上書きは --force）")
             existing = _existing_discussion(doc_path) or ""
             return DiscussionOutcome(org, month, doc_path, "kept", chars=len(existing))
         return DiscussionOutcome(
