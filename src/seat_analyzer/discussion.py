@@ -108,11 +108,20 @@ class Term:
     """
 
     text: str
-    kind: str  # org / email / person / group
+    kind: str  # org / address / domain / person / group
 
     @property
     def always_forbidden(self) -> bool:
         return self.kind == "org"
+
+    @property
+    def allowable(self) -> bool:
+        """--allow-term で許可してよい種類か。
+
+        組織名とメールアドレスは、一般語と衝突して誤検出になる余地が実質なく、
+        通ってしまった場合の影響が大きい。人の判断で通す対象から外す。
+        """
+        return self.kind not in ("org", "address")
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,7 @@ class LeakHit:
     term: str
     kind: str
     context: str  # 一致箇所の前後（誤検出かどうかを人が判断するため）
+    allowable: bool = True  # --allow-term で許可できる種類か
 
 
 @dataclass
@@ -208,7 +218,7 @@ def _prev_month_dir(org_output: Path, month: str) -> Path | None:
 
 def collect_materials(
     *, org_output: Path, month: str, preview: bool,
-    terms: tuple[Term, ...] = (), allow: tuple[str, ...] = (), notify=None,
+    terms: tuple[Term, ...] = (), notify=None,
 ) -> tuple[list[tuple[str, str]], str]:
     """(プロンプトへ渡す資料, 混入チェックの照合元テキスト) を返す。
 
@@ -243,7 +253,9 @@ def collect_materials(
         if prev_report.exists():
             prev = report.discussion_body(prev_report.read_text(encoding="utf-8"))
             if prev:
-                hits = find_leaks(prev, terms, source=source_text, allow=allow)
+                # allow は「今回の生成物を人が確認した」ことに基づく許可なので、
+                # 過去の考察の検査には適用しない
+                hits = find_leaks(prev, terms, source=source_text)
                 if hits:
                     notify(
                         f"前月（{prev_dir.name}）の考察に他組織の語が含まれるため資料から除外します: "
@@ -260,20 +272,37 @@ def collect_materials(
 # ---------------------------------------------------------------- 混入チェック
 
 
-def _org_dir_names(base: Path) -> set[str]:
-    """入力・出力ディレクトリ直下の組織ディレクトリ名。
+def _is_org_input_dir(path: Path) -> bool:
+    """入力側の組織ディレクトリか。既知の入力サブディレクトリを持つかで構造的に判定する。
 
-    入力サブディレクトリ名（spend 等）は落とす。旧レイアウトでは input/ 直下にこれらが
-    並ぶため、落とさないと自組織の入力を「他組織」と誤認し、自組織のユーザ名や
-    「spend」「members」といった語で考察がブロックされる。
-    出力側には横断サマリ（summary）と旧レイアウトの月ディレクトリが混ざるためこれも落とす。
+    名前で除外する（spend 等を落とす）方式にすると、`input/members/spend/` のように
+    入力サブディレクトリと同名の組織が実在した場合にその組織の禁止語が丸ごと抜ける。
+    組織名の検証（ingest.validate_org_name）はこれらの名前を許すため、構造で判定する。
+    旧レイアウトの `input/spend/` は CSV しか持たないのでここで除外される。
     """
+    return any((path / sub).is_dir() for sub in ingest.INPUT_SUBDIRS) or (
+        path / "members-info.csv"
+    ).exists()
+
+
+def _is_org_output_dir(path: Path) -> bool:
+    """出力側の組織ディレクトリか。月ディレクトリを子に持つかで構造的に判定する。
+
+    旧レイアウトの `reports/YYYY-MM/` と横断サマリの `reports/summary/` は月ディレクトリを
+    持たないため除外される。組織名が月の形式でも `reports/<月>/<月>/` になるので拾える。
+    """
+    try:
+        return any(c.is_dir() and _MONTH_DIR_RE.match(c.name) for c in path.iterdir())
+    except OSError:
+        return False
+
+
+def _org_dir_names(base: Path, is_org) -> set[str]:
     if not base.is_dir():
         return set()
     return {
         p.name for p in base.iterdir()
-        if p.is_dir() and p.name != "summary" and p.name not in ingest.INPUT_SUBDIRS
-        and not _MONTH_DIR_RE.match(p.name) and not p.name.startswith(".")
+        if p.is_dir() and not p.name.startswith(".") and is_org(p)
     }
 
 
@@ -284,17 +313,17 @@ def _emails_in_text(text: str) -> set[str]:
 def _terms_from_email(email: str) -> set[Term]:
     """メールアドレスから混入検出に使う語を取り出す。"""
     local, _, domain = email.partition("@")
-    terms = {Term(email, "email"), Term(local, "person")}
+    terms = {Term(email, "address"), Term(local, "person")}
     # ローカル部の区切り（姓・名）。`.` だけでなく `_` `+` `-` `%` でも区切る運用がある
     terms |= {
         Term(seg, "person") for seg in re.split(r"[._%+-]", local)
         if len(seg) >= _MIN_PERSON_TOKEN_LEN
     }
     if domain:
-        terms.add(Term(domain, "email"))
+        terms.add(Term(domain, "domain"))
         first = domain.split(".")[0]
         if len(first) >= _MIN_PERSON_TOKEN_LEN:
-            terms.add(Term(first, "email"))
+            terms.add(Term(first, "domain"))
     return terms
 
 
@@ -307,8 +336,12 @@ def _group_terms(org_input: Path, cfg: dict) -> set[Term]:
     for path in sorted(org_input.glob("members-info*.csv")):
         try:
             df = ingest.load_members_info_file(path, cfg)
-        except (OSError, ValueError):
-            continue
+        except (OSError, ValueError) as exc:
+            # 読めなければ部署名の照合を保証できない。「取りこぼしより誤検出」の方針の
+            # 帰結として、不完全な禁止語集合で書き込みを続行せずここで止める
+            raise DiscussionError(
+                f"他組織の {path} を読めないため混入チェックを保証できません: {exc}"
+            ) from exc
         for col in ("department", "team"):
             if col not in df.columns:
                 continue
@@ -322,8 +355,14 @@ def _group_terms(org_input: Path, cfg: dict) -> set[Term]:
 def forbidden_terms(
     *, input_dir: Path, output_dir: Path, target_org: str | None, cfg: dict,
 ) -> tuple[Term, ...]:
-    """他組織に由来する語（組織名・メール・人名トークン・部署/チーム名）。"""
-    others = (_org_dir_names(input_dir) | _org_dir_names(output_dir)) - {target_org}
+    """他組織に由来する語（組織名・メール・人名トークン・部署/チーム名）。
+
+    収集元が1件でも読めない場合は DiscussionError にする（不完全な集合で通さない）。
+    """
+    others = (
+        _org_dir_names(input_dir, _is_org_input_dir)
+        | _org_dir_names(output_dir, _is_org_output_dir)
+    ) - {target_org}
     terms: set[Term] = {Term(o, "org") for o in others}
     for org in sorted(others):
         org_input = input_dir / org
@@ -332,8 +371,10 @@ def forbidden_terms(
         for path in sorted(org_input.rglob("*.csv")):
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
+            except OSError as exc:
+                raise DiscussionError(
+                    f"他組織の {path} を読めないため混入チェックを保証できません: {exc}"
+                ) from exc
             for email in _emails_in_text(text):
                 terms |= _terms_from_email(email)
         terms |= _group_terms(org_input, cfg)
@@ -343,15 +384,20 @@ def forbidden_terms(
     ))
 
 
-def _boundary(term: str) -> str:
-    """語に応じた語境界パターン。短い日本語の語だけ漢字・カタカナも語の一部とみなす。"""
-    if len(term) <= _JP_STRICT_MAX_LEN and _HAS_JP_RE.search(term):
+def _boundary(term: str, kind: str) -> str:
+    """語に応じた語境界パターン。
+
+    短い日本語の語は漢字・カタカナも語の一部とみなし、一般語への部分一致を避ける。
+    ただし組織名は例外で常に積極照合する。数が少なく誤検出の余地が小さい一方、通した
+    場合の影響が最も大きいため（短い規則だと「東京」が「東京支社」に一致しなくなる）。
+    """
+    if kind != "org" and len(term) <= _JP_STRICT_MAX_LEN and _HAS_JP_RE.search(term):
         return _WORDISH_JP
     return _WORDISH
 
 
-def _search_term(haystack_lower: str, term_lower: str) -> re.Match | None:
-    wordish = _boundary(term_lower)
+def _search_term(haystack_lower: str, term_lower: str, kind: str) -> re.Match | None:
+    wordish = _boundary(term_lower, kind)
     pattern = rf"(?<!{wordish}){re.escape(term_lower)}(?!{wordish})"
     return re.search(pattern, haystack_lower)
 
@@ -369,21 +415,23 @@ def find_leaks(
 
     組織名は常時禁止。それ以外は対象組織の資料 source に現れる語を除外する
     （ドメイン共有・同姓による誤検出を避けるため）。allow に挙げた語は、人が内容を
-    確認して無害と判断したものとして除外する。
+    確認して無害と判断したものとして除外する。ただし組織名とメールアドレスは
+    allow の対象外（Term.allowable）— 一般語と衝突する余地が実質なく、影響が大きいため。
     """
     lowered, source_lower = text.lower(), source.lower()
     allowed = {a.strip().lower() for a in allow if a.strip()}
     hits: dict[str, LeakHit] = {}
     for term in terms:
         low = term.text.lower()
-        if low in allowed:
+        if term.allowable and low in allowed:
             continue
-        match = _search_term(lowered, low)
+        match = _search_term(lowered, low, term.kind)
         if match is None:
             continue
-        if not term.always_forbidden and _search_term(source_lower, low):
+        if not term.always_forbidden and _search_term(source_lower, low, term.kind):
             continue
-        hits.setdefault(term.text, LeakHit(term.text, term.kind, _context_of(text, match)))
+        hits.setdefault(term.text, LeakHit(
+            term.text, term.kind, _context_of(text, match), term.allowable))
     return tuple(hits[k] for k in sorted(hits))
 
 
@@ -392,7 +440,7 @@ def find_leaks(
 
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\n(.*)\n```$", re.DOTALL)
 _API_ERROR_RE = re.compile(r"^\s*API Error:?\s*(?P<status>\d{3})?", re.IGNORECASE)
-_DISCUSSION_HEADING_RE = re.compile(r"^##\s*考察\s*\n+")
+_DISCUSSION_HEADING_RE = re.compile(r"^##[ \t]*考察[ \t]*$\n?", re.MULTILINE)
 
 
 def _strip_fence(text: str) -> str:
@@ -402,10 +450,11 @@ def _strip_fence(text: str) -> str:
 
 
 def _strip_discussion_heading(text: str) -> str:
-    """先頭の「## 考察」見出しを落とす。
+    """「## 考察」の見出し行を落とす。
 
-    プロンプトでは出力しないよう指示しているが、付いてきた場合に差し込むと
-    レポートに同名の H2 が2つ並ぶため、書き込み前に正規化する。
+    プロンプトでは出力しないよう指示しているが、付いてきた場合に差し込むとレポートに
+    同名の H2 が2つ並ぶ。前置き（「以下が考察です。」等）の後に見出しが来ることも
+    あるため、先頭限定ではなく行全体が見出しの箇所をすべて対象にする。
     """
     return _DISCUSSION_HEADING_RE.sub("", text.strip()).strip()
 
@@ -523,8 +572,7 @@ def generate(
     terms = forbidden_terms(
         input_dir=input_dir, output_dir=output_dir, target_org=org, cfg=cfg)
     materials, source = collect_materials(
-        org_output=org_output, month=month, preview=preview,
-        terms=terms, allow=allow, notify=notify)
+        org_output=org_output, month=month, preview=preview, terms=terms, notify=notify)
     prompt = build_prompt(org=org, scope=scope, materials=materials, preview=preview)
 
     # --dry-run はプロンプトの確認用なので、上書き可否に関係なく必ずプロンプトを返す
@@ -546,11 +594,11 @@ def generate(
         if leaks:
             continue
         # 生成には最大で timeout_seconds かかる。その間に人が考察を書いた場合に
-        # 上書きしないよう、書き込み直前にもう一度確認する
-        if not force and (existing := _existing_discussion(doc_path)):
+        # 上書きしないよう、書き込み側で判定と置換を1回の読み取りに畳んで確認する
+        if not report.write_discussion(doc_path, body, only_if_unwritten=not force):
             notify("生成中に考察が記入されたため書き込みません（上書きは --force）")
+            existing = _existing_discussion(doc_path) or ""
             return DiscussionOutcome(org, month, doc_path, "kept", chars=len(existing))
-        report.write_discussion(doc_path, body)
         return DiscussionOutcome(
             org, month, doc_path, "written", attempts=attempt, chars=len(body))
     return DiscussionOutcome(

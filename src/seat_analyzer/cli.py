@@ -361,7 +361,8 @@ def _run_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
-_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+# ASCII 数字のみ・全体一致で検証する（`\d` は全角数字にも一致し、`$` は末尾改行を許す）
+_MONTH_RE = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
 
 
 def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | None) -> str:
@@ -371,7 +372,7 @@ def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | No
     検証しないと `--month ../<他組織>/<月>` で別組織のレポートを読み書きできてしまう。
     """
     if month is not None:
-        if not _MONTH_RE.match(month):
+        if not _MONTH_RE.fullmatch(month):
             raise ValueError(f"対象月の形式が不正です: {month!r}（YYYY-MM 形式で指定してください）")
         return month
     latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_months(d))]
@@ -403,6 +404,11 @@ def _run_discussions(
     cfg: dict, preview: bool, force: bool, dry_run: bool, allow: tuple[str, ...] = (),
 ) -> int:
     """組織ごとに考察を生成する。1組織の失敗で他組織を止めない。"""
+    if allow and len(items) > 1:
+        # 許可は「その組織の生成物を人が確認した」ことに基づく。全組織へ一括適用させない
+        raise ValueError(
+            "--allow-term は単一組織に対してのみ指定できます（--org で対象を絞ってください）"
+        )
     if not dry_run:
         print(f"\n=== 考察の執筆（{len(items)} 組織） ===")
     failed: list[str] = []
@@ -450,8 +456,11 @@ def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None
         for hit in outcome.leaks:
             # 一致箇所の文脈を出す。誤検出（他組織の短い部署名が無関係な複合語に
             # 一致した等）かどうかを人が判断できるようにするため
-            print(f"    検出語: {hit.term}（{hit.kind}） … {hit.context} …", file=sys.stderr)
-        print("    誤検出と判断した語は --allow-term <語> で許可できます", file=sys.stderr)
+            note = "" if hit.allowable else "・--allow-term では許可できません"
+            print(f"    検出語: {hit.term}（{hit.kind}{note}） … {hit.context} …",
+                  file=sys.stderr)
+        if any(h.allowable for h in outcome.leaks):
+            print("    誤検出と判断した語は --allow-term <語> で許可できます", file=sys.stderr)
 
 
 def _print_preview(pv, paths: dict[str, Path]) -> None:
