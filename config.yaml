@@ -128,3 +128,16 @@ cache_multipliers:
   read: 0.1
   write_5m: 1.25
   write_1h: 2.0
+
+# 考察セクションの自動執筆（seat-analyzer discuss / analyze --with-discussion）。
+# ローカルの Claude Code CLI をヘッドレスで呼び、考察本文だけを生成させる。
+# LLM にツールは渡さず（資料はプロンプトへ埋め込む）、書き込みと混入チェックはツール側が行う。
+discussion:
+  command: claude          # ヘッドレス実行する CLI。PATH 上の名前かフルパス
+  model: opus              # 別名指定で最新の Opus に追従する
+  effort: xhigh            # 判定の妥当性検証と執筆に高い推論品質が必要（low/medium/high/xhigh/max）
+  timeout_seconds: 1800    # 1組織あたりの応答待ち上限
+  max_attempts: 2          # 混入検出時の書き直しを含む試行回数
+  min_output_chars: 200    # これ未満の出力は失敗扱い（API エラー等をレポートへ書かないため）
+  retries: 2               # API の一時エラー・タイムアウト時の再試行回数（混入の書き直しとは別）
+  retry_wait_seconds: 30   # 再試行までの待機秒数

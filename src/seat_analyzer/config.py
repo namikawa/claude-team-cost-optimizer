@@ -67,6 +67,25 @@ def _validate(cfg: dict) -> None:
     if not _num(d.get("censoring_margin")) or d["censoring_margin"] <= 0:
         errors.append("decision.censoring_margin は正の数値が必要です")
 
+    # discussion は任意セクション（未指定なら discussion.DEFAULTS が使われる）
+    disc = cfg.get("discussion")
+    if disc is not None:
+        if not isinstance(disc, dict):
+            errors.append("discussion セクションが辞書ではありません")
+        else:
+            for key in ("command", "model", "effort"):
+                if key in disc and not (isinstance(disc[key], str) and disc[key].strip()):
+                    errors.append(f"discussion.{key} は空でない文字列が必要です")
+            efforts = ("low", "medium", "high", "xhigh", "max")
+            if "effort" in disc and disc["effort"] not in efforts:
+                errors.append(f"discussion.effort は {'/'.join(efforts)} のいずれかが必要です")
+            for key in ("timeout_seconds", "max_attempts", "min_output_chars"):
+                if key in disc and (not _num(disc[key]) or disc[key] <= 0):
+                    errors.append(f"discussion.{key} は正の数値が必要です")
+            for key in ("retries", "retry_wait_seconds"):
+                if key in disc and (not _num(disc[key]) or disc[key] < 0):
+                    errors.append(f"discussion.{key} は 0 以上の数値が必要です")
+
     patterns = cfg["model_prices"].get("patterns")
     if not isinstance(patterns, list) or not patterns:
         errors.append("model_prices.patterns が空です")
