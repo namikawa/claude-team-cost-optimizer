@@ -46,6 +46,7 @@ DEFAULTS: dict = {
     "retries": 2,
     "retry_wait_seconds": 30,
     "allow_terms": (),
+    "public_org_names": (),
 }
 
 # ヘッドレス実行で禁止するツール。資料はプロンプトに埋め込むためツールは一切不要。
@@ -494,7 +495,6 @@ def _context_of(text: str, match: re.Match) -> str:
 
 def find_leaks(
     text: str, terms: tuple[Term, ...], *, source: str, allow: tuple[str, ...] = (),
-    strict_orgs: bool = True,
 ) -> tuple[LeakHit, ...]:
     """text に現れる他組織由来の語。
 
@@ -503,9 +503,9 @@ def find_leaks(
     確認して無害と判断したものとして除外する。ただし組織名とメールアドレスは
     allow の対象外（Term.allowable）— 一般語と衝突する余地が実質なく、影響が大きいため。
 
-    strict_orgs=False にすると組織名も source による除外の対象にする。公開テキストの
-    検査（check_public_text）では source が「すでに公開されている内容」なので、
-    サンプル組織名のように公開済みの名前を誤検出しないために使う。
+    公開済みと分かっている組織名を通したい場合は、source で緩めるのではなく呼び出し側で
+    terms から外す（`config.yaml > discussion.public_org_names`）。source は変動する
+    内容なので、影響が最大の組織名の除外根拠にはしない。
     """
     lowered, source_lower = text.lower(), source.lower()
     allowed = {a.strip().lower() for a in allow if a.strip()}
@@ -517,8 +517,7 @@ def find_leaks(
         match = _search_term(lowered, low, term.kind)
         if match is None:
             continue
-        if not (term.always_forbidden and strict_orgs) \
-                and _search_term(source_lower, low, term.kind):
+        if not term.always_forbidden and _search_term(source_lower, low, term.kind):
             continue
         hits.setdefault(term.text, LeakHit(
             term.text, term.kind, _context_of(text, match), term.allowable))
@@ -528,10 +527,8 @@ def find_leaks(
 # ---------------------------------------------------------------- 公開テキストの検査
 
 
-# 「すでに公開されている内容」とみなす対象。ここに現れる語は公開済みなので、
-# 公開テキストに書いても新たな開示にはあたらない（例: examples/ の合成データの人名が
-# 実在の姓と偶然一致していても、その文字列は既にリポジトリにある）。
-# input/・reports/・CLAUDE.md は gitignore 対象なので意図的に含めない。
+# git が使えないとき（テストの --repo-root 等）に走査する対象。
+# 通常は git 管理下のファイル一覧を使う（下記 _tracked_files）。
 PUBLIC_BASELINE_PATHS = (
     "README.md", "config.yaml", "pyproject.toml", "examples", "src", "tests", ".claude",
 )
@@ -540,43 +537,109 @@ _TEXT_SUFFIXES = (
 )
 
 
-def public_baseline(root: Path, paths: tuple[str, ...] = PUBLIC_BASELINE_PATHS) -> str:
-    """すでに公開されている（コミット対象の）内容を連結したテキスト。"""
+@dataclass(frozen=True)
+class PublicCheckResult:
+    """公開テキスト検査の結果。"""
+
+    hits: tuple[LeakHit, ...]
+    n_terms: int  # 照合した禁止語の数（0 なら検査が退化しているので失敗させる）
+
+
+def _tracked_files(root: Path) -> list[Path] | None:
+    """git 管理下のファイル一覧。git が使えない・リポジトリでない場合は None。"""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return [root / name for name in proc.stdout.split("\0") if name]
+
+
+def public_baseline(
+    root: Path, paths: tuple[str, ...] = PUBLIC_BASELINE_PATHS,
+    *, exclude: tuple[Path, ...] = (),
+) -> str:
+    """すでに公開されている内容を連結したテキスト。
+
+    ここに現れる語は公開済みなので、公開テキストに書いても新たな開示にはあたらない
+    （例: examples/ の合成データの人名が実在の姓と偶然一致していても、その文字列は
+    既にリポジトリにある）。
+
+    対象は **git 管理下のファイル**。作業ツリーを走査すると、未追跡のドラフトや
+    gitignore 済みのファイル（input/・reports/・CLAUDE.md・.claude/settings.local.json 等）
+    を置いただけでその中身が「公開済み」になり、検査が黙って素通りする。
+    exclude には検査対象のファイル自身を渡す（自分自身を根拠に素通りさせないため）。
+    """
+    tracked = _tracked_files(root)
+    if tracked is None:
+        # git が使えない場合のフォールバック。「コミット済み」を保証できないため、
+        # 既知のディレクトリ走査に留める
+        files: list[Path] = []
+        for name in paths:
+            target = root / name
+            if target.is_file():
+                files.append(target)
+            elif target.is_dir():
+                files.extend(_files_under(target, _TEXT_SUFFIXES))
+    else:
+        files = tracked
+
+    skip = {p.resolve() for p in exclude}
     chunks: list[str] = []
-    for name in paths:
-        target = root / name
-        if target.is_file():
-            files = [target]
-        elif target.is_dir():
-            files = _files_under(target, _TEXT_SUFFIXES)
-        else:
-            continue
-        for path in files:
-            try:
-                chunks.append(path.read_text(encoding="utf-8", errors="replace"))
-            except OSError:
+    for path in files:
+        try:
+            if path.resolve() in skip:
                 continue
+            chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
     return "\n".join(chunks)
 
 
 def check_public_text(
     text: str, *, input_dir: Path, output_dir: Path, cfg: dict,
     root: Path = Path("."), allow: tuple[str, ...] = (),
-) -> tuple[LeakHit, ...]:
+    exclude: tuple[Path, ...] = (),
+) -> PublicCheckResult:
     """公開予定のテキストに業務情報が含まれないか検査する。
 
     PR 本文・PR コメント・コミットメッセージなど、リポジトリの外に出る文章が対象。
     レポートの混入チェックと違い「対象組織」という概念がない（どの組織の情報も書けない）
     ため、全組織の語を禁止語として集める。
 
+    禁止語が1件も集まらない場合は DiscussionError にする。--input-dir が解決できない
+    等で検査が退化していると、何を渡しても「検出なし」になり、青信号にしか見えないため。
+
     レポートの混入チェックと同じ規則を、リポジトリの外に出る文章にも適用するための
     入口。規則の適用範囲をレポートに限定すると、公開面が検査から漏れるため、道具の
     側で範囲を揃えている。
     """
+    if not input_dir.is_dir():
+        raise DiscussionError(
+            f"入力ディレクトリがありません: {input_dir}"
+            "（--input-dir を確認してください。検査が退化するため中止します）"
+        )
     terms = forbidden_terms(
         input_dir=input_dir, output_dir=output_dir, target_org=None, cfg=cfg)
-    return find_leaks(
-        text, terms, source=public_baseline(root), allow=allow, strict_orgs=False)
+    # 公開済みと分かっている組織名（サンプル組織等）は明示的に外す。組織名は
+    # 常時禁止のままにし、除外根拠を config の差分としてレビューできる形にする
+    public_orgs = {
+        str(o).strip().lower() for o in (settings(cfg).get("public_org_names") or ())
+    }
+    terms = tuple(
+        t for t in terms if not (t.kind == "org" and t.text.lower() in public_orgs))
+    if not terms:
+        raise DiscussionError(
+            "禁止語を1件も収集できませんでした（--input-dir / --output-dir を確認して"
+            "ください）。検査が成立しないため中止します"
+        )
+    hits = find_leaks(
+        text, terms, source=public_baseline(root, exclude=exclude), allow=allow)
+    return PublicCheckResult(hits, len(terms))
 
 
 # ---------------------------------------------------------------- ヘッドレス実行
