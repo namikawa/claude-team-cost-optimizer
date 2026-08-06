@@ -1,4 +1,4 @@
-"""CLI エントリポイント: seat-analyzer {analyze,discuss,doctor,init-org}"""
+"""CLI エントリポイント: seat-analyzer {analyze,discuss,check-text,doctor,init-org}"""
 
 from __future__ import annotations
 
@@ -96,6 +96,30 @@ def main(argv: list[str] | None = None) -> int:
         help="出力形式。json は構造化issueの配列を stdout へ出す (default: text)",
     )
     pdoc.set_defaults(func=_run_doctor)
+
+    pchk = sub.add_parser(
+        "check-text",
+        help="公開予定のテキスト（PR 本文・コメント・コミットメッセージ等）に業務情報が"
+             "含まれないか検査する",
+    )
+    pchk.add_argument(
+        "files", nargs="*", metavar="ファイル",
+        help="検査するファイル。'-' または省略で標準入力を読む",
+    )
+    pchk.add_argument("--text", help="ファイルではなく文字列を直接検査する")
+    pchk.add_argument(
+        "--allow-term", action="append", metavar="語",
+        help="内容を確認して無害と判断した語を許可する（複数指定可）",
+    )
+    pchk.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pchk.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
+    pchk.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    pchk.add_argument(
+        "--repo-root", metavar="パス",
+        help="「すでに公開されている内容」を読むリポジトリのルート。"
+             "省略時は --config の置かれたディレクトリ",
+    )
+    pchk.set_defaults(func=_run_check_text)
 
     pi = sub.add_parser("init-org", help="新しい組織の入力/出力ディレクトリの雛形を作成")
     pi.add_argument("orgs", nargs="+", metavar="組織名",
@@ -396,6 +420,50 @@ def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | No
     month = max(latest)
     print(f"対象月未指定のため最新月を使用: {month}")
     return month
+
+
+def _run_check_text(args: argparse.Namespace) -> int:
+    """公開予定のテキストを検査する。業務情報を検出したら終了コード 1。"""
+    cfg = load_config(args.config)
+    # baseline（すでに公開されている内容）はリポジトリのルートから読む。
+    # config.yaml はリポジトリ直下に置く運用なので、省略時はその親をルートとみなす
+    root = Path(args.repo_root) if args.repo_root else Path(args.config).resolve().parent
+
+    sources: list[tuple[str, str]] = []
+    if args.text is not None:
+        sources.append(("--text", args.text))
+    names = list(args.files) or ([] if args.text is not None else ["-"])
+    for name in names:
+        if name == "-":
+            sources.append(("(標準入力)", sys.stdin.read()))
+        else:
+            sources.append((name, Path(name).read_text(encoding="utf-8")))
+    if not sources:
+        raise ValueError("検査するテキストがありません（ファイル・'-'・--text のいずれかを指定）")
+
+    n_hits = 0
+    for label, text in sources:
+        hits = discussion.check_public_text(
+            text, input_dir=Path(args.input_dir), output_dir=Path(args.output_dir),
+            cfg=cfg, root=root, allow=tuple(args.allow_term or ()),
+        )
+        if not hits:
+            print(f"  {label}: 業務情報は検出されませんでした")
+            continue
+        n_hits += len(hits)
+        print(f"\n! {label}: 業務情報が含まれています（{len(hits)} 件）", file=sys.stderr)
+        for hit in hits:
+            print(f"    {hit.term}（{hit.kind}） … {hit.context} …", file=sys.stderr)
+
+    if n_hits:
+        print(
+            "\n公開する前に該当箇所を、出典が特定できない一般論へ書き換えてください"
+            "（例: 組織名を『ある組織』、部署名を『短い英字略称の部署』とする）。"
+            "\n誤検出と判断した語は --allow-term <語> で許可できます。",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def _check_allow_scope(allow: tuple[str, ...], n_targets: int) -> None:

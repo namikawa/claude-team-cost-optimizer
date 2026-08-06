@@ -912,6 +912,134 @@ def test_cli_blocked_output_includes_context(two_orgs, tmp_path, monkeypatch, ca
     assert "--allow-term" in err
 
 
+# ---------------------------------------------------------------- 公開テキストの検査
+
+
+@pytest.fixture
+def publish_input(make_input, tmp_path):
+    """公開テキスト検査用の入力と、テストが制御する baseline。
+
+    baseline（すでに公開されている内容）には tests/ も含まれるため、実リポジトリを
+    ルートにするとテスト自身に書いた固有名が「公開済み」と判定されてしまう。
+    テストでは --repo-root で空の baseline を指し、公開済みとみなす内容を明示する。
+    """
+    input_dir = make_input(
+        {"2026-06": [spend_row("quillon.marsden@zz.example", 10.0)]},
+        members=["quillon.marsden@zz.example,Premium"], org="zephyr-holdings")
+    (input_dir / "zephyr-holdings" / "members-info.csv").write_text(
+        "email,部署,チーム\nquillon.marsden@zz.example,増枠推進室,ZTeamX\n", encoding="utf-8")
+    (tmp_path / "baseline").mkdir()
+    return input_dir
+
+
+def _check(text: str, publish_input: Path, tmp_path: Path, *extra: str) -> int:
+    return main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
+                 "--output-dir", str(tmp_path / "reports"),
+                 "--repo-root", str(tmp_path / "baseline"), "--text", text, *extra])
+
+
+def test_check_text_detects_org_and_group_names(publish_input, tmp_path, capsys):
+    """公開テキストに組織名・部署名・人名が含まれていれば検出する。"""
+    capsys.readouterr()
+    assert _check("zephyr-holdings の team 列を直した", publish_input, tmp_path) == 1
+    err = capsys.readouterr().err
+    assert "zephyr-holdings（org）" in err
+    assert "--allow-term" in err
+
+    for text, term in [("増枠推進室 の削減余地", "増枠推進室"),
+                       ("ZTeamX チームの需要", "ZTeamX"),
+                       ("marsden さんの利用", "marsden")]:
+        assert _check(text, publish_input, tmp_path) == 1
+        assert term in capsys.readouterr().err
+
+
+def test_check_text_passes_text_without_business_info(publish_input, tmp_path, capsys):
+    capsys.readouterr()
+    assert _check(
+        "ある組織の team 列に短い英字略称が含まれており、誤検出することを再現した。",
+        publish_input, tmp_path) == 0
+    assert "検出されませんでした" in capsys.readouterr().out
+
+
+def test_check_text_ignores_already_public_names(publish_input, tmp_path):
+    """すでに公開されている内容（examples/ の合成データ等）に現れる語は検出しない。
+
+    合成サンプルの人名は実在の姓と偶然一致しうるが、その文字列は公開済みなので
+    公開テキストに書いても新たな開示にはあたらない。
+    """
+    baseline = tmp_path / "baseline" / "examples"
+    baseline.mkdir(parents=True)
+    (baseline / "members-info.csv").write_text(
+        "email\nquillon.marsden@zz.example\n", encoding="utf-8")
+    assert _check("marsden 相当の利用水準だった", publish_input, tmp_path) == 0
+    # 公開済みでない部署名は引き続き検出する
+    assert _check("ZTeamX の需要", publish_input, tmp_path) == 1
+
+
+def test_check_text_uses_repo_baseline_by_default(publish_input, tmp_path, capsys):
+    """--repo-root 省略時は --config の置かれたディレクトリを baseline とする。"""
+    capsys.readouterr()
+    # 実リポジトリの examples/ にある合成データの人名は検出されない
+    rc = main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
+               "--output-dir", str(tmp_path / "reports"),
+               "--text", "対象組織の watanabe@... は他組織の tanabe を部分文字列として含む"])
+    assert rc == 0
+    assert "検出されませんでした" in capsys.readouterr().out
+
+
+def test_check_text_allow_term(publish_input, tmp_path):
+    assert _check("ZTeamX の需要", publish_input, tmp_path) == 1
+    assert _check("ZTeamX の需要", publish_input, tmp_path, "--allow-term", "ZTeamX") == 0
+
+
+def test_check_text_allow_term_cannot_override_org_names(publish_input, tmp_path):
+    """組織名は許可対象外（一般語と衝突する余地が実質なく影響が大きい）。"""
+    assert _check("zephyr-holdings の話", publish_input, tmp_path,
+                  "--allow-term", "zephyr-holdings") == 1
+
+
+def test_check_text_reads_file_and_stdin(publish_input, tmp_path, monkeypatch, capsys):
+    path = tmp_path / "comment.md"
+    path.write_text("zephyr-holdings の team 列\n", encoding="utf-8")
+    args = ["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
+            "--output-dir", str(tmp_path / "reports"),
+            "--repo-root", str(tmp_path / "baseline")]
+    assert main([*args, str(path)]) == 1
+
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO("増枠推進室 の削減余地\n"))
+    capsys.readouterr()
+    assert main([*args, "-"]) == 1
+    assert "(標準入力)" in capsys.readouterr().err
+
+
+def test_check_text_checks_every_input(publish_input, tmp_path, capsys):
+    clean = tmp_path / "clean.md"
+    clean.write_text("ある組織のレポートを生成した\n", encoding="utf-8")
+    dirty = tmp_path / "dirty.md"
+    dirty.write_text("ZTeamX の需要\n", encoding="utf-8")
+    capsys.readouterr()
+    assert main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
+                 "--output-dir", str(tmp_path / "reports"),
+                 "--repo-root", str(tmp_path / "baseline"), str(clean), str(dirty)]) == 1
+    captured = capsys.readouterr()
+    assert "clean.md: 業務情報は検出されませんでした" in captured.out
+    assert "ZTeamX" in captured.err
+
+
+def test_public_baseline_excludes_local_only_paths(tmp_path):
+    """gitignore 対象（input/・reports/・CLAUDE.md）は baseline に含めない。"""
+    (tmp_path / "examples").mkdir()
+    (tmp_path / "examples" / "sample.csv").write_text("public-name\n", encoding="utf-8")
+    (tmp_path / "input").mkdir()
+    (tmp_path / "input" / "secret.csv").write_text("secret-name\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("local-only-name\n", encoding="utf-8")
+    baseline = discussion.public_baseline(tmp_path)
+    assert "public-name" in baseline
+    assert "secret-name" not in baseline
+    assert "local-only-name" not in baseline
+
+
 # ---------------------------------------------------------------- 入力検証
 
 

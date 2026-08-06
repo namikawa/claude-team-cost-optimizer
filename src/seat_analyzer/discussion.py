@@ -494,6 +494,7 @@ def _context_of(text: str, match: re.Match) -> str:
 
 def find_leaks(
     text: str, terms: tuple[Term, ...], *, source: str, allow: tuple[str, ...] = (),
+    strict_orgs: bool = True,
 ) -> tuple[LeakHit, ...]:
     """text に現れる他組織由来の語。
 
@@ -501,6 +502,10 @@ def find_leaks(
     （ドメイン共有・同姓による誤検出を避けるため）。allow に挙げた語は、人が内容を
     確認して無害と判断したものとして除外する。ただし組織名とメールアドレスは
     allow の対象外（Term.allowable）— 一般語と衝突する余地が実質なく、影響が大きいため。
+
+    strict_orgs=False にすると組織名も source による除外の対象にする。公開テキストの
+    検査（check_public_text）では source が「すでに公開されている内容」なので、
+    サンプル組織名のように公開済みの名前を誤検出しないために使う。
     """
     lowered, source_lower = text.lower(), source.lower()
     allowed = {a.strip().lower() for a in allow if a.strip()}
@@ -512,11 +517,66 @@ def find_leaks(
         match = _search_term(lowered, low, term.kind)
         if match is None:
             continue
-        if not term.always_forbidden and _search_term(source_lower, low, term.kind):
+        if not (term.always_forbidden and strict_orgs) \
+                and _search_term(source_lower, low, term.kind):
             continue
         hits.setdefault(term.text, LeakHit(
             term.text, term.kind, _context_of(text, match), term.allowable))
     return tuple(hits[k] for k in sorted(hits))
+
+
+# ---------------------------------------------------------------- 公開テキストの検査
+
+
+# 「すでに公開されている内容」とみなす対象。ここに現れる語は公開済みなので、
+# 公開テキストに書いても新たな開示にはあたらない（例: examples/ の合成データの人名が
+# 実在の姓と偶然一致していても、その文字列は既にリポジトリにある）。
+# input/・reports/・CLAUDE.md は gitignore 対象なので意図的に含めない。
+PUBLIC_BASELINE_PATHS = (
+    "README.md", "config.yaml", "pyproject.toml", "examples", "src", "tests", ".claude",
+)
+_TEXT_SUFFIXES = (
+    ".md", ".py", ".csv", ".yaml", ".yml", ".txt", ".html", ".toml", ".json",
+)
+
+
+def public_baseline(root: Path, paths: tuple[str, ...] = PUBLIC_BASELINE_PATHS) -> str:
+    """すでに公開されている（コミット対象の）内容を連結したテキスト。"""
+    chunks: list[str] = []
+    for name in paths:
+        target = root / name
+        if target.is_file():
+            files = [target]
+        elif target.is_dir():
+            files = _files_under(target, _TEXT_SUFFIXES)
+        else:
+            continue
+        for path in files:
+            try:
+                chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+    return "\n".join(chunks)
+
+
+def check_public_text(
+    text: str, *, input_dir: Path, output_dir: Path, cfg: dict,
+    root: Path = Path("."), allow: tuple[str, ...] = (),
+) -> tuple[LeakHit, ...]:
+    """公開予定のテキストに業務情報が含まれないか検査する。
+
+    PR 本文・PR コメント・コミットメッセージなど、リポジトリの外に出る文章が対象。
+    レポートの混入チェックと違い「対象組織」という概念がない（どの組織の情報も書けない）
+    ため、全組織の語を禁止語として集める。
+
+    経緯: 2026-08-05 に、レポートへの混入は機械的に防いでいた一方で、公開リポジトリの
+    PR コメントに組織名と部署名を書いてしまう事故があった。厳守ルールの適用範囲が
+    レポートに限られていたのが原因なので、道具の側で範囲を公開面へ広げる。
+    """
+    terms = forbidden_terms(
+        input_dir=input_dir, output_dir=output_dir, target_org=None, cfg=cfg)
+    return find_leaks(
+        text, terms, source=public_baseline(root), allow=allow, strict_orgs=False)
 
 
 # ---------------------------------------------------------------- ヘッドレス実行
