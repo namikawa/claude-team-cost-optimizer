@@ -4,6 +4,7 @@
 subprocess.run の monkeypatch で置き換える。
 """
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -1059,27 +1060,58 @@ def test_check_text_fails_closed_when_no_terms(tmp_path, capsys):
     assert "禁止語を1件も収集できませんでした" in capsys.readouterr().err
 
 
-def test_public_baseline_uses_git_tracked_files(tmp_path):
-    """baseline は作業ツリーではなく git 管理下のファイル。
-
-    未追跡・gitignore 済みのファイルを置いただけでその中身が「公開済み」になると、
-    ドラフトをリポジトリ内に保存した時点で検査が黙って素通りする。
-    """
+def _git_repo(root: Path):
+    """テスト用の git リポジトリを作り、git コマンドを実行するヘルパを返す。"""
     def git(*args):
-        subprocess.run(["git", "-C", str(tmp_path), *args],
-                       check=True, capture_output=True)
-
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
+                       env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+                            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+                            "PATH": os.environ.get("PATH", ""), "HOME": str(root)})
     git("init", "-q")
+    return git
+
+
+def test_public_baseline_uses_committed_content(tmp_path):
+    """baseline は HEAD の内容。作業ツリーの状態は一切見ない。
+
+    未追跡ファイルや gitignore 済みファイルはもちろん、**追跡ファイルの未コミット編集**も
+    baseline に入ってはいけない。入ると「テストに実データを書いた状態で公開文章を検査する」
+    という、検査を無意味にする状態を素通りさせる。
+    """
+    git = _git_repo(tmp_path)
     (tmp_path / "tracked.md").write_text("tracked-name\n", encoding="utf-8")
     git("add", "tracked.md")
+    git("commit", "-q", "-m", "init")
+
     (tmp_path / "untracked.md").write_text("untracked-name\n", encoding="utf-8")
     (tmp_path / ".gitignore").write_text("ignored.md\n", encoding="utf-8")
     (tmp_path / "ignored.md").write_text("ignored-name\n", encoding="utf-8")
+    # 追跡ファイルへの未コミット追記
+    (tmp_path / "tracked.md").write_text("tracked-name\nuncommitted-name\n", encoding="utf-8")
 
     baseline = discussion.public_baseline(tmp_path)
     assert "tracked-name" in baseline
+    assert "uncommitted-name" not in baseline
     assert "untracked-name" not in baseline
     assert "ignored-name" not in baseline
+
+
+def test_public_baseline_errors_when_git_unusable(tmp_path, monkeypatch):
+    """git 管理下なのに git を実行できない場合は黙って弱くならずエラーにする。"""
+    git = _git_repo(tmp_path)
+    (tmp_path / "a.md").write_text("x\n", encoding="utf-8")
+    git("add", "a.md")
+    git("commit", "-q", "-m", "init")
+
+    monkeypatch.setattr(discussion, "_git_bytes", lambda *a, **kw: None)
+    with pytest.raises(discussion.DiscussionError, match="git を実行できません"):
+        discussion.public_baseline(tmp_path)
+
+    # .git が無い（--repo-root に非 git を明示指定）ならフォールバックしてよい
+    plain = tmp_path / "plain"
+    (plain / "examples").mkdir(parents=True)
+    (plain / "examples" / "s.csv").write_text("public-name\n", encoding="utf-8")
+    assert "public-name" in discussion.public_baseline(plain)
 
 
 def test_public_baseline_excludes_checked_file_itself(tmp_path):
@@ -1094,6 +1126,38 @@ def test_public_baseline_excludes_checked_file_itself(tmp_path):
         tmp_path, ("draft.md", "examples"), exclude=(draft,))
     assert "draft-name" not in excluded
     assert "public-name" in excluded
+
+
+def test_check_text_diff_mode_ignores_removed_lines(publish_input, tmp_path):
+    """--diff は追加される内容だけを見る。削除行の語で落とさない。
+
+    「全部削除行だから問題ない」という目視判断は見落としやすいので機械化する。
+    """
+    removal_only = (
+        "diff --git a/x.md b/x.md\n"
+        "--- a/x.md\n"
+        "+++ b/x.md\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-  ZTeamX の需要\n"
+        "+  ある組織の需要\n"
+    )
+    assert _check(removal_only, publish_input, tmp_path) == 1            # 素の検査は落ちる
+    assert _check(removal_only, publish_input, tmp_path, "--diff") == 0  # 追加分はクリーン
+
+    # 追加行に業務情報があれば --diff でも落ちる
+    adds = removal_only.replace("+  ある組織の需要", "+  増枠推進室 の需要")
+    assert _check(adds, publish_input, tmp_path, "--diff") == 1
+
+
+def test_diff_added_text_keeps_new_paths(publish_input, tmp_path):
+    """新規追加ファイルのパス自体に業務情報がある場合も拾う。"""
+    diff = ("diff --git a/ZTeamX.md b/ZTeamX.md\n"
+            "--- /dev/null\n"
+            "+++ b/ZTeamX.md\n"
+            "+内容\n")
+    assert "b/ZTeamX.md" in discussion.diff_added_text(diff)
+    assert "/dev/null" not in discussion.diff_added_text(diff)
+    assert _check(diff, publish_input, tmp_path, "--diff") == 1
 
 
 def test_check_text_public_org_names(publish_input, tmp_path):
