@@ -450,18 +450,23 @@ def _run_check_text(args: argparse.Namespace) -> int:
     n_hits = 0
     allowable_seen = False
     for label, text in sources:
+        scope = ""
         if args.diff:
-            text = discussion.diff_added_text(text)
+            extract = discussion.diff_added_text(text)
+            text = extract.text
+            # 抽出量を必ず出す。追加行 0 なら、検査すべき内容が無かったことに気づける
+            scope = f"追加行 {extract.n_added_lines} / 対象パス {extract.n_paths} / "
         result = discussion.check_public_text(
             text, input_dir=Path(args.input_dir), output_dir=Path(args.output_dir),
             cfg=cfg, root=root, allow=tuple(args.allow_term or ()), exclude=exclude,
         )
         if not result.hits:
-            print(f"  {label}: 業務情報は検出されませんでした（{result.n_terms} 語と照合）")
+            print(f"  {label}: 業務情報は検出されませんでした"
+                  f"（{scope}{result.n_terms} 語と照合）")
             continue
         n_hits += len(result.hits)
         print(f"\n! {label}: 業務情報が含まれています"
-              f"（{len(result.hits)} 件 / {result.n_terms} 語と照合）", file=sys.stderr)
+              f"（{len(result.hits)} 件 / {scope}{result.n_terms} 語と照合）", file=sys.stderr)
         for hit in result.hits:
             note = "" if hit.allowable else "・--allow-term では許可できません"
             allowable_seen = allowable_seen or hit.allowable

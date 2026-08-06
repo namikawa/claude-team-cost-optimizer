@@ -1155,9 +1155,43 @@ def test_diff_added_text_keeps_new_paths(publish_input, tmp_path):
             "--- /dev/null\n"
             "+++ b/ZTeamX.md\n"
             "+内容\n")
-    assert "b/ZTeamX.md" in discussion.diff_added_text(diff)
-    assert "/dev/null" not in discussion.diff_added_text(diff)
+    extract = discussion.diff_added_text(diff)
+    assert "b/ZTeamX.md" in extract.text
+    assert "/dev/null" not in extract.text
+    assert (extract.n_added_lines, extract.n_paths) == (1, 1)
     assert _check(diff, publish_input, tmp_path, "--diff") == 1
+
+
+def test_diff_added_text_keeps_rename_targets(publish_input, tmp_path):
+    """内容変更を伴わない rename は +++ 行を持たないため rename to から拾う。"""
+    diff = ("diff --git a/old.md b/ZTeamX.md\n"
+            "similarity index 100%\n"
+            "rename from old.md\n"
+            "rename to ZTeamX.md\n")
+    assert "ZTeamX.md" in discussion.diff_added_text(diff).text
+    assert _check(diff, publish_input, tmp_path, "--diff") == 1
+
+
+def test_diff_mode_rejects_non_diff_input(publish_input, tmp_path, capsys):
+    """差分でない入力に --diff を付けたら素通りさせずエラーにする。
+
+    抽出結果が空になって「N 語と照合したが検出なし」と出ると、完全な青信号に見える。
+    フラグの取り違えは現実に起きるので、入力側でも fail-closed にする。
+    """
+    text = "zephyr-holdings の ZTeamX について"
+    assert _check(text, publish_input, tmp_path) == 1              # 素の検査は検出する
+    capsys.readouterr()
+    assert _check(text, publish_input, tmp_path, "--diff") == 1    # 素通りさせない
+    assert "unified diff ではありません" in capsys.readouterr().err
+
+
+def test_diff_mode_reports_extraction_size(publish_input, tmp_path, capsys):
+    """成功時に抽出量を出す（追加行 0 なら検査対象が無かったと分かる）。"""
+    empty_diff = "diff --git a/x.md b/x.md\n--- a/x.md\n+++ b/x.md\n@@ -1 +0,0 @@\n-消す行\n"
+    capsys.readouterr()
+    assert _check(empty_diff, publish_input, tmp_path, "--diff") == 0
+    out = capsys.readouterr().out
+    assert "追加行 0" in out and "対象パス 1" in out
 
 
 def test_check_text_public_org_names(publish_input, tmp_path):
