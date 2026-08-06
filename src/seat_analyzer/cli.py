@@ -108,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     pchk.add_argument("--text", help="ファイルではなく文字列を直接検査する")
     pchk.add_argument(
+        "--diff", action="store_true",
+        help="入力を unified diff として扱い、追加される内容だけを検査する"
+             "（削除行に現れる語で落ちないようにする）",
+    )
+    pchk.add_argument(
         "--allow-term", action="append", metavar="語",
         help="内容を確認して無害と判断した語を許可する（複数指定可）",
     )
@@ -445,6 +450,8 @@ def _run_check_text(args: argparse.Namespace) -> int:
     n_hits = 0
     allowable_seen = False
     for label, text in sources:
+        if args.diff:
+            text = discussion.diff_added_text(text)
         result = discussion.check_public_text(
             text, input_dir=Path(args.input_dir), output_dir=Path(args.output_dir),
             cfg=cfg, root=root, allow=tuple(args.allow_term or ()), exclude=exclude,

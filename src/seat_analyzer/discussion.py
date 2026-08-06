@@ -545,18 +545,56 @@ class PublicCheckResult:
     n_terms: int  # 照合した禁止語の数（0 なら検査が退化しているので失敗させる）
 
 
-def _tracked_files(root: Path) -> list[Path] | None:
-    """git 管理下のファイル一覧。git が使えない・リポジトリでない場合は None。"""
+def _git_bytes(root: Path, args: list[str], stdin: bytes | None = None) -> bytes | None:
+    """git コマンドの標準出力（バイト列）。失敗したら None。"""
     try:
         proc = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z"],
-            capture_output=True, text=True, timeout=60, check=False,
+            ["git", "-C", str(root), *args], input=stdin,
+            capture_output=True, timeout=60, check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    if proc.returncode != 0:
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _head_files(root: Path) -> list[tuple[str, str]] | None:
+    """HEAD 時点の追跡ファイルの (パス, 内容)。git が使えない場合は None。
+
+    パス一覧だけを git から取って内容を作業ツリーから読むと、追跡ファイルの未コミット
+    編集が baseline に入る。それでは「テストに実データを書いた状態で公開文章を検査する」
+    という、インシデントが起きたときの状態そのものを素通りさせてしまう。
+    内容も HEAD から読む。
+    """
+    names = _git_bytes(root, ["ls-tree", "-r", "-z", "--name-only", "HEAD"])
+    if names is None:
         return None
-    return [root / name for name in proc.stdout.split("\0") if name]
+    paths = [p for p in names.split(b"\0") if p]
+    if not paths:
+        return []
+    out = _git_bytes(
+        root, ["cat-file", "--batch"],
+        stdin=b"".join(b"HEAD:" + p + b"\n" for p in paths),
+    )
+    if out is None:
+        return None
+
+    files: list[tuple[str, str]] = []
+    pos, index = 0, 0
+    while pos < len(out) and index < len(paths):
+        end = out.find(b"\n", pos)
+        if end < 0:
+            break
+        header = out[pos:end].split(b" ")
+        path = paths[index].decode("utf-8", errors="replace")
+        index += 1
+        # `<sha> missing` 等、blob 以外は本文が続かない（サブモジュールも該当）
+        if len(header) < 3 or header[1] != b"blob":
+            pos = end + 1
+            continue
+        size = int(header[2])
+        files.append((path, out[end + 1:end + 1 + size].decode("utf-8", errors="replace")))
+        pos = end + 1 + size + 1  # 本文の後の改行
+    return files
 
 
 def public_baseline(
@@ -569,26 +607,36 @@ def public_baseline(
     （例: examples/ の合成データの人名が実在の姓と偶然一致していても、その文字列は
     既にリポジトリにある）。
 
-    対象は **git 管理下のファイル**。作業ツリーを走査すると、未追跡のドラフトや
-    gitignore 済みのファイル（input/・reports/・CLAUDE.md・.claude/settings.local.json 等）
-    を置いただけでその中身が「公開済み」になり、検査が黙って素通りする。
+    対象は **HEAD 時点の git 管理下のファイル**（パスも内容も git から読む）。作業ツリーを
+    読むと、未追跡のドラフト・gitignore 済みのファイル・追跡ファイルの未コミット編集が
+    「公開済み」になり、検査が黙って素通りする。
     exclude には検査対象のファイル自身を渡す（自分自身を根拠に素通りさせないため）。
-    """
-    tracked = _tracked_files(root)
-    if tracked is None:
-        # git が使えない場合のフォールバック。「コミット済み」を保証できないため、
-        # 既知のディレクトリ走査に留める
-        files: list[Path] = []
-        for name in paths:
-            target = root / name
-            if target.is_file():
-                files.append(target)
-            elif target.is_dir():
-                files.extend(_files_under(target, _TEXT_SUFFIXES))
-    else:
-        files = tracked
 
+    root が git 管理下（.git がある）なのに git を実行できない場合はエラーにする。
+    ゲートが黙って弱くなるのを避けるため。.git が無い場合（--repo-root に非 git の
+    ディレクトリを明示指定した場合）だけ、既知のディレクトリ走査へフォールバックする。
+    """
     skip = {p.resolve() for p in exclude}
+    head = _head_files(root)
+    if head is not None:
+        return "\n".join(
+            content for name, content in head
+            if (root / name).resolve() not in skip
+        )
+    if (root / ".git").exists():
+        raise DiscussionError(
+            f"{root} は git 管理下ですが git を実行できませんでした。"
+            "公開済みの内容を確定できないため中止します"
+        )
+
+    # 非 git ディレクトリ向けのフォールバック
+    files: list[Path] = []
+    for name in paths:
+        target = root / name
+        if target.is_file():
+            files.append(target)
+        elif target.is_dir():
+            files.extend(_files_under(target, _TEXT_SUFFIXES))
     chunks: list[str] = []
     for path in files:
         try:
@@ -598,6 +646,24 @@ def public_baseline(
         except OSError:
             continue
     return "\n".join(chunks)
+
+
+def diff_added_text(diff: str) -> str:
+    """unified diff から「追加される内容」だけを取り出す。
+
+    削除行にはまさに今取り除こうとしている業務情報が現れるため、差分をそのまま検査すると
+    必ず落ちる。「全部削除行だから問題ない」という目視判断こそが2度失敗した工程なので、
+    追加行と追加先のパスだけを対象にして機械的に判定できるようにする。
+    """
+    out: list[str] = []
+    for line in diff.splitlines():
+        if line.startswith("+++"):
+            path = line[3:].strip()
+            if path and path != "/dev/null":
+                out.append(path)
+        elif line.startswith("+"):
+            out.append(line[1:])
+    return "\n".join(out)
 
 
 def check_public_text(
