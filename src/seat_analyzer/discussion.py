@@ -648,22 +648,49 @@ def public_baseline(
     return "\n".join(chunks)
 
 
-def diff_added_text(diff: str) -> str:
+@dataclass(frozen=True)
+class DiffExtract:
+    """差分から取り出した「追加される内容」。"""
+
+    text: str
+    n_added_lines: int
+    n_paths: int
+
+
+# unified diff であることの目印。1つも無い入力を diff として扱うと、抽出結果が
+# ほぼ空になり何も検査されないまま成功する
+_DIFF_MARKER_RE = re.compile(
+    r"^(?:diff --git |@@ |\+\+\+ |--- |rename to |copy to )", re.MULTILINE)
+
+
+def diff_added_text(diff: str) -> DiffExtract:
     """unified diff から「追加される内容」だけを取り出す。
 
     削除行にはまさに今取り除こうとしている業務情報が現れるため、差分をそのまま検査すると
     必ず落ちる。「全部削除行だから問題ない」という目視判断は見落としやすいので、
     追加行と追加先のパスだけを対象にして機械的に判定できるようにする。
+
+    差分でない入力を渡された場合はエラーにする。抽出結果が空になって「照合したが
+    検出なし」と表示され、完全な青信号に見えてしまうため（フラグの取り違えは起きる）。
     """
-    out: list[str] = []
+    if diff.strip() and not _DIFF_MARKER_RE.search(diff):
+        raise DiscussionError(
+            "--diff を指定しましたが、入力が unified diff ではありません"
+            "（差分でない文章は --diff を外して検査してください）"
+        )
+    added: list[str] = []
+    paths: list[str] = []
     for line in diff.splitlines():
         if line.startswith("+++"):
             path = line[3:].strip()
             if path and path != "/dev/null":
-                out.append(path)
+                paths.append(path)
         elif line.startswith("+"):
-            out.append(line[1:])
-    return "\n".join(out)
+            added.append(line[1:])
+        elif line.startswith(("rename to ", "copy to ")):
+            # 内容変更を伴わない rename/copy は +++ 行を持たないため、ここで拾う
+            paths.append(line.split(" to ", 1)[1].strip())
+    return DiffExtract("\n".join(paths + added), len(added), len(paths))
 
 
 def check_public_text(
