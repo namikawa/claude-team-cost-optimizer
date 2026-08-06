@@ -123,13 +123,13 @@ def test_forbidden_terms_splits_short_name_segments(make_input, tmp_path):
 
 def test_find_leaks_flags_only_terms_absent_from_source():
     terms = _terms(("org-b", "org"), ("bernard.holloway@y.jp", "address"),
-                   ("holloway", "person"), ("開発推進4部", "group"))
+                   ("holloway", "person"), ("架空推進3部", "group"))
     source = "org-a のユーザ alice.morgan@x.jp は Premium。"
 
     assert _hit_terms(discussion.find_leaks(
         "holloway さんは Standard で足りている。", terms, source=source)) == ("holloway",)
     assert _hit_terms(discussion.find_leaks(
-        "開発推進4部の削減余地は小さい。", terms, source=source)) == ("開発推進4部",)
+        "架空推進3部の削減余地は小さい。", terms, source=source)) == ("架空推進3部",)
     assert discussion.find_leaks("alice.morgan の需要は妥当。", terms, source=source) == ()
 
 
@@ -177,9 +177,9 @@ def test_find_leaks_short_japanese_terms_need_non_kanji_boundary():
 
 def test_find_leaks_long_japanese_terms_match_inside_compounds():
     """長い日本語の語は固有性が高いため、複合語に埋め込まれても検出する。"""
-    long_term = _terms(("開発推進4部", "group"))
+    long_term = _terms(("架空推進3部", "group"))
     assert _hit_terms(discussion.find_leaks(
-        "開発推進4部第2チームの需要。", long_term, source="")) == ("開発推進4部",)
+        "架空推進3部第2チームの需要。", long_term, source="")) == ("架空推進3部",)
 
 
 def test_find_leaks_reports_context_and_kind():
@@ -221,12 +221,12 @@ def test_find_leaks_org_names_use_aggressive_boundary():
 
 def test_group_names_from_members_info(two_orgs, tmp_path):
     (two_orgs / "org-b" / "members-info.csv").write_text(
-        "email,部署,チーム,職種\nbernard.holloway@y.jp,開発推進4部,Sophia-AI,エンジニア\n",
+        "email,部署,チーム,職種\nbernard.holloway@y.jp,架空推進3部,Nebula-AI,エンジニア\n",
         encoding="utf-8")
     cfg = load_config(CONFIG)
     texts = _texts(discussion.forbidden_terms(
         input_dir=two_orgs, output_dir=tmp_path / "reports", target_org="org-a", cfg=cfg))
-    assert "開発推進4部" in texts and "Sophia-AI" in texts
+    assert "架空推進3部" in texts and "Nebula-AI" in texts
     # 職種は一般語のため禁止語に含めない
     assert "エンジニア" not in texts
 
@@ -304,7 +304,7 @@ def test_duplicate_text_merges_to_stricter_kind():
 
 def test_forbidden_terms_fails_closed_on_broken_members_info(two_orgs, tmp_path):
     (two_orgs / "org-b" / "members-info.csv").write_text(
-        "部署,チーム\n開発推進4部,Sophia-AI\n", encoding="utf-8")  # email 列が無い
+        "部署,チーム\n架空推進3部,Nebula-AI\n", encoding="utf-8")  # email 列が無い
     with pytest.raises(discussion.DiscussionError, match="混入チェックを保証できません"):
         discussion.forbidden_terms(
             input_dir=two_orgs, output_dir=tmp_path / "reports",
@@ -943,14 +943,24 @@ def test_check_text_detects_org_and_group_names(publish_input, tmp_path, capsys)
     capsys.readouterr()
     assert _check("zephyr-holdings の team 列を直した", publish_input, tmp_path) == 1
     err = capsys.readouterr().err
-    assert "zephyr-holdings（org）" in err
-    assert "--allow-term" in err
+    assert "zephyr-holdings（org・--allow-term では許可できません）" in err
+    # 許可できない語しか無いときに許可の案内を出さない（実挙動と食い違うため）
+    assert "--allow-term <語> で許可できます" not in err
 
     for text, term in [("増枠推進室 の削減余地", "増枠推進室"),
                        ("ZTeamX チームの需要", "ZTeamX"),
                        ("marsden さんの利用", "marsden")]:
         assert _check(text, publish_input, tmp_path) == 1
-        assert term in capsys.readouterr().err
+        out = capsys.readouterr().err
+        assert term in out
+        assert "--allow-term <語> で許可できます" in out  # こちらは許可できる種類
+
+
+def test_check_text_reports_term_count(publish_input, tmp_path, capsys):
+    """成功時にも照合語数を出す（検査が退化していないことを目視できるように）。"""
+    capsys.readouterr()
+    assert _check("業務情報を含まない文章です", publish_input, tmp_path) == 0
+    assert "語と照合" in capsys.readouterr().out
 
 
 def test_check_text_passes_text_without_business_info(publish_input, tmp_path, capsys):
@@ -1025,6 +1035,80 @@ def test_check_text_checks_every_input(publish_input, tmp_path, capsys):
     captured = capsys.readouterr()
     assert "clean.md: 業務情報は検出されませんでした" in captured.out
     assert "ZTeamX" in captured.err
+
+
+def test_check_text_fails_closed_when_no_terms(tmp_path, capsys):
+    """禁止語を1件も集められない状態では成功させない。
+
+    --input-dir が解決できないと照合が空振りし、何を渡しても「検出なし」になる。
+    青信号にしか見えないので、fail-closed でエラー終了する。
+    """
+    capsys.readouterr()
+    rc = main(["check-text", "--config", CONFIG,
+               "--input-dir", str(tmp_path / "nonexistent"),
+               "--output-dir", str(tmp_path / "reports"), "--text", "何かの文章"])
+    assert rc == 1
+    assert "入力ディレクトリがありません" in capsys.readouterr().err
+
+    # 入力ディレクトリはあるが組織が無い場合も同様
+    (tmp_path / "empty-input").mkdir()
+    rc = main(["check-text", "--config", CONFIG,
+               "--input-dir", str(tmp_path / "empty-input"),
+               "--output-dir", str(tmp_path / "reports"), "--text", "何かの文章"])
+    assert rc == 1
+    assert "禁止語を1件も収集できませんでした" in capsys.readouterr().err
+
+
+def test_public_baseline_uses_git_tracked_files(tmp_path):
+    """baseline は作業ツリーではなく git 管理下のファイル。
+
+    未追跡・gitignore 済みのファイルを置いただけでその中身が「公開済み」になると、
+    ドラフトをリポジトリ内に保存した時点で検査が黙って素通りする。
+    """
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "tracked.md").write_text("tracked-name\n", encoding="utf-8")
+    git("add", "tracked.md")
+    (tmp_path / "untracked.md").write_text("untracked-name\n", encoding="utf-8")
+    (tmp_path / ".gitignore").write_text("ignored.md\n", encoding="utf-8")
+    (tmp_path / "ignored.md").write_text("ignored-name\n", encoding="utf-8")
+
+    baseline = discussion.public_baseline(tmp_path)
+    assert "tracked-name" in baseline
+    assert "untracked-name" not in baseline
+    assert "ignored-name" not in baseline
+
+
+def test_public_baseline_excludes_checked_file_itself(tmp_path):
+    """検査対象のファイル自身は baseline から除く（自分を根拠に素通りさせない）。"""
+    draft = tmp_path / "draft.md"
+    draft.write_text("draft-name\n", encoding="utf-8")
+    (tmp_path / "examples").mkdir()
+    (tmp_path / "examples" / "s.csv").write_text("public-name\n", encoding="utf-8")
+
+    assert "draft-name" in discussion.public_baseline(tmp_path, ("draft.md", "examples"))
+    excluded = discussion.public_baseline(
+        tmp_path, ("draft.md", "examples"), exclude=(draft,))
+    assert "draft-name" not in excluded
+    assert "public-name" in excluded
+
+
+def test_check_text_public_org_names(publish_input, tmp_path):
+    """組織名は --allow-term では通せないが、config の明示リストでは通せる。"""
+    assert _check("zephyr-holdings の話", publish_input, tmp_path) == 1
+
+    import yaml
+    cfg = yaml.safe_load(Path(CONFIG).read_text(encoding="utf-8"))
+    cfg["discussion"] = {**cfg["discussion"], "public_org_names": ["zephyr-holdings"]}
+    path = tmp_path / "config-public-org.yaml"
+    path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
+    assert main(["check-text", "--config", str(path), "--input-dir", str(publish_input),
+                 "--output-dir", str(tmp_path / "reports"),
+                 "--repo-root", str(tmp_path / "baseline"),
+                 "--text", "zephyr-holdings の話"]) == 0
 
 
 def test_public_baseline_excludes_local_only_paths(tmp_path):

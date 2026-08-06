@@ -131,8 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (OSError, ValueError) as e:
-        # 入力の読み取りに由来する失敗（欠損・権限・不正な値）は traceback を出さない
+    except (OSError, ValueError, discussion.DiscussionError) as e:
+        # 入力の読み取りに由来する失敗（欠損・権限・不正な値）と、混入チェックを
+        # 保証できない状況は traceback を出さずエラー終了する
         print(f"エラー: {e}", file=sys.stderr)
         return 1
 
@@ -433,35 +434,40 @@ def _run_check_text(args: argparse.Namespace) -> int:
     if args.text is not None:
         sources.append(("--text", args.text))
     names = list(args.files) or ([] if args.text is not None else ["-"])
+    # 検査対象のファイル自身を baseline から除く（自分自身を根拠に素通りさせない）
+    exclude = tuple(Path(n) for n in names if n != "-")
     for name in names:
         if name == "-":
             sources.append(("(標準入力)", sys.stdin.read()))
         else:
             sources.append((name, Path(name).read_text(encoding="utf-8")))
-    if not sources:
-        raise ValueError("検査するテキストがありません（ファイル・'-'・--text のいずれかを指定）")
 
     n_hits = 0
+    allowable_seen = False
     for label, text in sources:
-        hits = discussion.check_public_text(
+        result = discussion.check_public_text(
             text, input_dir=Path(args.input_dir), output_dir=Path(args.output_dir),
-            cfg=cfg, root=root, allow=tuple(args.allow_term or ()),
+            cfg=cfg, root=root, allow=tuple(args.allow_term or ()), exclude=exclude,
         )
-        if not hits:
-            print(f"  {label}: 業務情報は検出されませんでした")
+        if not result.hits:
+            print(f"  {label}: 業務情報は検出されませんでした（{result.n_terms} 語と照合）")
             continue
-        n_hits += len(hits)
-        print(f"\n! {label}: 業務情報が含まれています（{len(hits)} 件）", file=sys.stderr)
-        for hit in hits:
-            print(f"    {hit.term}（{hit.kind}） … {hit.context} …", file=sys.stderr)
+        n_hits += len(result.hits)
+        print(f"\n! {label}: 業務情報が含まれています"
+              f"（{len(result.hits)} 件 / {result.n_terms} 語と照合）", file=sys.stderr)
+        for hit in result.hits:
+            note = "" if hit.allowable else "・--allow-term では許可できません"
+            allowable_seen = allowable_seen or hit.allowable
+            print(f"    {hit.term}（{hit.kind}{note}） … {hit.context} …", file=sys.stderr)
 
     if n_hits:
         print(
             "\n公開する前に該当箇所を、出典が特定できない一般論へ書き換えてください"
-            "（例: 組織名を『ある組織』、部署名を『短い英字略称の部署』とする）。"
-            "\n誤検出と判断した語は --allow-term <語> で許可できます。",
+            "（例: 組織名を『ある組織』、部署名を『短い英字略称の部署』とする）。",
             file=sys.stderr,
         )
+        if allowable_seen:
+            print("誤検出と判断した語は --allow-term <語> で許可できます。", file=sys.stderr)
         return 1
     return 0
 

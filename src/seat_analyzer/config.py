@@ -110,12 +110,13 @@ def _validate(cfg: dict) -> None:
                 not _finite(disc["retry_wait_seconds"]) or disc["retry_wait_seconds"] < 0
             ):
                 errors.append("discussion.retry_wait_seconds は 0 以上の有限な数値が必要です")
-            terms = disc.get("allow_terms")
-            if terms is not None and not (
-                isinstance(terms, list)
-                and all(isinstance(t, str) and t.strip() for t in terms)
-            ):
-                errors.append("discussion.allow_terms は空でない文字列のリストが必要です")
+            for key in ("allow_terms", "public_org_names"):
+                values = disc.get(key)
+                if values is not None and not (
+                    isinstance(values, list)
+                    and all(isinstance(v, str) and v.strip() for v in values)
+                ):
+                    errors.append(f"discussion.{key} は空でない文字列のリストが必要です")
 
     patterns = cfg["model_prices"].get("patterns")
     if not isinstance(patterns, list) or not patterns:
