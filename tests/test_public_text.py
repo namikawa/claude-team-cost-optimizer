@@ -320,3 +320,23 @@ def test_public_baseline_excludes_local_only_paths(tmp_path):
     assert "public-name" in baseline
     assert "secret-name" not in baseline
     assert "local-only-name" not in baseline
+
+
+def test_public_baseline_includes_template_assets(tmp_path):
+    """.py の外にある資材（templates/ の .css・.j2）も baseline に含める。
+
+    ダッシュボードのスタイルと HTML 断片はコードではなくテンプレートとして置かれている。
+    拡張子の網羅が実体からずれると、公開済みの語が baseline から抜けたまま検査が走る。
+    """
+    templates = tmp_path / "src" / "seat_analyzer" / "templates"
+    (templates / "partials").mkdir(parents=True)
+    (templates / "dashboard.css").write_text(
+        ".seat { color: #333; }  /* css-name */\n", encoding="utf-8")
+    (templates / "dashboard.html.j2").write_text("<h1>j2-name</h1>\n", encoding="utf-8")
+    (templates / "partials" / "trend.html.j2").write_text(
+        "<p>partial-name</p>\n", encoding="utf-8")
+
+    baseline = public_text.public_baseline(tmp_path)
+    assert "css-name" in baseline
+    assert "j2-name" in baseline
+    assert "partial-name" in baseline
