@@ -22,7 +22,7 @@ from pathlib import Path
 from . import ingest
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-_MONTH_DIR_RE = re.compile(r"^\d{4}-\d{2}$")
+MONTH_DIR_RE = re.compile(r"^\d{4}-\d{2}$")
 
 # 語境界の判定に使う「語の一部とみなす文字」。日本語を含めないため、「架空推進3部の」の
 # ように助詞が続く出現も検出できる。`.` と `@` は含めない: 含めると
@@ -50,18 +50,13 @@ _MIN_TERM_LEN = 2
 _CONTEXT_CHARS = 24
 
 
-class DiscussionError(RuntimeError):
-    """照合・検査・考察の生成に失敗した。
+class LeakCheckError(RuntimeError):
+    """禁止語の収集・照合を続行できない。
 
-    考察の生成で送出された場合、レポートは書き換えていない。
-    transient=True は再実行で解消しうる失敗（通信の一時障害・429・5xx・タイムアウト）で、
-    認証や設定の誤りのような恒久的な失敗と区別してリトライの可否を決める。考察の生成
-    以外の経路では常に False。
+    送出された場合、照合の結果は「検出なし」ではなく「未確定」であり、呼び出し側は
+    処理を進めてはいけない（不完全な禁止語集合で通すと、検出漏れが検出なしと
+    区別できなくなるため）。再実行で解消しうるかどうかの区別は持たない。
     """
-
-    def __init__(self, message: str, *, transient: bool = False):
-        super().__init__(message)
-        self.transient = transient
 
 
 @dataclass(frozen=True)
@@ -102,7 +97,7 @@ class LeakHit:
 
 
 def _scandir(path: Path) -> list[os.DirEntry]:
-    """ディレクトリの列挙。読めない場合は DiscussionError にする。
+    """ディレクトリの列挙。読めない場合は LeakCheckError にする。
 
     pathlib の is_dir()/exists()/glob() は権限エラーを False や空リストとして飲み込む。
     それでは「他組織のディレクトリが読めなかった」ことが検出漏れと区別できないため、
@@ -114,7 +109,7 @@ def _scandir(path: Path) -> list[os.DirEntry]:
     except FileNotFoundError:
         return []
     except OSError as exc:
-        raise DiscussionError(
+        raise LeakCheckError(
             f"{path} を列挙できないため混入チェックを保証できません: {exc}"
         ) from exc
 
@@ -142,7 +137,7 @@ def _is_org_output_dir(path: Path) -> bool:
     持たないため除外される。組織名が月の形式でも `reports/<月>/<月>/` になるので拾える。
     """
     return any(
-        e.is_dir() and _MONTH_DIR_RE.match(e.name) for e in _scandir(path)
+        e.is_dir() and MONTH_DIR_RE.match(e.name) for e in _scandir(path)
     )
 
 
@@ -153,7 +148,7 @@ def _org_dir_names(base: Path, is_org) -> set[str]:
     }
 
 
-def _files_under(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
+def files_under(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
     """root 以下の該当ファイルを再帰的に集める。列挙できないディレクトリがあれば中止する。
 
     Path.rglob は走査中の OSError を抑制するため使わない。
@@ -170,7 +165,7 @@ def _files_under(root: Path, suffixes: tuple[str, ...]) -> list[Path]:
 
 
 def _csv_paths(root: Path) -> list[Path]:
-    return _files_under(root, (".csv",))
+    return files_under(root, (".csv",))
 
 
 def _emails_in_text(text: str) -> set[str]:
@@ -208,7 +203,7 @@ def _group_terms(org_input: Path, cfg: dict) -> set[Term]:
         except (OSError, ValueError) as exc:
             # 読めなければ部署名の照合を保証できない。「取りこぼしより誤検出」の方針の
             # 帰結として、不完全な禁止語集合で書き込みを続行せずここで止める
-            raise DiscussionError(
+            raise LeakCheckError(
                 f"他組織の {path} を読めないため混入チェックを保証できません: {exc}"
             ) from exc
         for col in ("department", "team"):
@@ -226,7 +221,7 @@ def forbidden_terms(
 ) -> tuple[Term, ...]:
     """他組織に由来する語（組織名・メール・人名トークン・部署/チーム名）。
 
-    収集元が1件でも読めない場合は DiscussionError にする（不完全な集合で通さない）。
+    収集元が1件でも読めない場合は LeakCheckError にする（不完全な集合で通さない）。
     """
     others = (
         _org_dir_names(input_dir, _is_org_input_dir)
@@ -237,12 +232,12 @@ def forbidden_terms(
         org_input = input_dir / org
         # 入力が消えている（reports 側にだけ残っている）組織でも、生成済みレポートから
         # メール・人名を拾えるようにする。拾えないと組織名1件だけの禁止語になる
-        sources = _csv_paths(org_input) + _files_under(output_dir / org, (".csv", ".md"))
+        sources = _csv_paths(org_input) + files_under(output_dir / org, (".csv", ".md"))
         for path in sources:
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError as exc:
-                raise DiscussionError(
+                raise LeakCheckError(
                     f"他組織の {path} を読めないため混入チェックを保証できません: {exc}"
                 ) from exc
             for email in _emails_in_text(text):

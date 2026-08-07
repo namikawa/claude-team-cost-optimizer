@@ -34,8 +34,7 @@ from pathlib import Path
 from . import report
 from .config import discussion_settings
 from .leakcheck import (
-    _MONTH_DIR_RE,
-    DiscussionError,
+    MONTH_DIR_RE,
     LeakHit,
     Term,
     find_leaks,
@@ -43,6 +42,20 @@ from .leakcheck import (
 )
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+class DiscussionError(RuntimeError):
+    """考察の生成に失敗した。
+
+    送出された場合、レポートは書き換えていない。
+    transient=True は再実行で解消しうる失敗（通信の一時障害・429・5xx・タイムアウト）で、
+    認証や設定の誤りのような恒久的な失敗と区別してリトライの可否を決める。
+    """
+
+    def __init__(self, message: str, *, transient: bool = False):
+        super().__init__(message)
+        self.transient = transient
+
 
 # ヘッドレス実行で禁止するツール。資料はプロンプトに埋め込むためツールは一切不要。
 #
@@ -144,7 +157,7 @@ def _prev_month_dir(org_output: Path, month: str) -> Path | None:
         return None
     months = sorted(
         p.name for p in org_output.iterdir()
-        if p.is_dir() and _MONTH_DIR_RE.match(p.name) and p.name < month
+        if p.is_dir() and MONTH_DIR_RE.match(p.name) and p.name < month
     )
     return org_output / months[-1] if months else None
 
