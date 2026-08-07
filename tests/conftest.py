@@ -2,9 +2,11 @@ from pathlib import Path
 
 import pytest
 
+from seat_analyzer.cli import main
 from seat_analyzer.config import load_config
 
 REPO_ROOT = Path(__file__).parent.parent
+CONFIG = str(REPO_ROOT / "config.yaml")
 
 
 @pytest.fixture
@@ -56,6 +58,35 @@ def make_input(tmp_path: Path):
         return input_dir
 
     return _make
+
+
+@pytest.fixture
+def two_orgs(make_input):
+    """org-a（対象）と org-b（他組織）の2組織構成。"""
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice.morgan@x.jp", 10.0)],
+         "2026-06": [spend_row("alice.morgan@x.jp", 12.0)]},
+        members=["alice.morgan@x.jp,Premium"], org="org-a",
+    )
+    make_input(
+        {"2026-06": [spend_row("bernard.holloway@y.jp", 300.0, net=250.0)]},
+        members=["bernard.holloway@y.jp,Standard"], org="org-b",
+    )
+    return input_dir
+
+
+def run_analyze(input_dir: Path, tmp_path: Path, *extra: str) -> Path:
+    """CLI の analyze を 2026-06 で実行し、出力ルート（reports/）を返す。"""
+    output_dir = tmp_path / "reports"
+    rc = main(["analyze", "--config", CONFIG, "--input-dir", str(input_dir),
+               "--output-dir", str(output_dir), "--month", "2026-06", *extra])
+    assert rc == 0
+    return output_dir
+
+
+def hit_terms(hits) -> tuple[str, ...]:
+    """混入チェックの検出結果から語だけを取り出す（検出の有無と順序を突き合わせる用）。"""
+    return tuple(h.term for h in hits)
 
 
 @pytest.fixture
