@@ -1,0 +1,13 @@
+
+{% if member_changes %}
+<h2><!--text:h_member_changes--></h2>
+<div class="card note">
+  <p>スナップショット時点: {{ member_changes.snap_list }}</p>
+  {% if member_changes.empty %}<p>変動なし</p>{% else %}<ul>
+  {% for c in member_changes.seat_changes %}<li>{{ c.email }}: {{ c.interval_label }} で {{ c.from_label }} → {{ c.to_label }}</li>{% endfor %}
+  {% for j in member_changes.joined %}<li>{{ j.email }}: {{ j.interval_label }} で追加（{{ j.seat_label }}）</li>{% endfor %}
+  {% for x in member_changes.left %}<li>{{ x.email }}: {{ x.interval_label }} で削除（{{ x.seat_label }}）</li>{% endfor %}
+  {% for c in member_changes.credit_changes %}<li>{{ c.email }}: {{ c.interval_label }} で 追加クレジット上限 {{ c.from }} → {{ c.to }}（members-info 由来）</li>{% endfor %}
+  </ul>{% if member_changes.credit_changes %}<p><!--text:note_credit_change-->。</p>{% endif %}{% endif %}
+</div>
+{% endif %}

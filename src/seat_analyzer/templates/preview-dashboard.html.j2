@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Team シート速報プレビュー — {{ scope }}</title>
+<style>{{ dashboard_css }}
+  /* 速報専用: 一次判断であることを強調する注意バナー */
+  .banner { background:#fdf3e0; border:1px solid #e0b96b; border-left:5px solid #d97a4a;
+            border-radius:8px; padding:12px 16px; margin:12px 0 20px; font-size:.85rem;
+            line-height:1.6; color:#7a5310; }
+</style>
+</head>
+<body><div class="wrap">
+<h1>Claude Team シート速報プレビュー <small>{{ scope }}</small></h1>
+<div class="banner">{{ days_observed }}日間の観測データ（暦{{ days_in_month }}日、月末ペース換算 ×{{ '%.1f' % factor }}）に基づく一次判断です。シート変更の確定判断には使わず、ヒアリング・観察対象の絞り込みに使ってください。</div>
+
+<div class="cards">
+  <div class="card"><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}{% if s.n_unassigned %} / 未割当 {{ s.n_unassigned }}{% endif %}）</div></div>
+  <div class="card"><div class="v">${{ '%.0f' % s.seat_cost_now_usd }}</div><div class="l">現在のシート費用 /月</div></div>
+  <div class="card"><div class="v">{{ total_obs_fmt }}</div><div class="l">観測需要（{{ days_observed }}日）</div></div>
+  <div class="card"><div class="v">{{ total_proj_fmt }}</div><div class="l">月末ペース換算 /月</div></div>
+  <div class="card"><div class="v">{{ s.n_billed }}</div><div class="l">実課金発生</div></div>
+</div>
+<!--CREDIT_COMPOSITION-->
+
+<h2>一次判断の内訳</h2>
+<div class="card">
+{% for c in label_counts %}<span class="badge {{ c.cls }}" style="margin:2px 6px 2px 0;">{{ c.label }} {{ c.n }} 名</span>{% endfor %}
+</div>
+
+<h2>月末ペース換算需要</h2>
+<div class="card">
+{% for u in users_sorted %}
+  <div class="bar">
+    <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
+    <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_projected_usd / max_proj * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('#9aa3ad' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div></div>
+    <div class="val">{{ u.proj_fmt }}</div>
+  </div>
+{% endfor %}
+  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span> / <span class="seat-unassigned">■ 未割当・不明</span></div>
+</div>
+
+<h2>一次判断テーブル</h2>
+<div class="tablebox"><table>
+<tr><th>ユーザ</th><th>現シート</th>{% if has_dept %}<th>部署</th>{% endif %}{% if has_team %}<th>チーム</th>{% endif %}<th class="num">{{ obs_label }}</th><th class="num">月末ペース換算</th><th class="num">実課金(観測)</th><th>一次判断</th><th>確度</th></tr>
+{% for u in users_sorted %}
+<tr>
+  <td class="user" title="{{ u.email }}">{{ u.email.split('@')[0] }}</td>
+  <td class="seat"><span class="seat-{{ u.current_seat }}">{{ seat_short.get(u.current_seat, '?') }}</span></td>
+  {% if has_dept %}<td>{{ u.department }}</td>{% endif %}
+  {% if has_team %}<td>{{ u.team }}</td>{% endif %}
+  <td class="num">{{ u.obs_fmt }}</td>
+  <td class="num">{{ u.proj_fmt }}</td>
+  <td class="num"{% if u.billed_bg %} style="background:{{ u.billed_bg }}"{% endif %}>{{ u.billed_fmt }}{% if u.billed_flag %} <span class="cap">{{ u.billed_flag }}</span>{% endif %}</td>
+  <td class="judge"><span class="badge {{ u.badge_class }}">{{ u.label }}</span></td>
+  <td>{% if u.confidence != '—' %}<span class="conf">{{ u.confidence }}</span>{% endif %}</td>
+</tr>
+{% endfor %}
+</table></div>
+<!--CREDIT_REACH-->
+<!--SNAPSHOT_SECTION-->
+<!--GRANT_SECTION-->
+<h2>注意事項</h2>
+<div class="card note">
+  <ul>
+    <li>日割り換算（×{{ '%.1f' % factor }}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません。</li>
+    <li><!--text:note_billed_nonlinear-->。</li>
+    <li>変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（analyze）で行ってください。</li>
+    {% if disabled_note %}<li>{{ disabled_note }}。</li>{% endif %}
+  </ul>
+  <ul>
+    <li><!--text:legend_idle-->。</li>
+    <li><!--text:legend_over-->。</li>
+    <li><!--text:legend_billed-->。</li>
+    <li><!--text:legend_excluded-->。</li>
+  </ul>
+</div>
+
+</div></body></html>

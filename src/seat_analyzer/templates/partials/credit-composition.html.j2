@@ -1,0 +1,4 @@
+
+{% if s.credit_shown %}
+<div class="card note">追加クレジット: 有効 {{ s.credit_enabled_n }} 名（上限計 ${{ '%.0f' % s.credit_cap_total_usd }}/月・無制限 {{ s.credit_unlimited_n }} 名） / 無効 {{ s.credit_disabled_n }} 名 / 不明 {{ s.credit_unknown_n }} 名</div>
+{% endif %}
