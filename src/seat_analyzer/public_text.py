@@ -30,8 +30,11 @@ from .leakcheck import (
 PUBLIC_BASELINE_PATHS = (
     "README.md", "config.yaml", "pyproject.toml", "examples", "src", "tests", ".claude",
 )
+# 公開済みの内容はコードだけでなく資材にもある（templates/ の .css・.j2 等）。
+# 拡張子の網羅が実体からずれると baseline が縮み、公開済みの語を新たな開示として扱う
 _TEXT_SUFFIXES = (
     ".md", ".py", ".csv", ".yaml", ".yml", ".txt", ".html", ".toml", ".json",
+    ".css", ".j2",
 )
 
 

@@ -54,13 +54,25 @@ def _units(package_dir: Path) -> dict[str, list[Path]]:
     直下の .py はそれ自身が単位。`__init__.py` を持つサブディレクトリは配下すべてで
     1単位（分割の内側は1つの責務とみなす）。`__init__.py` を持たないディレクトリ
     （テンプレート・プロンプト等の資材置き場）は単位にならない。
+
+    同名の単位が2つできる（`report.py` と `report/` が並ぶ）場合は失格にする。
+    片方が黙って上書きされると、その中身が検査対象から丸ごと外れるため。
     """
     units: dict[str, list[Path]] = {}
     for entry in sorted(package_dir.iterdir()):
         if entry.is_file() and entry.suffix == ".py":
-            units[entry.stem] = [entry]
+            name, paths = entry.stem, [entry]
         elif entry.is_dir() and (entry / "__init__.py").is_file():
-            units[entry.name] = sorted(entry.rglob("*.py"))
+            name, paths = entry.name, sorted(entry.rglob("*.py"))
+        else:
+            continue
+        if name in units:
+            raise AssertionError(
+                f"同名の単位が2つあります: {name}（{name}.py と {name}/）。"
+                "\n.py と同名パッケージの共存は Python 側でも .py が無視される状態です。"
+                "どちらかへ寄せてください"
+            )
+        units[name] = paths
     return units
 
 
@@ -184,3 +196,33 @@ def test_rule_reaches_into_subpackages(fake_package):
         "high(層30) → orphan(層の割り当てなし)",
         "pack(層20) → high(層30)",
     ]
+
+
+COLLIDING_FILES = {
+    "__init__.py": "",
+    "low.py": "",
+    "dup.py": "",
+    "dup/__init__.py": "from ..low import a\n",
+    "dup/inner.py": "from ..low import b\n",
+}
+
+
+@pytest.fixture
+def colliding_package(tmp_path):
+    """`dup.py` と `dup/` が並ぶ、単位名が衝突するパッケージ。"""
+    root = tmp_path / "collide"
+    for name, body in COLLIDING_FILES.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    return root
+
+
+def test_units_reject_module_and_package_with_the_same_name(colliding_package):
+    """.py と同名パッケージが並んだら失格にする。
+
+    片方が黙って上書きされると、その中の import が検査対象から丸ごと外れ、
+    上向きの依存があってもテストは緑のままになる。
+    """
+    with pytest.raises(AssertionError, match="同名の単位が2つあります: dup"):
+        _units(colliding_package)

@@ -50,6 +50,27 @@ def test_forbidden_terms_splits_short_name_segments(make_input, tmp_path):
     assert {"taro", "sato", "hana", "kato"} <= texts
 
 
+def test_forbidden_terms_person_token_length_floor(make_input, tmp_path):
+    """人名トークンの長さの下限を固定する（誤検出の量に直結するため）。
+
+    ローマ字の姓は3文字になる例が普通にあるので3文字までは禁止語に残す。2文字以下は
+    一般的な文章に偶然含まれて誤検出になるため落とす。両側を固定しないと、下限を
+    動かしたときに片方だけしか落ちない。
+    """
+    input_dir = make_input({"2026-06": [spend_row("alice.morgan@x.jp", 10.0)]},
+                           members=["alice.morgan@x.jp,Premium"], org="org-a")
+    make_input({"2026-06": [spend_row("mia.thornbury@y.jp", 10.0),
+                            spend_row("jo.vandermeer@y.jp", 10.0)]},
+               members=["mia.thornbury@y.jp,Premium", "jo.vandermeer@y.jp,Standard"],
+               org="org-b")
+    texts = _texts(leakcheck.forbidden_terms(
+        input_dir=input_dir, output_dir=tmp_path / "reports",
+        target_org="org-a", cfg=load_config(CONFIG)))
+    assert {"thornbury", "vandermeer"} <= texts
+    assert "mia" in texts      # 3文字は残す
+    assert "jo" not in texts   # 2文字以下は落とす
+
+
 def test_find_leaks_flags_only_terms_absent_from_source():
     terms = _terms(("org-b", "org"), ("bernard.holloway@y.jp", "address"),
                    ("holloway", "person"), ("架空推進3部", "group"))
