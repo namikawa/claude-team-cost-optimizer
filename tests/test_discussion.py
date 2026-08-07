@@ -4,52 +4,26 @@
 subprocess.run の monkeypatch で置き換える。
 """
 
-import os
-import shutil
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from seat_analyzer import cli, discussion, leakcheck, public_text, report
+from seat_analyzer import cli, discussion, leakcheck, report
 from seat_analyzer.cli import main
 from seat_analyzer.config import load_config, discussion_settings
 
-from .conftest import REPO_ROOT, spend_row
+from .conftest import CONFIG, hit_terms, run_analyze
 
-CONFIG = str(REPO_ROOT / "config.yaml")
 BODY = "### 変更推奨の妥当性\n\n" + "対象組織の需要は妥当な範囲に収まっている。" * 12
-
-
-@pytest.fixture
-def two_orgs(make_input):
-    """org-a（対象）と org-b（他組織）の2組織構成。"""
-    input_dir = make_input(
-        {"2026-05": [spend_row("alice.morgan@x.jp", 10.0)],
-         "2026-06": [spend_row("alice.morgan@x.jp", 12.0)]},
-        members=["alice.morgan@x.jp,Premium"], org="org-a",
-    )
-    make_input(
-        {"2026-06": [spend_row("bernard.holloway@y.jp", 300.0, net=250.0)]},
-        members=["bernard.holloway@y.jp,Standard"], org="org-b",
-    )
-    return input_dir
-
-
-def _analyze(input_dir: Path, tmp_path: Path, *extra: str) -> Path:
-    output_dir = tmp_path / "reports"
-    rc = main(["analyze", "--config", CONFIG, "--input-dir", str(input_dir),
-               "--output-dir", str(output_dir), "--month", "2026-06", *extra])
-    assert rc == 0
-    return output_dir
 
 
 # ---------------------------------------------------------------- report.py 側のヘルパ
 
 
 def test_document_body_and_discussion_body(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     path = out / "org-a" / "2026-06" / "report.md"
     md = path.read_text(encoding="utf-8")
 
@@ -67,10 +41,10 @@ def test_document_body_and_discussion_body(two_orgs, tmp_path):
 
 
 def test_written_discussion_survives_reanalysis(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     path = out / "org-a" / "2026-06" / "report.md"
     report.write_discussion(path, BODY)
-    _analyze(two_orgs, tmp_path)  # 同じ output_dir へ再生成
+    run_analyze(two_orgs, tmp_path)  # 同じ output_dir へ再生成
     assert report.discussion_body(path.read_text(encoding="utf-8")) == BODY.strip()
 
 
@@ -79,266 +53,6 @@ def test_write_discussion_requires_section(tmp_path):
     path.write_text("# タイトル\n\n本文\n", encoding="utf-8")
     with pytest.raises(ValueError, match="考察"):
         report.write_discussion(path, BODY)
-
-
-# ---------------------------------------------------------------- 混入チェック
-
-
-def _terms(*specs: tuple[str, str]) -> tuple[leakcheck.Term, ...]:
-    return tuple(leakcheck.Term(text, kind) for text, kind in specs)
-
-
-def _texts(terms) -> set[str]:
-    return {t.text for t in terms}
-
-
-def _hit_terms(hits) -> tuple[str, ...]:
-    return tuple(h.term for h in hits)
-
-
-def test_forbidden_terms_excludes_target_org(two_orgs, tmp_path):
-    cfg = load_config(CONFIG)
-    terms = leakcheck.forbidden_terms(
-        input_dir=two_orgs, output_dir=tmp_path / "reports", target_org="org-a", cfg=cfg)
-    texts = _texts(terms)
-    assert "org-b" in texts
-    assert "bernard.holloway@y.jp" in texts
-    assert "bernard" in texts and "holloway" in texts
-    # 組織名は kind=org として常時禁止の扱いになる
-    assert leakcheck.Term("org-b", "org") in terms
-    # 対象組織自身の語は禁止語に入らない
-    assert "org-a" not in texts
-    assert not any("alice" in t for t in texts)
-
-
-def test_forbidden_terms_splits_short_name_segments(make_input, tmp_path):
-    """ドット・アンダースコア区切りの短い姓名も禁止語に含める（実運用の命名に合わせる）。"""
-    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
-                           members=["a@x.jp,Premium"], org="org-a")
-    make_input({"2026-06": [spend_row("taro.sato@y.jp", 10.0)]},
-               members=["taro.sato@y.jp,Premium", "hana_kato@y.jp,Standard"], org="org-b")
-    texts = _texts(leakcheck.forbidden_terms(
-        input_dir=input_dir, output_dir=tmp_path / "reports",
-        target_org="org-a", cfg=load_config(CONFIG)))
-    assert {"taro", "sato", "hana", "kato"} <= texts
-
-
-def test_find_leaks_flags_only_terms_absent_from_source():
-    terms = _terms(("org-b", "org"), ("bernard.holloway@y.jp", "address"),
-                   ("holloway", "person"), ("架空推進3部", "group"))
-    source = "org-a のユーザ alice.morgan@x.jp は Premium。"
-
-    assert _hit_terms(leakcheck.find_leaks(
-        "holloway さんは Standard で足りている。", terms, source=source)) == ("holloway",)
-    assert _hit_terms(leakcheck.find_leaks(
-        "架空推進3部の削減余地は小さい。", terms, source=source)) == ("架空推進3部",)
-    assert leakcheck.find_leaks("alice.morgan の需要は妥当。", terms, source=source) == ()
-
-
-def test_find_leaks_ignores_terms_present_in_source():
-    # 対象組織の資料に現れる語は、出力に出てきても混入ではない
-    terms = _terms(("holloway", "person"))
-    source = "holloway@x.jp は対象組織のユーザ。"
-    assert leakcheck.find_leaks("holloway は Premium 継続。", terms, source=source) == ()
-
-
-def test_find_leaks_always_forbids_other_org_names():
-    """組織名は対象組織の資料に現れても混入として扱う（資料側の混入を許可根拠にしない）。"""
-    source = "備考: org-b から異動。"
-    assert _hit_terms(leakcheck.find_leaks(
-        "org-b と比べると小さい。", _terms(("org-b", "org")), source=source)) == ("org-b",)
-    # 人名・部署名は従来どおり資料に現れれば除外する
-    assert leakcheck.find_leaks(
-        "holloway は継続。", _terms(("holloway", "person")), source=source + " holloway@x.jp") == ()
-
-
-def test_find_leaks_respects_word_boundaries():
-    # 英単語の一部として現れる出現は拾わない（detail の中の etai 等の誤検出防止）
-    assert leakcheck.find_leaks("detail を確認する。", _terms(("etai", "person")), source="") == ()
-    # メールのローカル部・ドメインの構成要素として現れる出現は拾う
-    assert _hit_terms(leakcheck.find_leaks(
-        "bernard.holloway", _terms(("bernard", "person")), source="")) == ("bernard",)
-    assert _hit_terms(leakcheck.find_leaks(
-        "holloway@y.jp", _terms(("holloway", "person")), source="")) == ("holloway",)
-    # 日本語が隣接する出現は拾う
-    assert _hit_terms(leakcheck.find_leaks(
-        "org-b組織では", _terms(("org-b", "org")), source="")) == ("org-b",)
-
-
-def test_find_leaks_short_japanese_terms_need_non_kanji_boundary():
-    """短い日本語の語は漢字・カタカナの連結を語の一部とみなす（一般語の誤検出を防ぐ）。"""
-    short = _terms(("開発部", "group"), ("人事", "group"))
-    # 無関係な複合語の一部としての出現は拾わない
-    assert leakcheck.find_leaks("製品開発部門の需要が大きい。", short, source="") == ()
-    assert leakcheck.find_leaks("人事評価制度を見直す。", short, source="") == ()
-    # 助詞・記号が続く出現は拾う
-    assert _hit_terms(leakcheck.find_leaks("開発部の削減余地は小さい。", short, source="")) \
-        == ("開発部",)
-    assert _hit_terms(leakcheck.find_leaks("人事、総務の2部署。", short, source="")) == ("人事",)
-
-
-def test_find_leaks_long_japanese_terms_match_inside_compounds():
-    """長い日本語の語は固有性が高いため、複合語に埋め込まれても検出する。"""
-    long_term = _terms(("架空推進3部", "group"))
-    assert _hit_terms(leakcheck.find_leaks(
-        "架空推進3部第2チームの需要。", long_term, source="")) == ("架空推進3部",)
-
-
-def test_find_leaks_reports_context_and_kind():
-    hits = leakcheck.find_leaks(
-        "前段の説明。製品開発部の削減余地は小さい。後段の説明。",
-        _terms(("製品開発部", "group")), source="")
-    assert len(hits) == 1
-    assert hits[0].kind == "group"
-    assert "製品開発部の削減余地" in hits[0].context
-
-
-def test_find_leaks_allow_overrides_detection():
-    terms = _terms(("開発部", "group"), ("holloway", "person"))
-    text = "開発部と holloway について。"
-    assert _hit_terms(leakcheck.find_leaks(text, terms, source="")) == ("holloway", "開発部")
-    # 人が確認して無害と判断した語は許可できる（大文字小文字は問わない）
-    assert _hit_terms(leakcheck.find_leaks(
-        text, terms, source="", allow=("開発部",))) == ("holloway",)
-    assert leakcheck.find_leaks(text, terms, source="", allow=("開発部", "HOLLOWAY")) == ()
-
-
-def test_allow_cannot_override_org_names_or_addresses():
-    """組織名とメールアドレスは --allow-term の対象外（誤検出の余地が実質なく影響が大きい）。"""
-    terms = _terms(("org-b", "org"), ("x@y.jp", "address"), ("y.jp", "domain"))
-    text = "org-b の x@y.jp（y.jp）について。"
-    hits = leakcheck.find_leaks(
-        text, terms, source="", allow=("org-b", "x@y.jp", "y.jp"))
-    assert _hit_terms(hits) == ("org-b", "x@y.jp")
-    assert all(h.allowable is False for h in hits)
-
-
-def test_find_leaks_org_names_use_aggressive_boundary():
-    """短い日本語の緩い規則を組織名に適用すると取りこぼす（影響が最大の種類なので例外扱い）。"""
-    assert _hit_terms(leakcheck.find_leaks(
-        "東京支社の利用状況。", _terms(("東京", "org")), source="")) == ("東京",)
-    # 同じ長さでも部署名なら複合語の一部としては拾わない
-    assert leakcheck.find_leaks("東京支社の利用状況。", _terms(("東京", "group")), source="") == ()
-
-
-def test_group_names_from_members_info(two_orgs, tmp_path):
-    (two_orgs / "org-b" / "members-info.csv").write_text(
-        "email,部署,チーム,職種\nbernard.holloway@y.jp,架空推進3部,Nebula-AI,エンジニア\n",
-        encoding="utf-8")
-    cfg = load_config(CONFIG)
-    texts = _texts(leakcheck.forbidden_terms(
-        input_dir=two_orgs, output_dir=tmp_path / "reports", target_org="org-a", cfg=cfg))
-    assert "架空推進3部" in texts and "Nebula-AI" in texts
-    # 職種は一般語のため禁止語に含めない
-    assert "エンジニア" not in texts
-
-
-def test_org_named_like_input_subdir_is_still_collected(make_input, tmp_path):
-    """入力サブディレクトリと同名の組織（組織名として許される）も禁止語を集める。
-
-    名前で除外すると、その組織のユーザ名・部署名が丸ごと照合対象から抜ける。
-    """
-    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
-                           members=["a@x.jp,Premium"], org="org-a")
-    make_input({"2026-06": [spend_row("bernard.holloway@y.jp", 10.0)]},
-               members=["bernard.holloway@y.jp,Premium"], org="members")
-    texts = _texts(leakcheck.forbidden_terms(
-        input_dir=input_dir, output_dir=tmp_path / "reports",
-        target_org="org-a", cfg=load_config(CONFIG)))
-    assert "members" in texts and "holloway" in texts
-
-
-def test_forbidden_terms_fails_closed_on_unreadable_input(two_orgs, tmp_path, monkeypatch):
-    """収集元が読めない場合、不完全な禁止語集合で通さず中止する。"""
-    def boom(self, *a, **kw):
-        raise OSError("permission denied")
-
-    monkeypatch.setattr(Path, "read_text", boom)
-    with pytest.raises(leakcheck.LeakCheckError, match="混入チェックを保証できません"):
-        leakcheck.forbidden_terms(
-            input_dir=two_orgs, output_dir=tmp_path / "reports",
-            target_org="org-a", cfg=load_config(CONFIG))
-
-
-@pytest.mark.parametrize("target", ["input", "org", "subdir"])
-def test_forbidden_terms_fails_closed_on_unlistable_dir(two_orgs, tmp_path, target):
-    """列挙できないディレクトリも中止扱いにする。
-
-    pathlib の is_dir()/glob() は権限エラーを False や空リストとして飲み込むため、
-    それに頼ると「他組織が読めなかった」ことが検出漏れと区別できない。
-    """
-    victim = {
-        "input": two_orgs,
-        "org": two_orgs / "org-b",
-        "subdir": two_orgs / "org-b" / "spend",
-    }[target]
-    victim.chmod(0o000)
-    try:
-        with pytest.raises(leakcheck.LeakCheckError, match="混入チェックを保証できません"):
-            leakcheck.forbidden_terms(
-                input_dir=two_orgs, output_dir=tmp_path / "reports",
-                target_org="org-a", cfg=load_config(CONFIG))
-    finally:
-        victim.chmod(0o755)
-
-
-def test_single_character_org_name_is_detected(make_input, tmp_path):
-    """1文字の組織名も禁止語に残す（長さ下限は派生語の誤検出対策で、識別子には適用しない）。"""
-    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
-                           members=["a@x.jp,Premium"], org="org-a")
-    make_input({"2026-06": [spend_row("z@y.jp", 10.0)]}, members=["z@y.jp,Premium"], org="A")
-    terms = leakcheck.forbidden_terms(
-        input_dir=input_dir, output_dir=tmp_path / "reports",
-        target_org="org-a", cfg=load_config(CONFIG))
-    assert leakcheck.Term("A", "org") in terms
-    assert _hit_terms(leakcheck.find_leaks("A社の状況は…", terms, source="")) == ("A",)
-
-
-def test_duplicate_text_merges_to_stricter_kind():
-    """同一文字列が複数 kind にあるとき、厳しい側（許可できない側）に寄せる。"""
-    terms = _terms(("acme", "domain"), ("acme", "org"))
-    hits = leakcheck.find_leaks("acme の状況。", terms, source="")
-    assert [(h.kind, h.allowable) for h in hits] == [("org", False)]
-    # 許可指定を付けても org として残る（案内と実挙動が一致する）
-    assert _hit_terms(leakcheck.find_leaks(
-        "acme の状況。", terms, source="", allow=("acme",))) == ("acme",)
-
-
-def test_forbidden_terms_fails_closed_on_broken_members_info(two_orgs, tmp_path):
-    (two_orgs / "org-b" / "members-info.csv").write_text(
-        "部署,チーム\n架空推進3部,Nebula-AI\n", encoding="utf-8")  # email 列が無い
-    with pytest.raises(leakcheck.LeakCheckError, match="混入チェックを保証できません"):
-        leakcheck.forbidden_terms(
-            input_dir=two_orgs, output_dir=tmp_path / "reports",
-            target_org="org-a", cfg=load_config(CONFIG))
-
-
-def test_forbidden_terms_harvested_from_reports_only_org(two_orgs, tmp_path):
-    """入力が無く reports にだけ残っている組織からも語を集める。
-
-    集めないと組織名1件だけの禁止語になり、その組織のユーザ名が素通りする。
-    """
-    out = _analyze(two_orgs, tmp_path)
-    # org-b の入力を消し、生成済みレポートだけ残す
-    shutil.rmtree(two_orgs / "org-b")
-    texts = _texts(leakcheck.forbidden_terms(
-        input_dir=two_orgs, output_dir=out, target_org="org-a", cfg=load_config(CONFIG)))
-    assert "org-b" in texts
-    assert "bernard.holloway@y.jp" in texts and "holloway" in texts
-
-
-def test_legacy_layout_has_no_forbidden_terms(make_input, tmp_path):
-    """旧レイアウト（input/spend 直下）では他組織が存在しないため禁止語は空。
-
-    入力サブディレクトリ名を組織名と誤認すると、考察が「spend」「members」に触れる
-    だけでブロックされ、自組織のユーザ名まで禁止語に入ってしまう。
-    """
-    input_dir = make_input({"2026-06": [spend_row("alice.morgan@x.jp", 10.0)]},
-                           members=["alice.morgan@x.jp,Premium"])
-    terms = leakcheck.forbidden_terms(
-        input_dir=input_dir, output_dir=tmp_path / "reports",
-        target_org=None, cfg=load_config(CONFIG))
-    assert terms == ()
 
 
 # ---------------------------------------------------------------- generate()
@@ -363,7 +77,7 @@ def _generate(two_orgs: Path, out: Path, runner, **kw):
 
 
 def test_generate_writes_discussion(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     runner = _runner(BODY)
     outcome = _generate(two_orgs, out, runner)
 
@@ -378,7 +92,7 @@ def test_generate_writes_discussion(two_orgs, tmp_path):
 
 
 def test_generate_keeps_existing_unless_forced(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     report.write_discussion(out / "org-a" / "2026-06" / "report.md", BODY)
 
     runner = _runner("### 別の考察\n\n" + "上書きされた本文。" * 20)
@@ -393,7 +107,7 @@ def test_generate_keeps_existing_unless_forced(two_orgs, tmp_path):
 
 
 def test_generate_retries_once_then_accepts(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "他組織の bernard.holloway と比べると小さい。" * 6
     runner = _runner(leaky, BODY)
     outcome = _generate(two_orgs, out, runner)
@@ -412,7 +126,7 @@ def test_generate_reports_leaks_even_when_rewrite_succeeds(two_orgs, tmp_path):
     残さないと、誤検出なら「正当な記述が静かに削られた」ことに気づけず、真の混入なら
     「モデルが他組織名を出そうとした」という兆候の記録が消える。
     """
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "他組織の bernard.holloway と比べると小さい。" * 6
     notices: list[str] = []
     outcome = discussion.generate(
@@ -429,7 +143,7 @@ def test_generate_reports_leaks_even_when_rewrite_succeeds(two_orgs, tmp_path):
 
 def test_config_allow_terms_apply_to_all_orgs(two_orgs, tmp_path, monkeypatch):
     """config の allow_terms は全組織実行でも効く（--allow-term は単一組織限定のため）。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "holloway 相当の水準にある。" * 10
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: leaky)
 
@@ -446,14 +160,14 @@ def test_config_allow_terms_apply_to_all_orgs(two_orgs, tmp_path, monkeypatch):
 
 
 def test_generate_blocks_persistent_leak(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "他組織の bernard.holloway と比べると小さい。" * 6
     runner = _runner(leaky, leaky)
     outcome = _generate(two_orgs, out, runner)
 
     assert outcome.status == "blocked"
     assert outcome.attempts == 2
-    leaked = _hit_terms(outcome.leaks)
+    leaked = hit_terms(outcome.leaks)
     assert "bernard.holloway" in leaked and "holloway" in leaked
     # 検出語には一致箇所の文脈が付く（誤検出かどうかを人が判断するため）
     assert all(h.context for h in outcome.leaks)
@@ -462,7 +176,7 @@ def test_generate_blocks_persistent_leak(two_orgs, tmp_path):
 
 
 def test_generate_allow_term_lets_verified_text_through(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "holloway 相当の水準にある。" * 10
     outcome = _generate(two_orgs, out, _runner(leaky),
                         allow=("holloway", "bernard.holloway"))
@@ -470,7 +184,7 @@ def test_generate_allow_term_lets_verified_text_through(two_orgs, tmp_path):
 
 
 def test_generate_dry_run_does_not_call_claude(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     runner = _runner(BODY)
     outcome = _generate(two_orgs, out, runner, dry_run=True)
 
@@ -482,7 +196,7 @@ def test_generate_dry_run_does_not_call_claude(two_orgs, tmp_path):
 
 def test_generate_dry_run_shows_prompt_even_when_already_written(two_orgs, tmp_path):
     """--dry-run はプロンプト確認用なので、記入済みでもプロンプトを返す。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     report.write_discussion(out / "org-a" / "2026-06" / "report.md", BODY)
     outcome = _generate(two_orgs, out, _runner(BODY), dry_run=True)
     assert outcome.status == "dry-run"
@@ -491,7 +205,7 @@ def test_generate_dry_run_shows_prompt_even_when_already_written(two_orgs, tmp_p
 
 def test_generate_does_not_overwrite_discussion_written_during_generation(two_orgs, tmp_path):
     """生成中に人が考察を書いた場合は上書きしない（判定と書き込みの間の競合）。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     path = out / "org-a" / "2026-06" / "report.md"
     handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
 
@@ -511,7 +225,7 @@ def test_generate_does_not_overwrite_discussion_written_during_generation(two_or
 
 
 def test_generate_retries_transient_failure(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     calls: list[str] = []
     notices: list[str] = []
 
@@ -533,7 +247,7 @@ def test_generate_retries_transient_failure(two_orgs, tmp_path):
 
 
 def test_generate_does_not_retry_permanent_failure(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     calls: list[str] = []
 
     def broken(prompt: str, s: dict) -> str:
@@ -552,7 +266,7 @@ def test_generate_requires_report(two_orgs, tmp_path):
 
 
 def test_preview_materials_use_preview_document(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path, "--preview", "--days", "10")
+    out = run_analyze(two_orgs, tmp_path, "--preview", "--days", "10")
     runner = _runner(BODY)
     outcome = _generate(two_orgs, out, runner, preview=True)
 
@@ -568,7 +282,7 @@ def test_previous_month_discussion_is_included(two_orgs, tmp_path):
     prev = "### 前月の所見\n\n" + "前月は Premium 継続と判断した。" * 10
     report.write_discussion(out / "org-a" / "2026-05" / "report.md", prev)
 
-    _analyze(two_orgs, tmp_path)
+    run_analyze(two_orgs, tmp_path)
 
     # 既定では前月の考察を渡さない（検証できない人手の文書のため）
     default_runner = _runner(BODY)
@@ -591,7 +305,7 @@ def test_previous_month_discussion_with_leak_is_excluded(two_orgs, tmp_path):
         out / "org-a" / "2026-05" / "report.md",
         "### 前月の所見\n\n" + "org-b の bernard.holloway と比べると小さい。" * 6)
 
-    _analyze(two_orgs, tmp_path)
+    run_analyze(two_orgs, tmp_path)
     runner = _runner(BODY)
     notices: list[str] = []
     discussion.generate(
@@ -788,7 +502,7 @@ def test_cli_reports_both_error_kinds_identically(exc, tmp_path, monkeypatch, ca
 
 
 def test_cli_discuss_writes_all_orgs(two_orgs, tmp_path, monkeypatch):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "2026-06"])
@@ -799,7 +513,7 @@ def test_cli_discuss_writes_all_orgs(two_orgs, tmp_path, monkeypatch):
 
 
 def test_cli_discuss_dry_run_prints_prompt(two_orgs, tmp_path, capsys):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     capsys.readouterr()
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "2026-06", "--org", "org-a", "--dry-run"])
@@ -811,7 +525,7 @@ def test_cli_discuss_dry_run_prints_prompt(two_orgs, tmp_path, capsys):
 
 def test_cli_dry_run_keeps_stdout_to_prompt_only(two_orgs, tmp_path, capsys):
     """--dry-run の stdout はプロンプトだけに保つ（ファイルへ落として確認する使い方のため）。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     (out / "org-a" / "2026-06" / "report.md").unlink()  # スキップ通知を発生させる
     capsys.readouterr()
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
@@ -824,7 +538,7 @@ def test_cli_dry_run_keeps_stdout_to_prompt_only(two_orgs, tmp_path, capsys):
 
 
 def test_cli_discuss_blocked_returns_nonzero(two_orgs, tmp_path, monkeypatch):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "他組織の bernard.holloway と比べる。" * 8
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: leaky)
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
@@ -868,7 +582,7 @@ def test_cli_discuss_failure_does_not_stop_other_orgs(
     break_org_a, two_orgs, tmp_path, monkeypatch,
 ):
     """1組織の失敗で他組織を止めない。考察生成の失敗と混入チェックの失敗の両方で成り立つ。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     with break_org_a(two_orgs, monkeypatch):
         rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                    "--output-dir", str(out), "--month", "2026-06"])
@@ -881,7 +595,7 @@ def test_cli_discuss_failure_does_not_stop_other_orgs(
 
 def test_cli_discuss_skips_orgs_without_report(two_orgs, tmp_path, monkeypatch, capsys):
     """レポートが無い組織はスキップする（組織ごとに spend の月がずれるため）。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     (out / "org-a" / "2026-06" / "report.md").unlink()
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
     capsys.readouterr()
@@ -895,7 +609,7 @@ def test_cli_discuss_skips_orgs_without_report(two_orgs, tmp_path, monkeypatch, 
 
 def test_cli_discuss_single_org_without_report_is_an_error(two_orgs, tmp_path, monkeypatch):
     """単一組織指定でレポートが無い場合は理由を示して失敗する（黙って何もしない、にしない）。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     (out / "org-a" / "2026-06" / "report.md").unlink()
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
@@ -905,21 +619,21 @@ def test_cli_discuss_single_org_without_report_is_an_error(two_orgs, tmp_path, m
 
 def test_cli_analyze_with_discussion(two_orgs, tmp_path, monkeypatch):
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
-    out = _analyze(two_orgs, tmp_path, "--with-discussion")
+    out = run_analyze(two_orgs, tmp_path, "--with-discussion")
     for org in ("org-a", "org-b"):
         md = (out / org / "2026-06" / "report.md").read_text(encoding="utf-8")
         assert report.discussion_body(md) == BODY.strip()
 
 
 def test_cli_analyze_without_discussion_leaves_placeholder(two_orgs, tmp_path):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     md = (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")
     assert report.discussion_body(md) is None
     assert "未記入" in md
 
 
 def test_cli_discuss_allow_term(two_orgs, tmp_path, monkeypatch):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "holloway 相当の水準にある。" * 10
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: leaky)
     args = ["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
@@ -931,7 +645,7 @@ def test_cli_discuss_allow_term(two_orgs, tmp_path, monkeypatch):
 
 def test_cli_allow_term_requires_single_org(two_orgs, tmp_path, monkeypatch):
     """許可はその組織の生成物を人が確認した結果なので、全組織へ一括適用させない。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "2026-06", "--allow-term", "holloway"])
@@ -952,7 +666,7 @@ def test_analyze_rejects_allow_term_before_running(two_orgs, tmp_path, capsys):
 
 
 def test_cli_blocked_output_includes_context(two_orgs, tmp_path, monkeypatch, capsys):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     leaky = "### 変更推奨の妥当性\n\n" + "他組織の bernard.holloway と比べる。" * 8
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: leaky)
     capsys.readouterr()
@@ -962,315 +676,6 @@ def test_cli_blocked_output_includes_context(two_orgs, tmp_path, monkeypatch, ca
     assert "検出語: bernard.holloway" in err
     assert "他組織の bernard.holloway と比べる" in err
     assert "--allow-term" in err
-
-
-# ---------------------------------------------------------------- 公開テキストの検査
-
-
-@pytest.fixture
-def publish_input(make_input, tmp_path):
-    """公開テキスト検査用の入力と、テストが制御する baseline。
-
-    baseline（すでに公開されている内容）には tests/ も含まれるため、実リポジトリを
-    ルートにするとテスト自身に書いた固有名が「公開済み」と判定されてしまう。
-    テストでは --repo-root で空の baseline を指し、公開済みとみなす内容を明示する。
-    """
-    input_dir = make_input(
-        {"2026-06": [spend_row("quillon.marsden@zz.example", 10.0)]},
-        members=["quillon.marsden@zz.example,Premium"], org="zephyr-holdings")
-    (input_dir / "zephyr-holdings" / "members-info.csv").write_text(
-        "email,部署,チーム\nquillon.marsden@zz.example,増枠推進室,ZTeamX\n", encoding="utf-8")
-    (tmp_path / "baseline").mkdir()
-    return input_dir
-
-
-def _check(text: str, publish_input: Path, tmp_path: Path, *extra: str) -> int:
-    return main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
-                 "--output-dir", str(tmp_path / "reports"),
-                 "--repo-root", str(tmp_path / "baseline"), "--text", text, *extra])
-
-
-def test_check_text_detects_org_and_group_names(publish_input, tmp_path, capsys):
-    """公開テキストに組織名・部署名・人名が含まれていれば検出する。"""
-    capsys.readouterr()
-    assert _check("zephyr-holdings の team 列を直した", publish_input, tmp_path) == 1
-    err = capsys.readouterr().err
-    assert "zephyr-holdings（org・--allow-term では許可できません）" in err
-    # 許可できない語しか無いときに許可の案内を出さない（実挙動と食い違うため）
-    assert "--allow-term <語> で許可できます" not in err
-
-    for text, term in [("増枠推進室 の削減余地", "増枠推進室"),
-                       ("ZTeamX チームの需要", "ZTeamX"),
-                       ("marsden さんの利用", "marsden")]:
-        assert _check(text, publish_input, tmp_path) == 1
-        out = capsys.readouterr().err
-        assert term in out
-        assert "--allow-term <語> で許可できます" in out  # こちらは許可できる種類
-
-
-def test_check_text_reports_term_count(publish_input, tmp_path, capsys):
-    """成功時にも照合語数を出す（検査が退化していないことを目視できるように）。"""
-    capsys.readouterr()
-    assert _check("業務情報を含まない文章です", publish_input, tmp_path) == 0
-    assert "語と照合" in capsys.readouterr().out
-
-
-def test_check_text_passes_text_without_business_info(publish_input, tmp_path, capsys):
-    capsys.readouterr()
-    assert _check(
-        "ある組織の team 列に短い英字略称が含まれており、誤検出することを再現した。",
-        publish_input, tmp_path) == 0
-    assert "検出されませんでした" in capsys.readouterr().out
-
-
-def test_check_text_ignores_already_public_names(publish_input, tmp_path):
-    """すでに公開されている内容（examples/ の合成データ等）に現れる語は検出しない。
-
-    合成サンプルの人名は実在の姓と偶然一致しうるが、その文字列は公開済みなので
-    公開テキストに書いても新たな開示にはあたらない。
-    """
-    baseline = tmp_path / "baseline" / "examples"
-    baseline.mkdir(parents=True)
-    (baseline / "members-info.csv").write_text(
-        "email\nquillon.marsden@zz.example\n", encoding="utf-8")
-    assert _check("marsden 相当の利用水準だった", publish_input, tmp_path) == 0
-    # 公開済みでない部署名は引き続き検出する
-    assert _check("ZTeamX の需要", publish_input, tmp_path) == 1
-
-
-def test_check_text_uses_repo_baseline_by_default(publish_input, tmp_path, capsys):
-    """--repo-root 省略時は --config の置かれたディレクトリを baseline とする。"""
-    capsys.readouterr()
-    # 実リポジトリの examples/ にある合成データの人名は検出されない
-    rc = main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
-               "--output-dir", str(tmp_path / "reports"),
-               "--text", "対象組織の watanabe@... は他組織の tanabe を部分文字列として含む"])
-    assert rc == 0
-    assert "検出されませんでした" in capsys.readouterr().out
-
-
-def test_check_text_allow_term(publish_input, tmp_path):
-    assert _check("ZTeamX の需要", publish_input, tmp_path) == 1
-    assert _check("ZTeamX の需要", publish_input, tmp_path, "--allow-term", "ZTeamX") == 0
-
-
-def test_check_text_allow_term_cannot_override_org_names(publish_input, tmp_path):
-    """組織名は許可対象外（一般語と衝突する余地が実質なく影響が大きい）。"""
-    assert _check("zephyr-holdings の話", publish_input, tmp_path,
-                  "--allow-term", "zephyr-holdings") == 1
-
-
-def test_check_text_reads_file_and_stdin(publish_input, tmp_path, monkeypatch, capsys):
-    path = tmp_path / "comment.md"
-    path.write_text("zephyr-holdings の team 列\n", encoding="utf-8")
-    args = ["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
-            "--output-dir", str(tmp_path / "reports"),
-            "--repo-root", str(tmp_path / "baseline")]
-    assert main([*args, str(path)]) == 1
-
-    import io
-    monkeypatch.setattr("sys.stdin", io.StringIO("増枠推進室 の削減余地\n"))
-    capsys.readouterr()
-    assert main([*args, "-"]) == 1
-    assert "(標準入力)" in capsys.readouterr().err
-
-
-def test_check_text_checks_every_input(publish_input, tmp_path, capsys):
-    clean = tmp_path / "clean.md"
-    clean.write_text("ある組織のレポートを生成した\n", encoding="utf-8")
-    dirty = tmp_path / "dirty.md"
-    dirty.write_text("ZTeamX の需要\n", encoding="utf-8")
-    capsys.readouterr()
-    assert main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
-                 "--output-dir", str(tmp_path / "reports"),
-                 "--repo-root", str(tmp_path / "baseline"), str(clean), str(dirty)]) == 1
-    captured = capsys.readouterr()
-    assert "clean.md: 業務情報は検出されませんでした" in captured.out
-    assert "ZTeamX" in captured.err
-
-
-def test_check_text_fails_closed_when_no_terms(tmp_path, capsys):
-    """禁止語を1件も集められない状態では成功させない。
-
-    --input-dir が解決できないと照合が空振りし、何を渡しても「検出なし」になる。
-    青信号にしか見えないので、fail-closed でエラー終了する。
-    """
-    capsys.readouterr()
-    rc = main(["check-text", "--config", CONFIG,
-               "--input-dir", str(tmp_path / "nonexistent"),
-               "--output-dir", str(tmp_path / "reports"), "--text", "何かの文章"])
-    assert rc == 1
-    assert "入力ディレクトリがありません" in capsys.readouterr().err
-
-    # 入力ディレクトリはあるが組織が無い場合も同様
-    (tmp_path / "empty-input").mkdir()
-    rc = main(["check-text", "--config", CONFIG,
-               "--input-dir", str(tmp_path / "empty-input"),
-               "--output-dir", str(tmp_path / "reports"), "--text", "何かの文章"])
-    assert rc == 1
-    assert "禁止語を1件も収集できませんでした" in capsys.readouterr().err
-
-
-def _git_repo(root: Path):
-    """テスト用の git リポジトリを作り、git コマンドを実行するヘルパを返す。"""
-    def git(*args):
-        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True,
-                       env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
-                            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
-                            "PATH": os.environ.get("PATH", ""), "HOME": str(root)})
-    git("init", "-q")
-    return git
-
-
-def test_public_baseline_uses_committed_content(tmp_path):
-    """baseline は HEAD の内容。作業ツリーの状態は一切見ない。
-
-    未追跡ファイルや gitignore 済みファイルはもちろん、**追跡ファイルの未コミット編集**も
-    baseline に入ってはいけない。入ると「テストに実データを書いた状態で公開文章を検査する」
-    という、検査を無意味にする状態を素通りさせる。
-    """
-    git = _git_repo(tmp_path)
-    (tmp_path / "tracked.md").write_text("tracked-name\n", encoding="utf-8")
-    git("add", "tracked.md")
-    git("commit", "-q", "-m", "init")
-
-    (tmp_path / "untracked.md").write_text("untracked-name\n", encoding="utf-8")
-    (tmp_path / ".gitignore").write_text("ignored.md\n", encoding="utf-8")
-    (tmp_path / "ignored.md").write_text("ignored-name\n", encoding="utf-8")
-    # 追跡ファイルへの未コミット追記
-    (tmp_path / "tracked.md").write_text("tracked-name\nuncommitted-name\n", encoding="utf-8")
-
-    baseline = public_text.public_baseline(tmp_path)
-    assert "tracked-name" in baseline
-    assert "uncommitted-name" not in baseline
-    assert "untracked-name" not in baseline
-    assert "ignored-name" not in baseline
-
-
-def test_public_baseline_errors_when_git_unusable(tmp_path, monkeypatch):
-    """git 管理下なのに git を実行できない場合は黙って弱くならずエラーにする。"""
-    git = _git_repo(tmp_path)
-    (tmp_path / "a.md").write_text("x\n", encoding="utf-8")
-    git("add", "a.md")
-    git("commit", "-q", "-m", "init")
-
-    monkeypatch.setattr(public_text, "_git_bytes", lambda *a, **kw: None)
-    with pytest.raises(leakcheck.LeakCheckError, match="git を実行できません"):
-        public_text.public_baseline(tmp_path)
-
-    # .git が無い（--repo-root に非 git を明示指定）ならフォールバックしてよい
-    plain = tmp_path / "plain"
-    (plain / "examples").mkdir(parents=True)
-    (plain / "examples" / "s.csv").write_text("public-name\n", encoding="utf-8")
-    assert "public-name" in public_text.public_baseline(plain)
-
-
-def test_public_baseline_excludes_checked_file_itself(tmp_path):
-    """検査対象のファイル自身は baseline から除く（自分を根拠に素通りさせない）。"""
-    draft = tmp_path / "draft.md"
-    draft.write_text("draft-name\n", encoding="utf-8")
-    (tmp_path / "examples").mkdir()
-    (tmp_path / "examples" / "s.csv").write_text("public-name\n", encoding="utf-8")
-
-    assert "draft-name" in public_text.public_baseline(tmp_path, ("draft.md", "examples"))
-    excluded = public_text.public_baseline(
-        tmp_path, ("draft.md", "examples"), exclude=(draft,))
-    assert "draft-name" not in excluded
-    assert "public-name" in excluded
-
-
-def test_check_text_diff_mode_ignores_removed_lines(publish_input, tmp_path):
-    """--diff は追加される内容だけを見る。削除行の語で落とさない。
-
-    「全部削除行だから問題ない」という目視判断は見落としやすいので機械化する。
-    """
-    removal_only = (
-        "diff --git a/x.md b/x.md\n"
-        "--- a/x.md\n"
-        "+++ b/x.md\n"
-        "@@ -1,2 +1,2 @@\n"
-        "-  ZTeamX の需要\n"
-        "+  ある組織の需要\n"
-    )
-    assert _check(removal_only, publish_input, tmp_path) == 1            # 素の検査は落ちる
-    assert _check(removal_only, publish_input, tmp_path, "--diff") == 0  # 追加分はクリーン
-
-    # 追加行に業務情報があれば --diff でも落ちる
-    adds = removal_only.replace("+  ある組織の需要", "+  増枠推進室 の需要")
-    assert _check(adds, publish_input, tmp_path, "--diff") == 1
-
-
-def test_diff_added_text_keeps_new_paths(publish_input, tmp_path):
-    """新規追加ファイルのパス自体に業務情報がある場合も拾う。"""
-    diff = ("diff --git a/ZTeamX.md b/ZTeamX.md\n"
-            "--- /dev/null\n"
-            "+++ b/ZTeamX.md\n"
-            "+内容\n")
-    extract = public_text.diff_added_text(diff)
-    assert "b/ZTeamX.md" in extract.text
-    assert "/dev/null" not in extract.text
-    assert (extract.n_added_lines, extract.n_paths) == (1, 1)
-    assert _check(diff, publish_input, tmp_path, "--diff") == 1
-
-
-def test_diff_added_text_keeps_rename_targets(publish_input, tmp_path):
-    """内容変更を伴わない rename は +++ 行を持たないため rename to から拾う。"""
-    diff = ("diff --git a/old.md b/ZTeamX.md\n"
-            "similarity index 100%\n"
-            "rename from old.md\n"
-            "rename to ZTeamX.md\n")
-    assert "ZTeamX.md" in public_text.diff_added_text(diff).text
-    assert _check(diff, publish_input, tmp_path, "--diff") == 1
-
-
-def test_diff_mode_rejects_non_diff_input(publish_input, tmp_path, capsys):
-    """差分でない入力に --diff を付けたら素通りさせずエラーにする。
-
-    抽出結果が空になって「N 語と照合したが検出なし」と出ると、完全な青信号に見える。
-    フラグの取り違えは現実に起きるので、入力側でも fail-closed にする。
-    """
-    text = "zephyr-holdings の ZTeamX について"
-    assert _check(text, publish_input, tmp_path) == 1              # 素の検査は検出する
-    capsys.readouterr()
-    assert _check(text, publish_input, tmp_path, "--diff") == 1    # 素通りさせない
-    assert "unified diff ではありません" in capsys.readouterr().err
-
-
-def test_diff_mode_reports_extraction_size(publish_input, tmp_path, capsys):
-    """成功時に抽出量を出す（追加行 0 なら検査対象が無かったと分かる）。"""
-    empty_diff = "diff --git a/x.md b/x.md\n--- a/x.md\n+++ b/x.md\n@@ -1 +0,0 @@\n-消す行\n"
-    capsys.readouterr()
-    assert _check(empty_diff, publish_input, tmp_path, "--diff") == 0
-    out = capsys.readouterr().out
-    assert "追加行 0" in out and "対象パス 1" in out
-
-
-def test_check_text_public_org_names(publish_input, tmp_path):
-    """組織名は --allow-term では通せないが、config の明示リストでは通せる。"""
-    assert _check("zephyr-holdings の話", publish_input, tmp_path) == 1
-
-    import yaml
-    cfg = yaml.safe_load(Path(CONFIG).read_text(encoding="utf-8"))
-    cfg["discussion"] = {**cfg["discussion"], "public_org_names": ["zephyr-holdings"]}
-    path = tmp_path / "config-public-org.yaml"
-    path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
-    assert main(["check-text", "--config", str(path), "--input-dir", str(publish_input),
-                 "--output-dir", str(tmp_path / "reports"),
-                 "--repo-root", str(tmp_path / "baseline"),
-                 "--text", "zephyr-holdings の話"]) == 0
-
-
-def test_public_baseline_excludes_local_only_paths(tmp_path):
-    """gitignore 対象（input/・reports/・CLAUDE.md）は baseline に含めない。"""
-    (tmp_path / "examples").mkdir()
-    (tmp_path / "examples" / "sample.csv").write_text("public-name\n", encoding="utf-8")
-    (tmp_path / "input").mkdir()
-    (tmp_path / "input" / "secret.csv").write_text("secret-name\n", encoding="utf-8")
-    (tmp_path / "CLAUDE.md").write_text("local-only-name\n", encoding="utf-8")
-    baseline = public_text.public_baseline(tmp_path)
-    assert "public-name" in baseline
-    assert "secret-name" not in baseline
-    assert "local-only-name" not in baseline
 
 
 # ---------------------------------------------------------------- 入力検証
@@ -1287,7 +692,7 @@ def test_public_baseline_excludes_local_only_paths(tmp_path):
 ])
 def test_month_format_is_validated(two_orgs, tmp_path, month):
     """対象月は出力パスの一部になるため、形式外の値を受け付けない。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     for command in ("analyze", "discuss"):
         rc = main([command, "--config", CONFIG, "--input-dir", str(two_orgs),
                    "--output-dir", str(out), "--month", month, "--org", "org-a"])
@@ -1295,7 +700,7 @@ def test_month_format_is_validated(two_orgs, tmp_path, month):
 
 
 def test_traversal_month_does_not_touch_other_org(two_orgs, tmp_path, monkeypatch):
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     before = (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8")
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
@@ -1306,7 +711,7 @@ def test_traversal_month_does_not_touch_other_org(two_orgs, tmp_path, monkeypatc
 
 def test_write_discussion_only_if_unwritten_guard(two_orgs, tmp_path):
     """判定と置換を1回の読み取りに畳む（呼び出し側の事前確認より競合の窓が狭い）。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     path = out / "org-a" / "2026-06" / "report.md"
 
     assert report.write_discussion(path, BODY, only_if_unwritten=True) is True
@@ -1322,7 +727,7 @@ def test_write_discussion_only_if_unwritten_guard(two_orgs, tmp_path):
 def test_write_discussion_aborts_when_file_changes_before_replace(two_orgs, tmp_path,
                                                                   monkeypatch):
     """置換直前に内容が変わっていたら書き込まない（判定〜置換の窓を詰める）。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     path = out / "org-a" / "2026-06" / "report.md"
     handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
 
@@ -1350,7 +755,7 @@ def _with_discussion(path: Path, body: str) -> str:
 
 def test_atomic_write_preserves_permissions(two_orgs, tmp_path):
     """一時ファイル経由の置換で元ファイルの権限を落とさない（共有用に緩めた権限を守る）。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     path = out / "org-a" / "2026-06" / "report.md"
     path.chmod(0o644)
     report.write_discussion(path, BODY)
@@ -1363,12 +768,12 @@ def test_new_report_permissions_match_other_outputs(two_orgs, tmp_path):
     一時ファイルは mkstemp 由来で 0600 なので、新規作成時に umask 既定を適用しないと
     レポートだけ dashboard.html より狭い権限になる（共有できなくなる）。
     """
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     d = out / "org-a" / "2026-06"
     reference = (d / "dashboard.html").stat().st_mode & 0o777
     assert (d / "report.md").stat().st_mode & 0o777 == reference
 
-    pv = _analyze(two_orgs, tmp_path / "pv", "--preview", "--days", "10")
+    pv = run_analyze(two_orgs, tmp_path / "pv", "--preview", "--days", "10")
     pvd = pv / "org-a" / "2026-06"
     assert (pvd / "preview.md").stat().st_mode & 0o777 == (
         pvd / "preview-dashboard.html").stat().st_mode & 0o777
@@ -1376,7 +781,7 @@ def test_new_report_permissions_match_other_outputs(two_orgs, tmp_path):
 
 def test_atomic_write_leaves_original_on_failure(two_orgs, tmp_path, monkeypatch):
     """書き込みが途中で失敗しても、レポート本体は元の内容が残る。"""
-    out = _analyze(two_orgs, tmp_path)
+    out = run_analyze(two_orgs, tmp_path)
     path = out / "org-a" / "2026-06" / "report.md"
     before = path.read_text(encoding="utf-8")
 
