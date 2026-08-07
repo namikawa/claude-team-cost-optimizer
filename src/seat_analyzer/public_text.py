@@ -18,9 +18,9 @@ from pathlib import Path
 
 from .config import discussion_settings
 from .leakcheck import (
-    DiscussionError,
+    LeakCheckError,
     LeakHit,
-    _files_under,
+    files_under,
     find_leaks,
     forbidden_terms,
 )
@@ -122,7 +122,7 @@ def public_baseline(
             if (root / name).resolve() not in skip
         )
     if (root / ".git").exists():
-        raise DiscussionError(
+        raise LeakCheckError(
             f"{root} は git 管理下ですが git を実行できませんでした。"
             "公開済みの内容を確定できないため中止します"
         )
@@ -134,7 +134,7 @@ def public_baseline(
         if target.is_file():
             files.append(target)
         elif target.is_dir():
-            files.extend(_files_under(target, _TEXT_SUFFIXES))
+            files.extend(files_under(target, _TEXT_SUFFIXES))
     chunks: list[str] = []
     for path in files:
         try:
@@ -172,7 +172,7 @@ def diff_added_text(diff: str) -> DiffExtract:
     検出なし」と表示され、完全な青信号に見えてしまうため（フラグの取り違えは起きる）。
     """
     if diff.strip() and not _DIFF_MARKER_RE.search(diff):
-        raise DiscussionError(
+        raise LeakCheckError(
             "--diff を指定しましたが、入力が unified diff ではありません"
             "（差分でない文章は --diff を外して検査してください）"
         )
@@ -202,7 +202,7 @@ def check_public_text(
     レポートの混入チェックと違い「対象組織」という概念がない（どの組織の情報も書けない）
     ため、全組織の語を禁止語として集める。
 
-    禁止語が1件も集まらない場合は DiscussionError にする。--input-dir が解決できない
+    禁止語が1件も集まらない場合は LeakCheckError にする。--input-dir が解決できない
     等で検査が退化していると、何を渡しても「検出なし」になり、青信号にしか見えないため。
 
     レポートの混入チェックと同じ規則を、リポジトリの外に出る文章にも適用するための
@@ -210,7 +210,7 @@ def check_public_text(
     側で範囲を揃えている。
     """
     if not input_dir.is_dir():
-        raise DiscussionError(
+        raise LeakCheckError(
             f"入力ディレクトリがありません: {input_dir}"
             "（--input-dir を確認してください。検査が退化するため中止します）"
         )
@@ -224,7 +224,7 @@ def check_public_text(
     terms = tuple(
         t for t in terms if not (t.kind == "org" and t.text.lower() in public_orgs))
     if not terms:
-        raise DiscussionError(
+        raise LeakCheckError(
             "禁止語を1件も収集できませんでした（--input-dir / --output-dir を確認して"
             "ください）。検査が成立しないため中止します"
         )

@@ -9,8 +9,9 @@ from pathlib import Path
 
 from . import analyze, data_quality, discussion, ingest, public_text, report
 from .config import load_config
+from .discussion import DiscussionError
 from .domain import QualityIssue, Severity
-from .leakcheck import DiscussionError
+from .leakcheck import LeakCheckError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -137,9 +138,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (OSError, ValueError, DiscussionError) as e:
+    except (OSError, ValueError, LeakCheckError, DiscussionError) as e:
         # 入力の読み取りに由来する失敗（欠損・権限・不正な値）と、混入チェックを
-        # 保証できない状況は traceback を出さずエラー終了する
+        # 保証できない状況、考察の生成に失敗した場合は traceback を出さずエラー終了する
         print(f"エラー: {e}", file=sys.stderr)
         return 1
 
@@ -546,7 +547,7 @@ def _run_discussions(
                 allow=allow, include_previous=include_previous,
                 notify=lambda m, scope=scope: print(f"  {scope}: {m}", file=sys.stderr),
             )
-        except (DiscussionError, OSError, ValueError) as exc:
+        except (DiscussionError, LeakCheckError, OSError, ValueError) as exc:
             print(f"  ! {scope}: 考察を生成できませんでした: {exc}", file=sys.stderr)
             failed.append(scope)
             continue

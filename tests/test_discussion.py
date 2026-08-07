@@ -7,11 +7,12 @@ subprocess.run の monkeypatch で置き換える。
 import os
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from seat_analyzer import discussion, leakcheck, public_text, report
+from seat_analyzer import cli, discussion, leakcheck, public_text, report
 from seat_analyzer.cli import main
 from seat_analyzer.config import load_config, discussion_settings
 
@@ -253,7 +254,7 @@ def test_forbidden_terms_fails_closed_on_unreadable_input(two_orgs, tmp_path, mo
         raise OSError("permission denied")
 
     monkeypatch.setattr(Path, "read_text", boom)
-    with pytest.raises(leakcheck.DiscussionError, match="混入チェックを保証できません"):
+    with pytest.raises(leakcheck.LeakCheckError, match="混入チェックを保証できません"):
         leakcheck.forbidden_terms(
             input_dir=two_orgs, output_dir=tmp_path / "reports",
             target_org="org-a", cfg=load_config(CONFIG))
@@ -273,7 +274,7 @@ def test_forbidden_terms_fails_closed_on_unlistable_dir(two_orgs, tmp_path, targ
     }[target]
     victim.chmod(0o000)
     try:
-        with pytest.raises(leakcheck.DiscussionError, match="混入チェックを保証できません"):
+        with pytest.raises(leakcheck.LeakCheckError, match="混入チェックを保証できません"):
             leakcheck.forbidden_terms(
                 input_dir=two_orgs, output_dir=tmp_path / "reports",
                 target_org="org-a", cfg=load_config(CONFIG))
@@ -306,7 +307,7 @@ def test_duplicate_text_merges_to_stricter_kind():
 def test_forbidden_terms_fails_closed_on_broken_members_info(two_orgs, tmp_path):
     (two_orgs / "org-b" / "members-info.csv").write_text(
         "部署,チーム\n架空推進3部,Nebula-AI\n", encoding="utf-8")  # email 列が無い
-    with pytest.raises(leakcheck.DiscussionError, match="混入チェックを保証できません"):
+    with pytest.raises(leakcheck.LeakCheckError, match="混入チェックを保証できません"):
         leakcheck.forbidden_terms(
             input_dir=two_orgs, output_dir=tmp_path / "reports",
             target_org="org-a", cfg=load_config(CONFIG))
@@ -517,7 +518,7 @@ def test_generate_retries_transient_failure(two_orgs, tmp_path):
     def flaky(prompt: str, s: dict) -> str:
         calls.append(prompt)
         if len(calls) == 1:
-            raise leakcheck.DiscussionError("API エラー: 529 Overloaded", transient=True)
+            raise discussion.DiscussionError("API エラー: 529 Overloaded", transient=True)
         return BODY
 
     cfg = load_config(CONFIG)
@@ -537,16 +538,16 @@ def test_generate_does_not_retry_permanent_failure(two_orgs, tmp_path):
 
     def broken(prompt: str, s: dict) -> str:
         calls.append(prompt)
-        raise leakcheck.DiscussionError("claude が見つかりません")
+        raise discussion.DiscussionError("claude が見つかりません")
 
-    with pytest.raises(leakcheck.DiscussionError, match="見つかりません"):
+    with pytest.raises(discussion.DiscussionError, match="見つかりません"):
         _generate(two_orgs, out, broken)
     assert len(calls) == 1
 
 
 def test_generate_requires_report(two_orgs, tmp_path):
     out = tmp_path / "reports"
-    with pytest.raises(leakcheck.DiscussionError, match="analyze"):
+    with pytest.raises(discussion.DiscussionError, match="analyze"):
         _generate(two_orgs, out, _runner(BODY))
 
 
@@ -690,7 +691,7 @@ def test_run_claude_strips_every_discussion_heading(stub_claude):
 def test_run_claude_rejects_bad_output(stub_claude, proc_kw, message):
     stub_claude(**proc_kw)
     s = discussion_settings(load_config(CONFIG))
-    with pytest.raises(leakcheck.DiscussionError, match=message):
+    with pytest.raises(discussion.DiscussionError, match=message):
         discussion.run_claude("prompt", s)
 
 
@@ -698,7 +699,7 @@ def test_run_claude_rejects_api_error_after_body(stub_claude):
     """API エラーは出力の先頭に限らない（ストリーミング途中で失敗すると本文の後に付く）。"""
     stub_claude(stdout=BODY + "\nAPI Error: 500 Internal Server Error")
     s = discussion_settings(load_config(CONFIG))
-    with pytest.raises(leakcheck.DiscussionError, match="API エラー") as exc:
+    with pytest.raises(discussion.DiscussionError, match="API エラー") as exc:
         discussion.run_claude("prompt", s)
     assert exc.value.transient is True
 
@@ -714,7 +715,7 @@ def test_run_claude_rejects_malformed_output(stub_claude, stdout, message):
     """長さだけでは弾けない「形の崩れた出力」を肯定的な検査で落とす。"""
     stub_claude(stdout=stdout)
     s = discussion_settings(load_config(CONFIG))
-    with pytest.raises(leakcheck.DiscussionError, match=message) as exc:
+    with pytest.raises(discussion.DiscussionError, match=message) as exc:
         discussion.run_claude("prompt", s)
     assert exc.value.transient is True  # 再試行で救えるため
 
@@ -739,7 +740,7 @@ def test_run_claude_isolates_mcp_and_session(stub_claude):
 def test_run_claude_transient_classification(stub_claude, proc_kw, transient):
     stub_claude(**proc_kw)
     s = discussion_settings(load_config(CONFIG))
-    with pytest.raises(leakcheck.DiscussionError) as exc:
+    with pytest.raises(discussion.DiscussionError) as exc:
         discussion.run_claude("prompt", s)
     assert exc.value.transient is transient
 
@@ -751,18 +752,39 @@ def test_run_claude_timeout(monkeypatch):
     monkeypatch.setattr(discussion.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(discussion.subprocess, "run", fake_run)
     s = discussion_settings(load_config(CONFIG))
-    with pytest.raises(leakcheck.DiscussionError, match="応答しませんでした"):
+    with pytest.raises(discussion.DiscussionError, match="応答しませんでした"):
         discussion.run_claude("prompt", s)
 
 
 def test_run_claude_missing_command(monkeypatch):
     monkeypatch.setattr(discussion.shutil, "which", lambda _: None)
     s = dict(discussion_settings(load_config(CONFIG)), command="claude-not-installed")
-    with pytest.raises(leakcheck.DiscussionError, match="見つかりません"):
+    with pytest.raises(discussion.DiscussionError, match="見つかりません"):
         discussion.run_claude("prompt", s)
 
 
 # ---------------------------------------------------------------- CLI
+
+
+@pytest.mark.parametrize("exc", [
+    leakcheck.LeakCheckError("照合を続行できません"),
+    discussion.DiscussionError("考察を生成できません"),
+])
+def test_cli_reports_both_error_kinds_identically(exc, tmp_path, monkeypatch, capsys):
+    """照合エンジンと考察生成で例外クラスが分かれても、ユーザから見える結果は同じ。
+
+    どちらも traceback を出さず「エラー: <本文>」を stderr へ出して終了コード 1 になる。
+    例外の分離は内部の整理であって、CLI の振る舞いを変えるものではない。
+    どのサブコマンドでも main() の同じ except に合流するため、代表として discuss で見る。
+    """
+    def boom(_path):
+        raise exc
+
+    monkeypatch.setattr(cli, "load_config", boom)
+    capsys.readouterr()
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(tmp_path)])
+    assert rc == 1
+    assert capsys.readouterr().err.strip() == f"エラー: {exc}"
 
 
 def test_cli_discuss_writes_all_orgs(two_orgs, tmp_path, monkeypatch):
@@ -812,18 +834,47 @@ def test_cli_discuss_blocked_returns_nonzero(two_orgs, tmp_path, monkeypatch):
     assert report.discussion_body(md) is None
 
 
-def test_cli_discuss_failure_does_not_stop_other_orgs(two_orgs, tmp_path, monkeypatch):
-    out = _analyze(two_orgs, tmp_path)
-
+@contextmanager
+def _break_generation_for_org_a(two_orgs, monkeypatch):
+    """org-a の考察生成だけを失敗させる（DiscussionError）。"""
     def fail_for_org_a(prompt: str, s: dict) -> str:
         if "org-a" in prompt:
-            raise leakcheck.DiscussionError("claude が見つかりません")
+            raise discussion.DiscussionError("claude が見つかりません")
         return BODY
 
     monkeypatch.setattr(discussion, "run_claude", fail_for_org_a)
-    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
-               "--output-dir", str(out), "--month", "2026-06"])
+    yield
+
+
+@contextmanager
+def _break_leakcheck_for_org_a(two_orgs, monkeypatch):
+    """org-a の混入チェックだけを失敗させる（LeakCheckError）。
+
+    禁止語は「対象組織以外」から集めるため、org-b の入力を読めなくすると
+    止まるのは org-a の生成であって org-b 自身の生成ではない。
+    """
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
+    victim = two_orgs / "org-b" / "spend"
+    victim.chmod(0o000)
+    try:
+        yield
+    finally:
+        victim.chmod(0o755)
+
+
+@pytest.mark.parametrize(
+    "break_org_a", [_break_generation_for_org_a, _break_leakcheck_for_org_a])
+def test_cli_discuss_failure_does_not_stop_other_orgs(
+    break_org_a, two_orgs, tmp_path, monkeypatch,
+):
+    """1組織の失敗で他組織を止めない。考察生成の失敗と混入チェックの失敗の両方で成り立つ。"""
+    out = _analyze(two_orgs, tmp_path)
+    with break_org_a(two_orgs, monkeypatch):
+        rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+                   "--output-dir", str(out), "--month", "2026-06"])
     assert rc == 1
+    assert report.discussion_body(
+        (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")) is None
     md = (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8")
     assert report.discussion_body(md) == BODY.strip()
 
@@ -1104,7 +1155,7 @@ def test_public_baseline_errors_when_git_unusable(tmp_path, monkeypatch):
     git("commit", "-q", "-m", "init")
 
     monkeypatch.setattr(public_text, "_git_bytes", lambda *a, **kw: None)
-    with pytest.raises(leakcheck.DiscussionError, match="git を実行できません"):
+    with pytest.raises(leakcheck.LeakCheckError, match="git を実行できません"):
         public_text.public_baseline(tmp_path)
 
     # .git が無い（--repo-root に非 git を明示指定）ならフォールバックしてよい
