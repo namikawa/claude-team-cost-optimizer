@@ -20,6 +20,10 @@ Claude Team プラン（Standard / Premium シート）のシート最適化分�
 uv sync
 ```
 
+Python 3.11 以上と [uv](https://docs.astral.sh/uv/) が必要。考察の自動執筆には
+ローカルの Claude Code CLI も使う。ゼロから環境を作る手順は
+[docs/setup.md](docs/setup.md) にある（Claude Code に読ませて実行させる形式）。
+
 ## 入力データの構成（複数組織対応）
 
 組織（Team プランの workspace）ごとに `input/<組織名>/` を作り、その配下に
