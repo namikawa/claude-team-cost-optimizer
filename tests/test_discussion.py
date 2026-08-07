@@ -7,6 +7,7 @@ subprocess.run の monkeypatch で置き換える。
 import os
 import shutil
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -765,27 +766,23 @@ def test_run_claude_missing_command(monkeypatch):
 # ---------------------------------------------------------------- CLI
 
 
-@pytest.mark.parametrize("subcommand", [
-    ["analyze"], ["discuss"], ["doctor"], ["check-text", "--text", "x"],
-])
 @pytest.mark.parametrize("exc", [
     leakcheck.LeakCheckError("照合を続行できません"),
     discussion.DiscussionError("考察を生成できません"),
 ])
-def test_cli_reports_both_error_kinds_identically(
-    subcommand, exc, tmp_path, monkeypatch, capsys,
-):
+def test_cli_reports_both_error_kinds_identically(exc, tmp_path, monkeypatch, capsys):
     """照合エンジンと考察生成で例外クラスが分かれても、ユーザから見える結果は同じ。
 
     どちらも traceback を出さず「エラー: <本文>」を stderr へ出して終了コード 1 になる。
     例外の分離は内部の整理であって、CLI の振る舞いを変えるものではない。
+    どのサブコマンドでも main() の同じ except に合流するため、代表として discuss で見る。
     """
     def boom(_path):
         raise exc
 
     monkeypatch.setattr(cli, "load_config", boom)
     capsys.readouterr()
-    rc = main([*subcommand, "--config", CONFIG, "--input-dir", str(tmp_path)])
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(tmp_path)])
     assert rc == 1
     assert capsys.readouterr().err.strip() == f"エラー: {exc}"
 
@@ -837,18 +834,47 @@ def test_cli_discuss_blocked_returns_nonzero(two_orgs, tmp_path, monkeypatch):
     assert report.discussion_body(md) is None
 
 
-def test_cli_discuss_failure_does_not_stop_other_orgs(two_orgs, tmp_path, monkeypatch):
-    out = _analyze(two_orgs, tmp_path)
-
+@contextmanager
+def _break_generation_for_org_a(two_orgs, monkeypatch):
+    """org-a の考察生成だけを失敗させる（DiscussionError）。"""
     def fail_for_org_a(prompt: str, s: dict) -> str:
         if "org-a" in prompt:
             raise discussion.DiscussionError("claude が見つかりません")
         return BODY
 
     monkeypatch.setattr(discussion, "run_claude", fail_for_org_a)
-    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
-               "--output-dir", str(out), "--month", "2026-06"])
+    yield
+
+
+@contextmanager
+def _break_leakcheck_for_org_a(two_orgs, monkeypatch):
+    """org-a の混入チェックだけを失敗させる（LeakCheckError）。
+
+    禁止語は「対象組織以外」から集めるため、org-b の入力を読めなくすると
+    止まるのは org-a の生成であって org-b 自身の生成ではない。
+    """
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
+    victim = two_orgs / "org-b" / "spend"
+    victim.chmod(0o000)
+    try:
+        yield
+    finally:
+        victim.chmod(0o755)
+
+
+@pytest.mark.parametrize(
+    "break_org_a", [_break_generation_for_org_a, _break_leakcheck_for_org_a])
+def test_cli_discuss_failure_does_not_stop_other_orgs(
+    break_org_a, two_orgs, tmp_path, monkeypatch,
+):
+    """1組織の失敗で他組織を止めない。考察生成の失敗と混入チェックの失敗の両方で成り立つ。"""
+    out = _analyze(two_orgs, tmp_path)
+    with break_org_a(two_orgs, monkeypatch):
+        rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+                   "--output-dir", str(out), "--month", "2026-06"])
     assert rc == 1
+    assert report.discussion_body(
+        (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")) is None
     md = (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8")
     assert report.discussion_body(md) == BODY.strip()
 

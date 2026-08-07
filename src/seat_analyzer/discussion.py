@@ -370,6 +370,9 @@ def generate(
 
     既に記入済みの考察は force が無ければ上書きしない（手書きの考察を守るため）。
     混入が検出された場合は書き直しを求め、max_attempts 回で解消しなければ書き込まない。
+
+    送出する例外は2系統ある: 生成そのものの失敗は DiscussionError、禁止語の収集・照合が
+    続行できない場合は leakcheck.LeakCheckError（共通の基底を持たないため両方を捕まえる）。
     """
     # 既定の runner は呼び出し時に解決する（デフォルト引数で束縛すると差し替えが効かない）
     runner = runner or run_claude
