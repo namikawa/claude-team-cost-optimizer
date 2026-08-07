@@ -11,6 +11,27 @@ from .ingest import MEMBERS_OPTIONAL_COLUMNS, REQUIRED_COLUMNS, SPEND_OPTIONAL_C
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 
+# config.yaml > discussion セクションの既定値。未指定の項目は discussion_settings() が補完する
+DISCUSSION_DEFAULTS: dict = {
+    "command": "claude",
+    "model": "opus",
+    "effort": "xhigh",
+    "timeout_seconds": 1800,
+    "max_attempts": 2,
+    "min_output_chars": 200,
+    "retries": 2,
+    "retry_wait_seconds": 30,
+    "allow_terms": (),
+    "public_org_names": (),
+}
+
+
+def discussion_settings(cfg: dict) -> dict:
+    """config.yaml > discussion を既定値で補完した設定。"""
+    merged = dict(DISCUSSION_DEFAULTS)
+    merged.update(cfg.get("discussion") or {})
+    return merged
+
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> dict:
     path = Path(path)
@@ -78,7 +99,7 @@ def _validate(cfg: dict) -> None:
     if not _num(d.get("censoring_margin")) or d["censoring_margin"] <= 0:
         errors.append("decision.censoring_margin は正の数値が必要です")
 
-    # discussion は任意セクション（未指定なら discussion.DEFAULTS が使われる）
+    # discussion は任意セクション（未指定なら DISCUSSION_DEFAULTS が使われる）
     disc = cfg.get("discussion")
     if disc is not None:
         if not isinstance(disc, dict):

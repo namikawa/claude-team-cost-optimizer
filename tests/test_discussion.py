@@ -11,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from seat_analyzer import discussion, report
+from seat_analyzer import discussion, leakcheck, public_text, report
 from seat_analyzer.cli import main
-from seat_analyzer.config import load_config
+from seat_analyzer.config import load_config, discussion_settings
 
 from .conftest import REPO_ROOT, spend_row
 
@@ -83,8 +83,8 @@ def test_write_discussion_requires_section(tmp_path):
 # ---------------------------------------------------------------- 混入チェック
 
 
-def _terms(*specs: tuple[str, str]) -> tuple[discussion.Term, ...]:
-    return tuple(discussion.Term(text, kind) for text, kind in specs)
+def _terms(*specs: tuple[str, str]) -> tuple[leakcheck.Term, ...]:
+    return tuple(leakcheck.Term(text, kind) for text, kind in specs)
 
 
 def _texts(terms) -> set[str]:
@@ -97,14 +97,14 @@ def _hit_terms(hits) -> tuple[str, ...]:
 
 def test_forbidden_terms_excludes_target_org(two_orgs, tmp_path):
     cfg = load_config(CONFIG)
-    terms = discussion.forbidden_terms(
+    terms = leakcheck.forbidden_terms(
         input_dir=two_orgs, output_dir=tmp_path / "reports", target_org="org-a", cfg=cfg)
     texts = _texts(terms)
     assert "org-b" in texts
     assert "bernard.holloway@y.jp" in texts
     assert "bernard" in texts and "holloway" in texts
     # 組織名は kind=org として常時禁止の扱いになる
-    assert discussion.Term("org-b", "org") in terms
+    assert leakcheck.Term("org-b", "org") in terms
     # 対象組織自身の語は禁止語に入らない
     assert "org-a" not in texts
     assert not any("alice" in t for t in texts)
@@ -116,7 +116,7 @@ def test_forbidden_terms_splits_short_name_segments(make_input, tmp_path):
                            members=["a@x.jp,Premium"], org="org-a")
     make_input({"2026-06": [spend_row("taro.sato@y.jp", 10.0)]},
                members=["taro.sato@y.jp,Premium", "hana_kato@y.jp,Standard"], org="org-b")
-    texts = _texts(discussion.forbidden_terms(
+    texts = _texts(leakcheck.forbidden_terms(
         input_dir=input_dir, output_dir=tmp_path / "reports",
         target_org="org-a", cfg=load_config(CONFIG)))
     assert {"taro", "sato", "hana", "kato"} <= texts
@@ -127,40 +127,40 @@ def test_find_leaks_flags_only_terms_absent_from_source():
                    ("holloway", "person"), ("架空推進3部", "group"))
     source = "org-a のユーザ alice.morgan@x.jp は Premium。"
 
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         "holloway さんは Standard で足りている。", terms, source=source)) == ("holloway",)
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         "架空推進3部の削減余地は小さい。", terms, source=source)) == ("架空推進3部",)
-    assert discussion.find_leaks("alice.morgan の需要は妥当。", terms, source=source) == ()
+    assert leakcheck.find_leaks("alice.morgan の需要は妥当。", terms, source=source) == ()
 
 
 def test_find_leaks_ignores_terms_present_in_source():
     # 対象組織の資料に現れる語は、出力に出てきても混入ではない
     terms = _terms(("holloway", "person"))
     source = "holloway@x.jp は対象組織のユーザ。"
-    assert discussion.find_leaks("holloway は Premium 継続。", terms, source=source) == ()
+    assert leakcheck.find_leaks("holloway は Premium 継続。", terms, source=source) == ()
 
 
 def test_find_leaks_always_forbids_other_org_names():
     """組織名は対象組織の資料に現れても混入として扱う（資料側の混入を許可根拠にしない）。"""
     source = "備考: org-b から異動。"
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         "org-b と比べると小さい。", _terms(("org-b", "org")), source=source)) == ("org-b",)
     # 人名・部署名は従来どおり資料に現れれば除外する
-    assert discussion.find_leaks(
+    assert leakcheck.find_leaks(
         "holloway は継続。", _terms(("holloway", "person")), source=source + " holloway@x.jp") == ()
 
 
 def test_find_leaks_respects_word_boundaries():
     # 英単語の一部として現れる出現は拾わない（detail の中の etai 等の誤検出防止）
-    assert discussion.find_leaks("detail を確認する。", _terms(("etai", "person")), source="") == ()
+    assert leakcheck.find_leaks("detail を確認する。", _terms(("etai", "person")), source="") == ()
     # メールのローカル部・ドメインの構成要素として現れる出現は拾う
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         "bernard.holloway", _terms(("bernard", "person")), source="")) == ("bernard",)
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         "holloway@y.jp", _terms(("holloway", "person")), source="")) == ("holloway",)
     # 日本語が隣接する出現は拾う
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         "org-b組織では", _terms(("org-b", "org")), source="")) == ("org-b",)
 
 
@@ -168,23 +168,23 @@ def test_find_leaks_short_japanese_terms_need_non_kanji_boundary():
     """短い日本語の語は漢字・カタカナの連結を語の一部とみなす（一般語の誤検出を防ぐ）。"""
     short = _terms(("開発部", "group"), ("人事", "group"))
     # 無関係な複合語の一部としての出現は拾わない
-    assert discussion.find_leaks("製品開発部門の需要が大きい。", short, source="") == ()
-    assert discussion.find_leaks("人事評価制度を見直す。", short, source="") == ()
+    assert leakcheck.find_leaks("製品開発部門の需要が大きい。", short, source="") == ()
+    assert leakcheck.find_leaks("人事評価制度を見直す。", short, source="") == ()
     # 助詞・記号が続く出現は拾う
-    assert _hit_terms(discussion.find_leaks("開発部の削減余地は小さい。", short, source="")) \
+    assert _hit_terms(leakcheck.find_leaks("開発部の削減余地は小さい。", short, source="")) \
         == ("開発部",)
-    assert _hit_terms(discussion.find_leaks("人事、総務の2部署。", short, source="")) == ("人事",)
+    assert _hit_terms(leakcheck.find_leaks("人事、総務の2部署。", short, source="")) == ("人事",)
 
 
 def test_find_leaks_long_japanese_terms_match_inside_compounds():
     """長い日本語の語は固有性が高いため、複合語に埋め込まれても検出する。"""
     long_term = _terms(("架空推進3部", "group"))
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         "架空推進3部第2チームの需要。", long_term, source="")) == ("架空推進3部",)
 
 
 def test_find_leaks_reports_context_and_kind():
-    hits = discussion.find_leaks(
+    hits = leakcheck.find_leaks(
         "前段の説明。製品開発部の削減余地は小さい。後段の説明。",
         _terms(("製品開発部", "group")), source="")
     assert len(hits) == 1
@@ -195,18 +195,18 @@ def test_find_leaks_reports_context_and_kind():
 def test_find_leaks_allow_overrides_detection():
     terms = _terms(("開発部", "group"), ("holloway", "person"))
     text = "開発部と holloway について。"
-    assert _hit_terms(discussion.find_leaks(text, terms, source="")) == ("holloway", "開発部")
+    assert _hit_terms(leakcheck.find_leaks(text, terms, source="")) == ("holloway", "開発部")
     # 人が確認して無害と判断した語は許可できる（大文字小文字は問わない）
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         text, terms, source="", allow=("開発部",))) == ("holloway",)
-    assert discussion.find_leaks(text, terms, source="", allow=("開発部", "HOLLOWAY")) == ()
+    assert leakcheck.find_leaks(text, terms, source="", allow=("開発部", "HOLLOWAY")) == ()
 
 
 def test_allow_cannot_override_org_names_or_addresses():
     """組織名とメールアドレスは --allow-term の対象外（誤検出の余地が実質なく影響が大きい）。"""
     terms = _terms(("org-b", "org"), ("x@y.jp", "address"), ("y.jp", "domain"))
     text = "org-b の x@y.jp（y.jp）について。"
-    hits = discussion.find_leaks(
+    hits = leakcheck.find_leaks(
         text, terms, source="", allow=("org-b", "x@y.jp", "y.jp"))
     assert _hit_terms(hits) == ("org-b", "x@y.jp")
     assert all(h.allowable is False for h in hits)
@@ -214,10 +214,10 @@ def test_allow_cannot_override_org_names_or_addresses():
 
 def test_find_leaks_org_names_use_aggressive_boundary():
     """短い日本語の緩い規則を組織名に適用すると取りこぼす（影響が最大の種類なので例外扱い）。"""
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         "東京支社の利用状況。", _terms(("東京", "org")), source="")) == ("東京",)
     # 同じ長さでも部署名なら複合語の一部としては拾わない
-    assert discussion.find_leaks("東京支社の利用状況。", _terms(("東京", "group")), source="") == ()
+    assert leakcheck.find_leaks("東京支社の利用状況。", _terms(("東京", "group")), source="") == ()
 
 
 def test_group_names_from_members_info(two_orgs, tmp_path):
@@ -225,7 +225,7 @@ def test_group_names_from_members_info(two_orgs, tmp_path):
         "email,部署,チーム,職種\nbernard.holloway@y.jp,架空推進3部,Nebula-AI,エンジニア\n",
         encoding="utf-8")
     cfg = load_config(CONFIG)
-    texts = _texts(discussion.forbidden_terms(
+    texts = _texts(leakcheck.forbidden_terms(
         input_dir=two_orgs, output_dir=tmp_path / "reports", target_org="org-a", cfg=cfg))
     assert "架空推進3部" in texts and "Nebula-AI" in texts
     # 職種は一般語のため禁止語に含めない
@@ -241,7 +241,7 @@ def test_org_named_like_input_subdir_is_still_collected(make_input, tmp_path):
                            members=["a@x.jp,Premium"], org="org-a")
     make_input({"2026-06": [spend_row("bernard.holloway@y.jp", 10.0)]},
                members=["bernard.holloway@y.jp,Premium"], org="members")
-    texts = _texts(discussion.forbidden_terms(
+    texts = _texts(leakcheck.forbidden_terms(
         input_dir=input_dir, output_dir=tmp_path / "reports",
         target_org="org-a", cfg=load_config(CONFIG)))
     assert "members" in texts and "holloway" in texts
@@ -253,8 +253,8 @@ def test_forbidden_terms_fails_closed_on_unreadable_input(two_orgs, tmp_path, mo
         raise OSError("permission denied")
 
     monkeypatch.setattr(Path, "read_text", boom)
-    with pytest.raises(discussion.DiscussionError, match="混入チェックを保証できません"):
-        discussion.forbidden_terms(
+    with pytest.raises(leakcheck.DiscussionError, match="混入チェックを保証できません"):
+        leakcheck.forbidden_terms(
             input_dir=two_orgs, output_dir=tmp_path / "reports",
             target_org="org-a", cfg=load_config(CONFIG))
 
@@ -273,8 +273,8 @@ def test_forbidden_terms_fails_closed_on_unlistable_dir(two_orgs, tmp_path, targ
     }[target]
     victim.chmod(0o000)
     try:
-        with pytest.raises(discussion.DiscussionError, match="混入チェックを保証できません"):
-            discussion.forbidden_terms(
+        with pytest.raises(leakcheck.DiscussionError, match="混入チェックを保証できません"):
+            leakcheck.forbidden_terms(
                 input_dir=two_orgs, output_dir=tmp_path / "reports",
                 target_org="org-a", cfg=load_config(CONFIG))
     finally:
@@ -286,28 +286,28 @@ def test_single_character_org_name_is_detected(make_input, tmp_path):
     input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
                            members=["a@x.jp,Premium"], org="org-a")
     make_input({"2026-06": [spend_row("z@y.jp", 10.0)]}, members=["z@y.jp,Premium"], org="A")
-    terms = discussion.forbidden_terms(
+    terms = leakcheck.forbidden_terms(
         input_dir=input_dir, output_dir=tmp_path / "reports",
         target_org="org-a", cfg=load_config(CONFIG))
-    assert discussion.Term("A", "org") in terms
-    assert _hit_terms(discussion.find_leaks("A社の状況は…", terms, source="")) == ("A",)
+    assert leakcheck.Term("A", "org") in terms
+    assert _hit_terms(leakcheck.find_leaks("A社の状況は…", terms, source="")) == ("A",)
 
 
 def test_duplicate_text_merges_to_stricter_kind():
     """同一文字列が複数 kind にあるとき、厳しい側（許可できない側）に寄せる。"""
     terms = _terms(("acme", "domain"), ("acme", "org"))
-    hits = discussion.find_leaks("acme の状況。", terms, source="")
+    hits = leakcheck.find_leaks("acme の状況。", terms, source="")
     assert [(h.kind, h.allowable) for h in hits] == [("org", False)]
     # 許可指定を付けても org として残る（案内と実挙動が一致する）
-    assert _hit_terms(discussion.find_leaks(
+    assert _hit_terms(leakcheck.find_leaks(
         "acme の状況。", terms, source="", allow=("acme",))) == ("acme",)
 
 
 def test_forbidden_terms_fails_closed_on_broken_members_info(two_orgs, tmp_path):
     (two_orgs / "org-b" / "members-info.csv").write_text(
         "部署,チーム\n架空推進3部,Nebula-AI\n", encoding="utf-8")  # email 列が無い
-    with pytest.raises(discussion.DiscussionError, match="混入チェックを保証できません"):
-        discussion.forbidden_terms(
+    with pytest.raises(leakcheck.DiscussionError, match="混入チェックを保証できません"):
+        leakcheck.forbidden_terms(
             input_dir=two_orgs, output_dir=tmp_path / "reports",
             target_org="org-a", cfg=load_config(CONFIG))
 
@@ -320,7 +320,7 @@ def test_forbidden_terms_harvested_from_reports_only_org(two_orgs, tmp_path):
     out = _analyze(two_orgs, tmp_path)
     # org-b の入力を消し、生成済みレポートだけ残す
     shutil.rmtree(two_orgs / "org-b")
-    texts = _texts(discussion.forbidden_terms(
+    texts = _texts(leakcheck.forbidden_terms(
         input_dir=two_orgs, output_dir=out, target_org="org-a", cfg=load_config(CONFIG)))
     assert "org-b" in texts
     assert "bernard.holloway@y.jp" in texts and "holloway" in texts
@@ -334,7 +334,7 @@ def test_legacy_layout_has_no_forbidden_terms(make_input, tmp_path):
     """
     input_dir = make_input({"2026-06": [spend_row("alice.morgan@x.jp", 10.0)]},
                            members=["alice.morgan@x.jp,Premium"])
-    terms = discussion.forbidden_terms(
+    terms = leakcheck.forbidden_terms(
         input_dir=input_dir, output_dir=tmp_path / "reports",
         target_org=None, cfg=load_config(CONFIG))
     assert terms == ()
@@ -517,7 +517,7 @@ def test_generate_retries_transient_failure(two_orgs, tmp_path):
     def flaky(prompt: str, s: dict) -> str:
         calls.append(prompt)
         if len(calls) == 1:
-            raise discussion.DiscussionError("API エラー: 529 Overloaded", transient=True)
+            raise leakcheck.DiscussionError("API エラー: 529 Overloaded", transient=True)
         return BODY
 
     cfg = load_config(CONFIG)
@@ -537,16 +537,16 @@ def test_generate_does_not_retry_permanent_failure(two_orgs, tmp_path):
 
     def broken(prompt: str, s: dict) -> str:
         calls.append(prompt)
-        raise discussion.DiscussionError("claude が見つかりません")
+        raise leakcheck.DiscussionError("claude が見つかりません")
 
-    with pytest.raises(discussion.DiscussionError, match="見つかりません"):
+    with pytest.raises(leakcheck.DiscussionError, match="見つかりません"):
         _generate(two_orgs, out, broken)
     assert len(calls) == 1
 
 
 def test_generate_requires_report(two_orgs, tmp_path):
     out = tmp_path / "reports"
-    with pytest.raises(discussion.DiscussionError, match="analyze"):
+    with pytest.raises(leakcheck.DiscussionError, match="analyze"):
         _generate(two_orgs, out, _runner(BODY))
 
 
@@ -631,7 +631,7 @@ def stub_claude(monkeypatch):
 
 def test_run_claude_returns_body_and_isolates_context(stub_claude):
     captured = stub_claude(stdout=BODY + "\n")
-    s = discussion.settings(load_config(CONFIG))
+    s = discussion_settings(load_config(CONFIG))
     assert discussion.run_claude("prompt", s) == BODY.strip()
 
     cmd = captured["cmd"]
@@ -651,7 +651,7 @@ def test_run_claude_returns_body_and_isolates_context(stub_claude):
 
 def test_run_claude_strips_code_fence(stub_claude):
     stub_claude(stdout="```markdown\n" + BODY + "\n```\n")
-    s = discussion.settings(load_config(CONFIG))
+    s = discussion_settings(load_config(CONFIG))
     assert discussion.run_claude("prompt", s) == BODY.strip()
 
 
@@ -665,7 +665,7 @@ def test_run_claude_strips_code_fence(stub_claude):
 def test_run_claude_strips_discussion_heading(stub_claude, stdout):
     """出力に「## 考察」が付いてきても差し込み時に H2 が重複しないよう落とす。"""
     stub_claude(stdout=stdout.format(body=BODY))
-    s = discussion.settings(load_config(CONFIG))
+    s = discussion_settings(load_config(CONFIG))
     result = discussion.run_claude("prompt", s)
     assert result.endswith(BODY.strip())
     for heading in ("## 考察", "##考察"):
@@ -675,7 +675,7 @@ def test_run_claude_strips_discussion_heading(stub_claude, stdout):
 def test_run_claude_strips_every_discussion_heading(stub_claude):
     """1つの出力に複数の考察見出しがあってもすべて落とす。"""
     stub_claude(stdout=f"## 考察\n\n{BODY}\n\n## 考察\n\n{BODY}")
-    s = discussion.settings(load_config(CONFIG))
+    s = discussion_settings(load_config(CONFIG))
     result = discussion.run_claude("prompt", s)
     assert "## 考察" not in result
     assert result.count("### 変更推奨の妥当性") == 2
@@ -689,16 +689,16 @@ def test_run_claude_strips_every_discussion_heading(stub_claude):
 ])
 def test_run_claude_rejects_bad_output(stub_claude, proc_kw, message):
     stub_claude(**proc_kw)
-    s = discussion.settings(load_config(CONFIG))
-    with pytest.raises(discussion.DiscussionError, match=message):
+    s = discussion_settings(load_config(CONFIG))
+    with pytest.raises(leakcheck.DiscussionError, match=message):
         discussion.run_claude("prompt", s)
 
 
 def test_run_claude_rejects_api_error_after_body(stub_claude):
     """API エラーは出力の先頭に限らない（ストリーミング途中で失敗すると本文の後に付く）。"""
     stub_claude(stdout=BODY + "\nAPI Error: 500 Internal Server Error")
-    s = discussion.settings(load_config(CONFIG))
-    with pytest.raises(discussion.DiscussionError, match="API エラー") as exc:
+    s = discussion_settings(load_config(CONFIG))
+    with pytest.raises(leakcheck.DiscussionError, match="API エラー") as exc:
         discussion.run_claude("prompt", s)
     assert exc.value.transient is True
 
@@ -713,8 +713,8 @@ def test_run_claude_rejects_api_error_after_body(stub_claude):
 def test_run_claude_rejects_malformed_output(stub_claude, stdout, message):
     """長さだけでは弾けない「形の崩れた出力」を肯定的な検査で落とす。"""
     stub_claude(stdout=stdout)
-    s = discussion.settings(load_config(CONFIG))
-    with pytest.raises(discussion.DiscussionError, match=message) as exc:
+    s = discussion_settings(load_config(CONFIG))
+    with pytest.raises(leakcheck.DiscussionError, match=message) as exc:
         discussion.run_claude("prompt", s)
     assert exc.value.transient is True  # 再試行で救えるため
 
@@ -722,7 +722,7 @@ def test_run_claude_rejects_malformed_output(stub_claude, stdout, message):
 def test_run_claude_isolates_mcp_and_session(stub_claude):
     """MCP サーバも二重防御で遮断し、レポート全文をトランスクリプトに残さない。"""
     captured = stub_claude(stdout=BODY)
-    discussion.run_claude("prompt", discussion.settings(load_config(CONFIG)))
+    discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
     assert "--strict-mcp-config" in captured["cmd"]
     assert "--no-session-persistence" in captured["cmd"]
 
@@ -738,8 +738,8 @@ def test_run_claude_isolates_mcp_and_session(stub_claude):
 ])
 def test_run_claude_transient_classification(stub_claude, proc_kw, transient):
     stub_claude(**proc_kw)
-    s = discussion.settings(load_config(CONFIG))
-    with pytest.raises(discussion.DiscussionError) as exc:
+    s = discussion_settings(load_config(CONFIG))
+    with pytest.raises(leakcheck.DiscussionError) as exc:
         discussion.run_claude("prompt", s)
     assert exc.value.transient is transient
 
@@ -750,15 +750,15 @@ def test_run_claude_timeout(monkeypatch):
 
     monkeypatch.setattr(discussion.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(discussion.subprocess, "run", fake_run)
-    s = discussion.settings(load_config(CONFIG))
-    with pytest.raises(discussion.DiscussionError, match="応答しませんでした"):
+    s = discussion_settings(load_config(CONFIG))
+    with pytest.raises(leakcheck.DiscussionError, match="応答しませんでした"):
         discussion.run_claude("prompt", s)
 
 
 def test_run_claude_missing_command(monkeypatch):
     monkeypatch.setattr(discussion.shutil, "which", lambda _: None)
-    s = dict(discussion.settings(load_config(CONFIG)), command="claude-not-installed")
-    with pytest.raises(discussion.DiscussionError, match="見つかりません"):
+    s = dict(discussion_settings(load_config(CONFIG)), command="claude-not-installed")
+    with pytest.raises(leakcheck.DiscussionError, match="見つかりません"):
         discussion.run_claude("prompt", s)
 
 
@@ -817,7 +817,7 @@ def test_cli_discuss_failure_does_not_stop_other_orgs(two_orgs, tmp_path, monkey
 
     def fail_for_org_a(prompt: str, s: dict) -> str:
         if "org-a" in prompt:
-            raise discussion.DiscussionError("claude が見つかりません")
+            raise leakcheck.DiscussionError("claude が見つかりません")
         return BODY
 
     monkeypatch.setattr(discussion, "run_claude", fail_for_org_a)
@@ -1089,7 +1089,7 @@ def test_public_baseline_uses_committed_content(tmp_path):
     # 追跡ファイルへの未コミット追記
     (tmp_path / "tracked.md").write_text("tracked-name\nuncommitted-name\n", encoding="utf-8")
 
-    baseline = discussion.public_baseline(tmp_path)
+    baseline = public_text.public_baseline(tmp_path)
     assert "tracked-name" in baseline
     assert "uncommitted-name" not in baseline
     assert "untracked-name" not in baseline
@@ -1103,15 +1103,15 @@ def test_public_baseline_errors_when_git_unusable(tmp_path, monkeypatch):
     git("add", "a.md")
     git("commit", "-q", "-m", "init")
 
-    monkeypatch.setattr(discussion, "_git_bytes", lambda *a, **kw: None)
-    with pytest.raises(discussion.DiscussionError, match="git を実行できません"):
-        discussion.public_baseline(tmp_path)
+    monkeypatch.setattr(public_text, "_git_bytes", lambda *a, **kw: None)
+    with pytest.raises(leakcheck.DiscussionError, match="git を実行できません"):
+        public_text.public_baseline(tmp_path)
 
     # .git が無い（--repo-root に非 git を明示指定）ならフォールバックしてよい
     plain = tmp_path / "plain"
     (plain / "examples").mkdir(parents=True)
     (plain / "examples" / "s.csv").write_text("public-name\n", encoding="utf-8")
-    assert "public-name" in discussion.public_baseline(plain)
+    assert "public-name" in public_text.public_baseline(plain)
 
 
 def test_public_baseline_excludes_checked_file_itself(tmp_path):
@@ -1121,8 +1121,8 @@ def test_public_baseline_excludes_checked_file_itself(tmp_path):
     (tmp_path / "examples").mkdir()
     (tmp_path / "examples" / "s.csv").write_text("public-name\n", encoding="utf-8")
 
-    assert "draft-name" in discussion.public_baseline(tmp_path, ("draft.md", "examples"))
-    excluded = discussion.public_baseline(
+    assert "draft-name" in public_text.public_baseline(tmp_path, ("draft.md", "examples"))
+    excluded = public_text.public_baseline(
         tmp_path, ("draft.md", "examples"), exclude=(draft,))
     assert "draft-name" not in excluded
     assert "public-name" in excluded
@@ -1155,7 +1155,7 @@ def test_diff_added_text_keeps_new_paths(publish_input, tmp_path):
             "--- /dev/null\n"
             "+++ b/ZTeamX.md\n"
             "+内容\n")
-    extract = discussion.diff_added_text(diff)
+    extract = public_text.diff_added_text(diff)
     assert "b/ZTeamX.md" in extract.text
     assert "/dev/null" not in extract.text
     assert (extract.n_added_lines, extract.n_paths) == (1, 1)
@@ -1168,7 +1168,7 @@ def test_diff_added_text_keeps_rename_targets(publish_input, tmp_path):
             "similarity index 100%\n"
             "rename from old.md\n"
             "rename to ZTeamX.md\n")
-    assert "ZTeamX.md" in discussion.diff_added_text(diff).text
+    assert "ZTeamX.md" in public_text.diff_added_text(diff).text
     assert _check(diff, publish_input, tmp_path, "--diff") == 1
 
 
@@ -1216,7 +1216,7 @@ def test_public_baseline_excludes_local_only_paths(tmp_path):
     (tmp_path / "input").mkdir()
     (tmp_path / "input" / "secret.csv").write_text("secret-name\n", encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_text("local-only-name\n", encoding="utf-8")
-    baseline = discussion.public_baseline(tmp_path)
+    baseline = public_text.public_baseline(tmp_path)
     assert "public-name" in baseline
     assert "secret-name" not in baseline
     assert "local-only-name" not in baseline

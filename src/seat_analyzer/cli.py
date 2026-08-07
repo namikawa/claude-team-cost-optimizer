@@ -7,9 +7,10 @@ import re
 import sys
 from pathlib import Path
 
-from . import analyze, data_quality, discussion, ingest, report
+from . import analyze, data_quality, discussion, ingest, public_text, report
 from .config import load_config
 from .domain import QualityIssue, Severity
+from .leakcheck import DiscussionError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -136,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
-    except (OSError, ValueError, discussion.DiscussionError) as e:
+    except (OSError, ValueError, DiscussionError) as e:
         # 入力の読み取りに由来する失敗（欠損・権限・不正な値）と、混入チェックを
         # 保証できない状況は traceback を出さずエラー終了する
         print(f"エラー: {e}", file=sys.stderr)
@@ -452,11 +453,11 @@ def _run_check_text(args: argparse.Namespace) -> int:
     for label, text in sources:
         scope = ""
         if args.diff:
-            extract = discussion.diff_added_text(text)
+            extract = public_text.diff_added_text(text)
             text = extract.text
             # 抽出量を必ず出す。追加行 0 なら、検査すべき内容が無かったことに気づける
             scope = f"追加行 {extract.n_added_lines} / 対象パス {extract.n_paths} / "
-        result = discussion.check_public_text(
+        result = public_text.check_public_text(
             text, input_dir=Path(args.input_dir), output_dir=Path(args.output_dir),
             cfg=cfg, root=root, allow=tuple(args.allow_term or ()), exclude=exclude,
         )
@@ -545,7 +546,7 @@ def _run_discussions(
                 allow=allow, include_previous=include_previous,
                 notify=lambda m, scope=scope: print(f"  {scope}: {m}", file=sys.stderr),
             )
-        except (discussion.DiscussionError, OSError, ValueError) as exc:
+        except (DiscussionError, OSError, ValueError) as exc:
             print(f"  ! {scope}: 考察を生成できませんでした: {exc}", file=sys.stderr)
             failed.append(scope)
             continue
