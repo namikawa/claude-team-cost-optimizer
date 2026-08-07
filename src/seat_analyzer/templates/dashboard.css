@@ -1,0 +1,32 @@
+
+  :root { --std:#4a90d9; --prem:#d97a4a; --ok:#2e8b57; --warn:#c0392b; }
+  * { box-sizing: border-box; }
+  body { font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; margin:0; background:#f6f7f9; color:#1f2933; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
+  .cards { display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+  .card { background:#fff; border-radius:10px; padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .card .v { font-size:1.5rem; font-weight:700; } .card .l { font-size:.78rem; color:#6b7280; }
+  .card.hl .v { color: var(--ok); }
+  .tablebox { overflow-x:auto; background:#fff; border-radius:10px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  table { border-collapse: collapse; width:100%; font-size:.8rem; }
+  th, td { padding:6px 8px; text-align:left; border-bottom:1px solid #eceef1; }
+  th { background:#f0f2f5; position:sticky; top:0; white-space:nowrap; }
+  td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; }
+  td.user { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  td.seat, td.judge { white-space:nowrap; }
+  .conf { color:#9aa3ad; font-size:.7rem; margin-left:4px; }
+  .badge { display:inline-block; border-radius:999px; padding:2px 8px; font-size:.72rem; }
+  .b-change { background:#e8f7ee; color:var(--ok); font-weight:700; }
+  .b-watch { background:#fdf3e0; color:#b7791f; }
+  .b-keep { background:#eef0f3; color:#6b7280; }
+  .b-unknown { background:#fbe9e9; color:var(--warn); }
+  .seat-standard { color:var(--std); } .seat-premium { color:var(--prem); }
+  .seat-unassigned, .seat-unknown { color:#9aa3ad; }
+  .bar { display:flex; align-items:center; gap:8px; margin:3px 0; }
+  .bar .name { width:220px; font-size:.78rem; overflow:hidden; text-overflow:ellipsis; }
+  .bar .track { flex:1; background:#eceef1; border-radius:4px; height:16px; position:relative; }
+  .bar .fill { height:100%; border-radius:4px; }
+  .bar .val { width:80px; text-align:right; font-size:.78rem; font-variant-numeric:tabular-nums; }
+  .cap { color:var(--warn); font-weight:700; }
+  .note { font-size:.8rem; color:#6b7280; line-height:1.7; }

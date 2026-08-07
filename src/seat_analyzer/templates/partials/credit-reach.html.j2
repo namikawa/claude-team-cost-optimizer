@@ -1,0 +1,11 @@
+
+{% if credit_reach %}
+<h2><!--text:h_credit_reach--></h2>
+<div class="tablebox"><table>
+<tr><th>ユーザ</th><th class="num">実課金(観測)</th><th class="num">上限 κ</th><th class="num">残額</th><th>到達見込み</th></tr>
+{% for r in credit_reach.rows %}
+<tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td><td class="num">{{ r.billed_fmt }}</td><td class="num">{{ r.kappa_fmt }}</td><td class="num">{{ r.remaining_fmt }}</td><td>{% if r.reached %}<span class="cap">⚠️上限到達</span>{% else %}{{ r.eta }}{% endif %}</td></tr>
+{% endfor %}
+</table></div>
+<div class="note"><!--text:note_credit_eta-->。</div>
+{% endif %}

@@ -1,0 +1,8 @@
+
+{% if grant_candidates %}
+<h2><!--text:h_grant--></h2>
+<div class="card note">
+  <ul>{% for c in grant_candidates %}<li>{{ c.email }}（クレジット{{ c.mode_label }}・モデル超過見込み {{ c.added_fmt }}/月）</li>{% endfor %}</ul>
+  <p>昇格の前に、まず上限つき追加クレジット（推奨初期上限 {{ grant_cap_fmt }}）を付与し、1ヶ月の課金実測で判断することを推奨します。</p>
+</div>
+{% endif %}

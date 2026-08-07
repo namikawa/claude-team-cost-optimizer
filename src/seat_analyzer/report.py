@@ -974,288 +974,46 @@ def _atomic_write(path: Path, text: str, *, expect: str | None = None) -> bool:
             tmp.unlink(missing_ok=True)
 
 
+# ダッシュボードの CSS と HTML 断片は templates/ 以下のファイルが実体（prompts/ と同じ流儀）。
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+def _asset(name: str) -> str:
+    """templates/ のアセットを読む。先頭・末尾の改行も出力の一部なので加工しない。"""
+    return (_TEMPLATES_DIR / name).read_text(encoding="utf-8")
+
+
 # dashboard.html / preview-dashboard.html で共有する CSS（二重メンテを避けるため定数化）。
 # 速報専用の追加スタイル（バナー等）は速報テンプレート側で足す。
-_DASHBOARD_CSS = r"""
-  :root { --std:#4a90d9; --prem:#d97a4a; --ok:#2e8b57; --warn:#c0392b; }
-  * { box-sizing: border-box; }
-  body { font-family: "Hiragino Sans", "Noto Sans JP", sans-serif; margin:0; background:#f6f7f9; color:#1f2933; }
-  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
-  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
-  .cards { display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
-  .card { background:#fff; border-radius:10px; padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
-  .card .v { font-size:1.5rem; font-weight:700; } .card .l { font-size:.78rem; color:#6b7280; }
-  .card.hl .v { color: var(--ok); }
-  .tablebox { overflow-x:auto; background:#fff; border-radius:10px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
-  table { border-collapse: collapse; width:100%; font-size:.8rem; }
-  th, td { padding:6px 8px; text-align:left; border-bottom:1px solid #eceef1; }
-  th { background:#f0f2f5; position:sticky; top:0; white-space:nowrap; }
-  td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; }
-  td.user { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  td.seat, td.judge { white-space:nowrap; }
-  .conf { color:#9aa3ad; font-size:.7rem; margin-left:4px; }
-  .badge { display:inline-block; border-radius:999px; padding:2px 8px; font-size:.72rem; }
-  .b-change { background:#e8f7ee; color:var(--ok); font-weight:700; }
-  .b-watch { background:#fdf3e0; color:#b7791f; }
-  .b-keep { background:#eef0f3; color:#6b7280; }
-  .b-unknown { background:#fbe9e9; color:var(--warn); }
-  .seat-standard { color:var(--std); } .seat-premium { color:var(--prem); }
-  .seat-unassigned, .seat-unknown { color:#9aa3ad; }
-  .bar { display:flex; align-items:center; gap:8px; margin:3px 0; }
-  .bar .name { width:220px; font-size:.78rem; overflow:hidden; text-overflow:ellipsis; }
-  .bar .track { flex:1; background:#eceef1; border-radius:4px; height:16px; position:relative; }
-  .bar .fill { height:100%; border-radius:4px; }
-  .bar .val { width:80px; text-align:right; font-size:.78rem; font-variant-numeric:tabular-nums; }
-  .cap { color:var(--warn); font-weight:700; }
-  .note { font-size:.8rem; color:#6b7280; line-height:1.7; }
-"""
-
+_DASHBOARD_CSS = _asset("dashboard.css")
 
 # 「前月からの変化」の HTML 断片（正式ダッシュボードのみ）。二重メンテを避けるため
 # テンプレート本体には placeholder を置き、from_string 前に差し込む。
-_TREND_HTML = r"""
-{% if trend %}
-<h2>前月からの変化</h2>
-<div class="card note">
-  <p>比較対象: {{ trend.compare_month }}{% if trend.gap_skipped %}（直前月が欠測のため直前の存在月と比較）{% endif %}</p>
-  <ul>
-    <li>利用開始 {{ trend.started|length }} 名{% if trend.started %}: {% for x in trend.started %}{{ x.email }}（{{ x.amount_fmt }}）{% if not loop.last %}, {% endif %}{% endfor %}{% else %}: なし{% endif %}</li>
-    <li>利用停止 {{ trend.stopped|length }} 名{% if trend.stopped %}: {% for x in trend.stopped %}{{ x.email }}（{{ x.amount_fmt }}）{% if not loop.last %}, {% endif %}{% endfor %}{% else %}: なし{% endif %}</li>
-    <li>実課金の新規発生 {{ trend.new_billed|length }} 名{% if trend.new_billed %}: {% for x in trend.new_billed %}{{ x.email }}（{{ x.amount_fmt }}）{% if not loop.last %}, {% endif %}{% endfor %}{% else %}: なし{% endif %}</li>
-  </ul>
-</div>
-{% if trend.changes %}
-<div class="tablebox"><table>
-<tr><th>主な増減</th><th class="num">前月</th><th class="num">当月</th><th class="num">増減</th></tr>
-{% for c in trend.changes %}
-<tr><td class="user" title="{{ c.email }}">{{ c.email.split('@')[0] }}</td><td class="num">{{ c.prev_fmt }}</td><td class="num">{{ c.curr_fmt }}</td><td class="num">{{ c.delta_fmt }}</td></tr>
-{% endfor %}
-</table></div>
-{% endif %}
-<div class="tablebox"><table>
-<tr><th>月</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">アクティブ</th></tr>
-{% for m in trend.series %}
-<tr><td>{{ m.month }}</td><td class="num">{{ m.api_fmt }}</td><td class="num">{{ m.billed_fmt }}</td><td class="num">{{ m.active }}</td></tr>
-{% endfor %}
-</table></div>
-{% endif %}
-"""
+_TREND_HTML = _asset("partials/trend.html.j2")
 
 # 「月中の利用推移（スナップショット差分）」の HTML 断片（正式・速報の両ダッシュボードで共有）。
-_SNAPSHOT_HTML = r"""
-{% if snapshot %}
-<h2><!--text:h_snapshot--></h2>
-<div class="card note">
-  <p>スナップショット: {{ snapshot.snap_list }}</p>
-  {% if not snapshot.judged %}<p>最新区間が {{ snapshot.latest_interval_days }} 日と短いため停止判定は行っていません。</p>{% endif %}
-</div>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th>{% for l in snapshot.labels %}<th class="num">{{ l }}</th>{% endfor %}<th class="num">最新区間の増分</th><th>判定</th></tr>
-{% for r in snapshot.rows %}
-<tr>
-  <td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td>
-  {% for c in r.cum_fmt %}<td class="num">{{ c }}</td>{% endfor %}
-  <td class="num">{{ r.delta_fmt }}</td>
-  <td>{% if r.stall %}<span class="cap">⚠️停止疑い</span>{% endif %}</td>
-</tr>
-{% endfor %}
-</table></div>
-{% if snapshot.stalled_capped or snapshot.billed_emerged %}
-<div class="card note"><ul>
-{% for x in snapshot.stalled_capped %}<li>{{ x.email }}: 上限停止の可能性。停止時点の累積 {{ x.cum_fmt }} は実効込み量の実測候補{% if x.loc_note %}。{{ x.loc_note }}{% endif %}。</li>{% endfor %}
-{% for x in snapshot.billed_emerged %}<li>{{ x.email }}: {{ x.interval_label }} で従量課金 {{ x.billed_fmt }} が発生（実効込み量は累積需要 {{ x.prev_fmt }}〜{{ x.curr_fmt }} の間）。</li>{% endfor %}
-</ul></div>
-{% endif %}
-<div class="note"><!--text:note_stall_caveat-->。</div>
-{% endif %}
-"""
+_SNAPSHOT_HTML = _asset("partials/snapshot.html.j2")
 
 # 「月中の Claude Code 活動（code-analytics 差分）」の HTML 断片（正式・速報の両方で共有）。
-_CODE_DIFF_HTML = r"""
-{% if code_diff %}
-<h2><!--text:h_code_diff--></h2>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th>{% for l in code_diff.labels %}<th class="num">{{ l }}</th>{% endfor %}<th class="num">LoC 増分</th>{% if code_diff.has_prs %}<th class="num">PR 増分</th>{% endif %}</tr>
-{% for r in code_diff.rows %}
-<tr>
-  <td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td>
-  {% for c in r.loc_cum_fmt %}<td class="num">{{ c }}</td>{% endfor %}
-  <td class="num">{{ r.loc_delta_fmt }}</td>
-  {% if code_diff.has_prs %}<td class="num">{{ r.prs_delta_fmt }}</td>{% endif %}
-</tr>
-{% endfor %}
-</table></div>
-{% endif %}
-"""
+_CODE_DIFF_HTML = _asset("partials/code-diff.html.j2")
 
 # 「月中のメンバー変動（スナップショット差分）」の HTML 断片（正式・速報の両方で共有）。
-_MEMBER_CHANGES_HTML = r"""
-{% if member_changes %}
-<h2><!--text:h_member_changes--></h2>
-<div class="card note">
-  <p>スナップショット時点: {{ member_changes.snap_list }}</p>
-  {% if member_changes.empty %}<p>変動なし</p>{% else %}<ul>
-  {% for c in member_changes.seat_changes %}<li>{{ c.email }}: {{ c.interval_label }} で {{ c.from_label }} → {{ c.to_label }}</li>{% endfor %}
-  {% for j in member_changes.joined %}<li>{{ j.email }}: {{ j.interval_label }} で追加（{{ j.seat_label }}）</li>{% endfor %}
-  {% for x in member_changes.left %}<li>{{ x.email }}: {{ x.interval_label }} で削除（{{ x.seat_label }}）</li>{% endfor %}
-  {% for c in member_changes.credit_changes %}<li>{{ c.email }}: {{ c.interval_label }} で 追加クレジット上限 {{ c.from }} → {{ c.to }}（members-info 由来）</li>{% endfor %}
-  </ul>{% if member_changes.credit_changes %}<p><!--text:note_credit_change-->。</p>{% endif %}{% endif %}
-</div>
-{% endif %}
-"""
+_MEMBER_CHANGES_HTML = _asset("partials/member-changes.html.j2")
 
 # 「込み枠の実測（E 分布）」の HTML 断片（正式ダッシュボードのみ）。
-_E_DIST_HTML = r"""
-{% if e_distribution %}
-<h2><!--text:h_e_dist--></h2>
-{% for g in e_distribution.groups %}
-<div class="tablebox"><table>
-<tr><th>{{ g.seat_label }}（実課金発生 {{ g.count }} 名）</th><th class="num">需要</th><th class="num">実課金</th><th class="num">E</th></tr>
-{% for r in g.rows %}
-<tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td><td class="num">{{ r.demand_fmt }}</td><td class="num">{{ r.billed_fmt }}</td><td class="num">{{ r.e_fmt }}</td></tr>
-{% endfor %}
-</table></div>
-<div class="note">件数 {{ g.count }} 名 / 中央値 {{ g.median_fmt }} / 最小 {{ g.min_fmt }} / 最大 {{ g.max_fmt }}{% if g.ratio is not none %}<br>参考: 実測 E の中央値は config の allowance（mid {{ g.allowance_mid_fmt }}）の {{ '%.1f' % g.ratio }} 倍{% endif %}</div>
-{% endfor %}
-<div class="note">E は各ユーザが込み枠から実際に引き出せた量の実測。利用の形（毎日安定かバースト）で個人差が大きく、config.yaml の allowance シナリオ見直しの材料になります（バースト型は過小評価に注意）。</div>
-{% endif %}
-"""
+_E_DIST_HTML = _asset("partials/e-dist.html.j2")
 
 # 「追加クレジット付与候補」の HTML 断片（正式・速報の両方で共有）。
-_GRANT_HTML = r"""
-{% if grant_candidates %}
-<h2><!--text:h_grant--></h2>
-<div class="card note">
-  <ul>{% for c in grant_candidates %}<li>{{ c.email }}（クレジット{{ c.mode_label }}・モデル超過見込み {{ c.added_fmt }}/月）</li>{% endfor %}</ul>
-  <p>昇格の前に、まず上限つき追加クレジット（推奨初期上限 {{ grant_cap_fmt }}）を付与し、1ヶ月の課金実測で判断することを推奨します。</p>
-</div>
-{% endif %}
-"""
+_GRANT_HTML = _asset("partials/grant.html.j2")
 
 # 「追加クレジット残額」の HTML 断片（速報ダッシュボードのみ）。
-_CREDIT_REACH_HTML = r"""
-{% if credit_reach %}
-<h2><!--text:h_credit_reach--></h2>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th><th class="num">実課金(観測)</th><th class="num">上限 κ</th><th class="num">残額</th><th>到達見込み</th></tr>
-{% for r in credit_reach.rows %}
-<tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td><td class="num">{{ r.billed_fmt }}</td><td class="num">{{ r.kappa_fmt }}</td><td class="num">{{ r.remaining_fmt }}</td><td>{% if r.reached %}<span class="cap">⚠️上限到達</span>{% else %}{{ r.eta }}{% endif %}</td></tr>
-{% endfor %}
-</table></div>
-<div class="note"><!--text:note_credit_eta-->。</div>
-{% endif %}
-"""
+_CREDIT_REACH_HTML = _asset("partials/credit-reach.html.j2")
 
 # 「追加クレジット構成」の HTML 断片（サマリカード直下・正式/速報で共有）。
-_CREDIT_COMPOSITION_HTML = r"""
-{% if s.credit_shown %}
-<div class="card note">追加クレジット: 有効 {{ s.credit_enabled_n }} 名（上限計 ${{ '%.0f' % s.credit_cap_total_usd }}/月・無制限 {{ s.credit_unlimited_n }} 名） / 無効 {{ s.credit_disabled_n }} 名 / 不明 {{ s.credit_unknown_n }} 名</div>
-{% endif %}
-"""
+_CREDIT_COMPOSITION_HTML = _asset("partials/credit-composition.html.j2")
 
 
-_HTML_TEMPLATE_SRC = r"""<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Team シート最適化 — {{ scope }}</title>
-<style>{{ dashboard_css }}</style>
-</head>
-<body><div class="wrap">
-<h1>Claude Team シート最適化ダッシュボード <small>{{ scope }}</small></h1>
-
-<div class="cards">
-  <div class="card"><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}{% if s.n_unassigned %} / 未割当 {{ s.n_unassigned }}{% endif %}）</div></div>
-  <div class="card"><div class="v">${{ '%.0f' % s.seat_cost_now_usd }}</div><div class="l">現在のシート費用 /月</div></div>
-  <div class="card"><div class="v">${{ '%.0f' % s.total_api_cost_usd }}</div><div class="l">API換算利用額 /月</div></div>
-  <div class="card hl"><div class="v">${{ '%.0f' % s.est_monthly_saving_usd }}</div><div class="l">削減見込み /月（変更推奨 {{ s.n_change_recommended }} 名）</div></div>
-</div>
-<!--CREDIT_COMPOSITION-->
-<!--TREND_SECTION-->
-<!--SNAPSHOT_SECTION-->
-<!--CREDIT_SECTION-->
-<h2>ユーザ別 API 換算コスト</h2>
-<div class="card">
-{% for u in users_sorted %}
-  <div class="bar">
-    <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
-    <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_usd / max_cost * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('#9aa3ad' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div></div>
-    <div class="val">${{ '%.2f' % u.api_cost_usd }}{% if u.cap_suspected %}<span class="cap"> ⚠</span>{% endif %}</div>
-  </div>
-{% endfor %}
-  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い</div>
-</div>
-
-<h2>推奨一覧</h2>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th><th>シート（現→推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">Std時</th><th class="num">Prem時</th><th class="num">削減/月</th><th>判定</th></tr>
-{% for u in users_sorted %}
-<tr>
-  <td class="user" title="{{ u.email }}">{{ u.email.split('@')[0] }}</td>
-  <td class="seat">
-    <span class="seat-{{ u.current_seat }}">{{ seat_short.get(u.current_seat, '?') }}</span>
-    {%- if u.recommended_seat != u.current_seat %} → <span class="seat-{{ u.recommended_seat }}"><b>{{ seat_short.get(u.recommended_seat, '?') }}</b></span>{% endif %}
-  </td>
-  <td class="num">{{ u.api_cost_fmt }}{% if u.cap_suspected %} <span class="cap">⚠</span>{% endif %}</td>
-  <td class="num"{% if u.billed_bg %} style="background:{{ u.billed_bg }}"{% endif %}>{{ u.billed_fmt }}</td>
-  <td class="num">{{ u.std_fmt }}</td>
-  <td class="num">{{ u.prem_fmt }}</td>
-  <td class="num">{{ u.saving_fmt }}</td>
-  <td class="judge"><span class="badge {{ u.badge_class }}">{{ u.status }}</span>{% if u.confidence != '—' %}<span class="conf">確度{{ u.confidence }}</span>{% endif %}</td>
-</tr>
-{% endfor %}
-</table></div>
-
-{% for grp in group_summaries %}
-<h2>{{ grp.heading }}</h2>
-<div class="tablebox"><table>
-<tr><th>{{ grp.col_label }}</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th>{% if grp.has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">変更推奨</th></tr>
-{% for t in grp.rows %}
-<tr>
-  <td>{{ t.group }}</td>
-  <td class="num">{{ t.n_fmt }}</td>
-  <td class="num">{{ t.seat_cost_fmt }}</td>
-  <td class="num">{{ t.api_fmt }}</td>
-  {% if grp.has_loc %}<td class="num">{{ t.loc_fmt }}</td>{% endif %}
-  <td class="num">{{ t.n_change_fmt }}</td>
-</tr>
-{% endfor %}
-</table></div>
-{% endfor %}
-
-<h2>詳細利用状況</h2>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">API換算需要</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr>
-{% for d in detail_rows %}
-<tr>
-  <td class="user" title="{{ d.email }}">{{ d.email.split('@')[0] }}</td>
-  <td class="num">{{ d.in_fmt }}</td>
-  <td class="num">{{ d.out_fmt }}</td>
-  {% if detail_has_loc %}<td class="num">{{ d.loc_fmt }}</td>{% endif %}
-  <td class="num">{{ d.api_fmt }}</td>
-  <td>{{ d.models }}</td>
-  <td>{{ d.products }}</td>
-</tr>
-{% endfor %}
-</table></div>
-<div class="note">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
-
-<h2>前提と注意</h2>
-<div class="card note">
-  <ul>
-    <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
-    <li>「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。</li>
-    <li>込み利用量は非公開のため low/mid/high 3シナリオの感度分析付き（判定横の「確度」）。</li>
-    <li>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。{% if cap_supplement %}{{ cap_supplement }}。{% endif %}</li>
-    {% if disabled_note %}<li>{{ disabled_note }}。</li>{% endif %}
-    {% if has_team_summary %}<li><!--text:note_team_total-->。</li>{% endif %}
-    <li>判定に使用した月: {{ s.months_used | join(', ') }}（{{ s.hysteresis_months }}ヶ月ヒステリシス）。</li>
-  </ul>
-</div>
-
-</div></body></html>
-"""
+_HTML_TEMPLATE_SRC = _asset("dashboard.html.j2")
 
 _HTML_TEMPLATE = _HTML_ENV.from_string(
     _embed_shared_text(
@@ -1277,87 +1035,7 @@ _PREVIEW_BADGE_CLASS = {
 }
 
 
-_PREVIEW_HTML_TEMPLATE_SRC = r"""<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Claude Team シート速報プレビュー — {{ scope }}</title>
-<style>{{ dashboard_css }}
-  /* 速報専用: 一次判断であることを強調する注意バナー */
-  .banner { background:#fdf3e0; border:1px solid #e0b96b; border-left:5px solid #d97a4a;
-            border-radius:8px; padding:12px 16px; margin:12px 0 20px; font-size:.85rem;
-            line-height:1.6; color:#7a5310; }
-</style>
-</head>
-<body><div class="wrap">
-<h1>Claude Team シート速報プレビュー <small>{{ scope }}</small></h1>
-<div class="banner">{{ days_observed }}日間の観測データ（暦{{ days_in_month }}日、月末ペース換算 ×{{ '%.1f' % factor }}）に基づく一次判断です。シート変更の確定判断には使わず、ヒアリング・観察対象の絞り込みに使ってください。</div>
-
-<div class="cards">
-  <div class="card"><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}{% if s.n_unassigned %} / 未割当 {{ s.n_unassigned }}{% endif %}）</div></div>
-  <div class="card"><div class="v">${{ '%.0f' % s.seat_cost_now_usd }}</div><div class="l">現在のシート費用 /月</div></div>
-  <div class="card"><div class="v">{{ total_obs_fmt }}</div><div class="l">観測需要（{{ days_observed }}日）</div></div>
-  <div class="card"><div class="v">{{ total_proj_fmt }}</div><div class="l">月末ペース換算 /月</div></div>
-  <div class="card"><div class="v">{{ s.n_billed }}</div><div class="l">実課金発生</div></div>
-</div>
-<!--CREDIT_COMPOSITION-->
-
-<h2>一次判断の内訳</h2>
-<div class="card">
-{% for c in label_counts %}<span class="badge {{ c.cls }}" style="margin:2px 6px 2px 0;">{{ c.label }} {{ c.n }} 名</span>{% endfor %}
-</div>
-
-<h2>月末ペース換算需要</h2>
-<div class="card">
-{% for u in users_sorted %}
-  <div class="bar">
-    <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
-    <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_projected_usd / max_proj * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('#9aa3ad' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div></div>
-    <div class="val">{{ u.proj_fmt }}</div>
-  </div>
-{% endfor %}
-  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span> / <span class="seat-unassigned">■ 未割当・不明</span></div>
-</div>
-
-<h2>一次判断テーブル</h2>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th><th>現シート</th>{% if has_dept %}<th>部署</th>{% endif %}{% if has_team %}<th>チーム</th>{% endif %}<th class="num">{{ obs_label }}</th><th class="num">月末ペース換算</th><th class="num">実課金(観測)</th><th>一次判断</th><th>確度</th></tr>
-{% for u in users_sorted %}
-<tr>
-  <td class="user" title="{{ u.email }}">{{ u.email.split('@')[0] }}</td>
-  <td class="seat"><span class="seat-{{ u.current_seat }}">{{ seat_short.get(u.current_seat, '?') }}</span></td>
-  {% if has_dept %}<td>{{ u.department }}</td>{% endif %}
-  {% if has_team %}<td>{{ u.team }}</td>{% endif %}
-  <td class="num">{{ u.obs_fmt }}</td>
-  <td class="num">{{ u.proj_fmt }}</td>
-  <td class="num"{% if u.billed_bg %} style="background:{{ u.billed_bg }}"{% endif %}>{{ u.billed_fmt }}{% if u.billed_flag %} <span class="cap">{{ u.billed_flag }}</span>{% endif %}</td>
-  <td class="judge"><span class="badge {{ u.badge_class }}">{{ u.label }}</span></td>
-  <td>{% if u.confidence != '—' %}<span class="conf">{{ u.confidence }}</span>{% endif %}</td>
-</tr>
-{% endfor %}
-</table></div>
-<!--CREDIT_REACH-->
-<!--SNAPSHOT_SECTION-->
-<!--GRANT_SECTION-->
-<h2>注意事項</h2>
-<div class="card note">
-  <ul>
-    <li>日割り換算（×{{ '%.1f' % factor }}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません。</li>
-    <li><!--text:note_billed_nonlinear-->。</li>
-    <li>変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（analyze）で行ってください。</li>
-    {% if disabled_note %}<li>{{ disabled_note }}。</li>{% endif %}
-  </ul>
-  <ul>
-    <li><!--text:legend_idle-->。</li>
-    <li><!--text:legend_over-->。</li>
-    <li><!--text:legend_billed-->。</li>
-    <li><!--text:legend_excluded-->。</li>
-  </ul>
-</div>
-
-</div></body></html>
-"""
+_PREVIEW_HTML_TEMPLATE_SRC = _asset("preview-dashboard.html.j2")
 
 _PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(
     _embed_shared_text(
