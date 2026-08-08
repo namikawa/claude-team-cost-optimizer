@@ -2,104 +2,51 @@
 
 from __future__ import annotations
 
-import os
-import re
-import tempfile
 from pathlib import Path
 
 import pandas as pd
 from jinja2 import Environment
 
-from .analyze import (
+from ..analyze import (
     CREDIT_DISABLED,
-    CREDIT_UNKNOWN,
-    LABEL_EXCLUDED,
-    LABEL_HOLD,
-    LABEL_IDLE,
-    LABEL_PREM_CONSIDER,
-    LABEL_PREM_OK,
-    LABEL_STD_CAND,
-    LABEL_STD_OK,
     SEAT_LABELS,
     STATUS_CHANGE,
-    STATUS_EXCLUDED,
-    STATUS_KEEP,
-    STATUS_UNKNOWN,
-    STATUS_WATCH,
-    STATUS_WATCH_WAIT,
     AnalysisResult,
     PreviewResult,
 )
-from .ingest import parse_affiliations
-
-STATUS_ORDER = [STATUS_CHANGE, STATUS_WATCH, STATUS_WATCH_WAIT, STATUS_UNKNOWN,
-                STATUS_KEEP, STATUS_EXCLUDED]
-
-# 速報の一次判断ラベルの表示順（対応アクションが明確なものから）
-PREVIEW_ORDER = [LABEL_IDLE, LABEL_STD_CAND, LABEL_PREM_CONSIDER, LABEL_HOLD,
-                 STATUS_UNKNOWN, LABEL_PREM_OK, LABEL_STD_OK, LABEL_EXCLUDED]
-
-# 判定ステータス → .badge クラス（速報側 _PREVIEW_BADGE_CLASS と同じ設計。
-# 未知の値は現状維持相当の b-keep に倒す）。
-_STATUS_BADGE_CLASS = {
-    STATUS_CHANGE: "b-change",
-    STATUS_WATCH: "b-watch",
-    STATUS_WATCH_WAIT: "b-watch",
-    STATUS_UNKNOWN: "b-unknown",
-    STATUS_KEEP: "b-keep",
-    STATUS_EXCLUDED: "b-keep",
-}
-
-# クレジットモード → 表示ラベル（付与候補の Markdown / HTML で共用）。
-# enabled は付与候補に現れないためラベルを持たない。
-_CREDIT_MODE_LABEL = {CREDIT_DISABLED: "無効", CREDIT_UNKNOWN: "不明"}
-
-# 部署/チーム軸の共通定義（col, 見出し, （未設定）行を含めるか）。
-# チームは（未設定）を除外する（チーム未設定は部署も異なる異質な集合のためまとめても意味がない）。
-GROUP_AXES = (
-    ("department", "部署別サマリ", True),
-    ("team", "チーム別サマリ", False),
+from .csv_out import write_csv
+from .document import (
+    _atomic_write,
+    _preserve_discussion,
+    discussion_body as discussion_body,
+    document_body as document_body,
+    write_discussion as write_discussion,
 )
-
-# Markdown と HTML の両方に出る固定文言。同じ文を2箇所で保守すると片方だけ直す事故が
-# 起きるため、ここを唯一の定義とする。Markdown 側は _TEXT[...] を直接埋め、HTML 側は
-# テンプレート組み立て時に <!--text:キー--> を _embed_shared_text() が置換する。
-# 文中に Jinja/HTML の特殊文字（{ } % < > &）を含めないこと（そのまま出力される）。
-_TEXT = {
-    # セクション見出し（md は "## " を、HTML は <h2> を前後に付ける）
-    "h_snapshot": "月中の利用推移（スナップショット差分）",
-    "h_code_diff": "月中の Claude Code 活動（code-analytics 差分）",
-    "h_member_changes": "月中のメンバー変動（スナップショット差分）",
-    "h_e_dist": "込み枠の実測（E = API換算需要 − 実課金）",
-    "h_grant": "追加クレジット付与候補",
-    "h_credit_reach": "追加クレジット残額",
-    # 注記（末尾の句点は使う側で付ける。md は付けず HTML は付ける）
-    "note_stall_caveat": "停止は休暇・案件の谷でも起こるため、上限到達の断定には本人確認が必要です",
-    "note_credit_change": "追加クレジット上限を変更した月の課金は部分月のため、"
-                          "上限に基づく判定は翌月から行ってください",
-    "note_credit_eta": "到達見込みはスナップショットがある場合は直近区間の課金ペース、"
-                       "無い場合は月初からの平均ペースによる目安です。平均ペースの場合、"
-                       "課金は込み枠を使い切ってから始まるため実際の到達はこれより"
-                       "早くなりうる点に注意してください",
-    "note_team_total": "チーム別サマリはチーム未設定のユーザを除外しているため、"
-                       "縦合計は組織全体と一致しません",
-    "note_billed_nonlinear": "実課金は込み量を使い切ってから発生する非線形な値のため、"
-                             "月末ペース換算していません",
-    # 速報の凡例
-    "legend_idle": "遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨",
-    "legend_over": "⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）",
-    "legend_billed": "⚠️従量あり: Standard 等で従量課金が発生（Premium 検討の重要シグナル）",
-    "legend_excluded": "対象外（未割当）: 意図的にシートを割り当てていないメンバー"
-                       "（別組織でアサイン済み・管理者等）",
-}
-
-
-def _embed_shared_text(src: str) -> str:
-    """HTML テンプレート組み立て時に <!--text:キー--> を _TEXT の文言へ置換する。"""
-    for key, value in _TEXT.items():
-        src = src.replace(f"<!--text:{key}-->", value)
-    return src
-
+from .format import (
+    _billed_bg,
+    _detail_rows,
+    _fmt_compact,
+    _fmt_count,
+    _fmt_delta,
+    _fmt_delta_int,
+    _fmt_tokens,
+    _fmt_usd,
+    _group_summary_rows,
+    _has_values,
+    _org_products,
+    _scope_label,
+    _sort_for_display,
+)
+from .text import (
+    GROUP_AXES,
+    PREVIEW_ORDER,
+    STATUS_ORDER,
+    _CREDIT_MODE_LABEL,
+    _PREVIEW_BADGE_CLASS,
+    _STATUS_BADGE_CLASS,
+    _TEXT,
+    _embed_shared_text,
+)
 
 # CSV 由来の値（email 等）が HTML/JS として解釈されないよう autoescape を有効化
 _HTML_ENV = Environment(autoescape=True)
@@ -119,77 +66,11 @@ def write_all(result: AnalysisResult, output_dir: str | Path) -> dict[str, Path]
     return paths
 
 
-# Excel/スプレッドシートで式として解釈されうる先頭文字（formula injection 対策）
-_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
-
-
-def _sanitize_csv_cell(v):
-    if isinstance(v, str) and v.startswith(_FORMULA_PREFIXES):
-        return "'" + v
-    return v
-
-
-def write_csv(result: AnalysisResult, path: Path) -> None:
-    result.users.map(_sanitize_csv_cell).to_csv(path, index=False, encoding="utf-8-sig")
-
-
-def _fmt_usd(v) -> str:
-    if v is None or pd.isna(v):
-        return "—"
-    return f"${v:,.2f}"
-
-
-def _fmt_delta(v, compact: bool = False) -> str:
-    """符号付きの金額（増減表示用）。compact=True はダッシュボードの短縮表記。"""
-    if v is None or pd.isna(v):
-        return "—"
-    body = _fmt_compact(abs(v)) if compact else f"${abs(v):,.2f}"
-    return ("+" if v >= 0 else "-") + body
-
-
-def _sort_for_display(users: pd.DataFrame, label_col: str, order: list[str],
-                      value_col: str) -> pd.DataFrame:
-    """ラベル列（status/label）を表示順 order で並べ、同順位内は value_col 降順にする。"""
-    df = users.copy()
-    df["_order"] = df[label_col].map(
-        {v: i for i, v in enumerate(order)}
-    ).fillna(len(order))
-    return df.sort_values(["_order", value_col], ascending=[True, False])
-
-
-def _billed_bg(billed: float, max_billed: float) -> str:
-    """実課金カラムの金額グラデーション背景色。実課金>0 のとき最大額比で警告色の濃さを
-    段階的に付け（最小 0.12〜最大 0.60）、0 のユーザは無着色（空文字列）にする。"""
-    if billed > 0 and max_billed > 0:
-        alpha = 0.12 + 0.48 * (billed / max_billed)
-        return f"rgba(192,57,43,{alpha:.2f})"
-    return ""
-
-
 def _md_cell(v) -> str:
     """Markdown 表セル用のエスケープ（表崩れ防止）。パイプ・改行が主な対象。"""
     s = "" if v is None else str(v)
     s = s.replace("\\", "\\\\").replace("|", "\\|").replace("\r", "").replace("\n", "<br>")
     return s
-
-
-def _scope_label(result: AnalysisResult) -> str:
-    """レポートタイトル用の対象表記。組織名があれば「組織 — 月」。"""
-    return f"{result.org} — {result.month}" if result.org else result.month
-
-
-def _org_products(summary: dict) -> str:
-    by_product = summary.get("org_service_by_product") or {}
-    if not by_product:
-        return ""
-    detail = " / ".join(f"{k} {_fmt_usd(v)}" for k, v in
-                        sorted(by_product.items(), key=lambda kv: -kv[1]))
-    return f"（{detail}）"
-
-
-def _has_values(users: pd.DataFrame, col: str) -> bool:
-    """指定カラムに1つでも非空の値があるか（当該軸の列・サマリの表示可否）。"""
-    return col in users.columns and users[col].fillna("").astype(str).str.strip().ne("").any()
 
 
 def _user_table_md(users: pd.DataFrame) -> str:
@@ -247,64 +128,6 @@ def _notes_md(users: pd.DataFrame) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _seat_price(seat: str, summary: dict) -> float:
-    """シート料金（unassigned/unknown は判定対象外のため $0 扱い）。summary の価格を使う。"""
-    if seat == "standard":
-        return float(summary.get("seat_price_standard_usd", 0.0))
-    if seat == "premium":
-        return float(summary.get("seat_price_premium_usd", 0.0))
-    return 0.0
-
-
-def _group_summary_rows(users: pd.DataFrame, summary: dict, col: str,
-                        include_unset: bool = True) -> list[dict]:
-    """指定軸（col）でのグループ別サマリの行データ。col 非空のユーザがいない場合は空リスト。
-
-    兼務（複数所属）ユーザは所属数 n で 1/n の重みに按分し、各所属グループへ計上する
-    （人数・費用・需要・実課金・変更推奨数・削減見込みすべて同じ重み）。所属が空のユーザは
-    「（未設定）」へ重み1で計上する。API換算需要の降順、（未設定）は常に最後。
-
-    include_unset=False のとき「（未設定）」行を除外する（例: チーム別サマリでは、
-    チーム未設定のユーザは部署も異なる異質な集合のためまとめても意味がない）。
-    この場合、縦合計は全体と一致しなくなる（当該軸に所属を持つユーザのみの集計になる）。
-    """
-    if not _has_values(users, col):
-        return []
-    has_loc = "loc_with_cc" in users.columns
-    # グループ名 → 集計値の accumulator（初期化順は問わない。最後に並べ替える）
-    acc: dict[str, dict] = {}
-    for _, r in users.iterrows():
-        groups = parse_affiliations(r.get(col)) or ["（未設定）"]
-        w = 1.0 / len(groups)
-        is_change = r["status"] == STATUS_CHANGE
-        seat_price = _seat_price(r["current_seat"], summary)
-        api = float(r["api_cost_usd"]) if not pd.isna(r["api_cost_usd"]) else 0.0
-        billed = float(r["billed_extra_usd"] or 0.0) if not pd.isna(r["billed_extra_usd"]) else 0.0
-        saving = float(r["monthly_saving_usd"] or 0.0) if is_change and not pd.isna(r["monthly_saving_usd"]) else 0.0
-        loc = float(r["loc_with_cc"]) if has_loc and not pd.isna(r["loc_with_cc"]) else 0.0
-        for grp in groups:
-            a = acc.setdefault(grp, {"n": 0.0, "seat_cost": 0.0, "api": 0.0,
-                                     "billed": 0.0, "n_change": 0.0, "saving": 0.0, "loc": 0.0})
-            a["n"] += w
-            a["seat_cost"] += seat_price * w
-            a["api"] += api * w
-            a["billed"] += billed * w
-            a["n_change"] += (1.0 * w) if is_change else 0.0
-            a["saving"] += saving * w
-            a["loc"] += loc * w
-    rows = [{"group": grp, "is_unset": grp == "（未設定）", **a} for grp, a in acc.items()]
-    if not include_unset:
-        rows = [r for r in rows if not r["is_unset"]]
-    rows.sort(key=lambda r: (r["is_unset"], -r["api"]))
-    return rows
-
-
-def _fmt_count(v) -> str:
-    """按分後の人数・変更推奨数の表示。整数なら「3」、端数は小数1桁「3.5」（末尾ゼロなし）。"""
-    r = round(float(v), 1)
-    return str(int(r)) if r == int(r) else f"{r:.1f}"
-
-
 def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str,
                       include_unset: bool = True) -> str:
     """指定軸（col）のグループ別サマリ表。col 非空のユーザがいる場合のみ生成し、無ければ空文字列。
@@ -329,41 +152,6 @@ def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str
         cells += [f"{_fmt_count(r['n_change'])} 名", _fmt_usd(r["saving"])]
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines) + "\n"
-
-
-def _fmt_tokens(v) -> str:
-    """トークン数を K/M/B 単位で短く表示（6.7e9 → 6.7B、1.2e6 → 1.2M、340e3 → 340K）。"""
-    n = float(v or 0)
-    if n >= 1e9:
-        return f"{n / 1e9:.1f}B"
-    if n >= 1e6:
-        return f"{n / 1e6:.1f}M"
-    if n >= 1e3:
-        return f"{n / 1e3:.0f}K"
-    return str(int(n))
-
-
-def _detail_rows(users: pd.DataFrame) -> tuple[list[dict], bool]:
-    """詳細利用状況テーブルの行データ。input+output トークンの降順で返す。"""
-    u = users.copy()
-    u["_in"] = u["prompt_tokens"].fillna(0)
-    u["_out"] = u["completion_tokens"].fillna(0)
-    u["_total"] = u["_in"] + u["_out"]
-    u = u.sort_values("_total", ascending=False)
-    has_loc = "loc_with_cc" in u.columns
-    rows = []
-    for _, r in u.iterrows():
-        api = r["api_cost_usd"]
-        rows.append({
-            "email": r["email"],
-            "in": int(r["_in"]),
-            "out": int(r["_out"]),
-            "api": float(api) if not pd.isna(api) else 0.0,  # NaN は 0 扱い
-            "models": str(r["model_breakdown"] or ""),
-            "products": str(r["product_breakdown"] or ""),
-            "loc": int(r["loc_with_cc"]) if has_loc else None,
-        })
-    return rows, has_loc
 
 
 def _detail_table_md(users: pd.DataFrame) -> str:
@@ -461,11 +249,6 @@ def _snapshot_md(snapshot: dict | None) -> str:
             )
     lines += ["", f"- {_TEXT['note_stall_caveat']}"]
     return "\n".join(lines)
-
-
-def _fmt_delta_int(v: int) -> str:
-    """整数の増減表示（+/− 符号 + 桁区切り）。"""
-    return ("+" if v >= 0 else "-") + f"{abs(v):,}"
 
 
 def _code_diff_md(code_diff: dict | None) -> str:
@@ -865,117 +648,8 @@ allowance（シート込み利用量のUSD換算・非公開のため推定）�
     _atomic_write(path, md)
 
 
-# 考察セクションの開始位置。本文の分割・差し替えはすべてこの文字列を境界に行う。
-_DISCUSSION_MARKER = "\n## 考察\n"
-
-# 未記入プレースホルダ行の判定。考察本文に「未記入」という語（例: 「部署未記入」）が
-# 含まれても誤判定しないよう、行アンカーで「（未記入 — ...）」形式の行のみを対象にする。
-_DISCUSSION_PLACEHOLDER_RE = re.compile(r"^（未記入 — .*）$")
-
-
-def _is_placeholder_discussion(tail: str) -> bool:
-    """考察 tail が未記入プレースホルダか。プレースホルダ行が1行でもあれば True。"""
-    return any(_DISCUSSION_PLACEHOLDER_RE.match(line.strip()) for line in tail.splitlines())
-
-
-def _preserve_discussion(md: str, path: Path) -> str:
-    """再生成時、既存 report.md の記入済み「## 考察」セクションを引き継ぐ。"""
-    if not path.exists():
-        return md
-    existing = path.read_text(encoding="utf-8")
-    if _DISCUSSION_MARKER not in existing:
-        return md
-    tail = existing.split(_DISCUSSION_MARKER, 1)[1]
-    if _is_placeholder_discussion(tail):
-        return md
-    return md.split(_DISCUSSION_MARKER, 1)[0] + _DISCUSSION_MARKER + tail
-
-
-def document_body(md: str) -> str:
-    """考察セクションを除いたレポート本文。考察執筆へ渡す資料はこの範囲に限る。"""
-    return md.split(_DISCUSSION_MARKER, 1)[0] if _DISCUSSION_MARKER in md else md
-
-
-def discussion_body(md: str) -> str | None:
-    """記入済みの考察本文。セクションが無い / 未記入プレースホルダのままなら None。"""
-    if _DISCUSSION_MARKER not in md:
-        return None
-    tail = md.split(_DISCUSSION_MARKER, 1)[1]
-    if _is_placeholder_discussion(tail):
-        return None
-    return tail.strip() or None
-
-
-def write_discussion(path: Path, body: str, *, only_if_unwritten: bool = False) -> bool:
-    """考察セクションの中身を body に差し替えて書き戻す。本文側は一切変更しない。
-
-    only_if_unwritten=True なら、記入済みの考察を見つけた時点で何もせず False を返す。
-    判定と書き込みを1回の読み取りに畳み、さらに置換の直前に内容が変わっていないかを
-    確認する（生成に時間がかかる間に人が考察を書いた場合や、並行する analyze が本文を
-    更新した場合に、それを巻き戻さないための保護）。競合を検出した場合も False を返す。
-    """
-    md = path.read_text(encoding="utf-8")
-    if _DISCUSSION_MARKER not in md:
-        raise ValueError(f"{path} に「## 考察」セクションがありません")
-    if only_if_unwritten and discussion_body(md) is not None:
-        return False
-    head = md.split(_DISCUSSION_MARKER, 1)[0]
-    return _atomic_write(
-        path, head + _DISCUSSION_MARKER + "\n" + body.strip() + "\n",
-        expect=md if only_if_unwritten else None,
-    )
-
-
-def _default_file_mode() -> int:
-    """umask を反映した新規ファイルの権限。write_text（open の既定）と同じ意味にする。
-
-    os.umask には読み取り専用の API が無いため 0 を設定して即戻す。単一スレッドの
-    CLI 前提の手法（この2行の間に別スレッドがファイルを作ると 0666 になる）。
-    """
-    current = os.umask(0)
-    os.umask(current)
-    return 0o666 & ~current
-
-
-def _atomic_write(path: Path, text: str, *, expect: str | None = None) -> bool:
-    """同一ディレクトリの一時ファイル経由で置換する。
-
-    write_text は書き込み前にファイルを切り詰めるため、ディスク不足や中断で
-    手書きの考察だけでなくレポート本文まで失われる。置換なら失敗しても元の内容が残る。
-    一時ファイルは mkstemp 由来で 0600 になるため、既存ファイルはその権限を引き継がせ、
-    新規作成時は umask 既定を使う（どちらも行わないとレポートだけ dashboard.html 等より
-    狭い権限になる）。
-
-    expect を渡すと、置換の直前に現在の内容と一致するかを確認し、変わっていれば
-    置換せず False を返す。判定から置換までの窓を詰めるための照合で、厳密な排他ではない
-    （照合と os.replace の間に書き込まれた場合は検出できない）。単一の実行者が使う前提で、
-    ロックは導入していない。
-    """
-    mode = (path.stat().st_mode & 0o7777) if path.exists() else _default_file_mode()
-    tmp: Path | None = None
-    try:
-        f = tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent,
-            prefix=path.name + ".", suffix=".tmp", delete=False,
-        )
-        tmp = Path(f.name)
-        with f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-        os.chmod(tmp, mode)
-        if expect is not None and path.read_text(encoding="utf-8") != expect:
-            return False
-        os.replace(tmp, path)
-        tmp = None
-        return True
-    finally:
-        if tmp is not None:
-            tmp.unlink(missing_ok=True)
-
-
 # ダッシュボードの CSS と HTML 断片は templates/ 以下のファイルが実体（prompts/ と同じ流儀）。
-_TEMPLATES_DIR = Path(__file__).parent / "templates"
+_TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 
 
 def _asset(name: str) -> str:
@@ -1025,16 +699,6 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(
 )
 
 
-# 速報の一次判断ラベル → 既存 .badge クラス。PREVIEW_ORDER に無いラベルは b-keep に倒す。
-_PREVIEW_BADGE_CLASS = {
-    LABEL_STD_CAND: "b-change", LABEL_PREM_CONSIDER: "b-change",   # アクション候補（緑）
-    LABEL_IDLE: "b-watch", LABEL_HOLD: "b-watch",                 # 要観察・保留（橙）
-    STATUS_UNKNOWN: "b-unknown",                                  # データ不整合（赤）
-    LABEL_PREM_OK: "b-keep", LABEL_STD_OK: "b-keep",             # 現状妥当（グレー）
-    LABEL_EXCLUDED: "b-keep",
-}
-
-
 _PREVIEW_HTML_TEMPLATE_SRC = _asset("preview-dashboard.html.j2")
 
 _PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(
@@ -1046,13 +710,6 @@ _PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(
         .replace("<!--GRANT_SECTION-->", _GRANT_HTML)
     )
 )
-
-
-def _fmt_compact(v) -> str:
-    """テーブル幅節約のため $100 以上は整数、未満はセント表示。"""
-    if v is None or pd.isna(v):
-        return "—"
-    return f"${v:,.0f}" if abs(v) >= 100 else f"${v:,.2f}"
 
 
 def write_preview_html(result: PreviewResult, path: Path) -> None:

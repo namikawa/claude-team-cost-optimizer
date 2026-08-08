@@ -4,7 +4,8 @@ from pathlib import Path
 
 from seat_analyzer import analyze as analyze_mod
 from seat_analyzer.analyze import analyze, preview
-from seat_analyzer.report import _group_summary_rows, write_markdown
+from seat_analyzer.report import write_markdown
+from seat_analyzer.report.format import _group_summary_rows
 
 from .conftest import spend_row
 

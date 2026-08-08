@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from seat_analyzer import cli, discussion, leakcheck, report
+from seat_analyzer.report import document
 from seat_analyzer.cli import main
 from seat_analyzer.config import load_config, discussion_settings
 
@@ -731,7 +732,7 @@ def test_write_discussion_aborts_when_file_changes_before_replace(two_orgs, tmp_
     path = out / "org-a" / "2026-06" / "report.md"
     handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
 
-    original_chmod = report.os.chmod
+    original_chmod = document.os.chmod
     injected: list[int] = []
 
     def chmod_with_concurrent_write(target, mode):
@@ -741,7 +742,7 @@ def test_write_discussion_aborts_when_file_changes_before_replace(two_orgs, tmp_
             path.write_text(_with_discussion(path, handwritten), encoding="utf-8")
         return original_chmod(target, mode)
 
-    monkeypatch.setattr(report.os, "chmod", chmod_with_concurrent_write)
+    monkeypatch.setattr(document.os, "chmod", chmod_with_concurrent_write)
     assert report.write_discussion(path, BODY, only_if_unwritten=True) is False
     assert report.discussion_body(path.read_text(encoding="utf-8")) == handwritten.strip()
     assert not list(path.parent.glob("report.md.*.tmp"))
@@ -788,7 +789,7 @@ def test_atomic_write_leaves_original_on_failure(two_orgs, tmp_path, monkeypatch
     def boom(src, dst):
         raise OSError("no space left on device")
 
-    monkeypatch.setattr(report.os, "replace", boom)
+    monkeypatch.setattr(document.os, "replace", boom)
     with pytest.raises(OSError):
         report.write_discussion(path, BODY)
     assert path.read_text(encoding="utf-8") == before
