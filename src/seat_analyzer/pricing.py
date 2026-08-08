@@ -115,7 +115,9 @@ def validate_spend(df: pd.DataFrame, cfg: dict) -> list[str]:
     deviation = (per_user["net_spend"] - per_user["computed_cost_usd"]).abs() / per_user["net_spend"]
     outliers = deviation[deviation > threshold]
     if not outliers.empty:
-        worst = outliers.sort_values(ascending=False).head(5)
+        # groupby の結果は email 昇順。安定ソートなら同率の乖離はその昇順のまま残るので、
+        # 例示に載る 5 名とその並びが実行環境によらず一意に決まる
+        worst = outliers.sort_values(ascending=False, kind="stable").head(5)
         detail = ", ".join(f"{email} ({ratio:.0%})" for email, ratio in worst.items())
         warnings.append(
             f"spend突合: net_spend と tokens×単価 の乖離が {threshold:.0%} を超えるユーザが "

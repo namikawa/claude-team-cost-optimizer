@@ -137,13 +137,13 @@
 | ユーザ | input | output | LoC | API換算需要 | モデル割合（トークン基準） | product構成（利用回数） |
 |---|---|---|---|---|---|---|
 | mori@example.co.jp | 62.7M | 6.3M | 6,800 | $470.00 | Opus 4.8 100% | Claude Code 100% |
-| kudo@example.co.jp | 34.7M | 3.5M | 0 | $260.00 | Opus 4.8 100% | Claude Code 100% |
 | ikeda@example.co.jp | 34.7M | 3.5M | 4,300 | $260.00 | Opus 4.8 100% | Claude Code 100% |
+| kudo@example.co.jp | 34.7M | 3.5M | 0 | $260.00 | Opus 4.8 100% | Claude Code 100% |
 | shimizu@example.co.jp | 10.1M | 1.0M | 260 | $45.40 | Sonnet 4.6 100% | Claude Code 100% |
 | abe@example.co.jp | 6.0M | 600K | 90 | $9.00 | Haiku 4.5 100% | Claude Code 100% |
 | hayashi@example.co.jp | 0 | 0 | 0 | $0.00 |  |  |
-| tanabe@example.co.jp | 0 | 0 | 0 | $0.00 |  |  |
 | okada@example.co.jp | 0 | 0 | 0 | $0.00 |  |  |
+| tanabe@example.co.jp | 0 | 0 | 0 | $0.00 |  |  |
 
 - input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります
 - product構成 は利用回数（リクエスト数）基準。Cowork/Chat は API コストが小さく出るため回数で示す

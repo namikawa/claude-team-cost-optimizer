@@ -55,9 +55,9 @@
 
 | ユーザ | 需要 | 実課金 | E |
 |---|---|---|---|
-| nakamura@example.co.jp | $335.00 | $335.00 | $0.00 |
 | kato@example.co.jp | $18.00 | $18.00 | $0.00 |
 | kobayashi@example.co.jp | $48.50 | $48.50 | $0.00 |
+| nakamura@example.co.jp | $335.00 | $335.00 | $0.00 |
 | yamada@example.co.jp | $27.00 | $27.00 | $0.00 |
 | yoshida@example.co.jp | $11.00 | $11.00 | $0.00 |
 - 件数 5 名 / 中央値 $0.00 / 最小 $0.00 / 最大 $0.00
@@ -146,8 +146,8 @@
 | yoshida@example.co.jp | 7.3M | 733K | 200 | $11.00 | Haiku 4.5 100% | Claude Code 81% / Chat 19% |
 | yamada@example.co.jp | 6.0M | 600K | 900 | $27.00 | Sonnet 4.6 100% | Claude Code 80% / Chat 20% |
 | sato@example.co.jp | 5.3M | 533K | 80 | $24.00 | Sonnet 4.6 100% | Claude Code 80% / Chat 20% |
-| yamamoto@example.co.jp | 4.0M | 400K | 400 | $30.00 | Opus 4.8 100% | Claude Code 80% / Chat 20% |
 | kato@example.co.jp | 4.0M | 400K | 700 | $18.00 | Sonnet 4.6 100% | Claude Code 80% / Chat 20% |
+| yamamoto@example.co.jp | 4.0M | 400K | 400 | $30.00 | Opus 4.8 100% | Claude Code 80% / Chat 20% |
 | guest@example.co.jp | 3.3M | 333K | 0 | $15.00 | Sonnet 4.6 100% | Claude Code 80% / Chat 20% |
 | watanabe@example.co.jp | 2.7M | 267K | 150 | $12.00 | Sonnet 4.6 100% | Claude Code 81% / Chat 19% |
 | ito@example.co.jp | 0 | 0 | 0 | $0.00 |  |  |

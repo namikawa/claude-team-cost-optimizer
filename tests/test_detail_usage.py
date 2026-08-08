@@ -71,6 +71,30 @@ def test_detail_rows_sort_and_loc_absence(cfg, make_input):
     assert rows[0]["email"] == "big@x.jp"  # input+output 降順
 
 
+def test_detail_rows_order_is_independent_of_input_row_order(cfg, make_input):
+    """トークン数もコストも完全に同点のユーザがいても、行順が入力の行順に依存しないこと。
+
+    タイブレークが無いと同点行の並びが入力順のまま残り、レポートの行順が実行環境で
+    変わりうる。email 昇順で一意に決まることを固定する。
+    """
+    input_dir = make_input(
+        {"2026-06": [
+            spend_row("tie-b@x.jp", 10.0, net=0.0),
+            spend_row("tie-a@x.jp", 10.0, net=0.0),   # tie-b とトークン数・コストとも同点
+            spend_row("big@x.jp", 500.0, net=0.0),
+        ]},
+        members=["tie-a@x.jp,Premium", "tie-b@x.jp,Premium", "big@x.jp,Premium"],
+    )
+    users = analyze(input_dir, "2026-06", cfg).users
+    assert users.set_index("email").loc["tie-a@x.jp", "prompt_tokens"] == \
+        users.set_index("email").loc["tie-b@x.jp", "prompt_tokens"]   # 同点の前提を確認
+    orders = (users, users.iloc[::-1],
+              users.sort_values("email"), users.sort_values("email", ascending=False))
+    for frame in orders:
+        rows, _ = _detail_rows(frame)
+        assert [r["email"] for r in rows] == ["big@x.jp", "tie-a@x.jp", "tie-b@x.jp"]
+
+
 def test_detail_table_md_with_loc():
     users = pd.DataFrame([
         {"email": "a@x.jp", "prompt_tokens": 1_200_000, "completion_tokens": 100_000,
