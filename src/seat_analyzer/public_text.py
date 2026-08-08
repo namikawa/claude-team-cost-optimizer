@@ -28,7 +28,7 @@ from .leakcheck import (
 # git が使えないとき（テストの --repo-root 等）に走査する対象。
 # 通常は git 管理下のファイル一覧を使う（下記 _tracked_files）。
 PUBLIC_BASELINE_PATHS = (
-    "README.md", "config.yaml", "pyproject.toml", "examples", "src", "tests", ".claude",
+    "README.md", "config.yaml", "pyproject.toml", "docs", "examples", "src", "tests", ".claude",
 )
 # 公開済みの内容はコードだけでなく資材にもある（templates/ の .css・.j2 等）。
 # 拡張子の網羅が実体からずれると baseline が縮み、公開済みの語を新たな開示として扱う

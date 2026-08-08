@@ -19,7 +19,7 @@ Claude Code を想定している。macOS / Windows / Linux の差異は、Claud
    すでにリポジトリが手元にある場合は、そのディレクトリで Claude Code を起動して
    「docs/setup.md の手順どおりにセットアップして」と伝えればよい。
 3. Claude が確認を求めてきたら答える（ツールのインストール、PATH の変更など）
-4. 最後にセットアップ結果の報告を受け取り、README の月次運用手順へ進む
+4. 最後にセットアップ結果の報告を受け取り、[usage.md](./usage.md) の月次運用手順へ進む
 
 ここから先は Claude 向けの指示。
 
@@ -242,7 +242,7 @@ uv run seat-analyzer init-org <組織名>
 `input/<組織名>/{spend,members,code-analytics}/` と `reports/<組織名>/`、および
 ヘッダ行だけの `input/<組織名>/members-info.csv` が作られる。CSV はまだ無くてよい。
 
-エクスポート手順と月次の運用は README の「月次運用手順」を参照する。
+エクスポート手順と月次の運用は [usage.md](./usage.md) の「月次運用手順」を参照する。
 
 ## ステップ 9: 報告する
 
@@ -254,7 +254,7 @@ uv run seat-analyzer init-org <組織名>
 - サンプル E2E で生成されたファイル
 - ヘッドレス Claude Code CLI の疎通結果（未疎通ならその理由と、分析自体は使えること）
 - 作成した組織ディレクトリ
-- 次にユーザが行うこと（claude.ai からの CSV エクスポート。README の月次運用手順）
+- 次にユーザが行うこと（claude.ai からの CSV エクスポート。[usage.md](./usage.md) の月次運用手順）
 
 ---
 
@@ -279,7 +279,7 @@ uv run seat-analyzer init-org <組織名>
 
 ## セットアップ後
 
-- CSV のエクスポート手順と月次運用: README の「月次運用手順」
+- CSV のエクスポート手順と月次運用: [usage.md](./usage.md) の「月次運用手順」
   スペンドレポートのエクスポートには Owner / Primary Owner 権限が必要で、
   90 日より前には遡れない
 - 入力データの事前検査: `uv run seat-analyzer doctor`

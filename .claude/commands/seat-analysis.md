@@ -42,7 +42,7 @@ preview-dashboard.html・recommendations.csv）は、**その組織の担当者�
 
 - `input/<組織名>/{spend,members,code-analytics}/` の中身を組織ごとに確認する
 - 対象月のスペンドレポートとメンバー一覧が揃っているか確認する。
-  欠けている組織があれば README の月次運用手順を案内し、その組織を除外するか
+  欠けている組織があれば docs/usage.md の月次運用手順を案内し、その組織を除外するか
   中断するかをユーザに確認する
 - ファイルのヘッダを確認し、`config.yaml > columns` のエイリアスで解決できない
   カラム名があれば config.yaml にエイリアスを追記する
@@ -60,7 +60,7 @@ uv run seat-analyzer analyze [--month YYYY-MM] [--org <組織名>]
 
 - CLI の警告を確認する。特に:
   - **spend突合の乖離警告** → `config.yaml > model_prices` の単価が最新か、
-    spend列の意味（実課金 vs API等価見積り）を確認し、README に解釈を記録する
+    spend列の意味（実課金 vs API等価見積り）を確認し、docs/reference.md に解釈を記録する
   - **シート不明ユーザ** → members ファイルの更新漏れの可能性を指摘する
     （「対象外（シート未割当）」は意図的な未割当のため指摘不要）
   - **スキップされた組織** → 対象月のエクスポート漏れ。手順を案内する

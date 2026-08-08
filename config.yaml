@@ -1,7 +1,7 @@
 # Claude Team シート最適化分析 設定ファイル
 #
 # 単価・閾値はすべてここで管理する。実データが溜まったら allowance_usd を
-# キャリブレーションすること（README「allowanceのキャリブレーション」参照）。
+# キャリブレーションすること（docs/reference.md「allowanceのキャリブレーション」参照）。
 
 seats:
   standard:

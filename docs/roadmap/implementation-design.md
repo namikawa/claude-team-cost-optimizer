@@ -2380,7 +2380,7 @@ browser:
 各実装は次の形式で依頼する。
 
 ```text
-docs/implementation-design.md の「Step N: <名称>」だけを実装してください。
+docs/roadmap/implementation-design.md の「Step N: <名称>」だけを実装してください。
 
 対象:
 - 設計書記載のファイル

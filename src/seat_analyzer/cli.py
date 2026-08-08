@@ -176,7 +176,7 @@ def _run_init_org(args: argparse.Namespace) -> int:
             f"\n! 旧レイアウトのデータが {input_dir}/spend/ にあります。"
             f"分析前に {input_dir}/<組織名>/ 配下へ移動してください"
         )
-    print("\nCSV 配置後: uv run seat-analyzer analyze （エクスポート手順は README 参照）")
+    print("\nCSV 配置後: uv run seat-analyzer analyze （エクスポート手順は docs/usage.md 参照）")
     return 0
 
 
@@ -210,7 +210,7 @@ def _resolve_targets(
         if not legacy:
             raise FileNotFoundError(
                 f"{input_dir} に入力データがありません。{input_dir}/<組織名>/spend/ に"
-                "スペンドレポートを配置してください（README の月次運用手順参照）"
+                "スペンドレポートを配置してください（docs/usage.md の月次運用手順参照）"
             )
         return [(None, input_dir, output_dir)]
 
@@ -258,7 +258,7 @@ def _resolve_input_targets(
         # message の決定性のためパスは埋め込まない（実行環境依存値を持ち込まないため）
         raise FileNotFoundError(
             "--input-dir に指定されたディレクトリがありません"
-            "（README の月次運用手順に従いデータを配置してください）"
+            "（docs/usage.md の月次運用手順に従いデータを配置してください）"
         )
     orgs = _discover_inspect_orgs(input_dir)
     # 組織があるなら混在判定は analyze と同じく直下 spend/ のみで行う（残骸の
@@ -423,7 +423,7 @@ def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | No
     latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_months(d))]
     if not latest:
         raise FileNotFoundError(
-            "スペンドレポートがありません。README の月次運用手順に従いエクスポートしてください。"
+            "スペンドレポートがありません。docs/usage.md の月次運用手順に従いエクスポートしてください。"
         )
     month = max(latest)
     print(f"対象月未指定のため最新月を使用: {month}")

@@ -417,7 +417,7 @@ def _no_spend_month_issues(
     detail = (
         f"spend/ のCSVをファイル名から解決できません: {reason}" if reason
         else "spend/ にスペンドレポートがありません"
-        "（README の月次運用手順に従いエクスポートしてください）"
+        "（docs/usage.md の月次運用手順に従いエクスポートしてください）"
     )
     issues = [_issue(
         Severity.ERROR, IssueCode.MISSING_SPEND,
