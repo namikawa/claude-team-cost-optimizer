@@ -1,0 +1,13 @@
+﻿email,current_seat,api_cost_usd,cost_if_standard_usd,cost_if_premium_usd,cost_current_usd,recommended_seat,monthly_saving_usd,status,confidence,rec_low,rec_high,cap_suspected,billed_extra_usd,prompt_tokens,completion_tokens,product_breakdown,model_breakdown,department,team,role,note,prs_with_cc,loc_with_cc
+guest@example.co.jp,unknown,15.0,25.0,125.0,,standard,,シート不明,高,standard,standard,False,15.0,3333332,333332,Claude Code 80% / Chat 20%,Sonnet 4.6 100%,,,,,0,0
+nakamura@example.co.jp,standard,335.0,360.0,210.0,360.0,premium,150.0,変更推奨,高,premium,premium,False,335.0,119111110,11911110,Claude Code 80% / Chat 20%,Haiku 4.5 56% / Sonnet 4.6 44%,プロダクト開発部,モバイルチーム,テックリード,,21,4700
+ito@example.co.jp,premium,0.0,25.0,125.0,125.0,standard,100.0,変更推奨,高,standard,standard,False,0.0,0,0,,,コーポレート,情シスチーム,エンジニア,2026-06 休職中・9月復帰予定,0,0
+sato@example.co.jp,premium,24.0,49.0,149.0,149.0,standard,100.0,変更推奨,高,standard,standard,False,24.0,5333332,533332,Claude Code 80% / Chat 20%,Sonnet 4.6 100%,プロダクト開発部,Webチーム,エンジニア,2026-06 ヒアリング済み: 7月からPJ利用予定,1,80
+suzuki@example.co.jp,premium,415.0,440.0,540.0,540.0,standard,100.0,変更推奨,高,standard,standard,False,415.0,55333332,5533332,Claude Code 80% / Chat 20%,Opus 4.8 100%,プラットフォーム開発部,基盤チーム,エンジニア,,18,3900
+tanaka@example.co.jp,premium,610.0,635.0,735.0,735.0,standard,100.0,変更推奨,高,standard,standard,False,610.0,93533332,9353332,Claude Code 80% / Chat 20%,Opus 4.8 52% / Sonnet 4.6 43% / Fable 5 4%,プラットフォーム開発部,基盤チーム,テックリード,,24,5200
+watanabe@example.co.jp,premium,12.0,37.0,137.0,137.0,standard,100.0,変更推奨,高,standard,standard,False,12.0,2666666,266666,Claude Code 81% / Chat 19%,Sonnet 4.6 100%,プロダクト開発部,Webチーム,エンジニア,,2,150
+yamamoto@example.co.jp,premium,30.0,55.0,155.0,155.0,standard,100.0,変更推奨,高,standard,standard,False,30.0,4000000,400000,Claude Code 80% / Chat 20%,Opus 4.8 100%,プラットフォーム開発部,基盤チーム; SREチーム,エンジニア,2チーム兼務（兼務按分のデモ）,3,400
+kato@example.co.jp,standard,18.0,43.0,125.0,43.0,standard,0.0,現状維持,高,standard,standard,False,18.0,4000000,400000,Claude Code 80% / Chat 20%,Sonnet 4.6 100%,コーポレート,情シスチーム,エンジニア,,5,700
+kobayashi@example.co.jp,standard,48.5,73.5,125.0,73.5,standard,0.0,現状維持,高,standard,standard,False,48.5,10777777,1077777,Claude Code 80% / Chat 20%,Sonnet 4.6 100%,プロダクト開発部,モバイルチーム,エンジニア,,9,1800
+yamada@example.co.jp,standard,27.0,52.0,125.0,52.0,standard,0.0,現状維持,高,standard,standard,False,27.0,6000000,600000,Claude Code 80% / Chat 20%,Sonnet 4.6 100%,プラットフォーム開発部,SREチーム,エンジニア,,6,900
+yoshida@example.co.jp,standard,11.0,36.0,125.0,36.0,standard,0.0,現状維持,高,standard,standard,False,11.0,7333332,733332,Claude Code 81% / Chat 19%,Haiku 4.5 100%,コーポレート,デザインチーム,デザイナー,,2,200
