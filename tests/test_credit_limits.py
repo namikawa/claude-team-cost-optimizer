@@ -108,6 +108,29 @@ def test_credit_reach_warning(make_input, cfg):
     assert any("上限到達" in w and "a@x.jp" in w for w in warns)
 
 
+def test_credit_reach_requires_billing(make_input, cfg):
+    # κ ≤ cap_tolerance_usd だと billed ≥ κ − tol が実課金ゼロでも成立してしまう。
+    # 到達には課金の発生が必要なので、実課金 $0 は κ の大小によらず到達扱いにしない
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 30.0, net=0.0)]},
+        members=["a@x.jp,Premium"],
+    )
+    _write_info(input_dir, "email,追加クレジット上限\na@x.jp,5\n")
+    warns = analyze(input_dir, "2026-06", cfg).warnings
+    assert not any("上限到達" in w for w in warns)
+
+
+def test_credit_reach_small_cap_billed(make_input, cfg):
+    # κ ≤ tolerance でも課金が実際に κ へ達していれば検出する（billed>0 ガードの偽陰性がないこと）
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 30.0, net=5.0)]},
+        members=["a@x.jp,Premium"],
+    )
+    _write_info(input_dir, "email,追加クレジット上限\na@x.jp,5\n")
+    warns = analyze(input_dir, "2026-06", cfg).warnings
+    assert any("上限到達" in w and "a@x.jp" in w for w in warns)
+
+
 def test_integrity_over_cap(make_input, cfg):
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 300.0, net=120.0)]},

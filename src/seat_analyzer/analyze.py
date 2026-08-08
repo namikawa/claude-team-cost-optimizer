@@ -748,7 +748,7 @@ def _credit_integrity_warnings(users: pd.DataFrame, cfg: dict, billed_col: str) 
 
 
 def _credit_reached_emails(users: pd.DataFrame, cfg: dict, billed_col: str) -> list[str]:
-    """上限到達（billed ≥ κ − tolerance）の enabled・有限 κ ユーザの一覧。"""
+    """上限到達（billed > 0 かつ billed ≥ κ − tolerance）の enabled・有限 κ ユーザの一覧。"""
     if "credit_limit_usd" not in users.columns:
         return []
     tol = _usage_credits_cfg(cfg)["cap_tolerance_usd"]
@@ -757,7 +757,10 @@ def _credit_reached_emails(users: pd.DataFrame, cfg: dict, billed_col: str) -> l
         kappa = r["credit_limit_usd"]
         if pd.isna(kappa) or math.isinf(kappa) or kappa <= 0.0:
             continue
-        if float(r[billed_col] or 0.0) >= kappa - tol:
+        billed = float(r[billed_col] or 0.0)
+        # 到達には課金の発生が論理的に必要。κ ≤ tolerance の設定でも実課金ゼロを到達と誤判定しない
+        # （_credit_reach_preview と同じガード）
+        if billed > 0.0 and billed >= kappa - tol:
             reached.append(r["email"])
     return reached
 
