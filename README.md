@@ -42,10 +42,14 @@ Python 3.11 以上と [uv](https://docs.astral.sh/uv/) が必要。考察の自�
 4. 分析を実行する
 
    ```sh
-   uv run seat-analyzer analyze --month YYYY-MM
+   uv run seat-analyzer analyze --month YYYY-MM                    # 分析のみ
+   uv run seat-analyzer analyze --month YYYY-MM --with-discussion  # 考察の執筆まで
    ```
 
-   Claude Code から `/seat-analysis` を実行しても同じ処理を対話的に行える。
+   `analyze` 単体では report.md の「## 考察」は未記入のまま出力される。執筆には
+   ローカルの Claude Code CLI を使う（[docs/tooling.md](docs/tooling.md)）。
+   Claude Code から `/seat-analysis` を実行すると、分析に加えて警告の検証と考察の執筆までを
+   対話的に行える。
 
 ## 生成されるもの
 

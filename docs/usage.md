@@ -105,7 +105,8 @@ uv run seat-analyzer init-org <組織名>
    uv run seat-analyzer analyze --with-discussion        # 考察の執筆まで行う（tooling.md）
    ```
 
-   Claude Code から `/seat-analysis` を実行しても同じ処理を対話的に行える。
+   Claude Code から `/seat-analysis` を実行すると、分析に加えて警告の検証と考察の執筆までを
+   対話的に行える。
 
 6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される
    - `report.md` — 前月からの変化 + 推奨テーブル + 部署別/チーム別サマリ + 詳細利用状況 + 感度分析 + 考察
