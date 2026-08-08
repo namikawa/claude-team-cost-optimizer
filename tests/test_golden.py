@@ -9,6 +9,12 @@
 直下の `input/` は実データなので、golden がそこに依存すると手元の月次運用で
 テストが揺れる。CLI の引数は既定値に頼らず毎回明示する。
 
+ケースは2軸で持つ。2組織そろった 2026-06 が土台（組織横断サマリを含む通常の
+出力構成）で、org-b の 2026-07 が条件付きの断片を通すためのケース。後者が無いと、
+同一月に複数スナップショットがあるときだけ描画される断片（月中の利用推移・
+Claude Code 活動・メンバー変動）が golden の経路に一度も乗らず、HTML から
+丸ごと消えても誰も気づけない。
+
 golden の更新手順:
 
     UPDATE_GOLDEN=1 uv run pytest tests/test_golden.py
@@ -25,6 +31,7 @@ import os
 import shutil
 import warnings
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -34,31 +41,51 @@ from .conftest import CONFIG, REPO_ROOT
 
 EXAMPLES_INPUT = REPO_ROOT / "examples" / "input"
 GOLDEN_ROOT = REPO_ROOT / "tests" / "golden"
-MONTH = "2026-06"
+
+
+class Case(NamedTuple):
+    """golden 1ケース分の analyze 実行条件。辞書のキーが golden ツリーの名前になる。"""
+
+    month: str
+    args: tuple[str, ...] = ()
+
 
 # 速報は --days をファイル名からの自動判別に任せず明示する
 # （ファイル名の期間が変わると観測日数が変わり、golden が揺れるため）。
 CASES = {
-    "full": (),
-    "preview": ("--preview", "--days", "10"),
+    # 2組織そろった月。組織横断サマリ（summary/<月>.md）が出るのはこの構成だけ。
+    "full": Case("2026-06"),
+    "preview": Case("2026-06", ("--preview", "--days", "10")),
+    # 条件付きの断片を通すケース。同一月に複数スナップショットを持つのは
+    # org-b の 2026-07 だけで、org-a にこの月のデータは無いので --org で絞る。
+    "full-snapshots": Case("2026-07", ("--org", "org-b")),
+    # --days は 31（暦日数と同じ＝月末ペース換算 ×1.0）。この月の spend は期間の
+    # 最も広い 07-01-to-07-31 が主データに採用されるので、観測日数もその期間に
+    # 合わせる。短い値を書くと、月全体のデータを部分月と偽って割り増した数字が
+    # golden に固定される。
+    "preview-snapshots": Case("2026-07", ("--org", "org-b", "--preview", "--days", "31")),
 }
 
 # 差分は該当箇所が分かれば十分なので、1ファイルあたりこの行数で打ち切る。
 _MAX_DIFF_LINES = 60
 
 
-def _files(root: Path) -> set[str]:
+def _relative_files(root: Path, *, skip_hidden: bool) -> set[str]:
     """root 配下のファイルを相対パスの集合で返す。
 
-    ドットで始まる名前は除く。ツール側は隠しファイルを出力しないので、これは
-    コミット済みの golden ツリーに Finder が置く .DS_Store 等を無視するためだけの
-    規則になる（生成物側は毎回新しい tmp_path なので混入しない）。
+    skip_hidden はドットで始まる名前を除く。コミット済みの golden ツリーには Finder が
+    .DS_Store を置くことがあるので、除外は golden 側にだけ適用する。生成物側は
+    数え漏らさない（隠しファイルであっても、増えたなら「増えた」と言えるべきなので）。
     """
-    return {
-        str(p.relative_to(root))
-        for p in root.rglob("*")
-        if p.is_file() and not any(part.startswith(".") for part in p.relative_to(root).parts)
-    }
+    found = set()
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if skip_hidden and any(part.startswith(".") for part in rel.parts):
+            continue
+        found.add(str(rel))
+    return found
 
 
 def _diff_lines(text: str) -> list[str]:
@@ -92,14 +119,14 @@ def _read(path: Path) -> str:
     return path.read_bytes().decode("utf-8")
 
 
-def _generate(tmp_path: Path, extra: tuple[str, ...]) -> Path:
+def _generate(tmp_path: Path, case: Case) -> Path:
     output_dir = tmp_path / "out"
     rc = main([
         "analyze", "--config", CONFIG,
         "--input-dir", str(EXAMPLES_INPUT),
-        "--month", MONTH,
+        "--month", case.month,
         "--output-dir", str(output_dir),
-        *extra,
+        *case.args,
     ])
     assert rc == 0
     return output_dir
@@ -138,8 +165,8 @@ def test_golden_report_outputs(case: str, tmp_path: Path) -> None:
 
     # まずファイル構成を突き合わせる。個々の内容だけを比べると、生成されなく
     # なったファイルも、増えたファイルも見逃す。
-    expected_files = _files(golden_dir)
-    actual_files = _files(output_dir)
+    expected_files = _relative_files(golden_dir, skip_hidden=True)
+    actual_files = _relative_files(output_dir, skip_hidden=False)
     assert actual_files == expected_files, (
         f"[{case}] 生成ファイルの構成が golden と違います\n"
         f"  golden に無い（増えた）: {sorted(actual_files - expected_files)}\n"
