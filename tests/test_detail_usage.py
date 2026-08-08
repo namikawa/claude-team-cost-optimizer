@@ -3,8 +3,9 @@
 import pandas as pd
 
 from seat_analyzer.analyze import _short_model, analyze
-from seat_analyzer.report import _detail_table_md, write_html, write_markdown
+from seat_analyzer.report import write_html, write_markdown
 from seat_analyzer.report.format import _detail_rows, _fmt_tokens
+from seat_analyzer.report.markdown import _detail_table_md
 
 from .conftest import spend_row
 
@@ -154,8 +155,8 @@ def test_detail_section_in_markdown_and_html(cfg, make_input, tmp_path):
 
 
 def test_group_summary_includes_prorated_loc():
-    from seat_analyzer.report import _group_summary_md
     from seat_analyzer.report.format import _group_summary_rows
+    from seat_analyzer.report.markdown import _group_summary_md
     users = pd.DataFrame([
         {"email": "a@x.jp", "current_seat": "premium", "status": "現状維持",
          "api_cost_usd": 100.0, "billed_extra_usd": 0.0, "monthly_saving_usd": None,

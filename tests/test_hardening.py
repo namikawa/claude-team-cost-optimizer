@@ -10,7 +10,8 @@ from seat_analyzer.cli import main
 from seat_analyzer.config import _validate
 from seat_analyzer.ingest import discover_months
 from seat_analyzer.pricing import unmatched_models
-from seat_analyzer.report import (
+from seat_analyzer.report import write_csv, write_html
+from seat_analyzer.report.html import (
     _CODE_DIFF_HTML,
     _CREDIT_REACH_HTML,
     _E_DIST_HTML,
@@ -19,8 +20,6 @@ from seat_analyzer.report import (
     _MEMBER_CHANGES_HTML,
     _PREVIEW_HTML_TEMPLATE_SRC,
     _SNAPSHOT_HTML,
-    write_csv,
-    write_html,
 )
 from seat_analyzer.report.text import _embed_shared_text
 
