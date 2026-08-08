@@ -136,7 +136,9 @@ def _detail_rows(users: pd.DataFrame) -> tuple[list[dict], bool]:
     u["_in"] = u["prompt_tokens"].fillna(0)
     u["_out"] = u["completion_tokens"].fillna(0)
     u["_total"] = u["_in"] + u["_out"]
-    u = u.sort_values("_total", ascending=False)
+    # email をタイブレークに置き、トークン数が同点のユーザでも行順が一意に決まるようにする
+    # （単一列の sort_values は安定ソートではなく、同点行の並びが実行環境で変わりうる）
+    u = u.sort_values(["_total", "email"], ascending=[False, True])
     has_loc = "loc_with_cc" in u.columns
     rows = []
     for _, r in u.iterrows():

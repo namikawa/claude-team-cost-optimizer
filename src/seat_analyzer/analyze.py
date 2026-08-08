@@ -131,7 +131,10 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
         tmp = spend_df.assign(_pw=spend_df[weight_col].fillna(0) if weight_col else 1.0)
 
         def product_bd(g: pd.DataFrame) -> str:
-            by_product = g.groupby("product")["_pw"].sum().sort_values(ascending=False)
+            # groupby の結果は product 昇順。安定ソートなら同率の product はその昇順のまま
+            # 残るので、構成比の表示順が実行環境によらず一意に決まる
+            by_product = g.groupby("product")["_pw"].sum().sort_values(
+                ascending=False, kind="stable")
             total = by_product.sum()
             if total <= 0:
                 return ""
@@ -147,8 +150,10 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     def model_bd(g: pd.DataFrame) -> str:
-        # モデル利用割合はトークン量（input+output）基準。寄与降順・1%未満は集約
-        by_model = g.groupby("model")["_tok"].sum().sort_values(ascending=False)
+        # モデル利用割合はトークン量（input+output）基準。寄与降順・1%未満は集約。
+        # groupby の結果は model 昇順で、安定ソートなら同率のモデルはその昇順のまま残るので、
+        # 表示順が実行環境によらず一意に決まる
+        by_model = g.groupby("model")["_tok"].sum().sort_values(ascending=False, kind="stable")
         total = by_model.sum()
         if total <= 0:
             return ""
@@ -673,10 +678,12 @@ def _compute_e_distribution(users: pd.DataFrame, cfg: dict) -> dict | None:
         g = billers[billers["current_seat"] == seat]
         if g.empty:
             continue
+        # email をタイブレークに置き、E が同点のユーザでも行順が一意に決まるようにする
+        # （単一列の sort_values は安定ソートではなく、同点行の並びが実行環境で変わりうる）
         rows = [
             {"email": r["email"], "demand": round(float(r["api_cost_usd"]), 2),
              "billed": round(float(r["billed_extra_usd"]), 2), "e": round(float(r["_e"]), 2)}
-            for _, r in g.sort_values("_e", ascending=False).iterrows()
+            for _, r in g.sort_values(["_e", "email"], ascending=[False, True]).iterrows()
         ]
         es = g["_e"]
         median = round(float(es.median()), 2)

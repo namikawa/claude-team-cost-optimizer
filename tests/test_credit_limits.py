@@ -11,6 +11,7 @@ from seat_analyzer.analyze import (
     CREDIT_DISABLED,
     CREDIT_ENABLED,
     CREDIT_UNKNOWN,
+    _compute_e_distribution,
     analyze,
     credits_mode,
     preview,
@@ -209,6 +210,27 @@ def test_e_distribution_ratio_comparison(make_input, cfg, tmp_path):
     out = tmp_path / "report.md"
     write_markdown(result, out)
     assert "config の allowance（mid $250.00）の 0.4 倍" in out.read_text(encoding="utf-8")
+
+
+def test_e_distribution_row_order_is_independent_of_input_row_order(make_input, cfg):
+    """E が完全に同点のユーザがいても、行順が入力の行順に依存しないこと。
+
+    タイブレークが無いと同点行の並びが入力順のまま残り、レポートの行順が実行環境で
+    変わりうる。email 昇順で一意に決まることを固定する。
+    """
+    input_dir = make_input(
+        {"2026-06": [spend_row("tie-b@x.jp", 200.0, net=60.0),
+                     spend_row("tie-a@x.jp", 200.0, net=60.0)]},   # E=140 で同点
+        members=["tie-a@x.jp,Premium", "tie-b@x.jp,Premium"],
+    )
+    users = analyze(input_dir, "2026-06", cfg).users
+    orders = (users, users.iloc[::-1],
+              users.sort_values("email"), users.sort_values("email", ascending=False))
+    for frame in orders:
+        groups = _compute_e_distribution(frame, cfg)["groups"]
+        prem = next(g for g in groups if g["seat"] == "premium")
+        assert [r["e"] for r in prem["rows"]] == [140.0, 140.0]   # 同点の前提を確認
+        assert [r["email"] for r in prem["rows"]] == ["tie-a@x.jp", "tie-b@x.jp"]
 
 
 # --- 付与候補 -------------------------------------------------------------
