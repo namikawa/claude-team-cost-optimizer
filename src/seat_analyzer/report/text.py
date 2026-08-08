@@ -1,6 +1,8 @@
-"""レポートの表示順・ラベル・バッジクラスと、Markdown / HTML で共有する固定文言。"""
+"""レポートの表示順・ラベルと、Markdown / HTML で共有する固定文言・条件つき注記。"""
 
 from __future__ import annotations
+
+import pandas as pd
 
 from ..analyze import (
     CREDIT_DISABLED,
@@ -26,17 +28,6 @@ STATUS_ORDER = [STATUS_CHANGE, STATUS_WATCH, STATUS_WATCH_WAIT, STATUS_UNKNOWN,
 # 速報の一次判断ラベルの表示順（対応アクションが明確なものから）
 PREVIEW_ORDER = [LABEL_IDLE, LABEL_STD_CAND, LABEL_PREM_CONSIDER, LABEL_HOLD,
                  STATUS_UNKNOWN, LABEL_PREM_OK, LABEL_STD_OK, LABEL_EXCLUDED]
-
-# 判定ステータス → .badge クラス（速報側 _PREVIEW_BADGE_CLASS と同じ設計。
-# 未知の値は現状維持相当の b-keep に倒す）。
-_STATUS_BADGE_CLASS = {
-    STATUS_CHANGE: "b-change",
-    STATUS_WATCH: "b-watch",
-    STATUS_WATCH_WAIT: "b-watch",
-    STATUS_UNKNOWN: "b-unknown",
-    STATUS_KEEP: "b-keep",
-    STATUS_EXCLUDED: "b-keep",
-}
 
 # クレジットモード → 表示ラベル（付与候補の Markdown / HTML で共用）。
 # enabled は付与候補に現れないためラベルを持たない。
@@ -89,11 +80,24 @@ def _embed_shared_text(src: str) -> str:
     return src
 
 
-# 速報の一次判断ラベル → 既存 .badge クラス。PREVIEW_ORDER に無いラベルは b-keep に倒す。
-_PREVIEW_BADGE_CLASS = {
-    LABEL_STD_CAND: "b-change", LABEL_PREM_CONSIDER: "b-change",   # アクション候補（緑）
-    LABEL_IDLE: "b-watch", LABEL_HOLD: "b-watch",                 # 要観察・保留（橙）
-    STATUS_UNKNOWN: "b-unknown",                                  # データ不整合（赤）
-    LABEL_PREM_OK: "b-keep", LABEL_STD_OK: "b-keep",             # 現状妥当（グレー）
-    LABEL_EXCLUDED: "b-keep",
-}
+def _disabled_cost_note(users: pd.DataFrame) -> str:
+    """クレジット無効ユーザのコスト列の意味注記（無ければ空文字列）。"""
+    if "credits_mode" not in users.columns:
+        return ""
+    judged = users[users["current_seat"].isin(("standard", "premium"))]
+    n_disabled = int((judged["credits_mode"] == CREDIT_DISABLED).sum())
+    if n_disabled == 0:
+        return ""
+    if n_disabled == len(judged):
+        return ("追加クレジットが無効のため、「Standard時/Premium時」の枠超過分は実際には"
+                "請求されません（絞り負担のドル換算＝需要が上限で抑えられる分の目安）")
+    return ("クレジット無効のユーザについては、「Standard時/Premium時」の枠超過分は実際には"
+            "請求されず、絞り負担のドル換算（需要が上限で抑えられる分の目安）です")
+
+
+def _cap_legend_supplement(credit_shown: bool) -> str:
+    """⚠️上限? 凡例の補足（credit_shown のときのみ。無ければ空文字列）。"""
+    if not credit_shown:
+        return ""
+    return ("追加クレジットが有効なユーザは実課金がセンサーになるため、"
+            "実課金ゼロなら枠内と判断でき ⚠️上限? を付けません")
