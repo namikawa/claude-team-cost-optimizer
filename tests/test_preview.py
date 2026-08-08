@@ -162,7 +162,7 @@ def _write_preview_with_discussion(path, body: str) -> None:
 
 def test_preserve_discussion_keeps_filled_text_containing_placeholder_word(tmp_path):
     """考察本文に「未記入」という語（例: 部署未記入）を含んでも記入済みとして保持する。"""
-    from seat_analyzer.report import _preserve_discussion
+    from seat_analyzer.report.document import _preserve_discussion
 
     path = tmp_path / "preview.md"
     _write_preview_with_discussion(path, "- 部署未記入のメンバーがいるため整備が必要\n\n### 評価\n本格運用中")
@@ -175,7 +175,7 @@ def test_preserve_discussion_keeps_filled_text_containing_placeholder_word(tmp_p
 
 def test_preserve_discussion_replaces_placeholder(tmp_path):
     """未記入プレースホルダのままなら新規 md（プレースホルダ入り）で差し替える。"""
-    from seat_analyzer.report import _preserve_discussion
+    from seat_analyzer.report.document import _preserve_discussion
 
     path = tmp_path / "preview.md"
     _write_preview_with_discussion(
@@ -186,7 +186,7 @@ def test_preserve_discussion_replaces_placeholder(tmp_path):
 
 def test_preserve_discussion_no_marker_returns_new(tmp_path):
     """既存ファイルに「## 考察」marker が無ければ新規 md をそのまま返す。"""
-    from seat_analyzer.report import _preserve_discussion
+    from seat_analyzer.report.document import _preserve_discussion
 
     path = tmp_path / "preview.md"
     path.write_text("# 見出し\n\n本文だけで考察セクションが無い\n", encoding="utf-8")

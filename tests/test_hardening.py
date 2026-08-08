@@ -19,10 +19,10 @@ from seat_analyzer.report import (
     _MEMBER_CHANGES_HTML,
     _PREVIEW_HTML_TEMPLATE_SRC,
     _SNAPSHOT_HTML,
-    _embed_shared_text,
     write_csv,
     write_html,
 )
+from seat_analyzer.report.text import _embed_shared_text
 
 from .conftest import SPEND_HEADER, spend_row
 
