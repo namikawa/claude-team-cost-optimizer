@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Team シート最適化 — org-a — 2026-06</title>
+<style>
+  :root { --std:#4a90d9; --prem:#d97a4a; --ok:#2e8b57; --warn:#c0392b; }
+  * { box-sizing: border-box; }
+  body { font-family: &#34;Hiragino Sans&#34;, &#34;Noto Sans JP&#34;, sans-serif; margin:0; background:#f6f7f9; color:#1f2933; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px 64px; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 2rem; }
+  .cards { display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+  .card { background:#fff; border-radius:10px; padding:14px 16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .card .v { font-size:1.5rem; font-weight:700; } .card .l { font-size:.78rem; color:#6b7280; }
+  .card.hl .v { color: var(--ok); }
+  .tablebox { overflow-x:auto; background:#fff; border-radius:10px; box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  table { border-collapse: collapse; width:100%; font-size:.8rem; }
+  th, td { padding:6px 8px; text-align:left; border-bottom:1px solid #eceef1; }
+  th { background:#f0f2f5; position:sticky; top:0; white-space:nowrap; }
+  td.num, th.num { text-align:right; font-variant-numeric: tabular-nums; white-space:nowrap; }
+  td.user { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  td.seat, td.judge { white-space:nowrap; }
+  .conf { color:#9aa3ad; font-size:.7rem; margin-left:4px; }
+  .badge { display:inline-block; border-radius:999px; padding:2px 8px; font-size:.72rem; }
+  .b-change { background:#e8f7ee; color:var(--ok); font-weight:700; }
+  .b-watch { background:#fdf3e0; color:#b7791f; }
+  .b-keep { background:#eef0f3; color:#6b7280; }
+  .b-unknown { background:#fbe9e9; color:var(--warn); }
+  .seat-standard { color:var(--std); } .seat-premium { color:var(--prem); }
+  .seat-unassigned, .seat-unknown { color:#9aa3ad; }
+  .bar { display:flex; align-items:center; gap:8px; margin:3px 0; }
+  .bar .name { width:220px; font-size:.78rem; overflow:hidden; text-overflow:ellipsis; }
+  .bar .track { flex:1; background:#eceef1; border-radius:4px; height:16px; position:relative; }
+  .bar .fill { height:100%; border-radius:4px; }
+  .bar .val { width:80px; text-align:right; font-size:.78rem; font-variant-numeric:tabular-nums; }
+  .cap { color:var(--warn); font-weight:700; }
+  .note { font-size:.8rem; color:#6b7280; line-height:1.7; }
+</style>
+</head>
+<body><div class="wrap">
+<h1>Claude Team シート最適化ダッシュボード <small>org-a — 2026-06</small></h1>
+
+<div class="cards">
+  <div class="card"><div class="v">12</div><div class="l">メンバー（Std 5 / Prem 6）</div></div>
+  <div class="card"><div class="v">$875</div><div class="l">現在のシート費用 /月</div></div>
+  <div class="card"><div class="v">$1546</div><div class="l">API換算利用額 /月</div></div>
+  <div class="card hl"><div class="v">$750</div><div class="l">削減見込み /月（変更推奨 7 名）</div></div>
+</div>
+
+
+
+
+
+<h2>前月からの変化</h2>
+<div class="card note">
+  <p>比較対象: 2026-05</p>
+  <ul>
+    <li>利用開始 1 名: guest@example.co.jp（$15.00）</li>
+    <li>利用停止 0 名: なし</li>
+    <li>実課金の新規発生 1 名: guest@example.co.jp（$15.00）</li>
+  </ul>
+</div>
+
+<div class="tablebox"><table>
+<tr><th>主な増減</th><th class="num">前月</th><th class="num">当月</th><th class="num">増減</th></tr>
+
+<tr><td class="user" title="yamamoto@example.co.jp">yamamoto</td><td class="num">$480</td><td class="num">$30.00</td><td class="num">-$450</td></tr>
+
+<tr><td class="user" title="tanaka@example.co.jp">tanaka</td><td class="num">$520</td><td class="num">$610</td><td class="num">+$90.00</td></tr>
+
+<tr><td class="user" title="suzuki@example.co.jp">suzuki</td><td class="num">$340</td><td class="num">$415</td><td class="num">+$75.00</td></tr>
+
+</table></div>
+
+<div class="tablebox"><table>
+<tr><th>月</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">アクティブ</th></tr>
+
+<tr><td>2026-05</td><td class="num">$1,789</td><td class="num">$1,789</td><td class="num">10</td></tr>
+
+<tr><td>2026-06</td><td class="num">$1,546</td><td class="num">$1,546</td><td class="num">11</td></tr>
+
+</table></div>
+
+
+
+
+
+
+
+
+
+
+
+<h2>込み枠の実測（E = API換算需要 − 実課金）</h2>
+
+<div class="tablebox"><table>
+<tr><th>Premium（実課金発生 5 名）</th><th class="num">需要</th><th class="num">実課金</th><th class="num">E</th></tr>
+
+<tr><td class="user" title="sato@example.co.jp">sato</td><td class="num">$24.00</td><td class="num">$24.00</td><td class="num">$0.00</td></tr>
+
+<tr><td class="user" title="suzuki@example.co.jp">suzuki</td><td class="num">$415</td><td class="num">$415</td><td class="num">$0.00</td></tr>
+
+<tr><td class="user" title="tanaka@example.co.jp">tanaka</td><td class="num">$610</td><td class="num">$610</td><td class="num">$0.00</td></tr>
+
+<tr><td class="user" title="watanabe@example.co.jp">watanabe</td><td class="num">$12.00</td><td class="num">$12.00</td><td class="num">$0.00</td></tr>
+
+<tr><td class="user" title="yamamoto@example.co.jp">yamamoto</td><td class="num">$30.00</td><td class="num">$30.00</td><td class="num">$0.00</td></tr>
+
+</table></div>
+<div class="note">件数 5 名 / 中央値 $0.00 / 最小 $0.00 / 最大 $0.00<br>参考: 実測 E の中央値は config の allowance（mid $250）の 0.0 倍</div>
+
+<div class="tablebox"><table>
+<tr><th>Standard（実課金発生 5 名）</th><th class="num">需要</th><th class="num">実課金</th><th class="num">E</th></tr>
+
+<tr><td class="user" title="nakamura@example.co.jp">nakamura</td><td class="num">$335</td><td class="num">$335</td><td class="num">$0.00</td></tr>
+
+<tr><td class="user" title="kato@example.co.jp">kato</td><td class="num">$18.00</td><td class="num">$18.00</td><td class="num">$0.00</td></tr>
+
+<tr><td class="user" title="kobayashi@example.co.jp">kobayashi</td><td class="num">$48.50</td><td class="num">$48.50</td><td class="num">$0.00</td></tr>
+
+<tr><td class="user" title="yamada@example.co.jp">yamada</td><td class="num">$27.00</td><td class="num">$27.00</td><td class="num">$0.00</td></tr>
+
+<tr><td class="user" title="yoshida@example.co.jp">yoshida</td><td class="num">$11.00</td><td class="num">$11.00</td><td class="num">$0.00</td></tr>
+
+</table></div>
+<div class="note">件数 5 名 / 中央値 $0.00 / 最小 $0.00 / 最大 $0.00<br>参考: 実測 E の中央値は config の allowance（mid $50.00）の 0.0 倍</div>
+
+<div class="tablebox"><table>
+<tr><th>不明（実課金発生 1 名）</th><th class="num">需要</th><th class="num">実課金</th><th class="num">E</th></tr>
+
+<tr><td class="user" title="guest@example.co.jp">guest</td><td class="num">$15.00</td><td class="num">$15.00</td><td class="num">$0.00</td></tr>
+
+</table></div>
+<div class="note">件数 1 名 / 中央値 $0.00 / 最小 $0.00 / 最大 $0.00</div>
+
+<div class="note">E は各ユーザが込み枠から実際に引き出せた量の実測。利用の形（毎日安定かバースト）で個人差が大きく、config.yaml の allowance シナリオ見直しの材料になります（バースト型は過小評価に注意）。</div>
+
+
+
+
+<h2>ユーザ別 API 換算コスト</h2>
+<div class="card">
+
+  <div class="bar">
+    <div class="name" title="tanaka@example.co.jp">tanaka</div>
+    <div class="track"><div class="fill" style="width: 100.0%; background: var(--prem);"></div></div>
+    <div class="val">$610.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="suzuki@example.co.jp">suzuki</div>
+    <div class="track"><div class="fill" style="width: 68.0%; background: var(--prem);"></div></div>
+    <div class="val">$415.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="nakamura@example.co.jp">nakamura</div>
+    <div class="track"><div class="fill" style="width: 54.9%; background: var(--std);"></div></div>
+    <div class="val">$335.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="yamamoto@example.co.jp">yamamoto</div>
+    <div class="track"><div class="fill" style="width: 4.9%; background: var(--prem);"></div></div>
+    <div class="val">$30.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="sato@example.co.jp">sato</div>
+    <div class="track"><div class="fill" style="width: 3.9%; background: var(--prem);"></div></div>
+    <div class="val">$24.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="watanabe@example.co.jp">watanabe</div>
+    <div class="track"><div class="fill" style="width: 2.0%; background: var(--prem);"></div></div>
+    <div class="val">$12.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="ito@example.co.jp">ito</div>
+    <div class="track"><div class="fill" style="width: 0.0%; background: var(--prem);"></div></div>
+    <div class="val">$0.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="guest@example.co.jp">guest</div>
+    <div class="track"><div class="fill" style="width: 2.5%; background: #9aa3ad;"></div></div>
+    <div class="val">$15.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="kobayashi@example.co.jp">kobayashi</div>
+    <div class="track"><div class="fill" style="width: 8.0%; background: var(--std);"></div></div>
+    <div class="val">$48.50</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="yamada@example.co.jp">yamada</div>
+    <div class="track"><div class="fill" style="width: 4.4%; background: var(--std);"></div></div>
+    <div class="val">$27.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="kato@example.co.jp">kato</div>
+    <div class="track"><div class="fill" style="width: 3.0%; background: var(--std);"></div></div>
+    <div class="val">$18.00</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="yoshida@example.co.jp">yoshida</div>
+    <div class="track"><div class="fill" style="width: 1.8%; background: var(--std);"></div></div>
+    <div class="val">$11.00</div>
+  </div>
+
+  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い</div>
+</div>
+
+<h2>推奨一覧</h2>
+<div class="tablebox"><table>
+<tr><th>ユーザ</th><th>シート（現→推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">Std時</th><th class="num">Prem時</th><th class="num">削減/月</th><th>判定</th></tr>
+
+<tr>
+  <td class="user" title="tanaka@example.co.jp">tanaka</td>
+  <td class="seat">
+    <span class="seat-premium">Premium</span> → <span class="seat-standard"><b>Standard</b></span>
+  </td>
+  <td class="num">$610</td>
+  <td class="num" style="background:rgba(192,57,43,0.60)">$610</td>
+  <td class="num">$635</td>
+  <td class="num">$735</td>
+  <td class="num">$100</td>
+  <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="suzuki@example.co.jp">suzuki</td>
+  <td class="seat">
+    <span class="seat-premium">Premium</span> → <span class="seat-standard"><b>Standard</b></span>
+  </td>
+  <td class="num">$415</td>
+  <td class="num" style="background:rgba(192,57,43,0.45)">$415</td>
+  <td class="num">$440</td>
+  <td class="num">$540</td>
+  <td class="num">$100</td>
+  <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="nakamura@example.co.jp">nakamura</td>
+  <td class="seat">
+    <span class="seat-standard">Standard</span> → <span class="seat-premium"><b>Premium</b></span>
+  </td>
+  <td class="num">$335</td>
+  <td class="num" style="background:rgba(192,57,43,0.38)">$335</td>
+  <td class="num">$360</td>
+  <td class="num">$210</td>
+  <td class="num">$150</td>
+  <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="yamamoto@example.co.jp">yamamoto</td>
+  <td class="seat">
+    <span class="seat-premium">Premium</span> → <span class="seat-standard"><b>Standard</b></span>
+  </td>
+  <td class="num">$30.00</td>
+  <td class="num" style="background:rgba(192,57,43,0.14)">$30.00</td>
+  <td class="num">$55.00</td>
+  <td class="num">$155</td>
+  <td class="num">$100</td>
+  <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="sato@example.co.jp">sato</td>
+  <td class="seat">
+    <span class="seat-premium">Premium</span> → <span class="seat-standard"><b>Standard</b></span>
+  </td>
+  <td class="num">$24.00</td>
+  <td class="num" style="background:rgba(192,57,43,0.14)">$24.00</td>
+  <td class="num">$49.00</td>
+  <td class="num">$149</td>
+  <td class="num">$100</td>
+  <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="watanabe@example.co.jp">watanabe</td>
+  <td class="seat">
+    <span class="seat-premium">Premium</span> → <span class="seat-standard"><b>Standard</b></span>
+  </td>
+  <td class="num">$12.00</td>
+  <td class="num" style="background:rgba(192,57,43,0.13)">$12.00</td>
+  <td class="num">$37.00</td>
+  <td class="num">$137</td>
+  <td class="num">$100</td>
+  <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="ito@example.co.jp">ito</td>
+  <td class="seat">
+    <span class="seat-premium">Premium</span> → <span class="seat-standard"><b>Standard</b></span>
+  </td>
+  <td class="num">$0.00</td>
+  <td class="num">$0.00</td>
+  <td class="num">$25.00</td>
+  <td class="num">$125</td>
+  <td class="num">$100</td>
+  <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="guest@example.co.jp">guest</td>
+  <td class="seat">
+    <span class="seat-unknown">不明</span> → <span class="seat-standard"><b>Standard</b></span>
+  </td>
+  <td class="num">$15.00</td>
+  <td class="num" style="background:rgba(192,57,43,0.13)">$15.00</td>
+  <td class="num">$25.00</td>
+  <td class="num">$125</td>
+  <td class="num">—</td>
+  <td class="judge"><span class="badge b-unknown">シート不明</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="kobayashi@example.co.jp">kobayashi</td>
+  <td class="seat">
+    <span class="seat-standard">Standard</span>
+  </td>
+  <td class="num">$48.50</td>
+  <td class="num" style="background:rgba(192,57,43,0.16)">$48.50</td>
+  <td class="num">$73.50</td>
+  <td class="num">$125</td>
+  <td class="num">$0.00</td>
+  <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="yamada@example.co.jp">yamada</td>
+  <td class="seat">
+    <span class="seat-standard">Standard</span>
+  </td>
+  <td class="num">$27.00</td>
+  <td class="num" style="background:rgba(192,57,43,0.14)">$27.00</td>
+  <td class="num">$52.00</td>
+  <td class="num">$125</td>
+  <td class="num">$0.00</td>
+  <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="kato@example.co.jp">kato</td>
+  <td class="seat">
+    <span class="seat-standard">Standard</span>
+  </td>
+  <td class="num">$18.00</td>
+  <td class="num" style="background:rgba(192,57,43,0.13)">$18.00</td>
+  <td class="num">$43.00</td>
+  <td class="num">$125</td>
+  <td class="num">$0.00</td>
+  <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+</tr>
+
+<tr>
+  <td class="user" title="yoshida@example.co.jp">yoshida</td>
+  <td class="seat">
+    <span class="seat-standard">Standard</span>
+  </td>
+  <td class="num">$11.00</td>
+  <td class="num" style="background:rgba(192,57,43,0.13)">$11.00</td>
+  <td class="num">$36.00</td>
+  <td class="num">$125</td>
+  <td class="num">$0.00</td>
+  <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+</tr>
+
+</table></div>
+
+
+<h2>部署別サマリ</h2>
+<div class="tablebox"><table>
+<tr><th>部署</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th><th class="num">LoC</th><th class="num">変更推奨</th></tr>
+
+<tr>
+  <td>プラットフォーム開発部</td>
+  <td class="num">4</td>
+  <td class="num">$400</td>
+  <td class="num">$1,082</td>
+  <td class="num">10,400</td>
+  <td class="num">3</td>
+</tr>
+
+<tr>
+  <td>プロダクト開発部</td>
+  <td class="num">4</td>
+  <td class="num">$300</td>
+  <td class="num">$420</td>
+  <td class="num">6,730</td>
+  <td class="num">3</td>
+</tr>
+
+<tr>
+  <td>コーポレート</td>
+  <td class="num">3</td>
+  <td class="num">$175</td>
+  <td class="num">$29.00</td>
+  <td class="num">900</td>
+  <td class="num">1</td>
+</tr>
+
+<tr>
+  <td>（未設定）</td>
+  <td class="num">1</td>
+  <td class="num">$0.00</td>
+  <td class="num">$15.00</td>
+  <td class="num">0</td>
+  <td class="num">0</td>
+</tr>
+
+</table></div>
+
+<h2>チーム別サマリ</h2>
+<div class="tablebox"><table>
+<tr><th>チーム</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th><th class="num">LoC</th><th class="num">変更推奨</th></tr>
+
+<tr>
+  <td>基盤チーム</td>
+  <td class="num">2.5</td>
+  <td class="num">$312</td>
+  <td class="num">$1,040</td>
+  <td class="num">9,300</td>
+  <td class="num">2.5</td>
+</tr>
+
+<tr>
+  <td>モバイルチーム</td>
+  <td class="num">2</td>
+  <td class="num">$50.00</td>
+  <td class="num">$384</td>
+  <td class="num">6,500</td>
+  <td class="num">1</td>
+</tr>
+
+<tr>
+  <td>SREチーム</td>
+  <td class="num">1.5</td>
+  <td class="num">$87.50</td>
+  <td class="num">$42.00</td>
+  <td class="num">1,100</td>
+  <td class="num">0.5</td>
+</tr>
+
+<tr>
+  <td>Webチーム</td>
+  <td class="num">2</td>
+  <td class="num">$250</td>
+  <td class="num">$36.00</td>
+  <td class="num">230</td>
+  <td class="num">2</td>
+</tr>
+
+<tr>
+  <td>情シスチーム</td>
+  <td class="num">2</td>
+  <td class="num">$150</td>
+  <td class="num">$18.00</td>
+  <td class="num">700</td>
+  <td class="num">1</td>
+</tr>
+
+<tr>
+  <td>デザインチーム</td>
+  <td class="num">1</td>
+  <td class="num">$25.00</td>
+  <td class="num">$11.00</td>
+  <td class="num">200</td>
+  <td class="num">0</td>
+</tr>
+
+</table></div>
+
+
+<h2>詳細利用状況</h2>
+<div class="tablebox"><table>
+<tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th><th class="num">LoC</th><th class="num">API換算需要</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr>
+
+<tr>
+  <td class="user" title="nakamura@example.co.jp">nakamura</td>
+  <td class="num">119.1M</td>
+  <td class="num">11.9M</td>
+  <td class="num">4,700</td>
+  <td class="num">$335</td>
+  <td>Haiku 4.5 56% / Sonnet 4.6 44%</td>
+  <td>Claude Code 80% / Chat 20%</td>
+</tr>
+
+<tr>
+  <td class="user" title="tanaka@example.co.jp">tanaka</td>
+  <td class="num">93.5M</td>
+  <td class="num">9.4M</td>
+  <td class="num">5,200</td>
+  <td class="num">$610</td>
+  <td>Opus 4.8 52% / Sonnet 4.6 43% / Fable 5 4%</td>
+  <td>Claude Code 80% / Chat 20%</td>
+</tr>
+
+<tr>
+  <td class="user" title="suzuki@example.co.jp">suzuki</td>
+  <td class="num">55.3M</td>
+  <td class="num">5.5M</td>
+  <td class="num">3,900</td>
+  <td class="num">$415</td>
+  <td>Opus 4.8 100%</td>
+  <td>Claude Code 80% / Chat 20%</td>
+</tr>
+
+<tr>
+  <td class="user" title="kobayashi@example.co.jp">kobayashi</td>
+  <td class="num">10.8M</td>
+  <td class="num">1.1M</td>
+  <td class="num">1,800</td>
+  <td class="num">$48.50</td>
+  <td>Sonnet 4.6 100%</td>
+  <td>Claude Code 80% / Chat 20%</td>
+</tr>
+
+<tr>
+  <td class="user" title="yoshida@example.co.jp">yoshida</td>
+  <td class="num">7.3M</td>
+  <td class="num">733K</td>
+  <td class="num">200</td>
+  <td class="num">$11.00</td>
+  <td>Haiku 4.5 100%</td>
+  <td>Claude Code 81% / Chat 19%</td>
+</tr>
+
+<tr>
+  <td class="user" title="yamada@example.co.jp">yamada</td>
+  <td class="num">6.0M</td>
+  <td class="num">600K</td>
+  <td class="num">900</td>
+  <td class="num">$27.00</td>
+  <td>Sonnet 4.6 100%</td>
+  <td>Claude Code 80% / Chat 20%</td>
+</tr>
+
+<tr>
+  <td class="user" title="sato@example.co.jp">sato</td>
+  <td class="num">5.3M</td>
+  <td class="num">533K</td>
+  <td class="num">80</td>
+  <td class="num">$24.00</td>
+  <td>Sonnet 4.6 100%</td>
+  <td>Claude Code 80% / Chat 20%</td>
+</tr>
+
+<tr>
+  <td class="user" title="yamamoto@example.co.jp">yamamoto</td>
+  <td class="num">4.0M</td>
+  <td class="num">400K</td>
+  <td class="num">400</td>
+  <td class="num">$30.00</td>
+  <td>Opus 4.8 100%</td>
+  <td>Claude Code 80% / Chat 20%</td>
+</tr>
+
+<tr>
+  <td class="user" title="kato@example.co.jp">kato</td>
+  <td class="num">4.0M</td>
+  <td class="num">400K</td>
+  <td class="num">700</td>
+  <td class="num">$18.00</td>
+  <td>Sonnet 4.6 100%</td>
+  <td>Claude Code 80% / Chat 20%</td>
+</tr>
+
+<tr>
+  <td class="user" title="guest@example.co.jp">guest</td>
+  <td class="num">3.3M</td>
+  <td class="num">333K</td>
+  <td class="num">0</td>
+  <td class="num">$15.00</td>
+  <td>Sonnet 4.6 100%</td>
+  <td>Claude Code 80% / Chat 20%</td>
+</tr>
+
+<tr>
+  <td class="user" title="watanabe@example.co.jp">watanabe</td>
+  <td class="num">2.7M</td>
+  <td class="num">267K</td>
+  <td class="num">150</td>
+  <td class="num">$12.00</td>
+  <td>Sonnet 4.6 100%</td>
+  <td>Claude Code 81% / Chat 19%</td>
+</tr>
+
+<tr>
+  <td class="user" title="ito@example.co.jp">ito</td>
+  <td class="num">0</td>
+  <td class="num">0</td>
+  <td class="num">0</td>
+  <td class="num">$0.00</td>
+  <td></td>
+  <td></td>
+</tr>
+
+</table></div>
+<div class="note">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
+
+<h2>前提と注意</h2>
+<div class="card note">
+  <ul>
+    <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
+    <li>「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。</li>
+    <li>込み利用量は非公開のため low/mid/high 3シナリオの感度分析付き（判定横の「確度」）。</li>
+    <li>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。</li>
+    
+    <li>チーム別サマリはチーム未設定のユーザを除外しているため、縦合計は組織全体と一致しません。</li>
+    <li>判定に使用した月: 2026-05, 2026-06（2ヶ月ヒステリシス）。</li>
+  </ul>
+</div>
+
+</div></body></html>
