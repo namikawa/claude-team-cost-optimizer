@@ -46,6 +46,19 @@ def _render(src: str, **ctx) -> str:
     return _HTML_ENV.from_string(_embed_shared_text(src)).render(**ctx)
 
 
+def _without(html: str, *blocks: str) -> str:
+    """描画された側から分岐の出力を取り除く。
+
+    各ブロックがちょうど1回描画されたことも同時に固定する。これが無いと、分岐が
+    何も出さなくなったときに除去が空振りして両辺が一致し、テストが通ってしまう。
+    """
+    for b in blocks:
+        n = html.count(b)
+        assert n == 1, f"1回だけ描画されるはずが {n} 回: {b!r}"
+        html = html.replace(b, "", 1)
+    return html
+
+
 # --- 生データの組み立て（analyze 側の計算結果と同じ形。ビューモデル生成関数に通す） ---
 
 def _trend(**over) -> dict:
@@ -142,7 +155,7 @@ def test_trend_gap_skipped_note_only_when_month_missing():
     skipped = _trend_html(gap_skipped=True)
     normal = _trend_html(gap_skipped=False)
     assert f"比較対象: 2026-06{note}</p>" in skipped
-    assert skipped.replace(note, "") == normal      # 足すのはこの一文だけ
+    assert _without(skipped, note) == normal        # 足すのはこの一文だけ
 
 
 def test_trend_stopped_lists_people_when_present():
@@ -174,10 +187,20 @@ def test_trend_multiple_people_are_comma_separated():
         stopped=[_person("sp-1@x.jp", 220.0), _person("sp-2@x.jp", 210.0)],
         new_billed=[_person("nb-1@x.jp", 40.50), _person("nb-2@x.jp", 30.25)],
     )
-    assert "<li>利用開始 2 名: st-1@x.jp（$120）, st-2@x.jp（$110）</li>" in html
-    assert "<li>利用停止 2 名: sp-1@x.jp（$220）, sp-2@x.jp（$210）</li>" in html
-    assert ("<li>実課金の新規発生 2 名: nb-1@x.jp（$40.50）, "
-            "nb-2@x.jp（$30.25）</li>") in html
+    # 3項目を「なし」の形へ1つずつ戻すと該当者ゼロのレンダリングと完全一致する
+    # （各項目が1回だけ描画され、余計な <li> が増えていないことまで固定する）
+    restored = html
+    for li, none_li in (
+        ("<li>利用開始 2 名: st-1@x.jp（$120）, st-2@x.jp（$110）</li>",
+         "<li>利用開始 0 名: なし</li>"),
+        ("<li>利用停止 2 名: sp-1@x.jp（$220）, sp-2@x.jp（$210）</li>",
+         "<li>利用停止 0 名: なし</li>"),
+        ("<li>実課金の新規発生 2 名: nb-1@x.jp（$40.50）, nb-2@x.jp（$30.25）</li>",
+         "<li>実課金の新規発生 0 名: なし</li>"),
+    ):
+        assert restored.count(li) == 1
+        restored = restored.replace(li, none_li, 1)
+    assert restored == _trend_html()
 
 
 # --- snapshot.html.j2 ---
@@ -188,8 +211,7 @@ def test_snapshot_short_interval_note_only_when_unjudged():
     unjudged = _snapshot_html(judged=False, latest_interval_days=3)
     judged = _snapshot_html(judged=True)
     note = "<p>最新区間が 3 日と短いため停止判定は行っていません。</p>"
-    assert note in unjudged
-    assert unjudged.replace(note, "") == judged     # 足すのはこの1要素だけ
+    assert _without(unjudged, note) == judged       # 足すのはこの1要素だけ
 
 
 def test_snapshot_supplement_block_only_when_findings():
@@ -213,8 +235,8 @@ def test_snapshot_supplement_block_only_when_findings():
         "</ul></div>\n\n"
     )
     assert '<div class="card note"><ul>' not in none
-    assert with_stall.replace(stall_box, "") == none
-    assert with_billed.replace(billed_box, "") == none
+    assert _without(with_stall, stall_box) == none
+    assert _without(with_billed, billed_box) == none
 
 
 def test_snapshot_loc_note_only_when_corroborated():
@@ -229,7 +251,7 @@ def test_snapshot_loc_note_only_when_corroborated():
     without = _with("")
     assert f"実測候補{added}。</li>" in with_note
     assert "実測候補。</li>" in without
-    assert with_note.replace(added, "") == without      # 足すのはこの一文だけ
+    assert _without(with_note, added) == without        # 足すのはこの一文だけ
 
 
 # --- member-changes.html.j2 ---
@@ -257,8 +279,8 @@ def test_member_changes_lists_removed_members():
         {"email": "new@x.jp", "seat": "premium", "interval_label": interval}])
     li_removed = f"<li>gone@x.jp: {interval} で削除（Premium）</li>"
     li_added = f"<li>new@x.jp: {interval} で追加（Premium）</li>"
-    assert removed.replace(li_removed, "") == base    # 足すのはこの1行だけ
-    assert added.replace(li_added, "") == base
+    assert _without(removed, li_removed) == base      # 足すのはこの1行だけ
+    assert _without(added, li_added) == base
 
 
 def test_member_changes_credit_note_only_when_limit_changed():
@@ -271,9 +293,8 @@ def test_member_changes_credit_note_only_when_limit_changed():
           "（members-info 由来）</li>")
     note = ("<p>追加クレジット上限を変更した月の課金は部分月のため、"
             "上限に基づく判定は翌月から行ってください。</p>")
-    assert li in changed and note in changed
     assert note not in base
-    assert changed.replace(li, "").replace(note, "") == base   # 足すのはこの2要素だけ
+    assert _without(changed, li, note) == base        # 足すのはこの2要素だけ
 
 
 # --- code-diff.html.j2 ---
@@ -284,10 +305,9 @@ def test_code_diff_pr_column_only_when_prs_available():
     cell = '<td class="num">+3</td>'
     with_prs = _render(_CODE_DIFF_HTML, code_diff=_code_diff_view(_code_diff(True, 3)))
     without = _render(_CODE_DIFF_HTML, code_diff=_code_diff_view(_code_diff(False, None)))
-    assert header in with_prs and cell in with_prs
     assert header not in without
     # 足すのは見出し1つとセル1つだけ（列数のズレも余計な要素の追加も検出する）
-    assert with_prs.replace(header, "").replace(cell, "") == without
+    assert _without(with_prs, header, cell) == without
 
 
 # --- e-dist.html.j2 ---
