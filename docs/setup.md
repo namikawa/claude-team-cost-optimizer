@@ -76,24 +76,36 @@ git clone https://github.com/namikawa/claude-team-cost-optimizer.git
 cd claude-team-cost-optimizer
 ```
 
-すでに手元にある場合、clone は不要だが、Windows なら次の再チェックアウトを行ってから
-先へ進む。以降のコマンドはすべてリポジトリのルートで実行する（サブディレクトリで実行
-すると設定ファイルと入力ディレクトリの解決に失敗する）。
+すでに手元にある場合、clone は不要だが、次のワークツリーの確認を行ってから先へ進む。
+以降のコマンドはすべてリポジトリのルートで実行する（サブディレクトリで実行すると
+設定ファイルと入力ディレクトリの解決に失敗する）。
 
-Windows で以前から手元にあるクローンは、ワークツリーの改行が CRLF になっている。テストは
+手元のクローンは、ワークツリーの改行が CRLF になっていることがある（`core.autocrlf` と
+`core.eol` の設定で決まる。Git for Windows のインストーラ既定では CRLF になる）。テストは
 生成物と同梱の見本をバイト単位で比べるため、見本が CRLF のままだとステップ 5 で失敗する。
 改行の差は `git status` にも `git diff` にも出ないので、失敗の原因としては見えにくい。
-次の手順は未コミットの変更を捨てるので、残したい変更があれば先に退避する。
 
 ```sh
-git pull
-git rm --cached -r .
-git reset --hard
+git pull --ff-only
+git ls-files --eol | grep 'w/crlf' | grep -v examples/input
 ```
 
-`git pull` を先に行うのは、改行を LF に揃える `.gitattributes` を取り込むため。
-`git reset --hard` は HEAD の内容で取り直すので、この順でないと CRLF のまま戻る。
-新しく clone した場合はこの操作は要らない。
+`git pull --ff-only` は、改行を LF に揃える `.gitattributes` を取り込むために先に行う
+（`--ff-only` はマージコミットのエディタが開いて止まるのを避けるため）。2つ目のコマンドが
+何も出さなければ以降の操作は要らない。`examples/input` の合成サンプルは CRLF が正しい
+ので除いてある。
+
+行が出た場合はワークツリーを取り直す。次の操作は未コミットの変更を捨てるので、残したい
+変更があれば先に退避する。
+
+```sh
+git rm --cached -r . && git reset --hard
+```
+
+`git reset --hard` は HEAD の内容で取り直すので、`.gitattributes` を取り込んだ後に行う。
+`&&` で繋ぐのは、`git rm --cached` が中断したときに `git reset --hard` を走らせない
+ため（作業ツリーとも HEAD とも違う staged 内容が1つでもあると `git rm --cached` は
+何も変更せずに終了する）。新しく clone した場合はこの操作は要らない。
 
 検証:
 
@@ -292,9 +304,10 @@ uv run seat-analyzer init-org <組織名>
   旧レイアウトのデータが残っている。`input/<組織名>/` 配下へ移動する。
 - `check-text` や `discuss` が対象語を集められずにエラー終了する
   リポジトリのルート以外で実行している可能性が高い。ルートに移動して実行し直す。
-- Windows で `tests/test_golden.py` だけが落ちる
-  以前に clone したワークツリーで、同梱の見本の改行が CRLF のまま残っている。
-  ステップ 1 の手順でワークツリーを取り直す。
+- `tests/test_golden.py` だけが落ちる
+  ワークツリーの改行が CRLF のまま残っている。`core.autocrlf` や `core.eol` を有効に
+  していると OS によらず起きる。`git ls-files --eol | grep 'w/crlf' | grep -v examples/input`
+  で確認し、行が出たらステップ 1 の手順でワークツリーを取り直す。
 
 ## セットアップ後
 

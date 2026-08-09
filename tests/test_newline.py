@@ -26,8 +26,8 @@ macOS / Linux では引数を省いても出力が変わらないため、生成
 
 - ファイル名が mode に使える文字だけでできている `open` は、ファイル名を mode と読む。
   `open("rb", "w")` は読み取りに見えて外れ、`open("a")` は書き込みに見えて拾われる
-- `zipfile.ZipFile.open` や `ExcelWriter` のように `newline=` を取らない同名 API を
-  書き込みで呼ぶと違反として出る。抑制する手段は用意していない
+- `zipfile.ZipFile.open` や `tarfile.TarFile.open` のように、名前が衝突していて
+  `newline=` を取らない API を書き込みで呼ぶと違反として出る。抑制する手段は無い
 
 保証するのは「書き込みのときに OS 依存の変換をしない」ことだけで、出力が LF に
 なることそのものではない。`newline="\n"` は「変換しない」の意味なので、渡した
@@ -118,6 +118,11 @@ def _mode_candidates(node: ast.Call, positions: tuple[int, ...]) -> list[ast.exp
     return ([by_keyword] if by_keyword is not None else []) + args
 
 
+def _has_star_kwargs(node: ast.Call) -> bool:
+    """`**opts` で引数を渡しているか（何が入っているか構文木からは分からない）。"""
+    return any(kw.arg is None for kw in node.keywords)
+
+
 def _mode_literal(candidates: list[ast.expr]) -> str | None:
     """候補から mode の文字列を取る（見つからなければ None）。
 
@@ -141,11 +146,11 @@ def _scan(package_dir: Path) -> tuple[list[Path], list[_Call], list[_Call]]:
     2つ目は適合・違反の別なく返す。検査が本当にコードへ届いていることを、違反ゼロと
     いう結果とは別に確かめられるようにするため。
 
-    3つ目は、mode らしい文字列が見つからず、かつ候補の中に構文木から読めない式がある
-    呼び出し。書き込みかどうかを決められないので対象から外すしかなく、外した事実を数
-    として残す。`open` は mode の位置が呼び出しの形で変わるため、位置引数を1つだけ渡
-    した読み取り（`open(path)`）も、mode ではない文字列と非リテラルが並ぶ呼び出し
-    （`tarfile.open(path, "w:gz")`）もここに入る。
+    3つ目は、mode らしい文字列が見つからず、かつ mode が隠れうる書き方（候補の中の
+    非リテラル、`**opts`）が残っている呼び出し。書き込みかどうかを決められないので
+    対象から外すしかなく、外した事実を数として残す。`open` は mode の位置が呼び出しの
+    形で変わるため、位置引数を1つだけ渡した読み取り（`open(path)`）も、mode ではない
+    文字列と非リテラルが並ぶ呼び出し（`tarfile.open(path, "w:gz")`）もここに入る。
     """
     paths = sorted(package_dir.rglob("*.py"))
     calls: list[_Call] = []
@@ -164,7 +169,9 @@ def _scan(package_dir: Path) -> tuple[list[Path], list[_Call], list[_Call]]:
                 candidates = _mode_candidates(node, api.mode_at)
                 mode = _mode_literal(candidates)
                 if not _writes_text(mode):
-                    if mode is None and any(_str_literal(c) is None for c in candidates):
+                    unread = _has_star_kwargs(node) or any(
+                        _str_literal(c) is None for c in candidates)
+                    if mode is None and unread:
                         unreadable.append(_Call(rel, node.lineno, name, None))
                     continue
             value = _keyword(node, api.kwarg)
@@ -225,7 +232,10 @@ def test_no_write_call_hides_its_mode():
     assert not unreadable, (
         "mode を構文木から読めない書き込み呼び出しがあります:\n  "
         + "\n  ".join(f"{c.path}:{c.lineno} {c.api}()" for c in unreadable)
-        + "\n（mode を定数で書くか、`path.open(...)` の形に寄せてください）"
+        + "\n（mode を定数で書くか、`path.open(...)` の形に寄せてください。"
+        "変数のパスを読むだけなら `open(p, \"r\", ...)` と mode を明示すれば通ります。"
+        "`tarfile.open` のように名前が衝突していて `newline=` を取れない API なら、"
+        "この検査の想定の外なので `_WRITE_APIS` の作りから見直してください）"
     )
 
 
@@ -269,6 +279,11 @@ open(path, chosen_mode)                                           # want: unread
 open("/tmp/x", chosen_mode)                                       # want: unreadable
 open(path)                                                        # want: unreadable
 tarfile.open(path, "w:gz")                                        # want: unreadable
+# ** で渡されると mode も newline も構文木からは見えない
+path.open(**opts)                                                 # want: unreadable
+open(path, **opts)                                                # want: unreadable
+os.fdopen(fd, **opts)                                             # want: unreadable
+tempfile.NamedTemporaryFile(**opts)                               # want: unreadable
 ''',
     "bad.py": r'''
 path.write_text(text, encoding="utf-8")         # want: write_text() に newline= がありません
@@ -284,6 +299,11 @@ path.open(mode="w", encoding="utf-8")           # want: open() に newline= が�
 open("out.csv", "w")                            # want: open() に newline= がありません
 open(path, "a", newline="\r\n")                 # want: open() の newline='\r\n' は LF になりません
 os.fdopen(fd, "w")                              # want: fdopen() に newline= がありません
+open(path, "x")                                 # want: open() に newline= がありません
+path.open("wt", encoding="utf-8")               # want: open() に newline= がありません
+path.open("w+", encoding="utf-8")               # want: open() に newline= がありません
+open("rb", mode="w")                            # want: open() に newline= がありません
+path.write_text(text, newline=3)                # want: write_text() の newline= が定数の文字列ではありません
 ''',
     "nested/deep.py": r'''
 path.write_text(text)                           # want: write_text() に newline= がありません
@@ -368,16 +388,22 @@ def test_checker_records_the_modes_it_cannot_read(fake_package):
 # 単位が違う（構文木ではなく git の属性）ので節を分ける。守る対象は同じ不変条件で、
 # こちらは「ワークツリーへ出す側」の改行を見る。
 
-_MIXED_EOL = ("crlf", "mixed")
+# CR を含む改行。git は index と作業ツリーのそれぞれについてこの形を報告する
+# （`none` は改行なし、空文字は作業ツリーに実体が無いファイル）
+_EOL_WITH_CR = ("crlf", "mixed")
 
 
-def test_files_with_other_line_endings_are_excluded_from_normalization():
-    """index と作業ツリーで改行が食い違うファイルには `-text` が付いている。
+def test_files_with_cr_are_excluded_from_normalization():
+    """CR を含むファイルには `-text` が付いている。
 
     `.gitattributes` の `* text=auto eol=lf` は、除外しないファイルの CR をコミット時に
     落とす。CRLF のまま扱うファイル（合成サンプルの CSV）を後から足したときに、除外の
-    追記を忘れると index の中身が黙って LF に変わる。落ちた側は作業ツリーだけが CRLF の
-    まま残るので、index と作業ツリーの食い違いとして見つかる。
+    追記を忘れると index の中身が黙って LF に変わり、作業ツリーだけが CRLF で残る。
+    index と作業ツリーのどちらかに CR があれば拾えるので、両方を見る。
+
+    見るのは CR の有無だけで、index と作業ツリーが揃っているかは見ない。作業ツリーに
+    実体が無いファイル（削除・移動の途中）や、改行の無いファイルに1行足した状態でも
+    片側だけが変わるが、どちらもこの規約とは関係がない。
     """
     try:
         proc = subprocess.run(
@@ -397,10 +423,10 @@ def test_files_with_other_line_endings_are_excluded_from_normalization():
         attrs = info.partition("attr/")[2].split()
         if "-text" in attrs:
             continue
-        if index_eol != work_eol or index_eol in _MIXED_EOL:
+        if index_eol in _EOL_WITH_CR or work_eol in _EOL_WITH_CR:
             unexpected.append(f"{path}（index {index_eol} / 作業ツリー {work_eol}）")
     assert not unexpected, (
-        "`eol=lf` の対象なのに LF で揃っていないファイルがあります:\n  "
+        "`eol=lf` の対象なのに CR を含むファイルがあります:\n  "
         + "\n  ".join(unexpected)
         + "\n（CRLF のまま扱うなら .gitattributes に -text を足し、"
         "そうでなければ内容を LF に直してください）"
