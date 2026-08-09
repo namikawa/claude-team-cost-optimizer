@@ -1,7 +1,7 @@
 r"""生成物の改行を LF に固定していることを構文木で検査する。
 
 書き込み経路は既定で改行を OS 任せにする（`Path.write_text`・`Path.open`・
-`NamedTemporaryFile` は newline=None のとき os.linesep へ変換し、
+`os.fdopen`・`NamedTemporaryFile` は newline=None のとき os.linesep へ変換し、
 `DataFrame.to_csv` の lineterminator の既定も os.linesep）。Windows でだけ
 生成物が CRLF になり、レポートを共有したときに差分が出る。
 
@@ -9,10 +9,19 @@ macOS / Linux では引数を省いても出力が変わらないため、生成
 （golden を含む）ではこの規約の破れを検出できない。呼び出しに引数が付いていること
 と、その値が LF であることを直接見るしかない。
 
-この検査が及ぶ範囲は `src/seat_analyzer/` 配下だけで、リポジトリ全体の規約では
-ない。`examples/generate_sample_data.py` はコミット対象の合成 CSV を CRLF で
-書き出すが（`csv.writer` の excel dialect が全 OS で CRLF。これが正しい）、
-ここでは対象にしない。
+この検査が及ぶ範囲は `src/seat_analyzer/` 配下の、`_WRITE_APIS` に挙げた API を
+呼ぶ箇所だけで、リポジトリ全体の規約ではない。次は対象外になる。
+
+- `examples/generate_sample_data.py`。コミット対象の合成 CSV を CRLF で書き出すが
+  （`csv.writer` の excel dialect が全 OS で CRLF）、それが正しい
+- `io.TextIOWrapper`・`tempfile.TemporaryFile`・`SpooledTemporaryFile`
+- `print()` と `sys.stdout`。`cli.py` の `--format json` は Windows では CRLF で出る
+- `path.open("w", newline="")` に `csv.writer` を重ねた書き込み。規則は満たすが、
+  レコード区切りを書くのは csv 側なので出力は全 OS で CRLF になる
+- mode を定数で書いていない `open` 系。書き込みかどうかを構文木から決められない
+
+照合は呼び出し先の名前だけで行い、レシーバは見ない。同名の別 API を巻き込まないよう、
+mode を取る API では mode 文字列らしさ（`_MODE_CHARS`）まで確かめてから対象にする。
 
 保証するのは「書き込みのときに OS 依存の変換をしない」ことだけで、出力が LF に
 なることそのものではない。`newline="\n"` は「変換しない」の意味なので、渡した
@@ -25,6 +34,7 @@ universal newlines、Jinja の `newline_sequence` の既定は LF、`discussion.
 """
 
 import ast
+import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
@@ -34,22 +44,41 @@ from .conftest import REPO_ROOT
 
 PACKAGE_DIR = REPO_ROOT / "src" / "seat_analyzer"
 
-# 改行を OS 任せにする書き込み API → 固定に必須のキーワード引数と、その許容値。
-# write_text / open / NamedTemporaryFile は "" も「変換しない」の意味なので許す。
-# to_csv だけは "" を許さない（pandas が `lineterminator or os.linesep` と解決するため、
-# 空文字を渡すと黙って os.linesep に落ちる）。
-_REQUIRED_KWARG = {
-    "write_text": ("newline", ("\n", "")),
-    "to_csv": ("lineterminator", ("\n",)),
-    "NamedTemporaryFile": ("newline", ("\n", "")),
-    "open": ("newline", ("\n", "")),
+# mode 文字列に現れうる文字。これ以外を含む文字列は mode ではないとみなす
+# （`webbrowser.open("http://...")` のような同名の別 API を対象にしないため）
+_MODE_CHARS = set("rwaxbt+")
+
+
+class _Api(NamedTuple):
+    """改行を OS 任せにする書き込み API 1つ分の規則。"""
+
+    kwarg: str                        # LF を固定するために要るキーワード引数
+    allowed: tuple[str, ...]          # その引数に許す値
+    mode_at: tuple[int, ...] | None   # mode が来る位置引数の候補。None は mode を取らない API
+
+
+# 検査する API 名 → 規則。
+#
+# mode を取る API はテキストの書き込みのときだけ対象にする（binary には newline= を
+# 渡せず ValueError になり、読み取りには意味が無いため）。mode の位置は AST の形では
+# なく API ごとに持つ。`from tempfile import NamedTemporaryFile` のように import の
+# 書き方で呼び出しの形が変わっても、mode の位置は変わらないため。
+#
+# 許容値の "" は newline と同じく「変換しない」の意味。to_csv だけは "" を許さない
+# （pandas が `lineterminator or os.linesep` と解決するので、空文字は os.linesep に落ちる）。
+_WRITE_APIS = {
+    "write_text": _Api("newline", ("\n", ""), None),
+    "to_csv": _Api("lineterminator", ("\n",), None),
+    "open": _Api("newline", ("\n", ""), (0, 1)),        # path.open(mode) / open(path, mode)
+    "fdopen": _Api("newline", ("\n", ""), (1,)),        # os.fdopen(fd, mode)
+    "NamedTemporaryFile": _Api("newline", ("\n", ""), (0,)),
 }
 
 
 class _Call(NamedTuple):
     """規約の対象になった書き込み呼び出し1件。"""
 
-    path: str          # パッケージディレクトリからの相対パス
+    path: str              # パッケージディレクトリからの相対パス
     lineno: int
     api: str
     problem: str | None    # 違反の説明。None なら規約を満たしている
@@ -76,24 +105,24 @@ def _keyword(node: ast.Call, name: str) -> ast.expr | None:
     return next((kw.value for kw in node.keywords if kw.arg == name), None)
 
 
-def _opens_for_write(node: ast.Call) -> bool | None:
-    """open 系の呼び出しが改行変換の対象になるか（判定できないときは None）。
+def _mode_literal(node: ast.Call, positions: tuple[int, ...]) -> str | None:
+    """呼び出しから mode の文字列を取る（書いていない・読み取れないときは None）。
 
-    mode は `path.open("w")` なら第1位置引数、組み込みの `open(path, "w")` なら
-    第2位置引数で、`mode=` キーワードでも来る。省略時は読み取りなので対象外。
-    バイナリは改行変換をしないので同じく対象外。
+    `mode=` キーワードを先に見て、次に位置引数の候補を順に見る。mode に使えない文字を
+    含む文字列は mode ではないとみなし、候補の先を探す。
     """
-    index = 0 if isinstance(node.func, ast.Attribute) else 1
-    mode_node = node.args[index] if len(node.args) > index else None
-    by_keyword = _keyword(node, "mode")
-    if by_keyword is not None:
-        mode_node = by_keyword
-    if mode_node is None:
-        return False
-    mode = _str_literal(mode_node)
-    if mode is None:
-        return None
-    return any(c in mode for c in "wax") and "b" not in mode
+    candidates = [_keyword(node, "mode")]
+    candidates += [node.args[i] for i in positions if len(node.args) > i]
+    for candidate in candidates:
+        mode = _str_literal(candidate)
+        if mode and set(mode) <= _MODE_CHARS:
+            return mode
+    return None
+
+
+def _writes_text(mode: str | None) -> bool:
+    """その mode がテキストの書き込みか（＝改行変換が働くか）。"""
+    return mode is not None and any(c in mode for c in "wax") and "b" not in mode
 
 
 def _scan(package_dir: Path) -> tuple[list[Path], list[_Call]]:
@@ -111,25 +140,18 @@ def _scan(package_dir: Path) -> tuple[list[Path], list[_Call]]:
             if not isinstance(node, ast.Call):
                 continue
             name = _called_name(node)
-            spec = _REQUIRED_KWARG.get(name)
-            if spec is None:
+            api = _WRITE_APIS.get(name)
+            if api is None:
                 continue
-            if name == "open":
-                writes = _opens_for_write(node)
-                if writes is False:
-                    continue
-                if writes is None:
-                    calls.append(_Call(rel, node.lineno, name,
-                                       "open() の mode が定数ではなく書き込みか判定できません"))
-                    continue
-            required, allowed = spec
-            value = _keyword(node, required)
+            if api.mode_at is not None and not _writes_text(_mode_literal(node, api.mode_at)):
+                continue
+            value = _keyword(node, api.kwarg)
             if value is None:
-                problem = f"{name}() に {required}= がありません"
+                problem = f"{name}() に {api.kwarg}= がありません"
             elif (literal := _str_literal(value)) is None:
-                problem = f"{name}() の {required}= が定数の文字列ではありません"
-            elif literal not in allowed:
-                problem = f"{name}() の {required}={literal!r} は LF になりません"
+                problem = f"{name}() の {api.kwarg}= が定数の文字列ではありません"
+            elif literal not in api.allowed:
+                problem = f"{name}() の {api.kwarg}={literal!r} は LF になりません"
             else:
                 problem = None
             calls.append(_Call(rel, node.lineno, name, problem))
@@ -168,39 +190,62 @@ def test_checker_reaches_the_package():
 
 # ------------------------------------------------------- 規則そのものの検査（合成ソース）
 
-# 期待値に行番号を含めるので、ケースを足すときは各ファイルの末尾に足すこと。
+# 各行の `# want:` が期待値。違反するケースは違反の説明を、しないケースは ok と書く。
+# 期待値はこのマーカーから導出するので、ケースの追加も並べ替えも1箇所で済む。
 FAKE_SOURCES = {
     "ok.py": r'''
-path.write_text(text, encoding="utf-8", newline="\n")
-path.write_text(text, newline="")
-df.to_csv(path, index=False, lineterminator="\n")
-tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", delete=False)
-tempfile.NamedTemporaryFile(mode="w", newline="")
-path.open("w", encoding="utf-8", newline="\n")
-path.open(mode="a", newline="")
-open(path, "x", newline="\n")
-path.open(encoding="utf-8")
-open(path)
-path.open("rb")
-path.open("wb")
-json.dumps(payload)
+path.write_text(text, encoding="utf-8", newline="\n")             # want: ok
+path.write_text(text, newline="")                                 # want: ok
+df.to_csv(path, index=False, lineterminator="\n")                 # want: ok
+tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n")  # want: ok
+# import の書き方が変わっても mode の位置は変わらない
+NamedTemporaryFile(mode="w", newline="")                          # want: ok
+# mode を省いた NamedTemporaryFile は binary（newline= を渡すと実行時に落ちる）
+tempfile.NamedTemporaryFile(dir=d, delete=False)                  # want: ok
+path.open("w", encoding="utf-8", newline="\n")                    # want: ok
+path.open(mode="a", newline="")                                   # want: ok
+open(path, "x", newline="\n")                                     # want: ok
+io.open(path, "w", newline="\n")                                  # want: ok
+os.fdopen(fd, "w", newline="\n")                                  # want: ok
+# 読み取りとバイナリは改行変換をしない
+path.open(encoding="utf-8")                                       # want: ok
+open(path)                                                        # want: ok
+os.fdopen(fd)                                                     # want: ok
+path.open("rb")                                                   # want: ok
+path.open("wb")                                                   # want: ok
+# 同名でも mode を取らない API と、mode を読めない呼び出しは対象外
+webbrowser.open("http://www.example.com")                         # want: ok
+path.open(chosen_mode)                                            # want: ok
+json.dumps(payload)                                               # want: ok
 ''',
     "bad.py": r'''
-path.write_text(text, encoding="utf-8")
-path.write_text(text, newline="\r\n")
-path.write_text(text, newline=None)
-path.write_text(text, newline=sep)
-df.to_csv(path, lineterminator="")
-df.to_csv(path, index=False)
-tempfile.NamedTemporaryFile("w", newline="\r\n")
-path.open("w", encoding="utf-8")
-open(path, "a", newline="\r\n")
-path.open(mode)
+path.write_text(text, encoding="utf-8")         # want: write_text() に newline= がありません
+path.write_text(text, newline="\r\n")           # want: write_text() の newline='\r\n' は LF になりません
+path.write_text(text, newline=None)             # want: write_text() の newline= が定数の文字列ではありません
+path.write_text(text, newline=sep)              # want: write_text() の newline= が定数の文字列ではありません
+df.to_csv(path, lineterminator="")              # want: to_csv() の lineterminator='' は LF になりません
+df.to_csv(path, index=False)                    # want: to_csv() に lineterminator= がありません
+tempfile.NamedTemporaryFile("w", delete=False)  # want: NamedTemporaryFile() に newline= がありません
+NamedTemporaryFile("w", newline="\r\n")         # want: NamedTemporaryFile() の newline='\r\n' は LF になりません
+path.open("w", encoding="utf-8")                # want: open() に newline= がありません
+open(path, "a", newline="\r\n")                 # want: open() の newline='\r\n' は LF になりません
+os.fdopen(fd, "w")                              # want: fdopen() に newline= がありません
 ''',
     "nested/deep.py": r'''
-path.write_text(text)
+path.write_text(text)                           # want: write_text() に newline= がありません
 ''',
 }
+
+
+def _expected(sources: dict[str, str]) -> list[str]:
+    """合成ソースの `# want:` マーカーから、期待する違反の一覧を作る。"""
+    wants = [
+        (name, lineno, marker)
+        for name, body in sources.items()
+        for lineno, line in enumerate(body.splitlines(), start=1)
+        if (marker := line.partition("# want:")[2].strip()) not in ("", "ok")
+    ]
+    return [f"{name}:{lineno} {marker}" for name, lineno, marker in sorted(wants)]
 
 
 @pytest.fixture
@@ -213,31 +258,57 @@ def fake_package(tmp_path):
     return root
 
 
-def test_checker_reports_every_kind_of_break(fake_package):
-    """引数の欠落・LF 以外の値・判定できない値をそれぞれ違反として返す。
+def test_every_case_carries_an_expected_marker():
+    """合成ソースの全ケースにマーカーが付いていて、適合・違反の両方がある。
 
-    適合している呼び出し・読み取りの open・バイナリの open は返さない。
+    期待値をマーカーから導出しているので、マーカーの無い行は黙って検査から外れる。
     """
-    assert _violations(fake_package) == [
-        "bad.py:2 write_text() に newline= がありません",
-        r"bad.py:3 write_text() の newline='\r\n' は LF になりません",
-        "bad.py:4 write_text() の newline= が定数の文字列ではありません",
-        "bad.py:5 write_text() の newline= が定数の文字列ではありません",
-        "bad.py:6 to_csv() の lineterminator='' は LF になりません",
-        "bad.py:7 to_csv() に lineterminator= がありません",
-        r"bad.py:8 NamedTemporaryFile() の newline='\r\n' は LF になりません",
-        "bad.py:9 open() に newline= がありません",
-        r"bad.py:10 open() の newline='\r\n' は LF になりません",
-        "bad.py:11 open() の mode が定数ではなく書き込みか判定できません",
-        "nested/deep.py:2 write_text() に newline= がありません",
+    markers = []
+    for name, body in FAKE_SOURCES.items():
+        for lineno, line in enumerate(body.splitlines(), start=1):
+            code = line.strip()
+            if not code or code.startswith("#"):
+                continue
+            marker = line.partition("# want:")[2].strip()
+            assert marker, f"{name}:{lineno} に # want: マーカーがありません"
+            markers.append(marker)
+    assert "ok" in markers, "適合するケースがありません"
+    assert [m for m in markers if m != "ok"], "違反するケースがありません"
+
+
+def test_checker_reports_exactly_the_marked_breaks(fake_package):
+    """引数の欠落・LF 以外の値・判定できない値をマーカーどおりに違反として返す。
+
+    適合している呼び出し・読み取り・バイナリ・mode を取らない同名 API は返さない。
+    """
+    assert _violations(fake_package) == _expected(FAKE_SOURCES)
+
+
+# ------------------------------------------------------- チェックアウト側の規約（.gitattributes）
+
+def test_crlf_files_are_excluded_from_normalization():
+    """index が CRLF のファイルには `-text` が付いている。
+
+    `.gitattributes` の `* text=auto eol=lf` は、除外しないファイルの CR をコミット時に
+    落とす。CRLF のまま扱うファイル（合成サンプルの CSV）を後から足したときに、除外の
+    追記を忘れると内容が黙って変わる。
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "--eol"], cwd=REPO_ROOT,
+            capture_output=True, text=True, check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("git を実行できない環境")
+    assert proc.stdout.strip(), "git ls-files --eol が何も返しません"
+
+    missing = [
+        line.partition("\t")[2]
+        for line in proc.stdout.splitlines()
+        if line.startswith("i/crlf") and "-text" not in line.partition("attr/")[2].split()
     ]
-
-
-def test_empty_newline_is_allowed_except_for_to_csv(fake_package):
-    """`newline=""` は変換しない指定なので許すが、to_csv の空文字は os.linesep に落ちる。"""
-    _, calls = _scan(fake_package)
-    problem = {(c.path, c.lineno): c.problem for c in calls}
-    assert problem[("ok.py", 3)] is None           # write_text(newline="")
-    assert problem[("ok.py", 6)] is None           # NamedTemporaryFile(newline="")
-    assert problem[("ok.py", 8)] is None           # path.open(mode="a", newline="")
-    assert problem[("bad.py", 6)] is not None      # to_csv(lineterminator="")
+    assert not missing, (
+        "index が CRLF なのに .gitattributes で除外されていないファイルがあります:\n  "
+        + "\n  ".join(missing)
+        + "\n（CRLF を保つなら -text を足し、LF でよいなら内容を LF に直してください）"
+    )

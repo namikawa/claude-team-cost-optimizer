@@ -65,6 +65,23 @@ def test_csv_formula_cells_are_sanitized(tmp_path):
     assert "-5.0" in text                 # 数値セルは変更しない
 
 
+def test_csv_cell_newlines_are_normalized(tmp_path):
+    # 引用符に囲まれたセルの中の改行は lineterminator の対象外で、入力の CR がそのまま出る。
+    # 式のエスケープはセル内改行を均す前に判定するので、CR 始まりのセルにも ' が付く
+    users = pd.DataFrame([
+        {"email": "a@x.jp", "note": "1行目\r\n2行目\r3行目"},
+        {"email": "b@x.jp", "note": "\r=SUM(A1)"},
+    ])
+    result = type("R", (), {"users": users})()
+    path = tmp_path / "rec.csv"
+    write_csv(result, path)
+    # read_text は改行を正規化して読むため、CR の有無はバイト列で見る
+    text = path.read_bytes().decode("utf-8-sig")
+    assert "\r" not in text
+    assert "1行目\n2行目\n3行目" in text
+    assert "'\n=SUM(A1)" in text
+
+
 # --- 入力ファイルの取り違え防止 ---
 
 def test_duplicate_month_csv_raises(make_input):
