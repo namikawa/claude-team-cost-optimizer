@@ -398,7 +398,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
     # サマリ直後に置く追加セクション（前月からの変化 → 月中の利用推移 → Claude Code 活動
     # → メンバー変動 → 込み枠の実測 → 追加クレジット付与候補）。無ければ空文字列で
     # 従来出力と完全一致（後方互換。E 分布は実課金発生ユーザがいるときのみ現れる）
-    cap_usd = s.get("grant_suggested_cap_usd", 150)
+    cap_usd = s["grant_suggested_cap_usd"]
     extra_sections = ""
     for block in (_trend_md(result.trend), _snapshot_md(result.snapshot),
                   _code_diff_md(result.code_diff), _member_changes_md(result.member_changes),
@@ -517,7 +517,7 @@ def write_preview_markdown(result: PreviewResult, path: Path) -> None:
     factor = result.days_in_month / result.days_observed
     # 一次判断テーブルの後に置くセクション（追加クレジット残額 → 月中推移 → 付与候補）。
     # 無ければ空文字列で従来出力と一致
-    cap_usd = s.get("grant_suggested_cap_usd", 150)
+    cap_usd = s["grant_suggested_cap_usd"]
     snap_section = ""
     for block in (_credit_reach_md(result.credit_reach),
                   _snapshot_md(result.snapshot), _code_diff_md(result.code_diff),
