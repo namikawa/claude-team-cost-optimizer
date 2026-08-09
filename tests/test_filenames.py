@@ -9,9 +9,8 @@ from seat_analyzer.cli import main
 from seat_analyzer.ingest import file_period, load_members, load_spend, month_of_file
 from seat_analyzer.pricing import price_for_model
 
-from .conftest import REPO_ROOT, SPEND_HEADER, spend_row
+from .conftest import CONFIG, SPEND_HEADER, spend_row
 
-CONFIG = str(REPO_ROOT / "config.yaml")
 UUID = "bd3f72b4-64ad-4756-bb58-3434644041ec"
 
 

@@ -8,9 +8,7 @@ from seat_analyzer import analyze, ingest
 from seat_analyzer.cli import main
 from seat_analyzer.ingest import discover_orgs
 
-from .conftest import REPO_ROOT, spend_row
-
-CONFIG = str(REPO_ROOT / "config.yaml")
+from .conftest import CONFIG, spend_row
 
 
 def _run(input_dir: Path, tmp_path: Path, *extra: str) -> tuple[int, Path]:

@@ -219,7 +219,7 @@ src/seat_analyzer/
   report_v2.py          # 新規CSV/Markdown
 ```
 
-`analyze.py`と`report.py`は当面分割しない。既存リファクタリングは別タスクとする。
+上の2つのブロックは設計時点の想定で、現状とは次の点が異なる。`report.py`は`report/`パッケージになっており、`__init__.py`が公開APIとオーケストレーション、出力形式ごとに`markdown.py`/`html.py`/`csv_out.py`、共通処理が`document.py`/`format.py`/`text.py`という構成。`analyze.py`は単一モジュールのままで、分割は別タスクとする。段階的に追加する一覧のうち`domain.py`/`data_quality.py`/`identity.py`は追加済みで、一覧に無いものとして考察執筆まわりの`discussion.py`/`leakcheck.py`/`public_text.py`がある。
 
 ## 6. ディレクトリ
 

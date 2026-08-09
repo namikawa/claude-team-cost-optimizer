@@ -9,9 +9,7 @@ import pytest
 from seat_analyzer.analyze import preview
 from seat_analyzer.cli import main
 
-from .conftest import REPO_ROOT, spend_row
-
-CONFIG = str(REPO_ROOT / "config.yaml")
+from .conftest import CONFIG, spend_row
 
 
 def _label_of(result, email: str) -> str:
