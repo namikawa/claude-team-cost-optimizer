@@ -338,7 +338,7 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
         max_proj=max_proj,
         seat_short=SEAT_LABELS,
     )
-    path.write_text(html, encoding="utf-8")
+    path.write_text(html, encoding="utf-8", newline="\n")
 
 
 def write_html(result: AnalysisResult, path: Path) -> None:
@@ -400,4 +400,4 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         max_cost=max_cost,
         seat_short=SEAT_LABELS,
     )
-    path.write_text(html, encoding="utf-8")
+    path.write_text(html, encoding="utf-8", newline="\n")

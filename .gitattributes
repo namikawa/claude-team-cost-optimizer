@@ -1,0 +1,7 @@
+# チェックアウトの改行を全 OS で LF に揃える。
+# tests/golden/ は生成物とバイト単位で比較するため、ワークツリー側が CRLF になると
+# LF 固定の生成物と一致しなくなる。
+* text=auto eol=lf
+
+# 合成サンプルは csv.writer（excel dialect = CRLF）が正。変換させない
+examples/input/**/*.csv -text

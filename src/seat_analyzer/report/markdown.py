@@ -616,5 +616,5 @@ def write_org_summary(results: list[AnalysisResult], output_dir: str | Path) -> 
         "各組織の詳細は `reports/<組織>/" + month + "/report.md` を参照。",
         "",
     ]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
     return path
