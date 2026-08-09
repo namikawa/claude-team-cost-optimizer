@@ -97,7 +97,7 @@ def _atomic_write(path: Path, text: str, *, expect: str | None = None) -> bool:
     tmp: Path | None = None
     try:
         f = tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", dir=path.parent,
+            "w", encoding="utf-8", newline="\n", dir=path.parent,
             prefix=path.name + ".", suffix=".tmp", delete=False,
         )
         tmp = Path(f.name)

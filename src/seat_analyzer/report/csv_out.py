@@ -17,4 +17,6 @@ def _sanitize_csv_cell(v):
 
 
 def write_csv(result: AnalysisResult, path: Path) -> None:
-    result.users.map(_sanitize_csv_cell).to_csv(path, index=False, encoding="utf-8-sig")
+    # lineterminator の既定は os.linesep なので、明示しないと Windows だけ CRLF になる
+    result.users.map(_sanitize_csv_cell).to_csv(
+        path, index=False, encoding="utf-8-sig", lineterminator="\n")
