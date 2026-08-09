@@ -32,27 +32,9 @@ def _sort_for_display(users: pd.DataFrame, label_col: str, order: list[str],
     return df.sort_values(["_order", value_col], ascending=[True, False])
 
 
-def _billed_bg(billed: float, max_billed: float) -> str:
-    """実課金カラムの金額グラデーション背景色。実課金>0 のとき最大額比で警告色の濃さを
-    段階的に付け（最小 0.12〜最大 0.60）、0 のユーザは無着色（空文字列）にする。"""
-    if billed > 0 and max_billed > 0:
-        alpha = 0.12 + 0.48 * (billed / max_billed)
-        return f"rgba(192,57,43,{alpha:.2f})"
-    return ""
-
-
 def _scope_label(result: AnalysisResult) -> str:
     """レポートタイトル用の対象表記。組織名があれば「組織 — 月」。"""
     return f"{result.org} — {result.month}" if result.org else result.month
-
-
-def _org_products(summary: dict) -> str:
-    by_product = summary.get("org_service_by_product") or {}
-    if not by_product:
-        return ""
-    detail = " / ".join(f"{k} {_fmt_usd(v)}" for k, v in
-                        sorted(by_product.items(), key=lambda kv: -kv[1]))
-    return f"（{detail}）"
 
 
 def _has_values(users: pd.DataFrame, col: str) -> bool:
