@@ -18,10 +18,16 @@ macOS / Linux では引数を省いても出力が変わらないため、生成
 - `print()` と `sys.stdout`。`cli.py` の `--format json` は Windows では CRLF で出る
 - `path.open("w", newline="")` に `csv.writer` を重ねた書き込み。規則は満たすが、
   レコード区切りを書くのは csv 側なので出力は全 OS で CRLF になる
-- mode を定数で書いていない `open` 系。書き込みかどうかを構文木から決められない
+- mode を定数で書いていない `open` 系。書き込みかどうかを構文木から決められない。
+  黙って外れないよう `_scan` が3つ目の戻り値として数え、ゼロであることを別に主張する
 
-照合は呼び出し先の名前だけで行い、レシーバは見ない。同名の別 API を巻き込まないよう、
-mode を取る API では mode 文字列らしさ（`_MODE_CHARS`）まで確かめてから対象にする。
+照合は呼び出し先の名前だけで行い、レシーバは見ない。mode を取る API では mode 文字列
+らしさ（`_MODE_CHARS`）まで確かめてから対象にするが、次の取り違えは残る。
+
+- ファイル名が mode に使える文字だけでできている `open` は、ファイル名を mode と読む。
+  `open("rb", "w")` は読み取りに見えて外れ、`open("a")` は書き込みに見えて拾われる
+- `zipfile.ZipFile.open` や `ExcelWriter` のように `newline=` を取らない同名 API を
+  書き込みで呼ぶと違反として出る。抑制する手段は用意していない
 
 保証するのは「書き込みのときに OS 依存の変換をしない」ことだけで、出力が LF に
 なることそのものではない。`newline="\n"` は「変換しない」の意味なので、渡した
@@ -76,7 +82,7 @@ _WRITE_APIS = {
 
 
 class _Call(NamedTuple):
-    """規約の対象になった書き込み呼び出し1件。"""
+    """検査が見た書き込み呼び出し1件。"""
 
     path: str              # パッケージディレクトリからの相対パス
     lineno: int
@@ -105,14 +111,18 @@ def _keyword(node: ast.Call, name: str) -> ast.expr | None:
     return next((kw.value for kw in node.keywords if kw.arg == name), None)
 
 
-def _mode_literal(node: ast.Call, positions: tuple[int, ...]) -> str | None:
-    """呼び出しから mode の文字列を取る（書いていない・読み取れないときは None）。
+def _mode_candidates(node: ast.Call, positions: tuple[int, ...]) -> list[ast.expr]:
+    """mode が書かれている可能性のある引数（`mode=` キーワードと位置引数の候補）。"""
+    by_keyword = _keyword(node, "mode")
+    args = [node.args[i] for i in positions if len(node.args) > i]
+    return ([by_keyword] if by_keyword is not None else []) + args
 
-    `mode=` キーワードを先に見て、次に位置引数の候補を順に見る。mode に使えない文字を
-    含む文字列は mode ではないとみなし、候補の先を探す。
+
+def _mode_literal(candidates: list[ast.expr]) -> str | None:
+    """候補から mode の文字列を取る（見つからなければ None）。
+
+    mode に使えない文字を含む文字列は mode ではないとみなし、候補の先を探す。
     """
-    candidates = [_keyword(node, "mode")]
-    candidates += [node.args[i] for i in positions if len(node.args) > i]
     for candidate in candidates:
         mode = _str_literal(candidate)
         if mode and set(mode) <= _MODE_CHARS:
@@ -125,14 +135,21 @@ def _writes_text(mode: str | None) -> bool:
     return mode is not None and any(c in mode for c in "wax") and "b" not in mode
 
 
-def _scan(package_dir: Path) -> tuple[list[Path], list[_Call]]:
-    """走査した .py と、そのうち規約の対象になった書き込み呼び出し。
+def _scan(package_dir: Path) -> tuple[list[Path], list[_Call], list[_Call]]:
+    """走査した .py と、規約の対象になった呼び出しと、mode を読めなかった呼び出し。
 
-    対象になった呼び出しは適合・違反の別なく返す。検査が本当にコードへ届いている
-    ことを、違反ゼロという結果とは別に確かめられるようにするため。
+    2つ目は適合・違反の別なく返す。検査が本当にコードへ届いていることを、違反ゼロと
+    いう結果とは別に確かめられるようにするため。
+
+    3つ目は、mode らしい文字列が見つからず、かつ候補の中に構文木から読めない式がある
+    呼び出し。書き込みかどうかを決められないので対象から外すしかなく、外した事実を数
+    として残す。`open` は mode の位置が呼び出しの形で変わるため、位置引数を1つだけ渡
+    した読み取り（`open(path)`）も、mode ではない文字列と非リテラルが並ぶ呼び出し
+    （`tarfile.open(path, "w:gz")`）もここに入る。
     """
     paths = sorted(package_dir.rglob("*.py"))
     calls: list[_Call] = []
+    unreadable: list[_Call] = []
     for path in paths:
         rel = path.relative_to(package_dir).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -143,8 +160,13 @@ def _scan(package_dir: Path) -> tuple[list[Path], list[_Call]]:
             api = _WRITE_APIS.get(name)
             if api is None:
                 continue
-            if api.mode_at is not None and not _writes_text(_mode_literal(node, api.mode_at)):
-                continue
+            if api.mode_at is not None:
+                candidates = _mode_candidates(node, api.mode_at)
+                mode = _mode_literal(candidates)
+                if not _writes_text(mode):
+                    if mode is None and any(_str_literal(c) is None for c in candidates):
+                        unreadable.append(_Call(rel, node.lineno, name, None))
+                    continue
             value = _keyword(node, api.kwarg)
             if value is None:
                 problem = f"{name}() に {api.kwarg}= がありません"
@@ -155,12 +177,17 @@ def _scan(package_dir: Path) -> tuple[list[Path], list[_Call]]:
             else:
                 problem = None
             calls.append(_Call(rel, node.lineno, name, problem))
-    return paths, calls
+    return paths, calls, unreadable
+
+
+def _at(calls: list[_Call]) -> list[tuple[str, int]]:
+    """呼び出しの位置（ファイル・行）を並べ替えて返す。"""
+    return sorted((c.path, c.lineno) for c in calls)
 
 
 def _violations(package_dir: Path) -> list[str]:
     """LF が固定されていない書き込みの一覧（表示用の文字列）。"""
-    _, calls = _scan(package_dir)
+    _, calls, _ = _scan(package_dir)
     broken = sorted((c for c in calls if c.problem), key=lambda c: (c.path, c.lineno))
     return [f"{c.path}:{c.lineno} {c.problem}" for c in broken]
 
@@ -179,7 +206,7 @@ def test_checker_reaches_the_package():
 
     違反ゼロという結果だけでは、検査が何も見ていない状態と区別できない。
     """
-    paths, calls = _scan(PACKAGE_DIR)
+    paths, calls, _ = _scan(PACKAGE_DIR)
     assert paths, f"{PACKAGE_DIR} に .py が1つも見つかりません"
     found = {c.api for c in calls}
     assert {"write_text", "to_csv", "NamedTemporaryFile"} <= found, (
@@ -188,10 +215,28 @@ def test_checker_reaches_the_package():
     )
 
 
+def test_no_write_call_hides_its_mode():
+    """mode を読めずに対象から外した呼び出しが無い。
+
+    外した呼び出しは以降どう書き換えても検査に掛からない。数がゼロでなくなったら、
+    その時点で見えるようにする。
+    """
+    _, _, unreadable = _scan(PACKAGE_DIR)
+    assert not unreadable, (
+        "mode を構文木から読めない書き込み呼び出しがあります:\n  "
+        + "\n  ".join(f"{c.path}:{c.lineno} {c.api}()" for c in unreadable)
+        + "\n（mode を定数で書くか、`path.open(...)` の形に寄せてください）"
+    )
+
+
 # ------------------------------------------------------- 規則そのものの検査（合成ソース）
 
-# 各行の `# want:` が期待値。違反するケースは違反の説明を、しないケースは ok と書く。
-# 期待値はこのマーカーから導出するので、ケースの追加も並べ替えも1箇所で済む。
+# 各行の `# want:` が期待値。違反するケースは違反の説明を、しないケースは ok を、
+# mode を読めず対象から外すケースは unreadable と書く。期待値はこのマーカーから
+# 導出するので、ケースの追加も並べ替えも1箇所で済む。
+_OK = "ok"
+_UNREADABLE = "unreadable"
+
 FAKE_SOURCES = {
     "ok.py": r'''
 path.write_text(text, encoding="utf-8", newline="\n")             # want: ok
@@ -209,14 +254,21 @@ io.open(path, "w", newline="\n")                                  # want: ok
 os.fdopen(fd, "w", newline="\n")                                  # want: ok
 # 読み取りとバイナリは改行変換をしない
 path.open(encoding="utf-8")                                       # want: ok
-open(path)                                                        # want: ok
 os.fdopen(fd)                                                     # want: ok
 path.open("rb")                                                   # want: ok
 path.open("wb")                                                   # want: ok
-# 同名でも mode を取らない API と、mode を読めない呼び出しは対象外
+# mode に使えない文字を含む引数は mode ではない
 webbrowser.open("http://www.example.com")                         # want: ok
-path.open(chosen_mode)                                            # want: ok
+open("a.txt")                                                     # want: ok
+# ファイル名が mode 文字だけでできていると mode と取り違える。承知のうえで見逃す
+open("rb", "w")                                                   # want: ok
 json.dumps(payload)                                               # want: ok
+# mode を決められない呼び出しは、対象から外したことを数える
+path.open(chosen_mode)                                            # want: unreadable
+open(path, chosen_mode)                                           # want: unreadable
+open("/tmp/x", chosen_mode)                                       # want: unreadable
+open(path)                                                        # want: unreadable
+tarfile.open(path, "w:gz")                                        # want: unreadable
 ''',
     "bad.py": r'''
 path.write_text(text, encoding="utf-8")         # want: write_text() に newline= がありません
@@ -228,6 +280,8 @@ df.to_csv(path, index=False)                    # want: to_csv() に linetermina
 tempfile.NamedTemporaryFile("w", delete=False)  # want: NamedTemporaryFile() に newline= がありません
 NamedTemporaryFile("w", newline="\r\n")         # want: NamedTemporaryFile() の newline='\r\n' は LF になりません
 path.open("w", encoding="utf-8")                # want: open() に newline= がありません
+path.open(mode="w", encoding="utf-8")           # want: open() に newline= がありません
+open("out.csv", "w")                            # want: open() に newline= がありません
 open(path, "a", newline="\r\n")                 # want: open() の newline='\r\n' は LF になりません
 os.fdopen(fd, "w")                              # want: fdopen() に newline= がありません
 ''',
@@ -237,15 +291,30 @@ path.write_text(text)                           # want: write_text() に newline
 }
 
 
-def _expected(sources: dict[str, str]) -> list[str]:
-    """合成ソースの `# want:` マーカーから、期待する違反の一覧を作る。"""
-    wants = [
+def _markers(sources: dict[str, str]) -> list[tuple[str, int, str]]:
+    """合成ソースの `# want:` を（ファイル・行・期待値）にする。"""
+    return sorted(
         (name, lineno, marker)
         for name, body in sources.items()
         for lineno, line in enumerate(body.splitlines(), start=1)
-        if (marker := line.partition("# want:")[2].strip()) not in ("", "ok")
+        if (marker := line.partition("# want:")[2].strip())
+    )
+
+
+def _expected_violations(sources: dict[str, str]) -> list[str]:
+    return [
+        f"{name}:{lineno} {marker}"
+        for name, lineno, marker in _markers(sources)
+        if marker not in (_OK, _UNREADABLE)
     ]
-    return [f"{name}:{lineno} {marker}" for name, lineno, marker in sorted(wants)]
+
+
+def _expected_unreadable(sources: dict[str, str]) -> list[tuple[str, int]]:
+    return [
+        (name, lineno)
+        for name, lineno, marker in _markers(sources)
+        if marker == _UNREADABLE
+    ]
 
 
 @pytest.fixture
@@ -259,7 +328,7 @@ def fake_package(tmp_path):
 
 
 def test_every_case_carries_an_expected_marker():
-    """合成ソースの全ケースにマーカーが付いていて、適合・違反の両方がある。
+    """合成ソースの全ケースにマーカーが付いていて、3種の期待値が揃っている。
 
     期待値をマーカーから導出しているので、マーカーの無い行は黙って検査から外れる。
     """
@@ -272,8 +341,9 @@ def test_every_case_carries_an_expected_marker():
             marker = line.partition("# want:")[2].strip()
             assert marker, f"{name}:{lineno} に # want: マーカーがありません"
             markers.append(marker)
-    assert "ok" in markers, "適合するケースがありません"
-    assert [m for m in markers if m != "ok"], "違反するケースがありません"
+    assert _OK in markers, "適合するケースがありません"
+    assert _UNREADABLE in markers, "mode を読めないケースがありません"
+    assert [m for m in markers if m not in (_OK, _UNREADABLE)], "違反するケースがありません"
 
 
 def test_checker_reports_exactly_the_marked_breaks(fake_package):
@@ -281,17 +351,33 @@ def test_checker_reports_exactly_the_marked_breaks(fake_package):
 
     適合している呼び出し・読み取り・バイナリ・mode を取らない同名 API は返さない。
     """
-    assert _violations(fake_package) == _expected(FAKE_SOURCES)
+    assert _violations(fake_package) == _expected_violations(FAKE_SOURCES)
+
+
+def test_checker_records_the_modes_it_cannot_read(fake_package):
+    """mode を読めなかった呼び出しをマーカーどおりに数える。
+
+    文字列リテラルが1つでもあれば（mode ではない文字列でも）読めなかったとはしない。
+    """
+    _, _, unreadable = _scan(fake_package)
+    assert _at(unreadable) == _expected_unreadable(FAKE_SOURCES)
 
 
 # ------------------------------------------------------- チェックアウト側の規約（.gitattributes）
 
-def test_crlf_files_are_excluded_from_normalization():
-    """index が CRLF のファイルには `-text` が付いている。
+# 単位が違う（構文木ではなく git の属性）ので節を分ける。守る対象は同じ不変条件で、
+# こちらは「ワークツリーへ出す側」の改行を見る。
+
+_MIXED_EOL = ("crlf", "mixed")
+
+
+def test_files_with_other_line_endings_are_excluded_from_normalization():
+    """index と作業ツリーで改行が食い違うファイルには `-text` が付いている。
 
     `.gitattributes` の `* text=auto eol=lf` は、除外しないファイルの CR をコミット時に
     落とす。CRLF のまま扱うファイル（合成サンプルの CSV）を後から足したときに、除外の
-    追記を忘れると内容が黙って変わる。
+    追記を忘れると index の中身が黙って LF に変わる。落ちた側は作業ツリーだけが CRLF の
+    まま残るので、index と作業ツリーの食い違いとして見つかる。
     """
     try:
         proc = subprocess.run(
@@ -302,13 +388,20 @@ def test_crlf_files_are_excluded_from_normalization():
         pytest.skip("git を実行できない環境")
     assert proc.stdout.strip(), "git ls-files --eol が何も返しません"
 
-    missing = [
-        line.partition("\t")[2]
-        for line in proc.stdout.splitlines()
-        if line.startswith("i/crlf") and "-text" not in line.partition("attr/")[2].split()
-    ]
-    assert not missing, (
-        "index が CRLF なのに .gitattributes で除外されていないファイルがあります:\n  "
-        + "\n  ".join(missing)
-        + "\n（CRLF を保つなら -text を足し、LF でよいなら内容を LF に直してください）"
+    unexpected = []
+    for line in proc.stdout.splitlines():
+        info, _, path = line.partition("\t")
+        fields = info.split(maxsplit=2)
+        index_eol = fields[0].removeprefix("i/")
+        work_eol = fields[1].removeprefix("w/")
+        attrs = info.partition("attr/")[2].split()
+        if "-text" in attrs:
+            continue
+        if index_eol != work_eol or index_eol in _MIXED_EOL:
+            unexpected.append(f"{path}（index {index_eol} / 作業ツリー {work_eol}）")
+    assert not unexpected, (
+        "`eol=lf` の対象なのに LF で揃っていないファイルがあります:\n  "
+        + "\n  ".join(unexpected)
+        + "\n（CRLF のまま扱うなら .gitattributes に -text を足し、"
+        "そうでなければ内容を LF に直してください）"
     )

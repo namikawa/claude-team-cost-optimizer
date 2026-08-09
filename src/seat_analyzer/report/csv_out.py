@@ -28,6 +28,11 @@ def _normalize_cell_newlines(v):
 
 
 def write_csv(result: AnalysisResult, path: Path) -> None:
+    """recommendations.csv を書く。
+
+    改行を均すのはセルの値だけで、ヘッダは通さない。列名は analyze が付ける正準名
+    しか来ないので CR を含みえない。
+    """
     # 式のエスケープを先に判定する。改行を先に均すと、CR で始まるセルが
     # _FORMULA_PREFIXES に一致しなくなり引用符が付かないまま出る
     cells = result.users.map(_sanitize_csv_cell).map(_normalize_cell_newlines)
