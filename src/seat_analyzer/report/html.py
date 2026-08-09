@@ -79,6 +79,17 @@ def _billed_bg(billed: float, max_billed: float) -> str:
     return ""
 
 
+def _apply_billed_bg(rows: list[dict], col: str) -> None:
+    """各行に実課金カラムの背景色 billed_bg を付ける（正式・速報で共通）。
+
+    最大額の算出と各行の着色は同じ列を見ていないと濃さの基準がずれるため、
+    列名を1箇所でだけ受け取る（正式は billed_extra_usd、速報は billed_observed_usd）。
+    """
+    max_billed = max((float(r.get(col) or 0.0) for r in rows), default=0.0)
+    for r in rows:
+        r["billed_bg"] = _billed_bg(float(r.get(col) or 0.0), max_billed)
+
+
 def _trend_view(trend: dict | None) -> dict | None:
     """dashboard.html 用に整形した「前月からの変化」データ（None なら None）。"""
     if not trend:
@@ -281,8 +292,7 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
     has_dept = _has_values(result.users, "department")
     has_team = _has_values(result.users, "team")
 
-    # 実課金カラムの金額グラデーション（正式 write_html と同じ最大額比の警告色）
-    max_billed = max((float(u.get("billed_observed_usd") or 0.0) for u in users_sorted), default=0.0)
+    _apply_billed_bg(users_sorted, "billed_observed_usd")
     for u in users_sorted:
         u["obs_fmt"] = _fmt_compact(u["api_cost_observed_usd"])
         u["proj_fmt"] = _fmt_compact(u["api_cost_projected_usd"])
@@ -290,9 +300,8 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
         u["department"] = str(u.get("department", "") or "") if has_dept else ""
         u["team"] = str(u.get("team", "") or "") if has_team else ""
         u["badge_class"] = _PREVIEW_BADGE_CLASS.get(u["label"], "b-keep")
-        billed = float(u.get("billed_observed_usd") or 0.0)
-        u["billed_bg"] = _billed_bg(billed, max_billed)
         # billed_flag は速報固有（正式ダッシュボードには無い上限/従量の注記）
+        billed = float(u.get("billed_observed_usd") or 0.0)
         u["billed_flag"] = ("⚠️超過済" if u["current_seat"] == "premium" else "⚠️従量あり") if billed > 0 else ""
     max_proj = max((u["api_cost_projected_usd"] for u in users_sorted), default=0) or 1.0
 
@@ -304,7 +313,7 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
     ]
     factor = result.days_in_month / result.days_observed
 
-    cap_usd = result.summary.get("grant_suggested_cap_usd", 150)
+    cap_usd = result.summary["grant_suggested_cap_usd"]
     html = _PREVIEW_HTML_TEMPLATE.render(
         dashboard_css=_DASHBOARD_CSS,
         scope=_scope_label(result),
@@ -336,16 +345,13 @@ def write_html(result: AnalysisResult, path: Path) -> None:
     users_sorted = _sort_for_display(
         result.users, "status", STATUS_ORDER, "api_cost_usd"
     ).to_dict("records")
-    # 実課金カラムの金額グラデーション: 実課金>0 のユーザだけ、最大額に対する比で
-    # 警告色（--warn）の濃さを段階的に付ける（0 のユーザは無着色）
-    max_billed = max((float(u.get("billed_extra_usd") or 0.0) for u in users_sorted), default=0.0)
+    _apply_billed_bg(users_sorted, "billed_extra_usd")
     for u in users_sorted:
         u["api_cost_fmt"] = _fmt_compact(u["api_cost_usd"])
         u["billed_fmt"] = _fmt_compact(u.get("billed_extra_usd", 0.0))
         u["std_fmt"] = _fmt_compact(u["cost_if_standard_usd"])
         u["prem_fmt"] = _fmt_compact(u["cost_if_premium_usd"])
         u["saving_fmt"] = _fmt_compact(u.get("monthly_saving_usd"))
-        u["billed_bg"] = _billed_bg(float(u.get("billed_extra_usd") or 0.0), max_billed)
         u["badge_class"] = _STATUS_BADGE_CLASS.get(u["status"], "b-keep")
     max_cost = max((u["api_cost_usd"] for u in users_sorted), default=0) or 1.0
     # 部署別 → チーム別の順で、データがある軸のみサマリ表を出す
@@ -372,7 +378,7 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         d["out_fmt"] = _fmt_tokens(d["out"])
         d["api_fmt"] = _fmt_compact(d["api"])
         d["loc_fmt"] = f"{d['loc']:,}" if d["loc"] is not None else ""
-    cap_usd = result.summary.get("grant_suggested_cap_usd", 150)
+    cap_usd = result.summary["grant_suggested_cap_usd"]
     html = _HTML_TEMPLATE.render(
         dashboard_css=_DASHBOARD_CSS,
         scope=_scope_label(result),
