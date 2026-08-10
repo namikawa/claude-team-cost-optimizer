@@ -330,8 +330,18 @@ def discover_orgs(input_dir: Path) -> list[str]:
 
 
 # 組織名は出力パスと Markdown リンクに使うため、それらを壊す文字を禁止する。
-# 日本語などの名前は許可し、パス区切り・Markdown/HTML を壊す文字のみ拒否する。
-_ORG_NAME_BAD_CHARS = re.compile(r"[/\\|\[\]()<>\r\n\t]")
+# 日本語などの名前は許可し、パス区切り・Markdown/HTML を壊す文字と、Windows が
+# ファイル名に使えない文字（: * ? "）のみ拒否する。
+_ORG_NAME_BAD_CHARS = re.compile(r"[/\\|\[\]()<>:*?\"\r\n\t]")
+
+# Windows がデバイスとして特別扱いする名前（拡張子が付いていても同じ）。ディレクトリを
+# 作れない・作れても開けないため、macOS で用意したデータをそのまま Windows へ持ち込める
+# よう全 OS で拒否する。
+_WINDOWS_RESERVED_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
 
 
 def validate_org_name(org: str) -> None:
@@ -350,7 +360,16 @@ def validate_org_name(org: str) -> None:
     if _ORG_NAME_BAD_CHARS.search(org):
         raise ValueError(
             f"組織名に使えない文字が含まれます: {org!r}"
-            "（パス区切りや | [ ] ( ) < > 改行・タブは使えません）"
+            "（パス区切りや | [ ] ( ) < > : * ? \" 改行・タブは使えません）"
+        )
+    # 末尾のドットは Windows が黙って落とすため、input/ と reports/ の名前が食い違う
+    if org.endswith("."):
+        raise ValueError(
+            f"組織名が不正です: {org!r}（末尾のドットは Windows で無視されます）"
+        )
+    if org.split(".")[0].upper() in _WINDOWS_RESERVED_NAMES:
+        raise ValueError(
+            f"組織名 {org!r} は Windows の予約デバイス名のため使えません"
         )
 
 

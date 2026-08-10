@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import calendar
 import json
+import os
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -153,8 +154,12 @@ def _reason(exc: Exception, input_dir: Path) -> str:
         ),
         key=len, reverse=True,
     )
+    # 区切りは os.sep（Windows なら "\\"）と "/" の両方を見る。例外文のパスは OS 由来
+    # のものとコード中で "/" を繋いだものが混在し、片方だけだと相対表記へ落ちない
+    separators = {"/", os.sep}
     for base in bases:
-        flat = flat.replace(base + "/", "")
+        for sep in separators:
+            flat = flat.replace(base + sep, "")
     for base in bases:
         flat = flat.replace(base, _INPUT_DIR_LABEL)
     return " ".join(flat.split()).strip()

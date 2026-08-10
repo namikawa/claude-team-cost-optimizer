@@ -14,7 +14,27 @@ from .domain import QualityIssue, Severity
 from .leakcheck import LeakCheckError
 
 
+def _force_utf8_output() -> None:
+    """標準出力・標準エラーを UTF-8 にする。
+
+    ロケール既定の文字コード（日本語 Windows では cp932）はレポートやプロンプトに
+    含まれる em dash・⚠️・≤ ≥ を表現できない。Windows はコンソール直結のときだけ
+    UTF-8 で書くため、そのままだと同じコマンドがリダイレクトやパイプ経由でだけ
+    UnicodeEncodeError で落ちる。出力先によって成否が変わる状態をなくす。
+    errors="replace" は、それでも表現できない文字が来たときに落とさないための保険。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue  # テストの差し替え等、TextIOWrapper でないストリーム
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_output()
     parser = argparse.ArgumentParser(prog="seat-analyzer", description="Claude Team シート最適化分析")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -142,6 +162,14 @@ def main(argv: list[str] | None = None) -> int:
         # 入力の読み取りに由来する失敗（欠損・権限・不正な値）と、混入チェックを
         # 保証できない状況、考察の生成に失敗した場合は traceback を出さずエラー終了する
         print(f"エラー: {e}", file=sys.stderr)
+        if isinstance(e, PermissionError):
+            # Windows は開いているファイルを書き換え・置換できない。CSV を Excel で
+            # 開いたまま再分析したときの WinError 32 が最も多い経路
+            print(
+                "  ヒント: 出力先のファイルを Excel やエディタで開いていると"
+                "書き換えられないことがあります。閉じてから再実行してください",
+                file=sys.stderr,
+            )
         return 1
 
 
@@ -159,11 +187,16 @@ def _run_init_org(args: argparse.Namespace) -> int:
         for subdir in INPUT_SUBDIRS:
             (input_dir / org / subdir).mkdir(parents=True, exist_ok=True)
         (output_dir / org).mkdir(parents=True, exist_ok=True)
-        # members-info.csv はヘッダ行のみの雛形を作る。既存（記入済みの可能性）は上書きしない
+        # members-info.csv はヘッダ行のみの雛形を作る。既存（記入済みの可能性）は上書きしない。
+        # 人が Excel で編集するファイルなので recommendations.csv と同じく BOM を付ける
+        # （BOM 無し UTF-8 は Windows の Excel がロケール既定で開き日本語ヘッダが化ける）
         info_path = input_dir / org / "members-info.csv"
         info_created = not info_path.exists()
         if info_created:
-            info_path.write_text("email,部署,チーム,職種,追加クレジット上限,備考\n", encoding="utf-8", newline="\n")
+            info_path.write_text(
+                "email,部署,チーム,職種,追加クレジット上限,備考\n",
+                encoding="utf-8-sig", newline="\n",
+            )
         print(f"組織 '{org}' の雛形を{'確認しました（既存）' if existed else '作成しました'}:")
         print(f"  {input_dir / org / 'spend'}/           ← spend_YYYY-MM.csv（必須）")
         print(f"  {input_dir / org / 'members'}/         ← members_YYYY-MM.csv（必須。最低限 email,seat_type の2列）")

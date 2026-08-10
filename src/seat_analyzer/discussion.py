@@ -267,13 +267,17 @@ def _api_error_is_transient(status: str | None) -> bool:
 def run_claude(prompt: str, s: dict) -> str:
     """ヘッドレス Claude CLI を呼び、考察本文のテキストを返す。"""
     command = str(s["command"])
-    if shutil.which(command) is None and not Path(command).is_file():
+    # which() が返した実体を起動する。Windows の CreateProcess は拡張子を補うとき
+    # .exe しか試さないため、npm 版の claude.cmd は名前だけでは起動できない
+    # （which() は PATHEXT を見るので見つかる＝ガードだけ通って実行で落ちる）。
+    resolved = shutil.which(command)
+    if resolved is None and not Path(command).is_file():
         raise DiscussionError(
             f"'{command}' が見つかりません。Claude Code CLI を PATH に置くか、"
             "config.yaml > discussion.command にフルパスを指定してください"
         )
     cmd = [
-        command, "-p",
+        resolved or command, "-p",
         # プロジェクトの CLAUDE.md・auto-memory・hooks・MCP を読み込ませない
         "--safe-mode",
         "--output-format", "text",
@@ -295,6 +299,10 @@ def run_claude(prompt: str, s: dict) -> str:
         try:
             proc = subprocess.run(
                 cmd, input=prompt, capture_output=True, text=True,
+                # text=True の既定はロケールの文字コード（日本語 Windows では cp932）。
+                # プロンプトにはレポート全文が入り em dash・⚠️ を含むため cp932 では
+                # 送れず、claude 側も UTF-8 を前提にしている。両方向を UTF-8 に固定する
+                encoding="utf-8", errors="replace",
                 timeout=float(s["timeout_seconds"]), cwd=workdir, check=False,
             )
         except subprocess.TimeoutExpired as exc:

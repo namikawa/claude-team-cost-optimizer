@@ -189,7 +189,18 @@ def test_org_name_validation():
     from seat_analyzer.ingest import validate_org_name
     validate_org_name("org-a")          # 正常
     validate_org_name("開発本部")        # 日本語は許可
-    for bad in ("summary", ".hidden", "a/b", "org|x", "a[b]", " x", "x "):
+    validate_org_name("config")         # 予約デバイス名に似ているだけの名前は許可
+    validate_org_name("org.a")          # 途中のドットは許可（末尾だけが問題）
+    bad_names = (
+        "summary", ".hidden", "a/b", "org|x", "a[b]", " x", "x ",
+        # Windows でディレクトリ名に使えない文字（NTFS の代替データストリーム等）
+        "a:b", "a*b", "a?b", 'a"b',
+        # Windows が末尾のドットを黙って落とすため input/ と reports/ が食い違う
+        "org.",
+        # Windows のデバイス名。拡張子が付いていても同じ扱いになる
+        "CON", "nul", "com1", "LPT9", "aux.csv",
+    )
+    for bad in bad_names:
         with pytest.raises(ValueError):
             validate_org_name(bad)
 
