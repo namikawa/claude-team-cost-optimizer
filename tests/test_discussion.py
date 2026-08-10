@@ -377,7 +377,42 @@ def test_run_claude_uses_utf8_for_subprocess_io(stub_claude):
     discussion.run_claude("見出し — ⚠️", s)
 
     assert captured["kwargs"]["encoding"] == "utf-8"
-    assert captured["kwargs"]["errors"] == "replace"
+    # errors は既定の strict のまま。復号を replace にすると、壊れた出力に含まれる
+    # 他組織名が U+FFFD へ化けて find_leaks の照合をすり抜ける
+    assert captured["kwargs"].get("errors") is None
+
+
+def test_run_claude_aborts_when_output_is_not_utf8(monkeypatch):
+    """UTF-8 として壊れた出力は、置換して読み進めず中止する。
+
+    replace で読むと他組織名が U+FFFD へ化けて混入チェックに一致しなくなり、
+    長さ・見出しの検査を通ってレポートへ書き込まれてしまう。
+    """
+    def fake_run(cmd, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(discussion.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(discussion.subprocess, "run", fake_run)
+
+    with pytest.raises(discussion.DiscussionError, match="UTF-8") as e:
+        discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
+    assert e.value.transient is True
+
+
+def test_discuss_permission_error_shows_hint(two_orgs, tmp_path, monkeypatch, capsys):
+    """組織ごとに例外を握る経路でも、開いているファイルの案内を出す。"""
+    out = run_analyze(two_orgs, tmp_path)
+
+    def boom(**kwargs):
+        raise PermissionError(32, "プロセスはファイルにアクセスできません")
+
+    monkeypatch.setattr(discussion, "generate", boom)
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "ヒント" in err and "Excel" in err
 
 
 def test_run_claude_uses_resolved_executable_path(monkeypatch):

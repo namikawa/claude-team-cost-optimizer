@@ -331,16 +331,16 @@ def discover_orgs(input_dir: Path) -> list[str]:
 
 # 組織名は出力パスと Markdown リンクに使うため、それらを壊す文字を禁止する。
 # 日本語などの名前は許可し、パス区切り・Markdown/HTML を壊す文字と、Windows が
-# ファイル名に使えない文字（: * ? "）のみ拒否する。
-_ORG_NAME_BAD_CHARS = re.compile(r"[/\\|\[\]()<>:*?\"\r\n\t]")
+# ファイル名に使えない文字（: * ? " と制御文字 0x00-0x1f）のみ拒否する。
+_ORG_NAME_BAD_CHARS = re.compile(r"[/\\|\[\]()<>:*?\"\x00-\x1f]")
 
 # Windows がデバイスとして特別扱いする名前（拡張子が付いていても同じ）。ディレクトリを
-# 作れない・作れても開けないため、macOS で用意したデータをそのまま Windows へ持ち込める
-# よう全 OS で拒否する。
+# 作れない・作れても開けないため、ある OS で用意したデータをそのまま別の OS へ持ち込める
+# よう全 OS で拒否する。上付き数字の変種まで含めて Microsoft の命名規則に合わせる。
 _WINDOWS_RESERVED_NAMES = frozenset(
     ["CON", "PRN", "AUX", "NUL"]
-    + [f"COM{i}" for i in range(1, 10)]
-    + [f"LPT{i}" for i in range(1, 10)]
+    + [f"{dev}{i}" for dev in ("COM", "LPT") for i in range(10)]
+    + [f"{dev}{sup}" for dev in ("COM", "LPT") for sup in "¹²³"]
 )
 
 
@@ -349,7 +349,9 @@ def validate_org_name(org: str) -> None:
 
     init-org でユーザが指定する名前と、既存ディレクトリから発見した組織名の両方で使う。
     """
-    if org == "summary":
+    # 大文字小文字を無視して比較する。既定の Windows / macOS のファイルシステムでは
+    # reports/SUMMARY が reports/summary と同じ場所になり、横断サマリを上書きする
+    if org.casefold() == "summary":
         raise ValueError(
             "組織名 'summary' は横断サマリの出力先（reports/summary/）として予約されています"
         )
@@ -371,6 +373,26 @@ def validate_org_name(org: str) -> None:
         raise ValueError(
             f"組織名 {org!r} は Windows の予約デバイス名のため使えません"
         )
+
+
+def validate_org_names(orgs: list[str]) -> None:
+    """組織名の集合としての妥当性検証。個々の検証に加えて名前の衝突を見る。
+
+    大文字小文字だけが違う名前は、既定の Windows / macOS のファイルシステムでは
+    同じ出力先になり、後に書いた組織が前の組織の成果物を上書きする。入力側が
+    大文字小文字を区別する環境（Linux・ネットワーク共有）なら両方が独立に存在
+    しうるため、1文字も書き込む前に止める。
+    """
+    for org in orgs:
+        validate_org_name(org)
+    seen: dict[str, str] = {}
+    for org in orgs:
+        first = seen.setdefault(org.casefold(), org)
+        if first != org:
+            raise ValueError(
+                f"組織名 {first!r} と {org!r} は大文字小文字だけが違うため、"
+                "同じ出力先になる環境があります。どちらかを改名してください"
+            )
 
 
 def _read_csv(path: Path, *, dtype=None) -> pd.DataFrame:

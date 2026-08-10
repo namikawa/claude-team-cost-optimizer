@@ -301,13 +301,21 @@ def run_claude(prompt: str, s: dict) -> str:
                 cmd, input=prompt, capture_output=True, text=True,
                 # text=True の既定はロケールの文字コード（日本語 Windows では cp932）。
                 # プロンプトにはレポート全文が入り em dash・⚠️ を含むため cp932 では
-                # 送れず、claude 側も UTF-8 を前提にしている。両方向を UTF-8 に固定する
-                encoding="utf-8", errors="replace",
+                # 送れず、claude 側も UTF-8 を前提にしている。両方向を UTF-8 に固定する。
+                # errors は既定の strict のまま扱う: 復号を replace にすると、壊れた出力に
+                # 含まれる他組織名が U+FFFD へ化けて find_leaks の照合をすり抜ける
+                encoding="utf-8",
                 timeout=float(s["timeout_seconds"]), cwd=workdir, check=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise DiscussionError(
                 f"{command} が {s['timeout_seconds']} 秒以内に応答しませんでした", transient=True
+            ) from exc
+        except UnicodeError as exc:
+            # 出力が UTF-8 として壊れている。置換して読み進めると混入チェックが
+            # 素通りするため、考察を作らずに中止する（再実行で直りうるので transient）
+            raise DiscussionError(
+                f"{command} との入出力を UTF-8 として扱えませんでした: {exc}", transient=True
             ) from exc
         except OSError as exc:
             raise DiscussionError(f"{command} を実行できませんでした: {exc}") from exc

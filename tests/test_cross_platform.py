@@ -53,6 +53,26 @@ def test_force_utf8_output_survives_cp932_locale_default(monkeypatch):
     assert _UNENCODABLE in buf.getvalue().decode("utf-8")
 
 
+def test_force_utf8_output_uses_strict_errors(monkeypatch):
+    """置換ではなく strict にする。
+
+    UTF-8 は通常の文字をすべて表現できるので置換の出番は壊れたデータのときだけで、
+    doctor --format json は ensure_ascii=False の生の Unicode を出す。改変した内容を
+    正常終了で返すより、明示的に失敗させる。
+    """
+    _, stream = _cp932_stream()
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stderr", stream)
+
+    cli._force_utf8_output()
+
+    assert stream.encoding == "utf-8"
+    assert stream.errors == "strict"
+    with pytest.raises(UnicodeEncodeError):
+        stream.write("\udcff")  # UTF-8 でも表現できない壊れた文字は落とす
+        stream.flush()
+
+
 def test_force_utf8_output_tolerates_streams_without_reconfigure(monkeypatch):
     """reconfigure を持たないストリームに差し替えられていても落ちない。"""
     monkeypatch.setattr(sys, "stdout", io.StringIO())

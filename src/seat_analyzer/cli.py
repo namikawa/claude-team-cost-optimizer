@@ -21,16 +21,34 @@ def _force_utf8_output() -> None:
     含まれる em dash・⚠️・≤ ≥ を表現できない。Windows はコンソール直結のときだけ
     UTF-8 で書くため、そのままだと同じコマンドがリダイレクトやパイプ経由でだけ
     UnicodeEncodeError で落ちる。出力先によって成否が変わる状態をなくす。
-    errors="replace" は、それでも表現できない文字が来たときに落とさないための保険。
+
+    errors は strict のままにする。UTF-8 は通常の文字をすべて表現できるので置換の
+    出番は壊れたデータのときだけで、doctor --format json は ensure_ascii=False の
+    生の Unicode を出す。改変した内容を正常終了で返すより、明示的に失敗させる。
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue  # テストの差し替え等、TextIOWrapper でないストリーム
         try:
-            reconfigure(encoding="utf-8", errors="replace")
+            reconfigure(encoding="utf-8", errors="strict")
         except (OSError, ValueError):
             pass
+
+
+def _print_permission_hint(exc: BaseException) -> None:
+    """ファイルを掴まれていて書けないときの案内。該当しない例外なら何も出さない。
+
+    Windows は他プロセスが開いているファイルを書き換え・置換できない。CSV を Excel で
+    開いたまま再分析したときの WinError 32 が最も多い経路で、素の例外文からは
+    「閉じれば直る」ことが読み取れない。組織ごとに例外を握る経路からも呼ぶ。
+    """
+    if isinstance(exc, PermissionError):
+        print(
+            "  ヒント: 出力先のファイルを Excel やエディタで開いていると"
+            "書き換えられないことがあります。閉じてから再実行してください",
+            file=sys.stderr,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -162,14 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         # 入力の読み取りに由来する失敗（欠損・権限・不正な値）と、混入チェックを
         # 保証できない状況、考察の生成に失敗した場合は traceback を出さずエラー終了する
         print(f"エラー: {e}", file=sys.stderr)
-        if isinstance(e, PermissionError):
-            # Windows は開いているファイルを書き換え・置換できない。CSV を Excel で
-            # 開いたまま再分析したときの WinError 32 が最も多い経路
-            print(
-                "  ヒント: 出力先のファイルを Excel やエディタで開いていると"
-                "書き換えられないことがあります。閉じてから再実行してください",
-                file=sys.stderr,
-            )
+        _print_permission_hint(e)
         return 1
 
 
@@ -179,8 +190,8 @@ INPUT_SUBDIRS = ingest.INPUT_SUBDIRS
 def _run_init_org(args: argparse.Namespace) -> int:
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
-    for org in args.orgs:
-        ingest.validate_org_name(org)
+    # 1つでも不正・衝突があれば1つも作らない（途中まで作ると片付けが要る）
+    ingest.validate_org_names(args.orgs)
 
     for org in args.orgs:
         existed = (input_dir / org).is_dir()
@@ -254,9 +265,9 @@ def _resolve_targets(
         selected = list(dict.fromkeys(org_args))
     else:
         selected = orgs
-    # 手動作成された不正名ディレクトリ（summary・パス/Markdown を壊す文字等）を弾く
-    for org in selected:
-        ingest.validate_org_name(org)
+    # 手動作成された不正名ディレクトリ（summary・パス/Markdown を壊す文字等）と、
+    # 同じ出力先になる名前の衝突を弾く
+    ingest.validate_org_names(selected)
     return [(org, input_dir / org, output_dir / org) for org in selected]
 
 
@@ -582,6 +593,7 @@ def _run_discussions(
             )
         except (DiscussionError, LeakCheckError, OSError, ValueError) as exc:
             print(f"  ! {scope}: 考察を生成できませんでした: {exc}", file=sys.stderr)
+            _print_permission_hint(exc)
             failed.append(scope)
             continue
         if outcome.status == "blocked":
