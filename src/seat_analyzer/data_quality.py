@@ -152,7 +152,11 @@ def _reason(exc: Exception, input_dir: Path) -> str:
             }
             if Path(base).is_absolute()
         ),
-        key=len, reverse=True,
+        # 長い候補から置換する（短い候補が長い候補の前方部分になりうる）。同じ長さの
+        # 候補は辞書順で確定させる: set の反復順はハッシュシードに依存し、置換は逐次
+        # なので、順序が変わると message が実行ごとに変わりうる（symlink 名と実体名が
+        # 同じ長さのとき absolute() と resolve() が同長の別パスになる）
+        key=lambda base: (-len(base), base),
     )
     # 区切りは os.sep（Windows なら "\\"）と "/" の両方を見る。例外文のパスは OS 由来
     # のものとコード中で "/" を繋いだものが混在し、片方だけだと相対表記へ落ちない。
