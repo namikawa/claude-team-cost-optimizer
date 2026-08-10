@@ -23,7 +23,7 @@ from seat_analyzer.report.html import (
 )
 from seat_analyzer.report.text import _embed_shared_text
 
-from .conftest import SPEND_HEADER, spend_row
+from .conftest import SPEND_HEADER, requires_posix_filenames, spend_row
 
 
 # --- 出力の安全性 ---
@@ -231,6 +231,7 @@ def test_org_name_collision_detection():
         validate_org_names(["org-a", "summary"])
 
 
+@requires_posix_filenames
 def test_manually_created_bad_org_dir_rejected(make_input, tmp_path, capsys):
     # spend/ を持つ不正名ディレクトリを手動作成 → 分析時に弾く
     input_dir = make_input(

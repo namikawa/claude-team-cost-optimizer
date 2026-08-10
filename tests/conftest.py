@@ -17,6 +17,12 @@ requires_posix_permissions = pytest.mark.skipif(
 requires_symlink = pytest.mark.skipif(
     os.name == "nt", reason="Windows の symlink 作成には追加の権限が要る")
 
+# Windows がファイル名に使えない文字（| : * ? " 等）を含むディレクトリを実際に作る検証。
+# 「作れてしまう環境で作られたものを弾く」ことの確認なので、作れない Windows では飛ばす
+# （validate_org_name はそこで作られたデータを持ち込んだときのために全 OS で効かせる）。
+requires_posix_filenames = pytest.mark.skipif(
+    os.name == "nt", reason="Windows では不正名のディレクトリを作れない")
+
 
 @pytest.fixture
 def cfg() -> dict:

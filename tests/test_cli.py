@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from seat_analyzer import analyze, ingest
@@ -156,9 +157,10 @@ def test_doctor_errors_on_unreadable_spend_without_leaking_path(make_input, tmp_
     out = capsys.readouterr().out
     assert "[error] MISSING_SPEND" in out
     assert "必須カラムが見つかりません" in out
-    # message は実行環境に依存しない（入力ディレクトリからの相対表記になる）
+    # message は実行環境に依存しない（入力ディレクトリからの相対表記になる）。
+    # 区切りはその OS のもの（Windows なら "\"）で、決定性は同一環境での一致を指す
     assert str(input_dir) not in out
-    assert "spend/spend_2026-06.csv" in out
+    assert os.path.join("spend", "spend_2026-06.csv") in out
 
 
 def test_doctor_warns_partial_month_and_exits_zero(make_snapshots, capsys):
