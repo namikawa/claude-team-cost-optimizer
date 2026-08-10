@@ -483,6 +483,27 @@ def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | No
     return month
 
 
+def _check_text_sources(name: str) -> list[tuple[str, str]]:
+    """検査対象 name の (ラベル, 本文)。複数の文字コードで読めるならすべて返す。
+
+    標準入力はテキストラッパーを介さずバイト列で読む。ラッパー越しだと、読み取り前に
+    UTF-8 へ再設定できていたかどうかで結果が変わり、安全機構の成否が環境に依存する
+    （すでに読み進めたラッパーは文字コードを変更できず、ロケール既定のまま読む）。
+    """
+    if name == "-":
+        buffer = getattr(sys.stdin, "buffer", None)
+        if buffer is None:  # テキストストリームに差し替えられている場合はそのまま読む
+            return [("(標準入力)", sys.stdin.read())]
+        raw, label = buffer.read(), "(標準入力)"
+    else:
+        raw, label = Path(name).read_bytes(), name
+    candidates = public_text.decode_candidates(raw)
+    if len(candidates) == 1:
+        return [(label, candidates[0][1])]
+    # 解釈が割れたときは、どの読み方で当たったのかが分かるようラベルを分ける
+    return [(f"{label}（{enc} として解釈）", text) for enc, text in candidates]
+
+
 def _run_check_text(args: argparse.Namespace) -> int:
     """公開予定のテキストを検査する。業務情報を検出したら終了コード 1。"""
     cfg = load_config(args.config)
@@ -497,10 +518,7 @@ def _run_check_text(args: argparse.Namespace) -> int:
     # 検査対象のファイル自身を baseline から除く（自分自身を根拠に素通りさせない）
     exclude = tuple(Path(n) for n in names if n != "-")
     for name in names:
-        if name == "-":
-            sources.append(("(標準入力)", sys.stdin.read()))
-        else:
-            sources.append((name, Path(name).read_text(encoding="utf-8")))
+        sources.extend(_check_text_sources(name))
 
     n_hits = 0
     allowable_seen = False

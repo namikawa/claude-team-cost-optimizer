@@ -4,8 +4,10 @@
 baseline（すでに公開されている内容）はテスト側で用意したものを使う。
 """
 
+import io
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -107,6 +109,51 @@ def test_check_text_allow_term_cannot_override_org_names(publish_input, tmp_path
     """組織名は許可対象外（一般語と衝突する余地が実質なく影響が大きい）。"""
     assert _check("zephyr-holdings の話", publish_input, tmp_path,
                   "--allow-term", "zephyr-holdings") == 1
+
+
+class _FakeStdin:
+    """バイト列を .buffer から読ませる標準入力の代用（テキストラッパーを持たない）。"""
+
+    def __init__(self, raw: bytes):
+        self.buffer = io.BytesIO(raw)
+
+
+def test_decode_candidates_returns_every_readable_interpretation():
+    """cp932 のバイト列が UTF-8 としても読めるとき、両方の解釈を検査対象にする。
+
+    片方だけを見ると、別の文字列として読めた側で禁止語を取りこぼす。
+    """
+    raw = "燿テ".encode("cp932")
+    readings = dict(public_text.decode_candidates(raw))
+
+    assert readings["cp932"] == "燿テ"
+    # UTF-8 としても妥当なので例外にならず、別の文字列として読めてしまう
+    assert readings["utf-8-sig"] != "燿テ"
+
+
+def test_decode_candidates_rejects_undecodable_bytes():
+    """どの文字コードでも読めない入力は、素通りさせず失敗させる。"""
+    # 0x81 は cp932 の2バイト文字の1バイト目で、空白は2バイト目になれない
+    with pytest.raises(ValueError, match="文字コードを判別できません"):
+        public_text.decode_candidates(b"\x81\x20")
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "cp932"])
+def test_check_text_detects_terms_regardless_of_input_encoding(
+    publish_input, tmp_path, monkeypatch, capsys, encoding,
+):
+    """標準入力の文字コードによらず禁止語を検出する。
+
+    Windows PowerShell はネイティブコマンドへのパイプをロケール既定（cp932）で流すため、
+    UTF-8 のバイト列が届くとは限らない。
+    """
+    monkeypatch.setattr(sys, "stdin", _FakeStdin("増枠推進室 の削減余地\n".encode(encoding)))
+    capsys.readouterr()
+
+    assert main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
+                 "--output-dir", str(tmp_path / "reports"),
+                 "--repo-root", str(tmp_path / "baseline"), "-"]) == 1
+    assert "(標準入力)" in capsys.readouterr().err
 
 
 def test_check_text_reads_file_and_stdin(publish_input, tmp_path, monkeypatch, capsys):

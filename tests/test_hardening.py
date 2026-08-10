@@ -219,6 +219,13 @@ def test_org_name_collision_detection():
     # 大文字小文字だけが違う名前は、既定の Windows / macOS で同じディレクトリになる
     with pytest.raises(ValueError, match="大文字小文字"):
         validate_org_names(["Acme", "acme"])
+    # 合成済みの「ガ」と、分解した「カ」＋濁点も同じディレクトリになる（macOS は
+    # 正規化を区別しない）。casefold だけでは別物と判定されるため正規化して比較する。
+    # ソースの見た目では区別できないのでコードポイントで書く
+    composed, decomposed = "\u30ac\u793e", "\u30ab\u3099\u793e"
+    assert composed != decomposed
+    with pytest.raises(ValueError, match="同じ出力先"):
+        validate_org_names([composed, decomposed])
     # 集合の検証でも個々の検証は効く
     with pytest.raises(ValueError, match="予約"):
         validate_org_names(["org-a", "summary"])

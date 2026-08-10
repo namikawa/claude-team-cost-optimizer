@@ -38,6 +38,36 @@ _TEXT_SUFFIXES = (
 )
 
 
+# 公開テキストの入力に想定する文字コード。utf-8-sig は BOM 無しの UTF-8 も読めるため、
+# ingest._read_csv と同じ2種で足りる
+_INPUT_ENCODINGS = ("utf-8-sig", "cp932")
+
+
+def decode_candidates(raw: bytes) -> list[tuple[str, str]]:
+    """バイト列の解釈候補を (文字コード名, 本文) で返す。読めた解釈をすべて返す。
+
+    公開テキストが UTF-8 で届くとは限らない。Windows PowerShell はネイティブコマンドへの
+    パイプをロケール既定（日本語環境では cp932）で流すため、cp932 のバイト列が来る。
+    さらに cp932 のバイト列が UTF-8 としても妥当になることがあり（文字をまたぐ位置で
+    3バイトの列が成立する。例: 「燿テ」= e0 a0 83 65 は UTF-8 では別の2文字に読める）、
+    片方の解釈だけを見ると禁止語を取りこぼす。
+    照合は取りこぼしより誤検出に倒す方針なので、読めた解釈はすべて検査対象にする。
+    """
+    out: list[tuple[str, str]] = []
+    for encoding in _INPUT_ENCODINGS:
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if all(text != seen for _, seen in out):
+            out.append((encoding, text))
+    if not out:
+        raise ValueError(
+            f"入力の文字コードを判別できません（{' / '.join(_INPUT_ENCODINGS)} を試行）"
+        )
+    return out
+
+
 @dataclass(frozen=True)
 class PublicCheckResult:
     """公開テキスト検査の結果。"""

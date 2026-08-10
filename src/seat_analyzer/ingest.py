@@ -14,6 +14,7 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -384,14 +385,17 @@ def check_org_name_collisions(orgs: list[str]) -> None:
     同じディレクトリになり、後に書いた組織が前の組織の成果物を上書きする。入力側が
     大文字小文字を区別する環境（Linux・ネットワーク共有）なら両方が独立に存在
     しうるため、1文字も書き込む前に止める。
+    Unicode の正規化形式だけが違う名前（合成済みの「ガ」と、分解した「カ」＋濁点）も
+    同様に衝突する。macOS の既定は正規化を区別しないため、比較の前に NFC へ揃える。
     完全一致は重複指定として許す（同じ組織を2回指定しても害はない）。
     """
     seen: dict[str, str] = {}
     for org in orgs:
-        first = seen.setdefault(org.casefold(), org)
+        key = unicodedata.normalize("NFC", org).casefold()
+        first = seen.setdefault(key, org)
         if first != org:
             raise ValueError(
-                f"組織名 {first!r} と {org!r} は大文字小文字だけが違うため、"
+                f"組織名 {first!r} と {org!r} は大文字小文字や文字の合成の違いだけなので、"
                 "同じ出力先になる環境があります。どちらかを改名してください"
             )
 
