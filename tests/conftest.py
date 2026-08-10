@@ -4,10 +4,13 @@ from pathlib import Path
 import pytest
 
 from seat_analyzer.cli import main
-from seat_analyzer.config import load_config
+from seat_analyzer.config import PACKAGE_CONFIG_PATH, load_config
 
 REPO_ROOT = Path(__file__).parent.parent
-CONFIG = str(REPO_ROOT / "config.yaml")
+# 設定は「パッケージ内の既定 + ワークスペースの config.yaml による差分上書き」の層構造。
+# テストは既定を明示的に指す（＝既定と同内容を上書きに指定する後方互換の経路も毎回通る）。
+# 省略時の挙動に任せるとカレントの config.yaml を拾い、手元の上書き設定で結果が変わる
+CONFIG = str(PACKAGE_CONFIG_PATH)
 
 # POSIX の権限モデルに依存する検証。Windows の chmod は読み取り権を落とせず（0o000 でも
 # 読める）、symlink の作成には開発者モードか管理者権限が要る。対象のプロダクトコードは
@@ -26,7 +29,7 @@ requires_posix_filenames = pytest.mark.skipif(
 
 @pytest.fixture
 def cfg() -> dict:
-    return load_config(REPO_ROOT / "config.yaml")
+    return load_config(CONFIG)
 
 
 SPEND_HEADER = (

@@ -28,8 +28,10 @@ from .leakcheck import (
 
 # git が使えないとき（テストの --repo-root 等）に走査する対象。
 # 通常は git 管理下のファイル一覧を使う（下記 _tracked_files）。
+# ワークスペースの config.yaml は入れない。利用者の手元だけにある上書き設定で、
+# そこに書かれた語（誤検出を許可した部署名等）は公開済みではない
 PUBLIC_BASELINE_PATHS = (
-    "README.md", "config.yaml", "pyproject.toml", "docs", "examples", "src", "tests", ".claude",
+    "README.md", "pyproject.toml", "docs", "examples", "src", "tests", ".claude",
 )
 # 公開済みの内容はコードだけでなく資材にもある（templates/ の .css・.j2 等）。
 # 拡張子の網羅が実体からずれると baseline が縮み、公開済みの語を新たな開示として扱う

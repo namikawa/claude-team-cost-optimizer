@@ -1,17 +1,24 @@
-"""CLI エントリポイント: seat-analyzer {analyze,discuss,check-text,doctor,init-org}"""
+"""CLI エントリポイント: seat-analyzer {analyze,discuss,check-text,doctor,init,init-org}"""
 
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import re
 import sys
 from pathlib import Path
 
 from . import analyze, data_quality, discussion, ingest, public_text, report
-from .config import load_config
+from .config import WORKSPACE_CONFIG_NAME, load_config
 from .discussion import DiscussionError
 from .domain import QualityIssue, Severity
 from .leakcheck import LeakCheckError
+
+# ワークスペース雛形用の設定テンプレート（init がコピーする。中身は全行コメント）
+WORKSPACE_CONFIG_TEMPLATE = Path(__file__).parent / "templates" / "workspace-config.yaml"
+
+# --config 省略時の説明。上書きファイルは任意なので「無くても動く」ことを明示する
+_CONFIG_HELP = f"設定の上書きファイル (default: ./{WORKSPACE_CONFIG_NAME} があれば適用)"
 
 
 def _force_utf8_io() -> None:
@@ -56,9 +63,21 @@ def _print_permission_hint(exc: BaseException) -> None:
         )
 
 
+def _version() -> str:
+    """インストールされているパッケージのバージョン。取得できなければ "unknown"。"""
+    try:
+        return importlib.metadata.version("seat-analyzer")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_io()
     parser = argparse.ArgumentParser(prog="seat-analyzer", description="Claude Team シート最適化分析")
+    parser.add_argument(
+        "--version", action="version", version=f"seat-analyzer {_version()}",
+        help="バージョンを表示して終了する",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("analyze", help="スペンドレポートを分析してレポートを生成")
@@ -67,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         "--org", action="append",
         help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織を分析",
     )
-    p.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    p.add_argument("--config", default=None, help=_CONFIG_HELP)
     p.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     p.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
     p.add_argument(
@@ -103,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         "--org", action="append",
         help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織",
     )
-    pdis.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pdis.add_argument("--config", default=None, help=_CONFIG_HELP)
     pdis.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     pdis.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
     pdis.add_argument(
@@ -134,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         "--org", action="append",
         help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織を検査",
     )
-    pdoc.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pdoc.add_argument("--config", default=None, help=_CONFIG_HELP)
     pdoc.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     pdoc.add_argument(
         "--format", choices=("text", "json"), default="text",
@@ -161,15 +180,19 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-term", action="append", metavar="語",
         help="内容を確認して無害と判断した語を許可する（複数指定可）",
     )
-    pchk.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pchk.add_argument("--config", default=None, help=_CONFIG_HELP)
     pchk.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     pchk.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
     pchk.add_argument(
         "--repo-root", metavar="パス",
         help="「すでに公開されている内容」を読むリポジトリのルート。"
-             "省略時は --config の置かれたディレクトリ",
+             "省略時はカレントディレクトリ",
     )
     pchk.set_defaults(func=_run_check_text)
+
+    pini = sub.add_parser("init", help="カレントディレクトリにワークスペースの雛形を作成")
+    pini.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
+    pini.set_defaults(func=_run_init)
 
     pi = sub.add_parser("init-org", help="新しい組織の入力/出力ディレクトリの雛形を作成")
     pi.add_argument("orgs", nargs="+", metavar="組織名",
@@ -190,6 +213,35 @@ def main(argv: list[str] | None = None) -> int:
 
 
 INPUT_SUBDIRS = ingest.INPUT_SUBDIRS
+
+
+def _run_init(args: argparse.Namespace) -> int:
+    """カレントディレクトリをワークスペースにする（入力ディレクトリと設定の雛形を作る）。
+
+    プログラム本体（uv tool install で入るパッケージ）と利用者のデータを分けるための入口。
+    設定はここに作る config.yaml へ差分だけを書き、書かなかった項目はパッケージ内の
+    既定が使われる。
+    """
+    input_dir = Path(args.input_dir)
+    input_dir.mkdir(parents=True, exist_ok=True)
+    print(f"入力ディレクトリ: {input_dir}/")
+
+    config_path = Path(WORKSPACE_CONFIG_NAME)
+    if config_path.exists():
+        # 記入済みの上書き設定を消さない（雛形で塗り替えると組織固有の設定が失われる）
+        print(f"設定ファイル:     {config_path}（既存のため変更しません）")
+    else:
+        config_path.write_text(
+            WORKSPACE_CONFIG_TEMPLATE.read_text(encoding="utf-8"),
+            encoding="utf-8", newline="\n",
+        )
+        print(f"設定ファイル:     {config_path}（全行コメントの雛形。差分だけ書く）")
+
+    print("\n次の手順:")
+    print("  1. seat-analyzer init-org <組織名>   ← 組織ごとの入力ディレクトリを作る")
+    print("  2. spend / members の CSV を配置（エクスポート手順は docs/usage.md 参照）")
+    print("  3. seat-analyzer analyze --month YYYY-MM")
+    return 0
 
 
 def _run_init_org(args: argparse.Namespace) -> int:
@@ -508,8 +560,8 @@ def _run_check_text(args: argparse.Namespace) -> int:
     """公開予定のテキストを検査する。業務情報を検出したら終了コード 1。"""
     cfg = load_config(args.config)
     # baseline（すでに公開されている内容）はリポジトリのルートから読む。
-    # config.yaml はリポジトリ直下に置く運用なので、省略時はその親をルートとみなす
-    root = Path(args.repo_root) if args.repo_root else Path(args.config).resolve().parent
+    # 省略時はカレントディレクトリ（リポジトリの中で実行する運用）
+    root = Path(args.repo_root) if args.repo_root else Path.cwd()
 
     sources: list[tuple[str, str]] = []
     if args.text is not None:

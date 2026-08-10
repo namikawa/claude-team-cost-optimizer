@@ -3,6 +3,10 @@
 /input/
 reports/
 
+# ワークスペースの上書き設定（組織固有の設定＝実在の部署名等が入りうるためコミット禁止。
+# 既定は src/seat_analyzer/default-config.yaml が持つ）
+/config.yaml
+
 CLAUDE.md
 .claude/settings.local.json
 .claude/agents/

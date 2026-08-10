@@ -15,7 +15,7 @@ import pytest
 from seat_analyzer import leakcheck, public_text
 from seat_analyzer.cli import main
 
-from .conftest import CONFIG, spend_row
+from .conftest import CONFIG, REPO_ROOT, spend_row
 
 
 @pytest.fixture
@@ -89,8 +89,11 @@ def test_check_text_ignores_already_public_names(publish_input, tmp_path):
     assert _check("ZTeamX の需要", publish_input, tmp_path) == 1
 
 
-def test_check_text_uses_repo_baseline_by_default(publish_input, tmp_path, capsys):
-    """--repo-root 省略時は --config の置かれたディレクトリを baseline とする。"""
+def test_check_text_uses_repo_baseline_by_default(
+    publish_input, tmp_path, capsys, monkeypatch,
+):
+    """--repo-root 省略時はカレントディレクトリを baseline とする。"""
+    monkeypatch.chdir(REPO_ROOT)
     capsys.readouterr()
     # 実リポジトリの examples/ にある合成データの人名は検出されない
     rc = main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),

@@ -1,4 +1,9 @@
-"""config.yaml のロード。"""
+"""設定のロード（パッケージ内の既定設定 + ワークスペース側の差分上書き）。
+
+既定値はパッケージに同梱する default-config.yaml が持ち、利用者のワークスペースに置く
+config.yaml は差分だけを書く上書きファイルとして扱う。モデル単価やカラムのエイリアス表は
+プログラムの更新で全利用者へ配り、組織固有の設定だけが手元に残る形にするため。
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,10 @@ import yaml
 
 from .ingest import MEMBERS_OPTIONAL_COLUMNS, REQUIRED_COLUMNS, SPEND_OPTIONAL_COLUMNS
 
-DEFAULT_CONFIG_PATH = Path("config.yaml")
+# パッケージ同梱の既定設定（prompts/・templates/ と同じ流儀でパッケージ内から読む）
+PACKAGE_CONFIG_PATH = Path(__file__).parent / "default-config.yaml"
+# ワークスペースに置く上書きファイルの名前（--config 省略時にカレントから探す）
+WORKSPACE_CONFIG_NAME = "config.yaml"
 
 # config.yaml > discussion セクションの既定値。未指定の項目は discussion_settings() が補完する
 DISCUSSION_DEFAULTS: dict = {
@@ -33,18 +41,79 @@ def discussion_settings(cfg: dict) -> dict:
     return merged
 
 
-def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> dict:
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(f"設定ファイルが見つかりません: {path}")
-    with path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+def load_config(path: str | Path | None = None) -> dict:
+    """既定設定に上書きファイルを重ねた設定。
+
+    path を省略するとカレントの config.yaml を上書きとして使う（無ければ既定のみ）。
+    path を明示した場合はそのファイルが必須で、無ければ FileNotFoundError にする。
+    """
+    cfg = _read_mapping(PACKAGE_CONFIG_PATH, allow_empty=False)
+    override_path = Path(path) if path is not None else Path(WORKSPACE_CONFIG_NAME)
+    if override_path.is_file():
+        override = _read_mapping(override_path, allow_empty=True)
+        if override:
+            cfg = _merge_override(cfg, override, label=str(override_path))
+    elif path is not None:
+        raise FileNotFoundError(f"設定ファイルが見つかりません: {override_path}")
 
     for key in ("seats", "decision", "model_prices", "columns"):
         if key not in cfg:
-            raise ValueError(f"config.yaml に '{key}' セクションがありません")
+            raise ValueError(f"設定に '{key}' セクションがありません")
     _validate(cfg)
     return cfg
+
+
+def _read_mapping(path: Path, *, allow_empty: bool) -> dict:
+    """YAML をマッピングとして読む。allow_empty なら空ファイル（全行コメント）は {}。"""
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except FileNotFoundError:
+        if path == PACKAGE_CONFIG_PATH:
+            raise FileNotFoundError(
+                f"既定の設定ファイルが見つかりません: {path}"
+                "（インストールが壊れている可能性があります）"
+            ) from None
+        raise
+    except yaml.YAMLError as e:
+        raise ValueError(f"{path} を YAML として読めません: {e}") from None
+    if data is None and allow_empty:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} の内容が設定のマッピングではありません")
+    return data
+
+
+def _merge_override(base: dict, override: dict, *, label: str, path: tuple[str, ...] = ()) -> dict:
+    """既定設定 base に上書き override を重ねた辞書を返す（base は変更しない）。
+
+    辞書はキー単位で再帰マージし、リストと値は丸ごと置換する（単価表のような一覧は
+    部分的に混ぜると意図しない並びになるため）。
+
+    この設定はどの階層でもキーが閉じた集合なので、既定に無いキーはエラーにする。
+    綴り違い（columns.spend.emial 等）を黙って無視すると、上書きしたつもりの値が
+    効かないまま既定で分析が完走してしまう。
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        where = ".".join((*path, str(key)))
+        if key not in base:
+            raise ValueError(
+                f"{label} の '{where}' は既定に存在しないキーです（綴りを確認してください）")
+        current = base[key]
+        if value is None:
+            raise ValueError(
+                f"{label} の '{where}' の値が空です"
+                "（既定のままにする項目は行ごと消してください）"
+            )
+        if isinstance(current, dict) != isinstance(value, dict):
+            expected = "キーを持つ辞書" if isinstance(current, dict) else "値またはリスト"
+            raise ValueError(f"{label} の '{where}' は{expected}で指定してください")
+        merged[key] = (
+            _merge_override(current, value, label=label, path=(*path, str(key)))
+            if isinstance(value, dict) else value
+        )
+    return merged
 
 
 def _validate(cfg: dict) -> None:
