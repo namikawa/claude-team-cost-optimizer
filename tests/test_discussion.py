@@ -396,7 +396,28 @@ def test_run_claude_aborts_when_output_is_not_utf8(monkeypatch):
 
     with pytest.raises(discussion.DiscussionError, match="UTF-8") as e:
         discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
-    assert e.value.transient is True
+    # 同じ入力の再実行では直らない（CLI が非 UTF-8 を出す設定・壊れたプロンプト）
+    assert e.value.transient is False
+
+
+def test_unicode_failure_is_not_retried(monkeypatch):
+    """UTF-8 の入出力エラーで CLI を呼び直さない（待ち時間と API 消費を増やさない）。"""
+    calls: list[int] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(1)
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(discussion.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(discussion.subprocess, "run", fake_run)
+    monkeypatch.setattr(discussion.time, "sleep", lambda _: None)
+    s = discussion_settings(load_config(CONFIG))
+    assert int(s["retries"]) > 0, "リトライ設定が 0 ならこのテストは何も保証しない"
+
+    with pytest.raises(discussion.DiscussionError):
+        discussion._call_with_retry(discussion.run_claude, "prompt", s, lambda _m: None)
+
+    assert len(calls) == 1
 
 
 def test_discuss_permission_error_shows_hint(two_orgs, tmp_path, monkeypatch, capsys):

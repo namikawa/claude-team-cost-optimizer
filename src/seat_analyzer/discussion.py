@@ -313,9 +313,11 @@ def run_claude(prompt: str, s: dict) -> str:
             ) from exc
         except UnicodeError as exc:
             # 出力が UTF-8 として壊れている。置換して読み進めると混入チェックが
-            # 素通りするため、考察を作らずに中止する（再実行で直りうるので transient）
+            # 素通りするため、考察を作らずに中止する。原因は CLI が非 UTF-8 を出す
+            # 設定か壊れたプロンプトで、同じ入力の再実行では直らないので transient に
+            # しない（無駄な待ちと API 消費を増やさない）
             raise DiscussionError(
-                f"{command} との入出力を UTF-8 として扱えませんでした: {exc}", transient=True
+                f"{command} との入出力を UTF-8 として扱えませんでした: {exc}"
             ) from exc
         except OSError as exc:
             raise DiscussionError(f"{command} を実行できませんでした: {exc}") from exc

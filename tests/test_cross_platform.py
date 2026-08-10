@@ -36,7 +36,7 @@ def test_cp932_stream_cannot_write_report_characters():
         stream.flush()
 
 
-def test_force_utf8_output_survives_cp932_locale_default(monkeypatch):
+def test_force_utf8_io_survives_cp932_locale_default(monkeypatch):
     """ロケール既定が cp932 でもレポート由来の文字を出力できる。
 
     Windows はコンソール直結のときだけ UTF-8 で書くため、再設定しないと同じコマンドが
@@ -46,14 +46,14 @@ def test_force_utf8_output_survives_cp932_locale_default(monkeypatch):
     monkeypatch.setattr(sys, "stdout", stream)
     monkeypatch.setattr(sys, "stderr", stream)
 
-    cli._force_utf8_output()
+    cli._force_utf8_io()
     print(_UNENCODABLE)
     stream.flush()
 
     assert _UNENCODABLE in buf.getvalue().decode("utf-8")
 
 
-def test_force_utf8_output_uses_strict_errors(monkeypatch):
+def test_force_utf8_io_uses_strict_errors(monkeypatch):
     """置換ではなく strict にする。
 
     UTF-8 は通常の文字をすべて表現できるので置換の出番は壊れたデータのときだけで、
@@ -64,7 +64,7 @@ def test_force_utf8_output_uses_strict_errors(monkeypatch):
     monkeypatch.setattr(sys, "stdout", stream)
     monkeypatch.setattr(sys, "stderr", stream)
 
-    cli._force_utf8_output()
+    cli._force_utf8_io()
 
     assert stream.encoding == "utf-8"
     assert stream.errors == "strict"
@@ -73,11 +73,60 @@ def test_force_utf8_output_uses_strict_errors(monkeypatch):
         stream.flush()
 
 
-def test_force_utf8_output_tolerates_streams_without_reconfigure(monkeypatch):
+def test_cp932_stdin_silently_mangles_utf8_input():
+    """前提の確認: UTF-8 の日本語は cp932 として例外なく別の語へ化ける。
+
+    これが混入チェックが fail-open する仕組み。エラーになるなら止まるので害は無いが、
+    実際には多くの語が黙って通り、禁止語と一致しないまま「検出なし」になる。
+    """
+    mangled = [w for w in ("開発", "本部", "企画", "経理")
+               if _decodes_as_cp932_without_error(w)]
+    assert mangled, "cp932 で黙って化ける語が無いなら stdin の再設定は不要"
+    for word in mangled:
+        assert word not in word.encode("utf-8").decode("cp932")
+
+
+def _decodes_as_cp932_without_error(word: str) -> bool:
+    try:
+        word.encode("utf-8").decode("cp932")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def test_force_utf8_io_reconfigures_stdin(monkeypatch):
+    """標準入力も UTF-8 で読む。
+
+    check-text は git diff や公開予定の文章をパイプで受け取る。Windows のパイプは
+    ロケール既定で読むため、再設定しないと禁止語を含む入力を「検出なし」で通す。
+    """
+    stream = io.TextIOWrapper(io.BytesIO("開発本部の件".encode()), encoding="cp932")
+    monkeypatch.setattr(sys, "stdin", stream)
+
+    cli._force_utf8_io()
+
+    assert stream.read() == "開発本部の件"
+
+
+def test_force_utf8_io_tolerates_streams_without_reconfigure(monkeypatch):
     """reconfigure を持たないストリームに差し替えられていても落ちない。"""
+    monkeypatch.setattr(sys, "stdin", io.StringIO())
     monkeypatch.setattr(sys, "stdout", io.StringIO())
     monkeypatch.setattr(sys, "stderr", io.StringIO())
-    cli._force_utf8_output()  # 例外にならなければよい
+    cli._force_utf8_io()  # 例外にならなければよい
+
+
+def test_org_name_collision_is_detected_before_org_selection(tmp_path):
+    """--org で片方だけ選んでも、同じ出力先になる組織があれば止める。
+
+    大文字小文字を区別しないファイルシステムでは両方のディレクトリを同時に作れない
+    ため、発見済みの組織一覧を直接渡して判定させる。
+    """
+    with pytest.raises(ValueError, match="大文字小文字"):
+        cli._resolve_targets(
+            tmp_path / "input", tmp_path / "reports", ["Acme"],
+            orgs=["Acme", "acme"], legacy=False,
+        )
 
 
 def test_permission_error_adds_hint_about_open_files(monkeypatch, capsys, tmp_path):

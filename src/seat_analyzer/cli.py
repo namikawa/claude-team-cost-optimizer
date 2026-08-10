@@ -14,19 +14,24 @@ from .domain import QualityIssue, Severity
 from .leakcheck import LeakCheckError
 
 
-def _force_utf8_output() -> None:
-    """標準出力・標準エラーを UTF-8 にする。
+def _force_utf8_io() -> None:
+    """標準入力・標準出力・標準エラーを UTF-8 にする。
 
     ロケール既定の文字コード（日本語 Windows では cp932）はレポートやプロンプトに
     含まれる em dash・⚠️・≤ ≥ を表現できない。Windows はコンソール直結のときだけ
     UTF-8 で書くため、そのままだと同じコマンドがリダイレクトやパイプ経由でだけ
     UnicodeEncodeError で落ちる。出力先によって成否が変わる状態をなくす。
 
+    標準入力も対象にする。check-text は git diff や公開予定の文章をパイプで受け取り、
+    Windows のパイプはロケール既定で読む。UTF-8 のバイト列を cp932 として読むと、
+    日本語の多くは例外にならずに別の文字列へ化けるため（「本部」→「譛ｬ驛ｨ」）、
+    禁止語と一致しないまま「検出なし」を返す＝混入チェックが fail-open する。
+
     errors は strict のままにする。UTF-8 は通常の文字をすべて表現できるので置換の
     出番は壊れたデータのときだけで、doctor --format json は ensure_ascii=False の
     生の Unicode を出す。改変した内容を正常終了で返すより、明示的に失敗させる。
     """
-    for stream in (sys.stdout, sys.stderr):
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue  # テストの差し替え等、TextIOWrapper でないストリーム
@@ -52,7 +57,7 @@ def _print_permission_hint(exc: BaseException) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _force_utf8_output()
+    _force_utf8_io()
     parser = argparse.ArgumentParser(prog="seat-analyzer", description="Claude Team シート最適化分析")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -258,6 +263,10 @@ def _resolve_targets(
             )
         return [(None, input_dir, output_dir)]
 
+    # 衝突は選択の前に、発見済みの組織全体で見る。--org で片方だけ選んだ実行でも、
+    # もう一方が同じ出力先へ書いた成果物を上書きしうるため
+    ingest.check_org_name_collisions(orgs)
+
     if org_args:
         unknown = [o for o in org_args if o not in orgs]
         if unknown:
@@ -265,9 +274,9 @@ def _resolve_targets(
         selected = list(dict.fromkeys(org_args))
     else:
         selected = orgs
-    # 手動作成された不正名ディレクトリ（summary・パス/Markdown を壊す文字等）と、
-    # 同じ出力先になる名前の衝突を弾く
-    ingest.validate_org_names(selected)
+    # 手動作成された不正名ディレクトリ（summary・パス/Markdown を壊す文字等）を弾く
+    for org in selected:
+        ingest.validate_org_name(org)
     return [(org, input_dir / org, output_dir / org) for org in selected]
 
 

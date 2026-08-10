@@ -201,8 +201,10 @@ def test_org_name_validation():
         "org\x01x", "org\x1fx",
         # Windows が末尾のドットを黙って落とすため input/ と reports/ が食い違う
         "org.",
-        # Windows のデバイス名。拡張子が付いていても、上付き数字の変種も同じ扱い
+        # Windows のデバイス名。拡張子が付いていても、上付き数字の変種も同じ扱い。
+        # コンソールのデバイス名（CONIN$ / CONOUT$）と、拡張子前の空白による回避も塞ぐ
         "CON", "nul", "com1", "LPT9", "aux.csv", "COM0", "LPT0", "COM¹", "LPT³.csv",
+        "CONIN$", "conout$.csv", "NUL .txt",
     )
     for bad in bad_names:
         with pytest.raises(ValueError):
