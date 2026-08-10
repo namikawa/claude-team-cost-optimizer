@@ -11,11 +11,11 @@ from seat_analyzer.analyze import (
     CREDIT_DISABLED,
     CREDIT_ENABLED,
     CREDIT_UNKNOWN,
-    _compute_e_distribution,
     analyze,
     credits_mode,
     preview,
 )
+from seat_analyzer.analyze.credits import _compute_e_distribution
 from seat_analyzer.ingest import parse_credit_limit
 from seat_analyzer.report import write_markdown, write_preview
 
