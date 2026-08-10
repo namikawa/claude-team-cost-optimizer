@@ -264,6 +264,18 @@ def _api_error_is_transient(status: str | None) -> bool:
     return code == 429 or 500 <= code < 600
 
 
+def _decode_output(raw: bytes | None) -> str:
+    """claude の出力を UTF-8 として読み、改行を LF に揃える。
+
+    text=True をやめた代わりの universal newlines。Windows の claude.cmd は CRLF を
+    出しうるが、レポートの改行は LF 固定で、`write_text(newline="\\n")` は文字列の中の
+    CR をそのまま書く。ここで落とさないと考察セクションだけが CRLF になる。
+    """
+    if not raw:
+        return ""
+    return raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def run_claude(prompt: str, s: dict) -> str:
     """ヘッドレス Claude CLI を呼び、考察本文のテキストを返す。"""
     command = str(s["command"])
@@ -294,38 +306,45 @@ def run_claude(prompt: str, s: dict) -> str:
         # 対象組織のレポート全文が ~/.claude のトランスクリプトに残らないようにする
         "--no-session-persistence",
     ]
+    # プロンプトも出力もバイト列で受け渡し、UTF-8 の変換は自分で行う。text=True に任せると
+    # ロケールの文字コード（日本語 Windows では cp932）になり、レポート全文を含む
+    # プロンプトの em dash・⚠️ を送れない。encoding="utf-8" を渡すだけでは足りず、
+    # Windows ではデコードがリーダースレッドで走るため UnicodeDecodeError がスレッドの
+    # 中で死んで stdout が None になる（「出力が空」と区別できず transient 扱いで
+    # 生成をやり直してしまう）。自分でデコードすれば例外の出所が全 OS で1箇所になる。
+    try:
+        payload = prompt.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise DiscussionError(f"プロンプトを UTF-8 で送れませんでした: {exc}") from exc
+
     # 空の作業ディレクトリで実行し、リポジトリのファイルを起点にさせない
     with tempfile.TemporaryDirectory(prefix="seat-analyzer-discuss-") as workdir:
         try:
             proc = subprocess.run(
-                cmd, input=prompt, capture_output=True, text=True,
-                # text=True の既定はロケールの文字コード（日本語 Windows では cp932）。
-                # プロンプトにはレポート全文が入り em dash・⚠️ を含むため cp932 では
-                # 送れず、claude 側も UTF-8 を前提にしている。両方向を UTF-8 に固定する。
-                # errors は既定の strict のまま扱う: 復号を replace にすると、壊れた出力に
-                # 含まれる他組織名が U+FFFD へ化けて find_leaks の照合をすり抜ける
-                encoding="utf-8",
+                cmd, input=payload, capture_output=True,
                 timeout=float(s["timeout_seconds"]), cwd=workdir, check=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise DiscussionError(
                 f"{command} が {s['timeout_seconds']} 秒以内に応答しませんでした", transient=True
             ) from exc
-        except UnicodeError as exc:
-            # 出力が UTF-8 として壊れている。置換して読み進めると混入チェックが
-            # 素通りするため、考察を作らずに中止する。原因は CLI が非 UTF-8 を出す
-            # 設定か壊れたプロンプトで、同じ入力の再実行では直らないので transient に
-            # しない（無駄な待ちと API 消費を増やさない）
-            raise DiscussionError(
-                f"{command} との入出力を UTF-8 として扱えませんでした: {exc}"
-            ) from exc
         except OSError as exc:
             raise DiscussionError(f"{command} を実行できませんでした: {exc}") from exc
 
-    out = (proc.stdout or "").strip()
+    # errors は既定の strict。置換して読み進めると、壊れた出力に含まれる他組織名が
+    # U+FFFD へ化けて find_leaks の照合をすり抜ける。原因は CLI が非 UTF-8 を出す設定で
+    # 同じ入力の再実行では直らないため transient にしない
+    try:
+        out = _decode_output(proc.stdout).strip()
+        err = _decode_output(proc.stderr).strip()
+    except UnicodeDecodeError as exc:
+        raise DiscussionError(
+            f"{command} の出力を UTF-8 として読めませんでした: {exc}"
+        ) from exc
+
     if proc.returncode != 0:
         # claude -p は API エラーでも 0 を返すため、非ゼロは使い方・設定の誤りとみなす
-        detail = ((proc.stderr or "").strip() or out).splitlines()
+        detail = (err or out).splitlines()
         raise DiscussionError(
             f"{command} が異常終了しました (exit {proc.returncode}): "
             f"{detail[0][:300] if detail else '出力なし'}"

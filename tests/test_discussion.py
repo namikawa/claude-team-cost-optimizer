@@ -322,9 +322,17 @@ def test_previous_month_discussion_with_leak_is_excluded(two_orgs, tmp_path):
 # ---------------------------------------------------------------- run_claude のガード
 
 
-def _fake_proc(stdout: str = "", stderr: str = "", returncode: int = 0):
+def _fake_proc(stdout: str | bytes = "", stderr: str | bytes = "", returncode: int = 0):
+    """subprocess.run の戻り値を模す。
+
+    run_claude はバイト列で受け取って自分でデコードするため、str で渡された分は
+    UTF-8 で符号化する（バイト列をそのまま渡せば壊れた出力も表現できる）。
+    """
+    def raw(value: str | bytes) -> bytes:
+        return value.encode("utf-8") if isinstance(value, str) else value
+
     return subprocess.CompletedProcess(args=["claude"], returncode=returncode,
-                                       stdout=stdout, stderr=stderr)
+                                       stdout=raw(stdout), stderr=raw(stderr))
 
 
 @pytest.fixture
@@ -367,36 +375,52 @@ def test_run_claude_returns_body_and_isolates_context(stub_claude):
 
 
 def test_run_claude_uses_utf8_for_subprocess_io(stub_claude):
-    """プロンプトと応答を UTF-8 で受け渡す。
+    """プロンプトを UTF-8 のバイト列で渡す。
 
     text=True の既定はロケールの文字コードで、日本語 Windows（cp932）では
-    プロンプトに含まれるレポート由来の em dash・⚠️ を送れずに落ちる。
+    プロンプトに含まれるレポート由来の em dash・⚠️ を送れずに落ちる。text=True に
+    encoding を足すだけでは足りない（Windows は出力のデコードを別スレッドで行い、
+    失敗が呼び出し元へ伝播しない）ので、変換は自分で行う。
     """
     captured = stub_claude(stdout=BODY + "\n")
     s = discussion_settings(load_config(CONFIG))
-    discussion.run_claude("見出し — ⚠️", s)
+    prompt = "見出し — ⚠️"
+    discussion.run_claude(prompt, s)
 
-    assert captured["kwargs"]["encoding"] == "utf-8"
-    # errors は既定の strict のまま。復号を replace にすると、壊れた出力に含まれる
-    # 他組織名が U+FFFD へ化けて find_leaks の照合をすり抜ける
-    assert captured["kwargs"].get("errors") is None
+    assert captured["kwargs"]["input"] == prompt.encode("utf-8")
+    # テキストモードに任せない（ロケール依存とスレッド内デコードの両方を避ける）
+    assert not captured["kwargs"].get("text")
+    assert "encoding" not in captured["kwargs"]
 
 
-def test_run_claude_aborts_when_output_is_not_utf8(monkeypatch):
+def test_run_claude_normalizes_crlf_in_output(stub_claude):
+    """CRLF の出力を LF に揃える。
+
+    text=True の universal newlines をやめた代わり。レポートの改行は LF 固定で、
+    write_text(newline="\\n") は文字列の中の CR をそのまま書くため、ここで落とさないと
+    考察セクションだけが CRLF になる（Windows の claude.cmd は CRLF を出しうる）。
+    """
+    body = "### 見出し\r\n\r\n" + "本文。" * 80   # min_output_chars を超える長さにする
+    stub_claude(stdout=body + "\r\n")
+
+    out = discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
+
+    assert "\r" not in out
+    assert "### 見出し\n\n" in out
+
+
+def test_run_claude_aborts_when_output_is_not_utf8(stub_claude):
     """UTF-8 として壊れた出力は、置換して読み進めず中止する。
 
     replace で読むと他組織名が U+FFFD へ化けて混入チェックに一致しなくなり、
     長さ・見出しの検査を通ってレポートへ書き込まれてしまう。
+    「出力が空」（transient）に化けて生成をやり直すことも避ける。
     """
-    def fake_run(cmd, **kwargs):
-        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
-
-    monkeypatch.setattr(discussion.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(discussion.subprocess, "run", fake_run)
+    stub_claude(stdout=b"\xff\xfe broken")
 
     with pytest.raises(discussion.DiscussionError, match="UTF-8") as e:
         discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
-    # 同じ入力の再実行では直らない（CLI が非 UTF-8 を出す設定・壊れたプロンプト）
+    # 同じ入力の再実行では直らない（CLI が非 UTF-8 を出す設定）
     assert e.value.transient is False
 
 
@@ -406,7 +430,7 @@ def test_unicode_failure_is_not_retried(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         calls.append(1)
-        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+        return _fake_proc(stdout=b"\xff\xfe broken")
 
     monkeypatch.setattr(discussion.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(discussion.subprocess, "run", fake_run)

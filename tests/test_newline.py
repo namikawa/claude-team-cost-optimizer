@@ -34,8 +34,8 @@ macOS / Linux では引数を省いても出力が変わらないため、生成
 文字列に `\r\n` が入っていればそのまま書き出される。実際に LF が保たれているのは
 読み取り側が揃って正規化しているためで、両側で1つの不変条件になっている
 （`report/html.py` の `_asset()` と `report/document.py` は `read_text()` ＝
-universal newlines、Jinja の `newline_sequence` の既定は LF、`discussion.py` の
-`subprocess.run(..., text=True)`）。読み取りを `read_bytes().decode()` に
+universal newlines、Jinja の `newline_sequence` の既定は LF、`discussion.py` は
+claude の出力を `_decode_output()` で LF に揃える）。読み取りを `read_bytes().decode()` に
 替えると、CRLF でチェックアウトされたテンプレートがこの検査を素通りして出力に載る。
 """
 

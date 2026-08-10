@@ -155,8 +155,10 @@ def _reason(exc: Exception, input_dir: Path) -> str:
         key=len, reverse=True,
     )
     # 区切りは os.sep（Windows なら "\\"）と "/" の両方を見る。例外文のパスは OS 由来
-    # のものとコード中で "/" を繋いだものが混在し、片方だけだと相対表記へ落ちない
-    separators = {"/", os.sep}
+    # のものとコード中で "/" を繋いだものが混在し、片方だけだと相対表記へ落ちない。
+    # 順序を固定するため set ではなく dict.fromkeys で重複を除く（置換は逐次なので、
+    # 反復順が変わると結果が変わりうる。message は同一入力から常にバイト一致にする）
+    separators = dict.fromkeys(("/", os.sep))
     for base in bases:
         for sep in separators:
             flat = flat.replace(base + sep, "")

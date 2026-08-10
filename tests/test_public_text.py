@@ -138,6 +138,22 @@ def test_decode_candidates_rejects_undecodable_bytes():
         public_text.decode_candidates(b"\x81\x20")
 
 
+@pytest.mark.parametrize("encoding", ["utf-16", "utf-16-le", "utf-16-be", "utf-32"])
+def test_decode_candidates_rejects_utf16_and_utf32(encoding):
+    """UTF-16 / UTF-32 の入力は素通りさせない。
+
+    どちらも utf-8 や cp932 として「読めてしまう」ことがある（cp932 は 0xFD-0xFF を
+    私用領域へ写すため BOM も通り、ASCII 中心の UTF-16 は NUL 混じりの UTF-8 として
+    読める）。化けたテキストでは禁止語に一致せず検査が素通りする。
+    PowerShell の Out-File や旧 Notepad の「Unicode」保存で作った文書をファイル引数で
+    渡すと、この形のバイト列がそのまま届く。
+    """
+    raw = "zephyr-holdings の team 列\n".encode(encoding)
+
+    with pytest.raises(ValueError, match="UTF-16 / UTF-32|NUL バイト"):
+        public_text.decode_candidates(raw)
+
+
 @pytest.mark.parametrize("encoding", ["utf-8", "cp932"])
 def test_check_text_detects_terms_regardless_of_input_encoding(
     publish_input, tmp_path, monkeypatch, capsys, encoding,
