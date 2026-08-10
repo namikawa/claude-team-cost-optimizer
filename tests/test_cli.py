@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from seat_analyzer import analyze, ingest
@@ -156,9 +157,10 @@ def test_doctor_errors_on_unreadable_spend_without_leaking_path(make_input, tmp_
     out = capsys.readouterr().out
     assert "[error] MISSING_SPEND" in out
     assert "必須カラムが見つかりません" in out
-    # message は実行環境に依存しない（入力ディレクトリからの相対表記になる）
+    # message は実行環境に依存しない（入力ディレクトリからの相対表記になる）。
+    # 区切りはその OS のもの（Windows なら "\"）で、決定性は同一環境での一致を指す
     assert str(input_dir) not in out
-    assert "spend/spend_2026-06.csv" in out
+    assert os.path.join("spend", "spend_2026-06.csv") in out
 
 
 def test_doctor_warns_partial_month_and_exits_zero(make_snapshots, capsys):
@@ -607,9 +609,12 @@ def test_init_org_creates_scaffold(tmp_path):
         for sub in ("spend", "members", "code-analytics"):
             assert (input_dir / org / sub).is_dir()
         assert (output_dir / org).is_dir()
-        # members-info.csv はヘッダ行のみの雛形が作られる
+        # members-info.csv はヘッダ行のみの雛形が作られる。人が Excel で開くファイルなので
+        # BOM 付き（BOM 無しだと Windows の Excel が日本語ヘッダを化けさせる）
         info = input_dir / org / "members-info.csv"
-        assert info.read_text(encoding="utf-8") == "email,部署,チーム,職種,追加クレジット上限,備考\n"
+        assert info.read_bytes().startswith(b"\xef\xbb\xbf")
+        assert info.read_text(
+            encoding="utf-8-sig") == "email,部署,チーム,職種,追加クレジット上限,備考\n"
     assert discover_orgs(input_dir) == ["org-x", "org-y"]
 
 
@@ -626,11 +631,15 @@ def test_init_org_does_not_overwrite_filled_members_info(tmp_path):
 
 def test_init_org_rejects_reserved_and_invalid_names(tmp_path, capsys):
     # summary=予約 / a/b=パス区切り / .hidden=先頭ドット / org|x=Markdown を壊す文字
+    # NUL=Windows のデバイス名 / org.=Windows が末尾のドットを落とす / a:b=NTFS で不可
     for bad, fragment in (
         ("summary", "予約"),
         ("a/b", "使えない文字"),
         (".hidden", "不正"),
         ("org|x", "使えない文字"),
+        ("NUL", "予約デバイス名"),
+        ("org.", "末尾のドット"),
+        ("a:b", "使えない文字"),
     ):
         rc = main([
             "init-org", bad,

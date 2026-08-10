@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,20 @@ from seat_analyzer.config import load_config
 
 REPO_ROOT = Path(__file__).parent.parent
 CONFIG = str(REPO_ROOT / "config.yaml")
+
+# POSIX の権限モデルに依存する検証。Windows の chmod は読み取り権を落とせず（0o000 でも
+# 読める）、symlink の作成には開発者モードか管理者権限が要る。対象のプロダクトコードは
+# Windows でも同じ経路を通るため、検証の手段が使えないケースだけを飛ばす。
+requires_posix_permissions = pytest.mark.skipif(
+    os.name == "nt", reason="Windows の chmod では読み取り権を落とせない")
+requires_symlink = pytest.mark.skipif(
+    os.name == "nt", reason="Windows の symlink 作成には追加の権限が要る")
+
+# Windows がファイル名に使えない文字（| : * ? " 等）を含むディレクトリを実際に作る検証。
+# 「作れてしまう環境で作られたものを弾く」ことの確認なので、作れない Windows では飛ばす
+# （validate_org_name はそこで作られたデータを持ち込んだときのために全 OS で効かせる）。
+requires_posix_filenames = pytest.mark.skipif(
+    os.name == "nt", reason="Windows では不正名のディレクトリを作れない")
 
 
 @pytest.fixture

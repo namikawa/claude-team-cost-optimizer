@@ -14,6 +14,7 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -330,8 +331,18 @@ def discover_orgs(input_dir: Path) -> list[str]:
 
 
 # 組織名は出力パスと Markdown リンクに使うため、それらを壊す文字を禁止する。
-# 日本語などの名前は許可し、パス区切り・Markdown/HTML を壊す文字のみ拒否する。
-_ORG_NAME_BAD_CHARS = re.compile(r"[/\\|\[\]()<>\r\n\t]")
+# 日本語などの名前は許可し、パス区切り・Markdown/HTML を壊す文字と、Windows が
+# ファイル名に使えない文字（: * ? " と制御文字 0x00-0x1f）のみ拒否する。
+_ORG_NAME_BAD_CHARS = re.compile(r"[/\\|\[\]()<>:*?\"\x00-\x1f]")
+
+# Windows がデバイスとして特別扱いする名前（拡張子が付いていても同じ）。ディレクトリを
+# 作れない・作れても開けないため、ある OS で用意したデータをそのまま別の OS へ持ち込める
+# よう全 OS で拒否する。上付き数字の変種まで含めて Microsoft の命名規則に合わせる。
+_WINDOWS_RESERVED_NAMES = frozenset(
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+    + [f"{dev}{i}" for dev in ("COM", "LPT") for i in range(10)]
+    + [f"{dev}{sup}" for dev in ("COM", "LPT") for sup in "¹²³"]
+)
 
 
 def validate_org_name(org: str) -> None:
@@ -339,7 +350,9 @@ def validate_org_name(org: str) -> None:
 
     init-org でユーザが指定する名前と、既存ディレクトリから発見した組織名の両方で使う。
     """
-    if org == "summary":
+    # 大文字小文字を無視して比較する。既定の Windows / macOS のファイルシステムでは
+    # reports/SUMMARY が reports/summary と同じ場所になり、横断サマリを上書きする
+    if org.casefold() == "summary":
         raise ValueError(
             "組織名 'summary' は横断サマリの出力先（reports/summary/）として予約されています"
         )
@@ -350,8 +363,48 @@ def validate_org_name(org: str) -> None:
     if _ORG_NAME_BAD_CHARS.search(org):
         raise ValueError(
             f"組織名に使えない文字が含まれます: {org!r}"
-            "（パス区切りや | [ ] ( ) < > 改行・タブは使えません）"
+            "（パス区切りや | [ ] ( ) < > : * ? \" 改行・タブは使えません）"
         )
+    # 末尾のドットは Windows が黙って落とすため、input/ と reports/ の名前が食い違う
+    if org.endswith("."):
+        raise ValueError(
+            f"組織名が不正です: {org!r}（末尾のドットは Windows で無視されます）"
+        )
+    # 拡張子より前だけを見る（Windows はデバイス名を拡張子付きでも同じ扱いにする）。
+    # 末尾の空白も落ちるため、"NUL .txt" のような書き方で抜けないよう除去して比較する
+    if org.partition(".")[0].rstrip(" ").upper() in _WINDOWS_RESERVED_NAMES:
+        raise ValueError(
+            f"組織名 {org!r} は Windows の予約デバイス名のため使えません"
+        )
+
+
+def check_org_name_collisions(orgs: list[str]) -> None:
+    """同じ出力先になる組織名の組み合わせを拒否する。
+
+    大文字小文字だけが違う名前は、既定の Windows / macOS のファイルシステムでは
+    同じディレクトリになり、後に書いた組織が前の組織の成果物を上書きする。入力側が
+    大文字小文字を区別する環境（Linux・ネットワーク共有）なら両方が独立に存在
+    しうるため、1文字も書き込む前に止める。
+    Unicode の正規化形式だけが違う名前（合成済みの「ガ」と、分解した「カ」＋濁点）も
+    同様に衝突する。macOS の既定は正規化を区別しないため、比較の前に NFC へ揃える。
+    完全一致は重複指定として許す（同じ組織を2回指定しても害はない）。
+    """
+    seen: dict[str, str] = {}
+    for org in orgs:
+        key = unicodedata.normalize("NFC", org).casefold()
+        first = seen.setdefault(key, org)
+        if first != org:
+            raise ValueError(
+                f"組織名 {first!r} と {org!r} は大文字小文字や文字の合成の違いだけなので、"
+                "同じ出力先になる環境があります。どちらかを改名してください"
+            )
+
+
+def validate_org_names(orgs: list[str]) -> None:
+    """組織名の集合としての妥当性検証。個々の検証に加えて名前の衝突を見る。"""
+    for org in orgs:
+        validate_org_name(org)
+    check_org_name_collisions(orgs)
 
 
 def _read_csv(path: Path, *, dtype=None) -> pd.DataFrame:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import calendar
 import json
+import os
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -151,10 +152,20 @@ def _reason(exc: Exception, input_dir: Path) -> str:
             }
             if Path(base).is_absolute()
         ),
-        key=len, reverse=True,
+        # 長い候補から置換する（短い候補が長い候補の前方部分になりうる）。同じ長さの
+        # 候補は辞書順で確定させる: set の反復順はハッシュシードに依存し、置換は逐次
+        # なので、順序が変わると message が実行ごとに変わりうる（symlink 名と実体名が
+        # 同じ長さのとき absolute() と resolve() が同長の別パスになる）
+        key=lambda base: (-len(base), base),
     )
+    # 区切りは os.sep（Windows なら "\\"）と "/" の両方を見る。例外文のパスは OS 由来
+    # のものとコード中で "/" を繋いだものが混在し、片方だけだと相対表記へ落ちない。
+    # 順序を固定するため set ではなく dict.fromkeys で重複を除く（置換は逐次なので、
+    # 反復順が変わると結果が変わりうる。message は同一入力から常にバイト一致にする）
+    separators = dict.fromkeys(("/", os.sep))
     for base in bases:
-        flat = flat.replace(base + "/", "")
+        for sep in separators:
+            flat = flat.replace(base + sep, "")
     for base in bases:
         flat = flat.replace(base, _INPUT_DIR_LABEL)
     return " ".join(flat.split()).strip()

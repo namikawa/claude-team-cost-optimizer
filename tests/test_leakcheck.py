@@ -12,7 +12,13 @@ import pytest
 from seat_analyzer import leakcheck
 from seat_analyzer.config import load_config
 
-from .conftest import CONFIG, hit_terms, run_analyze, spend_row
+from .conftest import (
+    CONFIG,
+    hit_terms,
+    requires_posix_permissions,
+    run_analyze,
+    spend_row,
+)
 
 
 def _terms(*specs: tuple[str, str]) -> tuple[leakcheck.Term, ...]:
@@ -208,6 +214,7 @@ def test_forbidden_terms_fails_closed_on_unreadable_input(two_orgs, tmp_path, mo
             target_org="org-a", cfg=load_config(CONFIG))
 
 
+@requires_posix_permissions
 @pytest.mark.parametrize("target", ["input", "org", "subdir"])
 def test_forbidden_terms_fails_closed_on_unlistable_dir(two_orgs, tmp_path, target):
     """列挙できないディレクトリも中止扱いにする。

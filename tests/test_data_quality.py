@@ -14,6 +14,8 @@ from seat_analyzer.data_quality import (
 )
 from seat_analyzer.domain import IssueCode, QualityIssue, Severity
 
+from .conftest import requires_symlink
+
 EXPECTED_CODES = {
     # 入力
     "MISSING_SPEND",
@@ -472,6 +474,7 @@ def test_reason_flattens_multiline_messages():
     assert _reason(ValueError("1行目\n  2行目\t3行目"), Path("input")) == "1行目 2行目 3行目"
 
 
+@requires_symlink
 def test_reason_relativizes_lexical_absolute_path_of_symlinked_input(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir()
     (tmp_path / "link").symlink_to("data", target_is_directory=True)

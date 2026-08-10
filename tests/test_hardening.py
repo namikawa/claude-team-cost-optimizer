@@ -23,7 +23,7 @@ from seat_analyzer.report.html import (
 )
 from seat_analyzer.report.text import _embed_shared_text
 
-from .conftest import SPEND_HEADER, spend_row
+from .conftest import SPEND_HEADER, requires_posix_filenames, spend_row
 
 
 # --- 出力の安全性 ---
@@ -189,11 +189,49 @@ def test_org_name_validation():
     from seat_analyzer.ingest import validate_org_name
     validate_org_name("org-a")          # 正常
     validate_org_name("開発本部")        # 日本語は許可
-    for bad in ("summary", ".hidden", "a/b", "org|x", "a[b]", " x", "x "):
+    validate_org_name("config")         # 予約デバイス名に似ているだけの名前は許可
+    validate_org_name("org.a")          # 途中のドットは許可（末尾だけが問題）
+    bad_names = (
+        "summary", ".hidden", "a/b", "org|x", "a[b]", " x", "x ",
+        # 大文字小文字を区別しないファイルシステムでは reports/summary と同じ場所になる
+        "SUMMARY", "Summary",
+        # Windows でディレクトリ名に使えない文字（NTFS の代替データストリーム等）
+        "a:b", "a*b", "a?b", 'a"b',
+        # 制御文字は 0x00-0x1f 全体が使えない（改行・タブだけではない）
+        "org\x01x", "org\x1fx",
+        # Windows が末尾のドットを黙って落とすため input/ と reports/ が食い違う
+        "org.",
+        # Windows のデバイス名。拡張子が付いていても、上付き数字の変種も同じ扱い。
+        # コンソールのデバイス名（CONIN$ / CONOUT$）と、拡張子前の空白による回避も塞ぐ
+        "CON", "nul", "com1", "LPT9", "aux.csv", "COM0", "LPT0", "COM¹", "LPT³.csv",
+        "CONIN$", "conout$.csv", "NUL .txt",
+    )
+    for bad in bad_names:
         with pytest.raises(ValueError):
             validate_org_name(bad)
 
 
+def test_org_name_collision_detection():
+    """同じ出力先になる組織名の組み合わせを、書き込む前に弾く。"""
+    from seat_analyzer.ingest import validate_org_names
+    validate_org_names(["org-a", "org-b"])   # 正常
+    validate_org_names(["org-a", "org-a"])   # 完全一致は重複指定として許す
+    # 大文字小文字だけが違う名前は、既定の Windows / macOS で同じディレクトリになる
+    with pytest.raises(ValueError, match="大文字小文字"):
+        validate_org_names(["Acme", "acme"])
+    # 合成済みの「ガ」と、分解した「カ」＋濁点も同じディレクトリになる（macOS は
+    # 正規化を区別しない）。casefold だけでは別物と判定されるため正規化して比較する。
+    # ソースの見た目では区別できないのでコードポイントで書く
+    composed, decomposed = "\u30ac\u793e", "\u30ab\u3099\u793e"
+    assert composed != decomposed
+    with pytest.raises(ValueError, match="同じ出力先"):
+        validate_org_names([composed, decomposed])
+    # 集合の検証でも個々の検証は効く
+    with pytest.raises(ValueError, match="予約"):
+        validate_org_names(["org-a", "summary"])
+
+
+@requires_posix_filenames
 def test_manually_created_bad_org_dir_rejected(make_input, tmp_path, capsys):
     # spend/ を持つ不正名ディレクトリを手動作成 → 分析時に弾く
     input_dir = make_input(

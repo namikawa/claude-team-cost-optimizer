@@ -15,7 +15,7 @@ from seat_analyzer.report import document
 from seat_analyzer.cli import main
 from seat_analyzer.config import load_config, discussion_settings
 
-from .conftest import CONFIG, hit_terms, run_analyze
+from .conftest import CONFIG, hit_terms, requires_posix_permissions, run_analyze
 
 BODY = "### 変更推奨の妥当性\n\n" + "対象組織の需要は妥当な範囲に収まっている。" * 12
 
@@ -322,9 +322,17 @@ def test_previous_month_discussion_with_leak_is_excluded(two_orgs, tmp_path):
 # ---------------------------------------------------------------- run_claude のガード
 
 
-def _fake_proc(stdout: str = "", stderr: str = "", returncode: int = 0):
+def _fake_proc(stdout: str | bytes = "", stderr: str | bytes = "", returncode: int = 0):
+    """subprocess.run の戻り値を模す。
+
+    run_claude はバイト列で受け取って自分でデコードするため、str で渡された分は
+    UTF-8 で符号化する（バイト列をそのまま渡せば壊れた出力も表現できる）。
+    """
+    def raw(value: str | bytes) -> bytes:
+        return value.encode("utf-8") if isinstance(value, str) else value
+
     return subprocess.CompletedProcess(args=["claude"], returncode=returncode,
-                                       stdout=stdout, stderr=stderr)
+                                       stdout=raw(stdout), stderr=raw(stderr))
 
 
 @pytest.fixture
@@ -351,7 +359,8 @@ def test_run_claude_returns_body_and_isolates_context(stub_claude):
     assert discussion.run_claude("prompt", s) == BODY.strip()
 
     cmd = captured["cmd"]
-    assert cmd[0] == "claude" and "-p" in cmd
+    # which() が解決した実体を起動する（Windows で claude.cmd を名前だけでは起動できない）
+    assert Path(cmd[0]).name in ("claude", "claude.exe", "claude.cmd") and "-p" in cmd
     # プロジェクトの CLAUDE.md・hooks・MCP を読み込ませない
     assert "--safe-mode" in cmd
     # 組み込みツールを空集合にする許可リストが主たる保証
@@ -363,6 +372,112 @@ def test_run_claude_returns_body_and_isolates_context(stub_claude):
     assert cmd[cmd.index("--effort") + 1] == "xhigh"
     # 空の作業ディレクトリで実行する（リポジトリを起点にさせない）
     assert Path(captured["kwargs"]["cwd"]).name.startswith("seat-analyzer-discuss-")
+
+
+def test_run_claude_uses_utf8_for_subprocess_io(stub_claude):
+    """プロンプトを UTF-8 のバイト列で渡す。
+
+    text=True の既定はロケールの文字コードで、日本語 Windows（cp932）では
+    プロンプトに含まれるレポート由来の em dash・⚠️ を送れずに落ちる。text=True に
+    encoding を足すだけでは足りない（Windows は出力のデコードを別スレッドで行い、
+    失敗が呼び出し元へ伝播しない）ので、変換は自分で行う。
+    """
+    captured = stub_claude(stdout=BODY + "\n")
+    s = discussion_settings(load_config(CONFIG))
+    prompt = "見出し — ⚠️"
+    discussion.run_claude(prompt, s)
+
+    assert captured["kwargs"]["input"] == prompt.encode("utf-8")
+    # テキストモードに任せない（ロケール依存とスレッド内デコードの両方を避ける）
+    assert not captured["kwargs"].get("text")
+    assert "encoding" not in captured["kwargs"]
+
+
+def test_run_claude_normalizes_crlf_in_output(stub_claude):
+    """CRLF の出力を LF に揃える。
+
+    text=True の universal newlines をやめた代わり。レポートの改行は LF 固定で、
+    write_text(newline="\\n") は文字列の中の CR をそのまま書くため、ここで落とさないと
+    考察セクションだけが CRLF になる（Windows の claude.cmd は CRLF を出しうる）。
+    """
+    body = "### 見出し\r\n\r\n" + "本文。" * 80   # min_output_chars を超える長さにする
+    stub_claude(stdout=body + "\r\n")
+
+    out = discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
+
+    assert "\r" not in out
+    assert "### 見出し\n\n" in out
+
+
+def test_run_claude_aborts_when_output_is_not_utf8(stub_claude):
+    """UTF-8 として壊れた出力は、置換して読み進めず中止する。
+
+    replace で読むと他組織名が U+FFFD へ化けて混入チェックに一致しなくなり、
+    長さ・見出しの検査を通ってレポートへ書き込まれてしまう。
+    「出力が空」（transient）に化けて生成をやり直すことも避ける。
+    """
+    stub_claude(stdout=b"\xff\xfe broken")
+
+    with pytest.raises(discussion.DiscussionError, match="UTF-8") as e:
+        discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
+    # 同じ入力の再実行では直らない（CLI が非 UTF-8 を出す設定）
+    assert e.value.transient is False
+
+
+def test_unicode_failure_is_not_retried(monkeypatch):
+    """UTF-8 の入出力エラーで CLI を呼び直さない（待ち時間と API 消費を増やさない）。"""
+    calls: list[int] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(1)
+        return _fake_proc(stdout=b"\xff\xfe broken")
+
+    monkeypatch.setattr(discussion.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(discussion.subprocess, "run", fake_run)
+    monkeypatch.setattr(discussion.time, "sleep", lambda _: None)
+    s = discussion_settings(load_config(CONFIG))
+    assert int(s["retries"]) > 0, "リトライ設定が 0 ならこのテストは何も保証しない"
+
+    with pytest.raises(discussion.DiscussionError):
+        discussion._call_with_retry(discussion.run_claude, "prompt", s, lambda _m: None)
+
+    assert len(calls) == 1
+
+
+def test_discuss_permission_error_shows_hint(two_orgs, tmp_path, monkeypatch, capsys):
+    """組織ごとに例外を握る経路でも、開いているファイルの案内を出す。"""
+    out = run_analyze(two_orgs, tmp_path)
+
+    def boom(**kwargs):
+        raise PermissionError(32, "プロセスはファイルにアクセスできません")
+
+    monkeypatch.setattr(discussion, "generate", boom)
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "ヒント" in err and "Excel" in err
+
+
+def test_run_claude_uses_resolved_executable_path(monkeypatch):
+    """which() が解決した実体を起動する。
+
+    Windows の CreateProcess は拡張子を補うとき .exe しか試さないため、npm 版の
+    claude.cmd は名前だけでは起動できない（which() は PATHEXT を見るので見つかり、
+    存在確認のガードだけ通って実行で落ちる）。
+    """
+    captured: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _fake_proc(stdout=BODY + "\n")
+
+    monkeypatch.setattr(discussion.shutil, "which", lambda _: r"C:\npm\claude.cmd")
+    monkeypatch.setattr(discussion.subprocess, "run", fake_run)
+    discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
+
+    assert captured["cmd"][0] == r"C:\npm\claude.cmd"
 
 
 def test_run_claude_strips_code_fence(stub_claude):
@@ -577,8 +692,11 @@ def _break_leakcheck_for_org_a(two_orgs, monkeypatch):
         victim.chmod(0o755)
 
 
-@pytest.mark.parametrize(
-    "break_org_a", [_break_generation_for_org_a, _break_leakcheck_for_org_a])
+@pytest.mark.parametrize("break_org_a", [
+    _break_generation_for_org_a,
+    # 混入チェックの失敗は chmod で他組織を読めなくして起こす
+    pytest.param(_break_leakcheck_for_org_a, marks=requires_posix_permissions),
+])
 def test_cli_discuss_failure_does_not_stop_other_orgs(
     break_org_a, two_orgs, tmp_path, monkeypatch,
 ):
@@ -754,6 +872,7 @@ def _with_discussion(path: Path, body: str) -> str:
     return head + "\n## 考察\n\n" + body.strip() + "\n"
 
 
+@requires_posix_permissions
 def test_atomic_write_preserves_permissions(two_orgs, tmp_path):
     """一時ファイル経由の置換で元ファイルの権限を落とさない（共有用に緩めた権限を守る）。"""
     out = run_analyze(two_orgs, tmp_path)

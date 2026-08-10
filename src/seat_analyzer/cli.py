@@ -14,7 +14,50 @@ from .domain import QualityIssue, Severity
 from .leakcheck import LeakCheckError
 
 
+def _force_utf8_io() -> None:
+    """標準入力・標準出力・標準エラーを UTF-8 にする。
+
+    ロケール既定の文字コード（日本語 Windows では cp932）はレポートやプロンプトに
+    含まれる em dash・⚠️・≤ ≥ を表現できない。Windows はコンソール直結のときだけ
+    UTF-8 で書くため、そのままだと同じコマンドがリダイレクトやパイプ経由でだけ
+    UnicodeEncodeError で落ちる。出力先によって成否が変わる状態をなくす。
+
+    標準入力も対象にする。check-text は git diff や公開予定の文章をパイプで受け取り、
+    Windows のパイプはロケール既定で読む。UTF-8 のバイト列を cp932 として読むと、
+    日本語の多くは例外にならずに別の文字列へ化けるため（「本部」→「譛ｬ驛ｨ」）、
+    禁止語と一致しないまま「検出なし」を返す＝混入チェックが fail-open する。
+
+    errors は strict のままにする。UTF-8 は通常の文字をすべて表現できるので置換の
+    出番は壊れたデータのときだけで、doctor --format json は ensure_ascii=False の
+    生の Unicode を出す。改変した内容を正常終了で返すより、明示的に失敗させる。
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue  # テストの差し替え等、TextIOWrapper でないストリーム
+        try:
+            reconfigure(encoding="utf-8", errors="strict")
+        except (OSError, ValueError):
+            pass
+
+
+def _print_permission_hint(exc: BaseException) -> None:
+    """ファイルを掴まれていて書けないときの案内。該当しない例外なら何も出さない。
+
+    Windows は他プロセスが開いているファイルを書き換え・置換できない。CSV を Excel で
+    開いたまま再分析したときの WinError 32 が最も多い経路で、素の例外文からは
+    「閉じれば直る」ことが読み取れない。組織ごとに例外を握る経路からも呼ぶ。
+    """
+    if isinstance(exc, PermissionError):
+        print(
+            "  ヒント: 出力先のファイルを Excel やエディタで開いていると"
+            "書き換えられないことがあります。閉じてから再実行してください",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_io()
     parser = argparse.ArgumentParser(prog="seat-analyzer", description="Claude Team シート最適化分析")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -142,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         # 入力の読み取りに由来する失敗（欠損・権限・不正な値）と、混入チェックを
         # 保証できない状況、考察の生成に失敗した場合は traceback を出さずエラー終了する
         print(f"エラー: {e}", file=sys.stderr)
+        _print_permission_hint(e)
         return 1
 
 
@@ -151,19 +195,24 @@ INPUT_SUBDIRS = ingest.INPUT_SUBDIRS
 def _run_init_org(args: argparse.Namespace) -> int:
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
-    for org in args.orgs:
-        ingest.validate_org_name(org)
+    # 1つでも不正・衝突があれば1つも作らない（途中まで作ると片付けが要る）
+    ingest.validate_org_names(args.orgs)
 
     for org in args.orgs:
         existed = (input_dir / org).is_dir()
         for subdir in INPUT_SUBDIRS:
             (input_dir / org / subdir).mkdir(parents=True, exist_ok=True)
         (output_dir / org).mkdir(parents=True, exist_ok=True)
-        # members-info.csv はヘッダ行のみの雛形を作る。既存（記入済みの可能性）は上書きしない
+        # members-info.csv はヘッダ行のみの雛形を作る。既存（記入済みの可能性）は上書きしない。
+        # 人が Excel で編集するファイルなので recommendations.csv と同じく BOM を付ける
+        # （BOM 無し UTF-8 は Windows の Excel がロケール既定で開き日本語ヘッダが化ける）
         info_path = input_dir / org / "members-info.csv"
         info_created = not info_path.exists()
         if info_created:
-            info_path.write_text("email,部署,チーム,職種,追加クレジット上限,備考\n", encoding="utf-8", newline="\n")
+            info_path.write_text(
+                "email,部署,チーム,職種,追加クレジット上限,備考\n",
+                encoding="utf-8-sig", newline="\n",
+            )
         print(f"組織 '{org}' の雛形を{'確認しました（既存）' if existed else '作成しました'}:")
         print(f"  {input_dir / org / 'spend'}/           ← spend_YYYY-MM.csv（必須）")
         print(f"  {input_dir / org / 'members'}/         ← members_YYYY-MM.csv（必須。最低限 email,seat_type の2列）")
@@ -213,6 +262,10 @@ def _resolve_targets(
                 "スペンドレポートを配置してください（docs/usage.md の月次運用手順参照）"
             )
         return [(None, input_dir, output_dir)]
+
+    # 衝突は選択の前に、発見済みの組織全体で見る。--org で片方だけ選んだ実行でも、
+    # もう一方が同じ出力先へ書いた成果物を上書きしうるため
+    ingest.check_org_name_collisions(orgs)
 
     if org_args:
         unknown = [o for o in org_args if o not in orgs]
@@ -430,6 +483,27 @@ def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | No
     return month
 
 
+def _check_text_sources(name: str) -> list[tuple[str, str]]:
+    """検査対象 name の (ラベル, 本文)。複数の文字コードで読めるならすべて返す。
+
+    標準入力はテキストラッパーを介さずバイト列で読む。ラッパー越しだと、読み取り前に
+    UTF-8 へ再設定できていたかどうかで結果が変わり、安全機構の成否が環境に依存する
+    （すでに読み進めたラッパーは文字コードを変更できず、ロケール既定のまま読む）。
+    """
+    if name == "-":
+        buffer = getattr(sys.stdin, "buffer", None)
+        if buffer is None:  # テキストストリームに差し替えられている場合はそのまま読む
+            return [("(標準入力)", sys.stdin.read())]
+        raw, label = buffer.read(), "(標準入力)"
+    else:
+        raw, label = Path(name).read_bytes(), name
+    candidates = public_text.decode_candidates(raw)
+    if len(candidates) == 1:
+        return [(label, candidates[0][1])]
+    # 解釈が割れたときは、どの読み方で当たったのかが分かるようラベルを分ける
+    return [(f"{label}（{enc} として解釈）", text) for enc, text in candidates]
+
+
 def _run_check_text(args: argparse.Namespace) -> int:
     """公開予定のテキストを検査する。業務情報を検出したら終了コード 1。"""
     cfg = load_config(args.config)
@@ -444,10 +518,7 @@ def _run_check_text(args: argparse.Namespace) -> int:
     # 検査対象のファイル自身を baseline から除く（自分自身を根拠に素通りさせない）
     exclude = tuple(Path(n) for n in names if n != "-")
     for name in names:
-        if name == "-":
-            sources.append(("(標準入力)", sys.stdin.read()))
-        else:
-            sources.append((name, Path(name).read_text(encoding="utf-8")))
+        sources.extend(_check_text_sources(name))
 
     n_hits = 0
     allowable_seen = False
@@ -549,6 +620,7 @@ def _run_discussions(
             )
         except (DiscussionError, LeakCheckError, OSError, ValueError) as exc:
             print(f"  ! {scope}: 考察を生成できませんでした: {exc}", file=sys.stderr)
+            _print_permission_hint(exc)
             failed.append(scope)
             continue
         if outcome.status == "blocked":

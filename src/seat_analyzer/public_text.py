@@ -11,6 +11,7 @@ PR 本文・コミットメッセージ・差分のように、リポジトリ�
 
 from __future__ import annotations
 
+import codecs
 import re
 import subprocess
 from dataclasses import dataclass
@@ -36,6 +37,67 @@ _TEXT_SUFFIXES = (
     ".md", ".py", ".csv", ".yaml", ".yml", ".txt", ".html", ".toml", ".json",
     ".css", ".j2",
 )
+
+
+# 公開テキストの入力に想定する文字コード。utf-8-sig は BOM 無しの UTF-8 も読めるため、
+# ingest._read_csv と同じ2種で足りる
+_INPUT_ENCODINGS = ("utf-8-sig", "cp932")
+
+# 扱わない文字コードの BOM。UTF-16 の BOM は UTF-32 の BOM の前方部分でもあるが、
+# ここでは「該当したら拒否」しかしないので判定順は問わない
+_UNSUPPORTED_BOMS = (
+    codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE,
+    codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE,
+)
+
+
+def _reject_unsupported_encoding(raw: bytes) -> None:
+    """UTF-16 / UTF-32 と判別できる入力を拒否する。
+
+    これらは utf-8 や cp932 として「読めてしまう」ことがあり、化けたテキストでは禁止語に
+    一致せず検査が素通りする（cp932 は 0xFD-0xFF を私用領域へ写すため BOM も通り、
+    ASCII 中心の UTF-16 は NUL 混じりの UTF-8 として読める）。テキストに NUL バイトが
+    正当に現れることは無いので、BOM が無い場合の手がかりに使う。
+
+    「BOM 無し・NUL 無し・日本語だけ」の UTF-16 は判別できず cp932 の誤解釈として通る。
+    改行や空白が1文字でもあれば NUL が現れるため、実用上の入力は捕まえられる。
+    """
+    if raw.startswith(_UNSUPPORTED_BOMS):
+        raise ValueError(
+            "入力が UTF-16 / UTF-32 です（BOM を検出）。"
+            f"{' / '.join(_INPUT_ENCODINGS)} のいずれかで渡してください"
+        )
+    if b"\x00" in raw:
+        raise ValueError(
+            "入力に NUL バイトが含まれます（UTF-16 等の非対応の文字コードの可能性）。"
+            f"{' / '.join(_INPUT_ENCODINGS)} のいずれかで渡してください"
+        )
+
+
+def decode_candidates(raw: bytes) -> list[tuple[str, str]]:
+    """バイト列の解釈候補を (文字コード名, 本文) で返す。読めた解釈をすべて返す。
+
+    公開テキストが UTF-8 で届くとは限らない。Windows PowerShell はネイティブコマンドへの
+    パイプをロケール既定（日本語環境では cp932）で流すため、cp932 のバイト列が来る。
+    さらに cp932 のバイト列が UTF-8 としても妥当になることがあり（文字をまたぐ位置で
+    3バイトの列が成立する。例: 「燿テ」= e0 a0 83 65 は UTF-8 では別の2文字に読める）、
+    片方の解釈だけを見ると禁止語を取りこぼす。
+    照合は取りこぼしより誤検出に倒す方針なので、読めた解釈はすべて検査対象にする。
+    """
+    _reject_unsupported_encoding(raw)
+    out: list[tuple[str, str]] = []
+    for encoding in _INPUT_ENCODINGS:
+        try:
+            text = raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if all(text != seen for _, seen in out):
+            out.append((encoding, text))
+    if not out:
+        raise ValueError(
+            f"入力の文字コードを判別できません（{' / '.join(_INPUT_ENCODINGS)} を試行）"
+        )
+    return out
 
 
 @dataclass(frozen=True)
