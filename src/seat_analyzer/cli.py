@@ -292,8 +292,11 @@ def _write_gitignore(path: Path, entries: list[str]) -> str:
         return f"{len(entries)} 行で作成"
 
     raw = path.read_bytes()
-    # 行の照合はバイト列から復号したものに対して行い、ファイル自体は書き戻さない
-    existing = {line.strip() for line in raw.decode("utf-8", errors="replace").splitlines()}
+    # 既存行との照合は正規化せず完全一致で行う（ファイル自体は書き戻さない）。
+    # git は先頭の空白をパターンの一部として扱うため、見た目が同じでも除外にならない
+    # 行がある。それを「設定済み」と数えると、保護がないまま済んだことになる。
+    # 逆に、効いている行を取りこぼして同じ内容を足すのは無害
+    existing = raw.decode("utf-8", errors="replace").splitlines()
     missing = [e for e in entries if e not in existing]
     if not missing:
         return "必要な行がそろっているため変更なし"

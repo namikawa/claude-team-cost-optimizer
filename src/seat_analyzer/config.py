@@ -94,15 +94,25 @@ class _StrictLoader(yaml.SafeLoader):
     2回書いた設定では先に書いた側が丸ごと消え、そこに混ざった綴り違いのキーも
     既定との突合に届かないまま「効いているつもり」の状態になる。
 
-    アンカーとマージキーは基底の実装に任せる（重複の判定は明示的に書かれたキー
-    どうしだけで行う。マージで来たキーを明示キーで上書きするのは YAML の仕様）。
+    アンカーの展開は基底の実装に任せる（重複の判定は明示的に書かれたキーどうしだけで
+    行う。マージで来たキーを明示キーで上書きするのは YAML の仕様）。マージキー自身は
+    1つのマッピングに1つだけ許す。2つ並べると展開の優先が正規のリスト形式
+    （`<<: [*a, *b]` は先に書いた基底が勝つ）と逆になるため、書いた順序の読み方が
+    形によって変わってしまう。
     """
 
     def construct_mapping(self, node, deep: bool = False):
         seen: set = set()
+        merge_keys = 0
         for key_node, _ in node.value:
             if key_node.tag == _MERGE_TAG:
-                continue  # 値を持たないキー。構成子が無いため作ろうとすると失敗する
+                # 値を持たないキー（構成子が無いため construct_object では作れない）。
+                # 複数の基底を使うときは1つのマージキーにリストで並べる
+                merge_keys += 1
+                if merge_keys > 1:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, "キー '<<' が重複しています", key_node.start_mark)
+                continue
             key = self.construct_object(key_node, deep=deep)
             try:
                 duplicated = key in seen

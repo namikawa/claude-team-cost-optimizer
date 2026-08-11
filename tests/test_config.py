@@ -31,6 +31,34 @@ def _override(tmp_path: Path, text: str) -> Path:
     return _write(tmp_path / "config.yaml", text)
 
 
+def _touch(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return _write(path, "x\n")
+
+
+# .gitignore の行が実際に効くかは git に聞くしかない（除外の規則は git 側にある）
+requires_git = pytest.mark.skipif(
+    shutil.which("git") is None, reason="git を実行できない環境")
+
+
+def _git_repo(root: Path) -> dict:
+    """root を git リポジトリにして、以降の git 呼び出しに渡す環境変数を返す。
+
+    利用者の設定（core.excludesFile 等）は持ち込まない（除外の判定が環境で変わる）。
+    """
+    missing = str(root / "no-git-config")
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": missing, "GIT_CONFIG_SYSTEM": missing}
+    subprocess.run(["git", "init", "-q"], cwd=root, env=env, check=True, capture_output=True)
+    return env
+
+
+def _git_ignores(root: Path, env: dict, rel: str) -> bool:
+    """git がそのパスを除外するか。"""
+    return subprocess.run(
+        ["git", "check-ignore", "-q", rel], cwd=root, env=env, capture_output=True,
+    ).returncode == 0
+
+
 # ------------------------------------------------------- 既定と上書きの重ね方
 
 
@@ -199,6 +227,43 @@ def test_duplicate_keys_are_still_detected_with_merge_keys(tmp_path):
     """マージキーがあっても、明示キーどうしの重複は検出する。"""
     text = _MERGE_YAML.format(order="<<: *std\n      high: 400.0\n      high: 500.0")
     with pytest.raises(ValueError, match="キー 'high' が重複しています"):
+        load_config(_override(tmp_path, text))
+
+
+# 複数の基底を1つのマージキーにリストで並べた上書き。リスト形式では先に書いた基底が
+# 勝つ（YAML の仕様）。単価表の項目はリストの中なので、既定のキー集合の検査は掛からない
+_MULTI_BASE_YAML = """
+model_prices:
+  patterns:
+    - &sonnet
+      match: "sonnet"
+      input: 3.0
+      output: 15.0
+    - &opus
+      match: "opus"
+      input: 5.0
+      output: 25.0
+    - {merge}
+      match: "special"
+"""
+
+
+def test_merge_key_list_form_keeps_the_first_base(tmp_path):
+    """複数の基底はリスト形式で書く。先に書いた基底の値が残る。"""
+    text = _MULTI_BASE_YAML.format(merge="<<: [*sonnet, *opus]")
+    patterns = load_config(_override(tmp_path, text))["model_prices"]["patterns"]
+
+    assert patterns[2] == {"match": "special", "input": 3.0, "output": 15.0}
+    assert patterns[2] == yaml.safe_load(text)["model_prices"]["patterns"][2]
+
+
+def test_duplicate_merge_keys_are_rejected(tmp_path):
+    """1つのマッピングにマージキーを2つ並べるのは許さない。
+
+    リスト形式と優先が逆になるため、同じ並びで書いても展開の結果が形によって変わる。
+    """
+    text = _MULTI_BASE_YAML.format(merge="<<: *sonnet\n      <<: *opus")
+    with pytest.raises(ValueError, match="キー '<<' が重複しています"):
         load_config(_override(tmp_path, text))
 
 
@@ -398,35 +463,23 @@ def test_init_gitignore_escapes_pattern_characters(tmp_path, monkeypatch):
     assert "/in\\[1\\]put/" in lines
 
 
+@requires_git
 def test_gitignore_entries_are_effective_in_git(tmp_path, monkeypatch):
     """書いた行が git に意図どおり解釈される（除外の実効を git 自身に確かめる）。
 
     エスケープの規則は git の側にあるので、生成した文字列を見るだけでは
     「保護したつもり」で終わりうる。
     """
-    if shutil.which("git") is None:
-        pytest.skip("git を実行できない環境")
-    # 利用者の設定（core.excludesFile 等）を持ち込まない
-    env = {**os.environ, "GIT_CONFIG_GLOBAL": str(tmp_path / "no-config"),
-           "GIT_CONFIG_SYSTEM": str(tmp_path / "no-config")}
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, env=env, check=True,
-                   capture_output=True)
+    env = _git_repo(tmp_path)
     monkeypatch.chdir(tmp_path)
     assert main(["init", "--input-dir", "in[1]put"]) == 0
     for rel in ("in[1]put/spend.csv", "i1put/other.csv", "config.yaml"):
-        path = tmp_path / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("x\n", encoding="utf-8", newline="\n")
+        _touch(tmp_path / rel)
 
-    def ignored(rel: str) -> bool:
-        return subprocess.run(
-            ["git", "check-ignore", "-q", rel], cwd=tmp_path, env=env,
-            capture_output=True,
-        ).returncode == 0
-
-    assert ignored("in[1]put/spend.csv")     # 名前どおりに一致する
-    assert ignored("config.yaml")
-    assert not ignored("i1put/other.csv")    # 文字クラスとして解釈されていない
+    assert _git_ignores(tmp_path, env, "in[1]put/spend.csv")   # 名前どおりに一致する
+    assert _git_ignores(tmp_path, env, "config.yaml")
+    # 文字クラスとして解釈されていない
+    assert not _git_ignores(tmp_path, env, "i1put/other.csv")
 
 
 def test_init_rejects_a_gitignore_that_is_not_a_regular_file(tmp_path, monkeypatch, capsys):
@@ -457,17 +510,39 @@ def test_init_rejects_a_symlinked_gitignore(tmp_path, monkeypatch, capsys):
 
 
 def test_init_appends_only_the_missing_gitignore_entries(tmp_path, monkeypatch):
-    """既存の .gitignore は残し、足りない行だけを足す（行の照合は前後空白を無視する）。"""
+    """既存の .gitignore は残し、足りない行だけを足す（照合は行の完全一致）。"""
     monkeypatch.chdir(tmp_path)
-    head = "# 利用者が書いた行\n.venv/\n  /input/  \n"
+    head = "# 利用者が書いた行\n.venv/\n/input/\n"
     path = _write(tmp_path / ".gitignore", head)
 
     assert main(["init"]) == 0
     text = path.read_text(encoding="utf-8")
     assert text.startswith(head)
-    lines = [line.strip() for line in text.splitlines()]
+    lines = text.splitlines()
     assert lines.count("/input/") == 1
     assert "/config.yaml" in lines and "/reports/" in lines
+
+
+@requires_git
+def test_init_adds_an_effective_line_beside_an_ineffective_one(tmp_path, monkeypatch, capsys):
+    """git が除外として読まない行は「設定済み」と数えない。
+
+    先頭の空白はパターンの一部になるため `  /input/` は input/ を除外しない。
+    見た目の同じ行を数えると、保護がないまま「そろっている」と表示してしまう。
+    """
+    env = _git_repo(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path / ".gitignore", "  /input/\n")
+    capsys.readouterr()
+
+    assert main(["init"]) == 0
+    lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "  /input/" in lines   # 利用者が書いた行は消さない
+    assert "/input/" in lines     # 効く行を足す
+    assert "行を追記" in capsys.readouterr().out
+
+    _touch(tmp_path / "input" / "spend.csv")
+    assert _git_ignores(tmp_path, env, "input/spend.csv")
 
 
 def test_init_leaves_a_complete_gitignore_untouched(tmp_path, monkeypatch, capsys):
