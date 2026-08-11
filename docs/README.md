@@ -10,6 +10,11 @@ claude-team-cost-optimizer のドキュメント一覧。ツールの概要と�
 - [reference.md](./reference.md) — レポート各セクションの読み方、追加クレジットの上限、判定ロジックの前提
 - [tooling.md](./tooling.md) — 考察の自動執筆（`discuss`）と公開テキストの検査（`check-text`）
 
+## 保守者向け
+
+- [release.md](./release.md) — リリース手順（タグと GitHub Releases）
+- [../CHANGELOG.md](../CHANGELOG.md) — バージョンごとの変更履歴
+
 ## 開発ロードマップ
 
 将来機能の提案・設計・進捗管理。ツールを使うだけなら読む必要はない。

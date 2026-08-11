@@ -3,6 +3,9 @@
 claude.ai からエクスポートした CSV を配置し、毎月の分析を回すための手順。
 セットアップが済んでいる前提で書いてある。
 
+コマンドはワークスペース（`input/` と `config.yaml` があるディレクトリ）のルートで実行する。
+リポジトリを clone した開発環境では `uv run seat-analyzer ...` の形で呼ぶ。
+
 - 環境構築: [setup.md](./setup.md)
 - レポートの読み方と判定の仕様: [reference.md](./reference.md)
 - 考察の自動執筆と公開テキストの検査: [tooling.md](./tooling.md)
@@ -50,7 +53,7 @@ input/
 `reports/<組織名>/` をまとめて作る。複数指定可）:
 
 ```sh
-uv run seat-analyzer init-org <組織名>
+seat-analyzer init-org <組織名>
 ```
 
 組織が1つだけの場合も同じ構成にする。`input/spend/` のように組織ディレクトリを挟まず
@@ -87,9 +90,9 @@ uv run seat-analyzer init-org <組織名>
    分析の前に、配置した CSV に不足や不整合がないかを確認できる。
 
    ```sh
-   uv run seat-analyzer doctor                           # 全組織を検査（最新月）
-   uv run seat-analyzer doctor --org <組織名> --month YYYY-MM
-   uv run seat-analyzer doctor --format json             # 機械可読な構造化 issue
+   seat-analyzer doctor                           # 全組織を検査（最新月）
+   seat-analyzer doctor --org <組織名> --month YYYY-MM
+   seat-analyzer doctor --format json             # 機械可読な構造化 issue
    ```
 
    検査するのはスペンドレポートとメンバー一覧で、対象月の欠損・部分月・ヒステリシス窓の
@@ -100,14 +103,14 @@ uv run seat-analyzer init-org <組織名>
 5. 分析実行
 
    ```sh
-   uv run seat-analyzer analyze                          # 全組織を一括分析（最新月）
-   uv run seat-analyzer analyze --month YYYY-MM          # 月を指定
-   uv run seat-analyzer analyze --org <組織名>           # 特定組織のみ（複数指定可）
-   uv run seat-analyzer analyze --with-discussion        # 考察の執筆まで行う（tooling.md）
+   seat-analyzer analyze                          # 全組織を一括分析（最新月）
+   seat-analyzer analyze --month YYYY-MM          # 月を指定
+   seat-analyzer analyze --org <組織名>           # 特定組織のみ（複数指定可）
+   seat-analyzer analyze --with-discussion        # 考察の執筆まで行う（tooling.md）
    ```
 
-   Claude Code から `/seat-analysis` を実行すると、分析に加えて警告の検証と考察の執筆までを
-   対話的に行える。
+   リポジトリを clone している場合は、Claude Code から `/seat-analysis` を実行すると、
+   分析に加えて警告の検証と考察の執筆までを対話的に行える。
 
 6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される
    - `report.md` — 前月からの変化 + 推奨テーブル + 部署別/チーム別サマリ + 詳細利用状況 + 感度分析 + 考察
@@ -128,7 +131,7 @@ uv run seat-analyzer init-org <組織名>
 `input/<組織名>/spend/` に配置して実行する:
 
 ```sh
-uv run seat-analyzer analyze --preview [--org <組織名>] [--days 10]
+seat-analyzer analyze --preview [--org <組織名>] [--days 10]
 ```
 
 観測日数はファイル名の期間（`...-2026-07-01-to-2026-07-10.csv` なら10日）から

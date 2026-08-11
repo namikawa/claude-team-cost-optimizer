@@ -44,8 +44,11 @@ preview-dashboard.html・recommendations.csv）は、**その組織の担当者�
 - 対象月のスペンドレポートとメンバー一覧が揃っているか確認する。
   欠けている組織があれば docs/usage.md の月次運用手順を案内し、その組織を除外するか
   中断するかをユーザに確認する
-- ファイルのヘッダを確認し、`config.yaml > columns` のエイリアスで解決できない
-  カラム名があれば config.yaml にエイリアスを追記する
+- ファイルのヘッダを確認し、`columns` のエイリアスで解決できないカラム名があれば
+  エイリアスを追記する。追記先は既定設定 `src/seat_analyzer/default-config.yaml`
+  （プログラムの更新で全利用者へ届く。実データのカラム名差異はここで吸収する設計）。
+  その場でしのぐ場合はワークスペースの `config.yaml` の `columns` を上書きするが、
+  リストは丸ごと置換されるため既定の一覧をすべて書き写す必要がある
 
 ## 2. 分析の実行
 
@@ -59,8 +62,9 @@ uv run seat-analyzer analyze [--month YYYY-MM] [--org <組織名>]
 ## 3. 結果の検証（組織ごと）
 
 - CLI の警告を確認する。特に:
-  - **spend突合の乖離警告** → `config.yaml > model_prices` の単価が最新か、
-    spend列の意味（実課金 vs API等価見積り）を確認し、docs/reference.md に解釈を記録する
+  - **spend突合の乖離警告** → 既定設定（`src/seat_analyzer/default-config.yaml`）の
+    `model_prices` の単価が最新か、spend列の意味（実課金 vs API等価見積り）を確認し、
+    docs/reference.md に解釈を記録する
   - **シート不明ユーザ** → members ファイルの更新漏れの可能性を指摘する
     （「対象外（シート未割当）」は意図的な未割当のため指摘不要）
   - **スキップされた組織** → 対象月のエクスポート漏れ。手順を案内する

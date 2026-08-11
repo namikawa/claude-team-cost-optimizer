@@ -7,6 +7,11 @@
 - 入力データの準備と月次運用: [usage.md](./usage.md)
 - 考察の自動執筆と公開テキストの検査: [tooling.md](./tooling.md)
 
+設定について: 以下で `config.yaml > trend` のように書くのは設定のキーの位置を指す。既定値は
+パッケージ同梱の `default-config.yaml` が持ち、ワークスペースの `config.yaml` には既定から
+変えたい差分だけを書く（書かなかった項目は既定が使われる）。モデル単価やカラム対応表のように
+プログラムの更新で新しい値が届く項目は、ワークスペース側に写さないこと。
+
 ## 前月からの変化（正式分析のみ）
 
 正式分析（`analyze`）では、過去月のスペンドがそろっていれば report.md / dashboard.html の
@@ -109,5 +114,5 @@ cost_if_premium  = $125 + max(0, api_cost − P_allowance)
 数ヶ月分の実データが溜まったら:
 
 - Standard ユーザの月次 `api_cost` の分布を確認し、上限到達（頭打ち）している
-  ユーザの観測最大値 ≒ `S_allowance` として `config.yaml` を更新
+  ユーザの観測最大値 ≒ `S_allowance` として `config.yaml > seats` で上書き
 - Premium は Standard の 5 倍程度（セッション倍率 1.25x vs 6.25x）を目安に設定
