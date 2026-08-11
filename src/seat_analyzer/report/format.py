@@ -33,8 +33,8 @@ def _sort_for_display(users: pd.DataFrame, label_col: str, order: list[str],
 
 
 def _scope_label(result: AnalysisResult) -> str:
-    """レポートタイトル用の対象表記。組織名があれば「組織 — 月」。"""
-    return f"{result.org} — {result.month}" if result.org else result.month
+    """レポートタイトル用の対象表記（「組織 — 月」）。"""
+    return f"{result.org} — {result.month}"
 
 
 def _has_values(users: pd.DataFrame, col: str) -> bool:

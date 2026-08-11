@@ -23,7 +23,7 @@ def test_seat_change_add_remove_detected(cfg, make_snapshots, write_member_snaps
         "2026-07-05": ["a@x.jp,standard", "b@x.jp,premium", "d@x.jp,standard"],
         "2026-07-16": ["a@x.jp,premium", "b@x.jp,premium", "c@x.jp,standard"],
     })
-    mc = analyze(input_dir, "2026-07", cfg).member_changes
+    mc = analyze(input_dir, "2026-07", cfg, org="org-a").member_changes
     assert mc is not None
     assert [s["label"] for s in mc["snaps"]] == ["07-05", "07-16"]
     assert mc["seat_changes"] == [
@@ -42,7 +42,7 @@ def test_no_changes_shows_no_change(cfg, make_snapshots, write_member_snapshots,
         "2026-07-05": ["a@x.jp,standard", "b@x.jp,premium"],
         "2026-07-16": ["a@x.jp,standard", "b@x.jp,premium"],
     })
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     mc = result.member_changes
     assert mc is not None                       # 変動が無くてもセクションは出す
     assert not (mc["seat_changes"] or mc["joined"] or mc["left"])
@@ -59,7 +59,7 @@ def test_seat_change_warning(cfg, make_snapshots, write_member_snapshots):
         "2026-07-05": ["a@x.jp,standard"],
         "2026-07-16": ["a@x.jp,premium"],
     })
-    warns = analyze(input_dir, "2026-07", cfg).warnings
+    warns = analyze(input_dir, "2026-07", cfg, org="org-a").warnings
     assert any("月中にシート変更を検出" in w and "最新スナップショット時点" in w for w in warns)
 
 
@@ -70,7 +70,7 @@ def test_month_kind_not_participating(cfg, make_snapshots, write_member_snapshot
         members=["a@x.jp,standard"],
     )
     write_member_snapshots(input_dir, {"2026-07-05": ["a@x.jp,standard"]})
-    assert analyze(input_dir, "2026-07", cfg).member_changes is None
+    assert analyze(input_dir, "2026-07", cfg, org="org-a").member_changes is None
 
 
 def test_month_kind_excluded_from_snaps(cfg, make_snapshots, write_member_snapshots):
@@ -83,7 +83,7 @@ def test_month_kind_excluded_from_snaps(cfg, make_snapshots, write_member_snapsh
         "2026-07-05": ["a@x.jp,standard"],
         "2026-07-16": ["a@x.jp,premium"],
     })
-    mc = analyze(input_dir, "2026-07", cfg).member_changes
+    mc = analyze(input_dir, "2026-07", cfg, org="org-a").member_changes
     assert mc is not None
     assert [s["label"] for s in mc["snaps"]] == ["07-05", "07-16"]
 
@@ -91,7 +91,7 @@ def test_month_kind_excluded_from_snaps(cfg, make_snapshots, write_member_snapsh
 def test_single_snapshot_no_section(cfg, make_snapshots, write_member_snapshots, tmp_path):
     input_dir = _spend(make_snapshots)
     write_member_snapshots(input_dir, {"2026-07-05": ["a@x.jp,standard"]})
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.member_changes is None
     out = tmp_path / "report.md"
     write_markdown(result, out)
@@ -104,7 +104,7 @@ def test_dedup_warning_reworded_when_active(cfg, make_snapshots, write_member_sn
         "2026-07-05": ["a@x.jp,standard"],
         "2026-07-16": ["a@x.jp,premium"],
     })
-    warns = analyze(input_dir, "2026-07", cfg).warnings
+    warns = analyze(input_dir, "2026-07", cfg, org="org-a").warnings
     assert any("メンバー変動の検出に" in w for w in warns)
     assert not any("未使用:" in w for w in warns)
 
@@ -115,7 +115,7 @@ def test_markdown_section_order(cfg, make_snapshots, write_member_snapshots, tmp
         "2026-07-05": ["a@x.jp,standard"],
         "2026-07-16": ["a@x.jp,premium"],
     })
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     out = tmp_path / "report.md"
     write_markdown(result, out)
     md = out.read_text(encoding="utf-8")
@@ -134,7 +134,7 @@ def test_preview_computes_member_changes(cfg, make_snapshots, write_member_snaps
         "2026-07-05": ["a@x.jp,standard"],
         "2026-07-13": ["a@x.jp,premium"],
     })
-    result = preview(input_dir, "2026-07", cfg, days_observed=13)
+    result = preview(input_dir, "2026-07", cfg, days_observed=13, org="org-a")
     assert result.member_changes is not None
     out = tmp_path / "org"
     write_preview(result, out)

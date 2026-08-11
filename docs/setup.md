@@ -300,8 +300,9 @@ uv run seat-analyzer init-org <組織名>
 - `claude` が見つからない、またはフラグが未対応
   Claude Code を導入・更新する。PATH に置けない場合は `config.yaml > discussion.command`
   にフルパスを書く。
-- 分析実行時に「組織ディレクトリと直下の spend/ が混在しています」と言われる
-  旧レイアウトのデータが残っている。`input/<組織名>/` 配下へ移動する。
+- 分析実行時に「直下の spend/ は旧レイアウトのため分析できません」と言われる
+  `input/spend/` に CSV が残っている。`seat-analyzer init-org <組織名>` で組織ディレクトリを
+  作り、`input/<組織名>/spend/` 配下へ移動する。
 - `check-text` や `discuss` が対象語を集められずにエラー終了する
   リポジトリのルート以外で実行している可能性が高い。ルートに移動して実行し直す。
 - `tests/test_golden.py` だけが落ちる

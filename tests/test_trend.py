@@ -20,7 +20,7 @@ def test_started_and_stopped(cfg, make_input):
         },
         members=["stop@x.jp,standard", "start@x.jp,standard", "keep@x.jp,premium"],
     )
-    t = analyze(input_dir, "2026-06", cfg).trend
+    t = analyze(input_dir, "2026-06", cfg, org="org-a").trend
     assert t["compare_month"] == "2026-05"
     assert t["gap_skipped"] is False
     assert [x["email"] for x in t["started"]] == ["start@x.jp"]
@@ -48,7 +48,7 @@ def test_changes_signed_and_top_limited(cfg, make_input):
         },
         members=[f"u{i}@x.jp,premium" for i in range(1, 7)],
     )
-    t = analyze(input_dir, "2026-06", cfg).trend
+    t = analyze(input_dir, "2026-06", cfg, org="org-a").trend
     assert len(t["changes"]) == 5                     # top_changes で6→5
     assert t["changes"][0]["email"] == "u1@x.jp"      # |+200| が最大
     assert t["changes"][0]["delta"] == 200.0
@@ -64,7 +64,7 @@ def test_new_billed_detected(cfg, make_input):
         },
         members=["nb@x.jp,standard"],
     )
-    t = analyze(input_dir, "2026-06", cfg).trend
+    t = analyze(input_dir, "2026-06", cfg, org="org-a").trend
     assert [x["email"] for x in t["new_billed"]] == ["nb@x.jp"]
     assert t["new_billed"][0]["amount"] == 120.0
 
@@ -78,7 +78,7 @@ def test_gap_skipped(cfg, make_input):
         },
         members=["a@x.jp,premium"],
     )
-    t = analyze(input_dir, "2026-06", cfg).trend
+    t = analyze(input_dir, "2026-06", cfg, org="org-a").trend
     assert t["compare_month"] == "2026-04"
     assert t["gap_skipped"] is True
 
@@ -88,7 +88,7 @@ def test_initial_month_has_no_trend(cfg, make_input, tmp_path):
         {"2026-06": [spend_row("a@x.jp", 100.0, net=0.0)]},
         members=["a@x.jp,premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert result.trend is None
     out = tmp_path / "report.md"
     write_markdown(result, out)
@@ -104,7 +104,7 @@ def test_monthly_series_active_count(cfg, make_input):
         },
         members=["a@x.jp,premium", "b@x.jp,standard"],
     )
-    series = analyze(input_dir, "2026-06", cfg).trend["series"]
+    series = analyze(input_dir, "2026-06", cfg, org="org-a").trend["series"]
     assert [s["month"] for s in series] == ["2026-05", "2026-06"]
     assert series[0]["active"] == 1              # a のみ（b は idle 未満）
     assert series[0]["api"] == 100.5
@@ -116,7 +116,7 @@ def test_series_limited_to_six_months(cfg, make_input):
     months = [f"2026-{m:02d}" for m in range(1, 8)]   # 1〜7月の7ヶ月
     spend = {m: [spend_row("a@x.jp", 100.0, net=0.0)] for m in months}
     input_dir = make_input(spend, members=["a@x.jp,premium"])
-    series = analyze(input_dir, "2026-07", cfg).trend["series"]
+    series = analyze(input_dir, "2026-07", cfg, org="org-a").trend["series"]
     assert len(series) == 6                        # 直近6ヶ月まで
     assert series[0]["month"] == "2026-02"
     assert series[-1]["month"] == "2026-07"
@@ -130,7 +130,7 @@ def test_trend_section_rendered_in_markdown(cfg, make_input, tmp_path):
         },
         members=["a@x.jp,premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     out = tmp_path / "report.md"
     write_markdown(result, out)
     md = out.read_text(encoding="utf-8")

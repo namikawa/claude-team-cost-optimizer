@@ -282,8 +282,8 @@ def test_forbidden_terms_harvested_from_reports_only_org(two_orgs, tmp_path):
     assert "bernard.holloway@y.jp" in texts and "holloway" in texts
 
 
-def test_legacy_layout_has_no_forbidden_terms(make_input, tmp_path):
-    """旧レイアウト（input/spend 直下）では他組織が存在しないため禁止語は空。
+def test_input_subdirs_are_not_treated_as_orgs(make_input, tmp_path):
+    """input/ 直下に置かれた spend/・members/ は組織として数えない。
 
     入力サブディレクトリ名を組織名と誤認すると、考察が「spend」「members」に触れる
     だけでブロックされ、自組織のユーザ名まで禁止語に入ってしまう。
@@ -292,5 +292,5 @@ def test_legacy_layout_has_no_forbidden_terms(make_input, tmp_path):
                            members=["alice.morgan@x.jp,Premium"])
     terms = leakcheck.forbidden_terms(
         input_dir=input_dir, output_dir=tmp_path / "reports",
-        target_org=None, cfg=load_config(CONFIG))
+        target_org="org-a", cfg=load_config(CONFIG))
     assert terms == ()

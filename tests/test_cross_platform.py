@@ -128,8 +128,7 @@ def test_org_name_collision_is_detected_before_org_selection(tmp_path):
     """
     with pytest.raises(ValueError, match="大文字小文字"):
         cli._resolve_targets(
-            tmp_path / "input", tmp_path / "reports", ["Acme"],
-            orgs=["Acme", "acme"], legacy=False,
+            tmp_path / "input", tmp_path / "reports", ["Acme"], orgs=["Acme", "acme"],
         )
 
 

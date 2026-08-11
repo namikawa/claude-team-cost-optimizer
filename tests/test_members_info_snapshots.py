@@ -28,7 +28,7 @@ def test_latest_on_or_before_month_end(make_input, cfg):
     )
     _write_snapshot(input_dir, "2026-07-05", ["a@x.jp,100"])
     _write_snapshot(input_dir, "2026-07-16", ["a@x.jp,200"])
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.sources["members_info"].endswith("2026-07-16.csv")
     assert result.users.set_index("email").loc["a@x.jp", "credit_limit_usd"] == 200.0
 
@@ -41,7 +41,7 @@ def test_fallback_to_oldest_with_strong_warning(make_input, cfg):
     )
     _write_snapshot(input_dir, "2026-07-05", ["a@x.jp,100"])
     _write_snapshot(input_dir, "2026-07-20", ["a@x.jp,200"])
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert result.sources["members_info"].endswith("2026-07-05.csv")
     assert any("月末以前のスナップショットが無いため" in w for w in result.warnings)
 
@@ -53,7 +53,7 @@ def test_date_snapshots_override_fixed_name(make_input, cfg):
     )
     _write_info(input_dir, "email,追加クレジット上限\na@x.jp,999\n")   # 固定名（無視される）
     _write_snapshot(input_dir, "2026-07-10", ["a@x.jp,200"])
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.sources["members_info"].endswith("2026-07-10.csv")
     assert result.users.set_index("email").loc["a@x.jp", "credit_limit_usd"] == 200.0
     assert any("固定名" in w and "無視" in w for w in result.warnings)
@@ -65,7 +65,7 @@ def test_fixed_name_used_without_snapshots(make_input, cfg):
         members=["a@x.jp,Standard"], members_month="2026-07",
     )
     _write_info(input_dir, "email,追加クレジット上限\na@x.jp,150\n")
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.sources["members_info"].endswith("members-info.csv")
     assert result.users.set_index("email").loc["a@x.jp", "credit_limit_usd"] == 150.0
 
@@ -77,7 +77,7 @@ def test_kappa_change_detected_and_rendered(make_input, cfg, tmp_path):
     )
     _write_snapshot(input_dir, "2026-07-05", ["a@x.jp,100", "b@x.jp,50"])
     _write_snapshot(input_dir, "2026-07-16", ["a@x.jp,200", "b@x.jp,50"])
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     mc = result.member_changes
     assert mc is not None
     # b は 50→50 で不変、a のみ κ 変更
@@ -98,4 +98,4 @@ def test_single_snapshot_no_kappa_change(make_input, cfg):
     )
     _write_snapshot(input_dir, "2026-07-05", ["a@x.jp,100"])
     # members-info スナップショットが1件のみ・members 差分も無い → member_changes は None
-    assert analyze(input_dir, "2026-07", cfg).member_changes is None
+    assert analyze(input_dir, "2026-07", cfg, org="org-a").member_changes is None

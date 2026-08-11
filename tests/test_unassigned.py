@@ -21,7 +21,7 @@ def _make(make_input, extra_spend=None):
 
 
 def test_unassigned_is_excluded_from_judgment(cfg, make_input):
-    result = analyze(_make(make_input), "2026-06", cfg)
+    result = analyze(_make(make_input), "2026-06", cfg, org="org-a")
     row = result.users.set_index("email").loc["admin@x.jp"]
     assert row["current_seat"] == "unassigned"
     assert row["status"] == "対象外（シート未割当）"
@@ -31,7 +31,7 @@ def test_unassigned_is_excluded_from_judgment(cfg, make_input):
 
 
 def test_unassigned_counted_separately_in_summary(cfg, make_input):
-    result = analyze(_make(make_input), "2026-06", cfg)
+    result = analyze(_make(make_input), "2026-06", cfg, org="org-a")
     s = result.summary
     assert s["n_unassigned"] == 1
     assert s["n_unknown"] == 0
@@ -43,17 +43,17 @@ def test_unassigned_counted_separately_in_summary(cfg, make_input):
 
 def test_unassigned_with_usage_warns(cfg, make_input):
     input_dir = _make(make_input, extra_spend=[spend_row("admin@x.jp", 5.0)])
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert any("シート未割当なのに利用実績" in w for w in result.warnings)
 
 
 def test_unassigned_without_usage_does_not_warn(cfg, make_input):
-    result = analyze(_make(make_input), "2026-06", cfg)
+    result = analyze(_make(make_input), "2026-06", cfg, org="org-a")
     assert not any("利用実績" in w for w in result.warnings)
 
 
 def test_unassigned_in_preview(cfg, make_input):
-    result = preview(_make(make_input), "2026-06", cfg, days_observed=10)
+    result = preview(_make(make_input), "2026-06", cfg, days_observed=10, org="org-a")
     users = result.users.set_index("email")
     assert users.loc["admin@x.jp", "label"] == "対象外（未割当）"
     assert result.summary["n_unassigned"] == 1

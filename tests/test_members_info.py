@@ -26,7 +26,7 @@ def test_japanese_header_merges(make_input, cfg):
         "a@example.com,開発部,基盤チーム,エンジニア,テスト備考\n"
         "b@example.com,営業部,西日本チーム,マネージャ,\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     by_email = result.users.set_index("email")
     assert by_email.loc["a@example.com", "department"] == "開発部"
     assert by_email.loc["a@example.com", "team"] == "基盤チーム"
@@ -47,7 +47,7 @@ def test_english_header_merges(make_input, cfg):
         "email,department,team,role,note\n"
         "a@example.com,Platform,Core,Engineer,hello\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     row = result.users.set_index("email").loc["a@example.com"]
     assert row["department"] == "Platform"
     assert row["team"] == "Core"
@@ -67,7 +67,7 @@ def test_team_only_without_department(make_input, cfg, tmp_path):
         "a@example.com,基盤チーム,エンジニア,\n"
         "b@example.com,SREチーム,エンジニア,\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     by_email = result.users.set_index("email")
     assert by_email.loc["a@example.com", "team"] == "基盤チーム"
     assert (result.users["department"] == "").all()
@@ -85,7 +85,7 @@ def test_no_file_no_error(make_input, cfg):
         {"2026-06": [spend_row("a@example.com", 10.0)]},
         members=["a@example.com,Standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     # 列は空文字列で存在し、report 生成も落ちない
     assert (result.users["department"] == "").all()
     assert (result.users["team"] == "").all()
@@ -102,7 +102,7 @@ def test_unmapped_member_is_blank(make_input, cfg):
         input_dir, None,
         "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,,\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     by_email = result.users.set_index("email")
     assert by_email.loc["c@example.com", "department"] == ""
     assert by_email.loc["c@example.com", "team"] == ""
@@ -117,7 +117,7 @@ def test_preview_merges(make_input, cfg):
         input_dir, None,
         "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,エンジニア,pv備考\n",
     )
-    result = preview(input_dir, "2026-06", cfg, days_observed=15)
+    result = preview(input_dir, "2026-06", cfg, days_observed=15, org="org-a")
     row = result.users.set_index("email").loc["a@example.com"]
     assert row["department"] == "開発部"
     assert row["team"] == "基盤チーム"
@@ -136,7 +136,7 @@ def test_markdown_has_both_summaries_and_notes(make_input, cfg, tmp_path):
         "a@example.com,開発部,基盤チーム,エンジニア,ヒアリング済み\n"
         "b@example.com,営業部,西日本チーム,マネージャ,\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     out = tmp_path / "report.md"
     write_markdown(result, out)
     text = out.read_text(encoding="utf-8")
@@ -155,7 +155,7 @@ def test_markdown_no_sections_without_info(make_input, cfg, tmp_path):
         {"2026-06": [spend_row("a@example.com", 10.0)]},
         members=["a@example.com,Standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     out = tmp_path / "report.md"
     write_markdown(result, out)
     text = out.read_text(encoding="utf-8")
@@ -176,7 +176,7 @@ def test_legacy_department_only_still_works(make_input, cfg, tmp_path):
         "a@example.com,開発部,エンジニア,\n"
         "b@example.com,営業部,マネージャ,\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     by_email = result.users.set_index("email")
     assert by_email.loc["a@example.com", "department"] == "開発部"
     assert (result.users["team"] == "").all()
@@ -200,7 +200,7 @@ def test_info_only_email_not_added(make_input, cfg):
         "a@example.com,開発部,基盤チーム,,\n"
         "ghost@example.com,幽霊部,幽霊チーム,,\n",  # members にも spend にも居ない
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert "ghost@example.com" not in set(result.users["email"])
 
 
@@ -231,7 +231,7 @@ def test_unregistered_users_warned(make_input, cfg):
         input_dir, None,
         "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,,\n",
     )
-    warns = _unregistered(analyze(input_dir, "2026-06", cfg).warnings)
+    warns = _unregistered(analyze(input_dir, "2026-06", cfg, org="org-a").warnings)
     assert len(warns) == 1
     assert "2 名" in warns[0]
     # 出力の安定のためメールは昇順（全件・打ち切りなし）
@@ -249,7 +249,7 @@ def test_all_registered_no_warning(make_input, cfg):
         "a@example.com,開発部,基盤チーム,,\n"
         "b@example.com,営業部,西日本チーム,,\n",
     )
-    assert _unregistered(analyze(input_dir, "2026-06", cfg).warnings) == []
+    assert _unregistered(analyze(input_dir, "2026-06", cfg, org="org-a").warnings) == []
 
 
 def test_no_info_file_no_unregistered_warning(make_input, cfg):
@@ -258,7 +258,7 @@ def test_no_info_file_no_unregistered_warning(make_input, cfg):
         {"2026-06": [spend_row("a@example.com", 10.0)]},
         members=["a@example.com,Standard"],
     )
-    assert _unregistered(analyze(input_dir, "2026-06", cfg).warnings) == []
+    assert _unregistered(analyze(input_dir, "2026-06", cfg, org="org-a").warnings) == []
 
 
 def test_unregistered_users_warned_in_preview(make_input, cfg):
@@ -270,7 +270,7 @@ def test_unregistered_users_warned_in_preview(make_input, cfg):
         input_dir, None,
         "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,,\n",
     )
-    warns = _unregistered(preview(input_dir, "2026-06", cfg, days_observed=15).warnings)
+    warns = _unregistered(preview(input_dir, "2026-06", cfg, days_observed=15, org="org-a").warnings)
     assert len(warns) == 1
     assert "c@example.com" in warns[0]
 
@@ -286,7 +286,7 @@ def test_unregistered_warning_in_markdown(make_input, cfg, tmp_path):
         "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,,\n",
     )
     out = tmp_path / "report.md"
-    write_markdown(analyze(input_dir, "2026-06", cfg), out)
+    write_markdown(analyze(input_dir, "2026-06", cfg, org="org-a"), out)
     text = out.read_text(encoding="utf-8")
     assert "## データ検証・警告" in text
     assert UNREGISTERED in text
@@ -308,7 +308,7 @@ def test_dual_team_split_half_and_half(make_input, cfg):
         "a@example.com,基盤チーム; SREチーム,,\n"
         "b@example.com,基盤チーム,,\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     # 表示は正規化された半角セミコロン+スペース区切り
     assert result.users.set_index("email").loc["a@example.com", "team"] == "基盤チーム; SREチーム"
     rows = {r["group"]: r for r in _group_summary_rows(result.users, result.summary, "team")}
@@ -337,7 +337,7 @@ def test_fullwidth_semicolon_parsed(make_input, cfg):
         input_dir, None,
         "email,チーム,職種,備考\na@example.com,基盤チーム；SREチーム,,\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert result.users.set_index("email").loc["a@example.com", "team"] == "基盤チーム; SREチーム"
     rows = {r["group"]: r for r in _group_summary_rows(result.users, result.summary, "team")}
     assert rows["基盤チーム"]["n"] == 0.5
@@ -355,7 +355,7 @@ def test_single_and_empty_affiliation_unchanged(make_input, cfg):
         input_dir, None,
         "email,チーム,職種,備考\na@example.com,基盤チーム,,\n",  # c は未設定
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     rows = {r["group"]: r for r in _group_summary_rows(result.users, result.summary, "team")}
     assert rows["基盤チーム"]["n"] == 1.0
     assert rows["（未設定）"]["n"] == 1.0
@@ -374,7 +374,7 @@ def test_markdown_escapes_pipe_and_newline(make_input, cfg, tmp_path):
         "email,チーム,職種,備考\n"
         'a@example.com,"基盤|チーム",,"1行目|注記\n2行目"\n',
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     out = tmp_path / "report.md"
     write_markdown(result, out)
     text = out.read_text(encoding="utf-8")
@@ -399,7 +399,7 @@ def test_dual_team_display_and_fraction_in_md(make_input, cfg, tmp_path):
         input_dir, None,
         "email,チーム,職種,備考\na@example.com,基盤チーム; SREチーム,,\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     out = tmp_path / "report.md"
     write_markdown(result, out)
     text = out.read_text(encoding="utf-8")

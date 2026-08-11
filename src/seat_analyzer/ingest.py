@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pandas as pd
 
-# 組織ディレクトリ直下に置かれる入力サブディレクトリ名。組織の発見処理はこれらを
-# 「組織名ではない」と判定するために参照する（旧レイアウトでは input/ 直下に現れる）。
+# 組織ディレクトリ直下に置かれる入力サブディレクトリ名。組織の発見処理は「これらを
+# 持つディレクトリが組織」という構造判定にこの一覧を参照する。
 INPUT_SUBDIRS = ("spend", "members", "code-analytics")
 
 # 各入力ファイルの必須カラム（正準名）。ロード時の required= と、config.py の

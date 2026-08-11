@@ -33,7 +33,7 @@ def test_html_escapes_script_in_email(cfg, make_input, tmp_path):
     input_dir = make_input(
         {"2026-06": [spend_row(evil, 10.0)]}, members=[f"{evil},Standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     out = tmp_path / "dashboard.html"
     write_html(result, out)
     html = out.read_text(encoding="utf-8")
@@ -98,7 +98,7 @@ def test_future_members_fallback_warns_strongly(cfg, make_input):
         {"2026-05": [spend_row("a@x.jp", 10.0)], "2026-06": [spend_row("a@x.jp", 10.0)]},
         members=["a@x.jp,Premium"], members_month="2026-07",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert any("未来月" in w for w in result.warnings)
 
 
@@ -124,7 +124,7 @@ def test_unmatched_models_listed(cfg):
 def test_unknown_model_warns_in_analyze(cfg, make_input):
     row = "a@x.jp,uuid-x,Claude Code,mystery-model-9,mystery,10,100000,10000,1.0,1.0"
     input_dir = make_input({"2026-06": [row]}, members=["a@x.jp,Standard"])
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert any("mystery-model-9" in w for w in result.warnings)
 
 

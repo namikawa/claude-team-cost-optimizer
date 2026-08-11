@@ -1,4 +1,4 @@
-"""CLI のマルチ組織対応（組織解決・--org・横断サマリ・旧レイアウト互換）と doctor のテスト。"""
+"""CLI のマルチ組織対応（組織解決・--org・横断サマリ・旧レイアウトの拒否）と doctor のテスト。"""
 
 import hashlib
 import json
@@ -84,31 +84,52 @@ def test_month_missing_in_one_org_is_skipped(make_input, tmp_path, capsys):
     assert "スキップした組織: org-b" in capsys.readouterr().out
 
 
-def test_legacy_flat_layout_still_works(make_input, tmp_path):
+def _assert_migration_guidance(err: str) -> None:
+    """旧レイアウトを検出したときの案内（何をどこへ移すか）が出ていること。"""
+    assert "旧レイアウト" in err
+    assert "init-org" in err and "<組織名>" in err
+
+
+def test_flat_layout_errors_with_migration_guidance(make_input, tmp_path, capsys):
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 10.0)]}, members=["a@x.jp,Standard"],
     )
     rc, out = _run(input_dir, tmp_path, "--month", "2026-06")
-    assert rc == 0
-    # 旧レイアウトは reports/<月>/ 直下（組織ディレクトリなし）
-    assert (out / "2026-06" / "report.md").exists()
+    assert rc == 1
+    _assert_migration_guidance(capsys.readouterr().err)
+    # 黙って無視も部分的な出力もしない
+    assert not out.exists()
 
 
-def test_legacy_layout_rejects_org_option(make_input, tmp_path, capsys):
+def test_flat_layout_errors_with_org_option(make_input, tmp_path, capsys):
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 10.0)]}, members=["a@x.jp,Standard"],
     )
     rc, _ = _run(input_dir, tmp_path, "--org", "org-a")
     assert rc == 1
-    assert "組織ディレクトリがありません" in capsys.readouterr().err
+    _assert_migration_guidance(capsys.readouterr().err)
 
 
-def test_mixed_layout_errors(make_input, tmp_path, capsys):
+def test_flat_layout_beside_orgs_errors(make_input, tmp_path, capsys):
     input_dir = _make_two_orgs(make_input)
     make_input({"2026-06": [spend_row("c@z.jp", 5.0)]})  # 直下にも spend/ を作る
-    rc, _ = _run(input_dir, tmp_path)
+    rc, out = _run(input_dir, tmp_path)
     assert rc == 1
-    assert "混在" in capsys.readouterr().err
+    # 組織ディレクトリがあっても、直下のデータを黙って無視して分析を進めない
+    _assert_migration_guidance(capsys.readouterr().err)
+    assert not out.exists()
+
+
+def test_flat_layout_errors_in_discuss(make_input, tmp_path, capsys):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 10.0)]}, members=["a@x.jp,Standard"],
+    )
+    rc = main([
+        "discuss", "--config", CONFIG, "--dry-run",
+        "--input-dir", str(input_dir), "--output-dir", str(tmp_path / "reports"),
+    ])
+    assert rc == 1
+    _assert_migration_guidance(capsys.readouterr().err)
 
 
 # --- doctor（既存入力の検査） ---
@@ -281,15 +302,15 @@ def test_doctor_json_covers_all_orgs(make_input, capsys):
     ]
 
 
-def test_doctor_supports_legacy_flat_layout(make_input, capsys):
+def test_doctor_rejects_flat_layout(make_input, capsys):
+    # 使い方の誤りは構造化 issue ではなく stderr + exit 1（doctor 既定の扱い）
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 10.0)]}, members=["a@x.jp,Premium"],
     )
-    assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 0
-    issues = json.loads(capsys.readouterr().out)
-    # 旧レイアウトは組織名を持たないため scope に org を入れない
-    assert [i["code"] for i in issues] == ["MISSING_HISTORY_MONTH"]
-    assert "org" not in issues[0]["scope"]
+    assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 1
+    captured = capsys.readouterr()
+    _assert_migration_guidance(captured.err)
+    assert captured.out == ""
 
 
 def test_doctor_output_is_deterministic(make_input, capsys):
@@ -313,7 +334,7 @@ def test_doctor_history_gap_message_matches_analyze_behavior(make_input, cfg, ca
         members=["a@x.jp,Premium"], org="org-a",
     )
     # analyze 側の実挙動を同じ入力で固定する（将来 analyze が変わればこのテストが落ちる）
-    result = analyze.analyze(input_dir / "org-a", "2026-06", cfg)
+    result = analyze.analyze(input_dir / "org-a", "2026-06", cfg, org="org-a")
     assert result.months_used == ["2026-04", "2026-06"]      # 2026-05 は欠月
     assert result.users.iloc[0]["status"] == "変更推奨"
 
@@ -446,20 +467,28 @@ def test_doctor_reports_missing_input_dir_with_org_option(tmp_path, capsys):
     assert [i["code"] for i in json.loads(capsys.readouterr().out)] == ["MISSING_SPEND"]
 
 
+def test_doctor_reports_input_without_org_dirs_as_issue(tmp_path, capsys):
+    # 組織ディレクトリが1つも無い入力（spend/ 以外の残骸だけ）は構造化 issue にする。
+    # 検査すべき組織を1つも解決できないので、組織単位の検査結果は出さない
+    (tmp_path / "input" / "members").mkdir(parents=True)
+    assert _doctor(tmp_path / "input", "--format", "json") == 1
+    assert [i["code"] for i in json.loads(capsys.readouterr().out)] == ["MISSING_SPEND"]
+
+
 def test_doctor_heading_without_org_and_month(tmp_path, capsys):
     assert _doctor(tmp_path / "nope") == 1
     assert "=== 入力検査 ===" in capsys.readouterr().out
 
 
-def test_doctor_treats_root_spend_as_legacy_layout(tmp_path, capsys):
-    # 組織名 spend + 直下の旧形式CSV は判別できないため analyze と同じく混在エラー
+def test_doctor_rejects_org_named_spend(tmp_path, capsys):
+    # 組織名 spend は直下 spend/ と区別できないため analyze と同じくエラーにする
     org = tmp_path / "input" / "spend"
     (org / "spend").mkdir(parents=True)
     (org / "spend" / "spend_2026-06.csv").write_text(
         "Email,Model,Prompt Tokens,Completion Tokens\na@x.jp,claude-sonnet-4-6,1000,100\n",
         encoding="utf-8")
     assert _doctor(tmp_path / "input", "--month", "2026-06") == 1
-    assert "混在" in capsys.readouterr().err
+    _assert_migration_guidance(capsys.readouterr().err)
 
 
 def test_doctor_picks_latest_members_snapshot_without_target_month(
@@ -560,10 +589,10 @@ def test_doctor_writes_no_files(make_input, tmp_path):
     assert _tree_state(tmp_path) == before
 
 
-def test_doctor_ignores_leftover_legacy_dir_when_orgs_exist(make_input, capsys):
+def test_doctor_ignores_leftover_input_subdir_when_orgs_exist(make_input, capsys):
     input_dir = _clean_org(make_input)
-    (input_dir / "members").mkdir()          # 旧レイアウトから移行し損ねた残骸
-    # analyze は直下 spend/ が無ければ組織を処理する。doctor も止まらない
+    (input_dir / "members").mkdir()          # 移行し損ねた入力サブディレクトリの残骸
+    # 直下 spend/ が無ければ analyze は組織を処理する。doctor も同じ入力で止まらない
     assert _doctor(input_dir, "--month", "2026-06") == 0
     assert "問題は見つかりませんでした" in capsys.readouterr().out
 
@@ -616,6 +645,16 @@ def test_init_org_creates_scaffold(tmp_path):
         assert info.read_text(
             encoding="utf-8-sig") == "email,部署,チーム,職種,追加クレジット上限,備考\n"
     assert discover_orgs(input_dir) == ["org-x", "org-y"]
+
+
+def test_init_org_points_out_flat_layout_data(tmp_path, capsys):
+    # 旧レイアウトからの移行の入口。analyze が拒否するデータの置き場を雛形作成時に知らせる
+    input_dir = tmp_path / "input"
+    (input_dir / "spend").mkdir(parents=True)
+    assert main(["init-org", "org-x", "--input-dir", str(input_dir),
+                 "--output-dir", str(tmp_path / "reports")]) == 0
+    out = capsys.readouterr().out
+    assert "旧レイアウト" in out and "<組織名>/spend/" in out
 
 
 def test_init_org_does_not_overwrite_filled_members_info(tmp_path):
