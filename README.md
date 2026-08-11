@@ -7,32 +7,55 @@ Claude Team プラン（Standard / Premium シート）のシート最適化分�
 - Premium なのに使っていない → Standard へダウングレード推奨
 - Standard + 従量課金が Premium を超えそう → Premium へアップグレード推奨
 
-を月次で判定・レポートします。ローカルマシン上で Claude Code から実行する想定です。
+を月次で判定・レポートします。ローカルマシン上で実行し、分析（`analyze`）は手元で完結します。
+考察の自動執筆（`discuss`）を使う場合のみ、レポートの内容が Claude（Anthropic）へ
+送信されます。
 
 > 免責: 本ツールは Anthropic 非公式のコミュニティツールです。シート料金・モデル単価・
-> スペンドレポートの仕様は変更される可能性があるため、利用前に `config.yaml` の単価
+> スペンドレポートの仕様は変更される可能性があるため、利用前に既定設定の単価
 > （2026-07 時点の値）を最新の公式情報と照合してください。本ツールの分析結果に基づく
 > 判断は利用者の責任で行ってください。
 
-## クイックスタート
+## 動作環境
 
-Python 3.11 以上と [uv](https://docs.astral.sh/uv/) が必要。考察の自動執筆には
-ローカルの Claude Code CLI も使う。ゼロから環境を作る手順は
-[docs/setup.md](docs/setup.md) にある（Claude Code に読ませて実行させる形式）。
+macOS / Windows / Linux で動作確認済み。必須なのは [uv](https://docs.astral.sh/uv/) のみで、
+Python（3.11 以上）は uv が用意します。レポートの考察を自動執筆する機能を使う場合は
+ローカルの Claude Code CLI も必要です。
 
-1. 依存をインストールする
+## インストール
+
+導入するバージョンは
+[Releases](https://github.com/namikawa/claude-team-cost-optimizer/releases) で最新のタグを
+確認してください。
+
+```sh
+uv tool install git+https://github.com/namikawa/claude-team-cost-optimizer@v1.0.0
+seat-analyzer --version
+```
+
+アップデートは新しいタグを指定して同じコマンドを実行し直すだけです。ゼロから環境を作る
+手順は [docs/setup.md](docs/setup.md) にあります（Claude Code に読ませて実行させる形式）。
+
+## 使い方
+
+1. データと設定を置くワークスペースを任意の場所に作る
 
    ```sh
-   uv sync
+   mkdir ~/claude-seat-analysis && cd ~/claude-seat-analysis
+   seat-analyzer init
    ```
+
+   `input/`・設定の上書きファイル `config.yaml`・`.gitignore` が作られます。設定は
+   パッケージ同梱の既定に対して差分だけを書く形式なので、`config.yaml` は空のままでも
+   動きます。以降のコマンドはこのディレクトリで実行します。
 
 2. 組織（Team プランの workspace）ごとにディレクトリの雛形を作る
 
    ```sh
-   uv run seat-analyzer init-org <組織名>
+   seat-analyzer init-org <組織名>
    ```
 
-   組織名はディレクトリ名がそのまま識別子になる。詳しくは
+   組織名はディレクトリ名がそのまま識別子になります。詳しくは
    [docs/usage.md](docs/usage.md) の入力データの構成。
 
 3. claude.ai からエクスポートした CSV を `input/<組織名>/` 配下に置く。
@@ -42,18 +65,16 @@ Python 3.11 以上と [uv](https://docs.astral.sh/uv/) が必要。考察の自�
 4. 分析を実行する
 
    ```sh
-   uv run seat-analyzer analyze --month YYYY-MM                    # 分析のみ
-   uv run seat-analyzer analyze --month YYYY-MM --with-discussion  # 考察の執筆まで
+   seat-analyzer analyze --month YYYY-MM                    # 分析のみ
+   seat-analyzer analyze --month YYYY-MM --with-discussion  # 考察の執筆まで
    ```
 
-   `analyze` 単体では report.md の「## 考察」は未記入のまま出力される。執筆には
-   ローカルの Claude Code CLI を使う（[docs/tooling.md](docs/tooling.md)）。
-   Claude Code から `/seat-analysis` を実行すると、分析に加えて警告の検証と考察の執筆までを
-   対話的に行える。
+   `analyze` 単体では report.md の「## 考察」は未記入のまま出力されます。執筆には
+   ローカルの Claude Code CLI を使います（[docs/tooling.md](docs/tooling.md)）。
 
 ## 生成されるもの
 
-組織ごとに `reports/<組織名>/YYYY-MM/` へ出力される。
+組織ごとに `reports/<組織名>/YYYY-MM/` へ出力されます。
 
 - `report.md` — 前月からの変化 + 推奨テーブル + 部署別/チーム別サマリ + 詳細利用状況 + 感度分析 + 考察
 - `dashboard.html` — 経営層共有用ダッシュボード（自己完結 HTML）
@@ -70,13 +91,27 @@ Python 3.11 以上と [uv](https://docs.astral.sh/uv/) が必要。考察の自�
 | [docs/usage.md](docs/usage.md) | 入力データの構成、CSV のエクスポート手順、月次運用、速報モード |
 | [docs/reference.md](docs/reference.md) | レポート各セクションの読み方、追加クレジットの上限、判定ロジックの前提 |
 | [docs/tooling.md](docs/tooling.md) | 考察の自動執筆（`discuss`）と公開テキストの検査（`check-text`） |
+| [CHANGELOG.md](CHANGELOG.md) | バージョンごとの変更履歴 |
 
 一覧は [docs/README.md](docs/README.md) にある。
 
 ## 開発
 
+リポジトリを clone して開発環境を作る。
+
 ```sh
+uv sync
 uv run pytest              # テスト
+uv run ruff check .        # lint
+```
+
+開発時は `uv run seat-analyzer ...` で実行する（`uv tool install` で入れたものとは別の環境）。
+サンプル 2 組織での E2E は出力先を分ける。
+
+```sh
 uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --month 2026-06   # サンプル2組織でE2E
 uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --org org-b       # 特定組織のみ
 ```
+
+設定の既定値は `src/seat_analyzer/default-config.yaml`（単価・カラムエイリアス・閾値）。
+リリース手順は [docs/release.md](docs/release.md)。

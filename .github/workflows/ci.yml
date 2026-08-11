@@ -6,13 +6,13 @@ on:
 
 jobs:
   test:
-    # Windows でも動かす前提のため、両方の OS でテストする。ローカル（macOS）の緑は
-    # 他プラットフォームの緑ではない（pandas の並びやロケール依存の入出力で実際に差が出た）。
-    # fail-fast を切って、片方が落ちてももう片方の結果を得られるようにする
+    # 動作環境として挙げている 3 OS すべてでテストする。1つの OS の緑は他プラットフォームの
+    # 緑ではない（pandas の並びやロケール依存の入出力で実際に差が出た）。
+    # fail-fast を切って、1つが落ちても残りの結果を得られるようにする
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6

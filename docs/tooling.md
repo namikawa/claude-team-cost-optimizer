@@ -13,18 +13,21 @@
 執筆は分析者（人または LLM）の仕事になる。この工程も CLI から完結させられる。
 
 ```sh
-uv run seat-analyzer discuss                             # 全組織（最新月）の考察を執筆
-uv run seat-analyzer discuss --org <組織名> --month YYYY-MM
-uv run seat-analyzer discuss --preview                   # preview.md の考察を執筆
-uv run seat-analyzer discuss --dry-run                   # プロンプトを表示するだけ（LLM を呼ばない）
-uv run seat-analyzer discuss --allow-term <語>           # 混入チェックの誤検出を許可する（下記）
-uv run seat-analyzer discuss --with-previous-discussion  # 前月の考察も資料に渡す（既定は渡さない）
-uv run seat-analyzer analyze --with-discussion            # 分析と考察を一度に
+seat-analyzer discuss                             # 全組織（最新月）の考察を執筆
+seat-analyzer discuss --org <組織名> --month YYYY-MM
+seat-analyzer discuss --preview                   # preview.md の考察を執筆
+seat-analyzer discuss --dry-run                   # プロンプトを表示するだけ（LLM を呼ばない）
+seat-analyzer discuss --allow-term <語>           # 混入チェックの誤検出を許可する（下記）
+seat-analyzer discuss --with-previous-discussion  # 前月の考察も資料に渡す（既定は渡さない）
+seat-analyzer analyze --with-discussion           # 分析と考察を一度に
 ```
 
 ローカルにインストールされた Claude Code CLI をヘッドレス（`claude -p`）で呼び出す。
-Anthropic API キーは不要で、Claude のサブスクリプション枠を消費する。設定は
-`config.yaml > discussion`（モデル・推論レベル・タイムアウト・再試行回数）。
+Anthropic API キーは不要で、Claude のサブスクリプション枠を消費する。レポートの内容
+（メールアドレス・利用額を含む）はプロンプトとして Anthropic へ送信される。設定は
+`discussion` セクション（モデル・推論レベル・タイムアウト・再試行回数）で、既定値は
+パッケージ同梱の `default-config.yaml` が持つ。変えたい項目だけをワークスペースの
+`config.yaml` に書いて上書きする。
 
 処理の流れと設計上の約束:
 
@@ -43,7 +46,7 @@ Anthropic API キーは不要で、Claude のサブスクリプション枠を�
   （照合そのものを無効化する手段は用意していない）。`--allow-term` は単一組織を対象にした
   実行でのみ指定でき、組織名とメールアドレスは対象外（一般語と衝突する余地が実質なく、
   通した場合の影響が大きいため）。全組織の実行でも効かせたい恒久的な許可は
-  `config.yaml > discussion.allow_terms` に書く
+  ワークスペースの `config.yaml` の `discussion.allow_terms` に書く
 - 検出したうえで書き直しが成功した場合も、検出語と一致箇所を必ず表示する。誤検出だった
   場合は正当な記述がモデルによって削られているため、内容が変わったことに気づける必要がある
 - 部署・チーム名は識別力のある名前にしておくと精度が上がる。3文字以下の略称は一般語と
@@ -64,8 +67,9 @@ Anthropic API キーは不要で、Claude のサブスクリプション枠を�
   過去のレポートに混入があった場合にそれを引き写す経路になるため。渡したい場合は
   `--with-previous-discussion` を指定する（渡す前に混入チェックを通し、落ちたら除外する）
 
-考察の指示文（執筆の原則・観点）は `src/seat_analyzer/prompts/` にある。書かせる内容を
-変えたい場合はここを編集する。`/seat-analysis` スラッシュコマンドも同じ指示文を参照する。
+考察の指示文（執筆の原則・観点）はパッケージ内の `prompts/`（リポジトリでは
+`src/seat_analyzer/prompts/`）にある。書かせる内容を変えたい場合はここを編集する。
+`/seat-analysis` スラッシュコマンドも同じ指示文を参照する。
 
 複数の組織を扱う場合、組織別の成果物には他組織の情報を書かないという制約が重要になる。
 report.md はその組織の担当者に共有される前提の文書で、組織横断の比較は
@@ -76,6 +80,11 @@ report.md はその組織の担当者に共有される前提の文書で、組�
 このリポジトリは公開されており、`input/` と `reports/` の中身（組織名・メンバー・利用金額）は
 コミット対象外にしている。ただし README やコード以外にも、PR の本文・コメント・コミット
 メッセージという公開面がある。そこに業務情報が出ていないことを機械的に確認する検査。
+
+リポジトリの公開面を対象にした検査なので、clone したリポジトリのルートで実行する
+（`--repo-root` を使えば別の場所からでも実行できる。下記）。対象語は分析用のデータから
+集めるため、`--input-dir` / `--output-dir` にはワークスペースの `input/` と `reports/` を
+指定する（既定はカレントディレクトリの同名ディレクトリ）。
 
 ```sh
 uv run seat-analyzer check-text draft.md                 # ファイルを検査
@@ -95,15 +104,17 @@ git log --format=%B -1 | uv run seat-analyzer check-text -   # 標準入力
 この基準に使うのは HEAD 時点の git 管理下のファイル（パスも内容も git から読む）。
 作業ツリーを読むと、未追跡のドラフト・gitignore 済みのファイル・追跡ファイルの未コミット
 編集が「公開済み」になり、検査が黙って素通りする。検査対象として渡したファイル自身も基準から
-除く。`--repo-root` で基準にするリポジトリを指定できる（省略時は `--config` の置かれた
-ディレクトリ。リポジトリのルートを指定すること。サブディレクトリを渡すと基準が空になり、
-検出過多になる）。git 管理下なのに git を実行できない場合はエラーにする。
+除く。`--repo-root` で基準にするリポジトリを指定できる（省略時はカレントディレクトリ。
+リポジトリのルートを指定すること。サブディレクトリを渡すと基準が空になり、検出過多になる）。
+省略した場合はカレントディレクトリがこのリポジトリのルートであることを確かめ、そうでなければ
+中止する（別のリポジトリの内容を「公開済み」として扱わないため）。git 管理下なのに git を
+実行できない場合もエラーにする。
 
 差分を検査する場合は `--diff` を付ける。削除行にはまさに取り除こうとしている語が現れて
 必ず落ちるため、追加される内容と追加先のパスだけを対象にする。
 
 ```sh
-git diff | uv run seat-analyzer check-text --diff -      # コミット前
+git diff HEAD | uv run seat-analyzer check-text --diff -  # コミット前（ステージ済みも含めて）
 git show HEAD | uv run seat-analyzer check-text --diff -
 ```
 

@@ -381,7 +381,7 @@ def _run_init_org(args: argparse.Namespace) -> int:
             f" {input_dir}/<組織名>/ 配下へ移動してください"
             "（空になったディレクトリも消す。手順は docs/setup.md 参照）"
         )
-    print("\nCSV 配置後: uv run seat-analyzer analyze （エクスポート手順は docs/usage.md 参照）")
+    print("\nCSV 配置後: seat-analyzer analyze --month YYYY-MM（エクスポート手順は docs/usage.md 参照）")
     return 0
 
 
