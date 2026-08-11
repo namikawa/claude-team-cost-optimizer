@@ -1,17 +1,28 @@
-"""CLI エントリポイント: seat-analyzer {analyze,discuss,check-text,doctor,init-org}"""
+"""CLI エントリポイント: seat-analyzer {analyze,discuss,check-text,doctor,init,init-org}"""
 
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import re
 import sys
 from pathlib import Path
 
 from . import analyze, data_quality, discussion, ingest, public_text, report
-from .config import load_config
+from .config import WORKSPACE_CONFIG_NAME, load_config, validate_config_path
 from .discussion import DiscussionError
 from .domain import QualityIssue, Severity
 from .leakcheck import LeakCheckError
+
+# ワークスペース雛形用の設定テンプレート（init がコピーする。中身は全行コメント）
+WORKSPACE_CONFIG_TEMPLATE = Path(__file__).parent / "templates" / "workspace-config.yaml"
+
+# --config 省略時の説明。上書きファイルは任意なので「無くても動く」ことを明示する
+_CONFIG_HELP = f"設定の上書きファイル (default: ./{WORKSPACE_CONFIG_NAME} があれば適用)"
+
+# ワークスペースを git 管理下に置いても、実データと組織固有の設定が入らないようにする。
+# 追記する行の目印にもなるので、文言は変えずに使う
+_GITIGNORE_NOTE = "# 実データと組織固有の設定をコミットしない（seat-analyzer init）"
 
 
 def _force_utf8_io() -> None:
@@ -56,9 +67,21 @@ def _print_permission_hint(exc: BaseException) -> None:
         )
 
 
+def _version() -> str:
+    """インストールされているパッケージのバージョン。取得できなければ "unknown"。"""
+    try:
+        return importlib.metadata.version("seat-analyzer")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
 def main(argv: list[str] | None = None) -> int:
     _force_utf8_io()
     parser = argparse.ArgumentParser(prog="seat-analyzer", description="Claude Team シート最適化分析")
+    parser.add_argument(
+        "--version", action="version", version=f"seat-analyzer {_version()}",
+        help="バージョンを表示して終了する",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("analyze", help="スペンドレポートを分析してレポートを生成")
@@ -67,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         "--org", action="append",
         help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織を分析",
     )
-    p.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    p.add_argument("--config", default=None, help=_CONFIG_HELP)
     p.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     p.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
     p.add_argument(
@@ -103,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         "--org", action="append",
         help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織",
     )
-    pdis.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pdis.add_argument("--config", default=None, help=_CONFIG_HELP)
     pdis.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     pdis.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
     pdis.add_argument(
@@ -134,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         "--org", action="append",
         help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織を検査",
     )
-    pdoc.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pdoc.add_argument("--config", default=None, help=_CONFIG_HELP)
     pdoc.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     pdoc.add_argument(
         "--format", choices=("text", "json"), default="text",
@@ -161,15 +184,19 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-term", action="append", metavar="語",
         help="内容を確認して無害と判断した語を許可する（複数指定可）",
     )
-    pchk.add_argument("--config", default="config.yaml", help="設定ファイル (default: config.yaml)")
+    pchk.add_argument("--config", default=None, help=_CONFIG_HELP)
     pchk.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
     pchk.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
     pchk.add_argument(
         "--repo-root", metavar="パス",
         help="「すでに公開されている内容」を読むリポジトリのルート。"
-             "省略時は --config の置かれたディレクトリ",
+             "省略時はカレントディレクトリ",
     )
     pchk.set_defaults(func=_run_check_text)
+
+    pini = sub.add_parser("init", help="カレントディレクトリにワークスペースの雛形を作成")
+    pini.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
+    pini.set_defaults(func=_run_init)
 
     pi = sub.add_parser("init-org", help="新しい組織の入力/出力ディレクトリの雛形を作成")
     pi.add_argument("orgs", nargs="+", metavar="組織名",
@@ -190,6 +217,133 @@ def main(argv: list[str] | None = None) -> int:
 
 
 INPUT_SUBDIRS = ingest.INPUT_SUBDIRS
+
+
+def _gitignore_pattern(rel: str, *, directory: bool) -> str:
+    """ワークスペース相対パスを、その名前どおりに一致する .gitignore の行にする。
+
+    `*` `?` `[` `]` `\\` はパターンとして解釈されるため、名前に含まれていれば
+    エスケープする（そのまま書くと、除外したつもりのディレクトリが対象から外れる）。
+    行頭の `/` はワークスペース直下に限る指定で、`#` や `!` が先頭に来ることも防ぐ。
+    """
+    escaped = "".join("\\" + c if c in "\\*?[]" else c for c in rel)
+    return f"/{escaped}" + ("/" if directory else "")
+
+
+def _workspace_relative(path: Path) -> str | None:
+    """カレント（ワークスペース）から見た相対パス。配下でなければ None。
+
+    .gitignore のパターンはそれが置かれたディレクトリからの相対でしか書けないため、
+    ワークスペースの外を指す入力ディレクトリは行にできない。
+    """
+    try:
+        rel = path.resolve().relative_to(Path.cwd().resolve())
+    except ValueError:
+        return None
+    return rel.as_posix() if rel.parts else None
+
+
+def _gitignore_entries(input_dir: Path) -> tuple[list[str], str | None]:
+    """ワークスペースで git に入れてはいけないものと、行にできなかった場合の通知。
+
+    設定には組織固有の語が入り、入力には利用実績、出力には生成したレポートが入る。
+    ワークスペースが git 管理下にあると `git add .` がまとめて拾う。
+    """
+    entries = [_gitignore_pattern(WORKSPACE_CONFIG_NAME, directory=False)]
+    note = None
+    rel = _workspace_relative(input_dir)
+    if rel is None:
+        note = (
+            f"入力ディレクトリ（{input_dir}）はワークスペース配下の相対パスにできないため"
+            " .gitignore の対象外です。git 管理下に置くなら自分で除外してください"
+        )
+    else:
+        entries.append(_gitignore_pattern(rel, directory=True))
+    entries.append(_gitignore_pattern("reports", directory=True))
+    return entries, note
+
+
+def _gitignore_path() -> Path:
+    """ワークスペースの .gitignore（書ける形であることを確かめて返す）。
+
+    git は symlink の .gitignore を除外設定として読まない（リンク先が通常ファイルでも
+    無視される）。追記できても保護にならないので、書く前に拒否する。
+    """
+    path = Path(".gitignore")
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(
+            f"{path} が通常のファイルではありません"
+            "（symlink やディレクトリの .gitignore は git が除外設定として読まないため、"
+            "書いても保護になりません。取り除いてから実行してください）"
+        )
+    return path
+
+
+def _write_gitignore(path: Path, entries: list[str]) -> str:
+    """.gitignore に必要な行を用意する。戻り値は表示用の状態。
+
+    既にあるファイルには足りない行だけを追記する（既存の内容と改行の形は変えない）。
+    """
+    if not path.exists():
+        path.write_text(
+            _GITIGNORE_NOTE + "\n" + "\n".join(entries) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+        return f"{len(entries)} 行で作成"
+
+    raw = path.read_bytes()
+    # 既存行との照合は正規化せず完全一致で行う（ファイル自体は書き戻さない）。
+    # git は先頭の空白をパターンの一部として扱うため、見た目が同じでも除外にならない
+    # 行がある。それを「設定済み」と数えると、保護がないまま済んだことになる。
+    # 逆に、効いている行を取りこぼして同じ内容を足すのは無害
+    existing = raw.decode("utf-8", errors="replace").splitlines()
+    missing = [e for e in entries if e not in existing]
+    if not missing:
+        return "必要な行がそろっているため変更なし"
+    # 追記なので既存のバイト列には触らない。最後の行が閉じていなければ閉じ、
+    # 既存の内容とは1行空ける
+    lead = "" if not raw else ("\n" if raw.endswith(b"\n") else "\n\n")
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(lead + _GITIGNORE_NOTE + "\n" + "\n".join(missing) + "\n")
+    return f"{len(missing)} 行を追記"
+
+
+def _run_init(args: argparse.Namespace) -> int:
+    """カレントディレクトリをワークスペースにする（入力ディレクトリと設定の雛形を作る）。
+
+    プログラム本体（uv tool install で入るパッケージ）と利用者のデータを分けるための入口。
+    設定はここに作る config.yaml へ差分だけを書き、書かなかった項目はパッケージ内の
+    既定が使われる。
+    """
+    input_dir = Path(args.input_dir)
+    config_path = Path(WORKSPACE_CONFIG_NAME)
+    # 書き込み先の可否は、1つも書き始める前にまとめて確かめる
+    validate_config_path(config_path)  # ディレクトリ等を「既存」として扱わない
+    gitignore_path = _gitignore_path()
+
+    input_dir.mkdir(parents=True, exist_ok=True)
+    print(f"入力ディレクトリ: {input_dir}/")
+
+    if config_path.is_file():
+        # 記入済みの上書き設定を消さない（雛形で塗り替えると組織固有の設定が失われる）
+        print(f"設定ファイル:     {config_path}（既存のため変更しません）")
+    else:
+        config_path.write_text(
+            WORKSPACE_CONFIG_TEMPLATE.read_text(encoding="utf-8"),
+            encoding="utf-8", newline="\n",
+        )
+        print(f"設定ファイル:     {config_path}（全行コメントの雛形。差分だけ書く）")
+
+    entries, note = _gitignore_entries(input_dir)
+    print(f"除外設定:         .gitignore（{_write_gitignore(gitignore_path, entries)}）")
+    if note:
+        print(f"  ! {note}")
+
+    print("\n次の手順:")
+    print("  1. seat-analyzer init-org <組織名>   ← 組織ごとの入力ディレクトリを作る")
+    print("  2. spend / members の CSV を配置（エクスポート手順は docs/usage.md 参照）")
+    print("  3. seat-analyzer analyze --month YYYY-MM")
+    return 0
 
 
 def _run_init_org(args: argparse.Namespace) -> int:
@@ -508,8 +662,13 @@ def _run_check_text(args: argparse.Namespace) -> int:
     """公開予定のテキストを検査する。業務情報を検出したら終了コード 1。"""
     cfg = load_config(args.config)
     # baseline（すでに公開されている内容）はリポジトリのルートから読む。
-    # config.yaml はリポジトリ直下に置く運用なので、省略時はその親をルートとみなす
-    root = Path(args.repo_root) if args.repo_root else Path(args.config).resolve().parent
+    # 省略時はカレントディレクトリ（リポジトリの中で実行する運用）。取り違えると
+    # 別のリポジトリの内容を公開済みとして扱うため、省略時はルートの同一性を確かめる
+    if args.repo_root:
+        root = Path(args.repo_root)
+    else:
+        root = Path.cwd()
+        public_text.validate_baseline_root(root)
 
     sources: list[tuple[str, str]] = []
     if args.text is not None:

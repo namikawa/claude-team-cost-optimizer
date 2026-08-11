@@ -15,7 +15,7 @@ import pytest
 from seat_analyzer import leakcheck, public_text
 from seat_analyzer.cli import main
 
-from .conftest import CONFIG, spend_row
+from .conftest import CONFIG, REPO_ROOT, spend_row
 
 
 @pytest.fixture
@@ -89,8 +89,11 @@ def test_check_text_ignores_already_public_names(publish_input, tmp_path):
     assert _check("ZTeamX の需要", publish_input, tmp_path) == 1
 
 
-def test_check_text_uses_repo_baseline_by_default(publish_input, tmp_path, capsys):
-    """--repo-root 省略時は --config の置かれたディレクトリを baseline とする。"""
+def test_check_text_uses_repo_baseline_by_default(
+    publish_input, tmp_path, capsys, monkeypatch,
+):
+    """--repo-root 省略時はカレントディレクトリを baseline とする。"""
+    monkeypatch.chdir(REPO_ROOT)
     capsys.readouterr()
     # 実リポジトリの examples/ にある合成データの人名は検出されない
     rc = main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
@@ -98,6 +101,50 @@ def test_check_text_uses_repo_baseline_by_default(publish_input, tmp_path, capsy
                "--text", "対象組織の watanabe@... は他組織の tanabe を部分文字列として含む"])
     assert rc == 0
     assert "検出されませんでした" in capsys.readouterr().out
+
+
+def test_check_text_rejects_an_unrelated_cwd_as_baseline(
+    publish_input, tmp_path, capsys, monkeypatch,
+):
+    """--repo-root 省略時、カレントがこのリポジトリでなければ検査を始めない。
+
+    別のリポジトリを baseline にすると、その HEAD に現れる語が「公開済み」として
+    素通りする。どの語が抜けたかは出力に現れないので、fail-closed にする。
+    """
+    monkeypatch.chdir(tmp_path)
+    capsys.readouterr()
+    rc = main(["check-text", "--config", CONFIG, "--input-dir", str(publish_input),
+               "--output-dir", str(tmp_path / "reports"),
+               "--text", "業務情報を含まない文章です"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "リポジトリのルートではありません" in err
+    assert "--repo-root" in err
+
+
+def test_check_text_does_not_check_an_explicit_repo_root(publish_input, tmp_path, monkeypatch):
+    """--repo-root を明示したときは同一性を確かめない（利用者の意識的な選択）。"""
+    monkeypatch.chdir(tmp_path)  # カレントはこのリポジトリではない
+    assert _check("業務情報を含まない文章です", publish_input, tmp_path) == 0
+
+
+def test_validate_baseline_root_accepts_this_repository():
+    public_text.validate_baseline_root(REPO_ROOT)
+
+
+def test_validate_baseline_root_rejects_other_roots(tmp_path):
+    """目印は pyproject.toml の project.name（別プロジェクト・壊れた TOML も拒否）。"""
+    with pytest.raises(leakcheck.LeakCheckError, match="リポジトリのルートではありません"):
+        public_text.validate_baseline_root(tmp_path)
+
+    other = tmp_path / "pyproject.toml"
+    other.write_text('[project]\nname = "other-tool"\n', encoding="utf-8")
+    with pytest.raises(leakcheck.LeakCheckError):
+        public_text.validate_baseline_root(tmp_path)
+
+    other.write_text("[project\n", encoding="utf-8")
+    with pytest.raises(leakcheck.LeakCheckError):
+        public_text.validate_baseline_root(tmp_path)
 
 
 def test_check_text_allow_term(publish_input, tmp_path):
@@ -201,12 +248,13 @@ def test_check_text_checks_every_input(publish_input, tmp_path, capsys):
     assert "ZTeamX" in captured.err
 
 
-def test_check_text_fails_closed_when_no_terms(tmp_path, capsys):
+def test_check_text_fails_closed_when_no_terms(tmp_path, capsys, monkeypatch):
     """禁止語を1件も集められない状態では成功させない。
 
     --input-dir が解決できないと照合が空振りし、何を渡しても「検出なし」になる。
     青信号にしか見えないので、fail-closed でエラー終了する。
     """
+    monkeypatch.chdir(REPO_ROOT)  # --repo-root 省略時の既定（カレント）を有効にする
     capsys.readouterr()
     rc = main(["check-text", "--config", CONFIG,
                "--input-dir", str(tmp_path / "nonexistent"),

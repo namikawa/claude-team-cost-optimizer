@@ -20,3 +20,56 @@ jobs:
       - run: uv sync --all-groups
       - run: uv run ruff check .
       - run: uv run pytest
+
+  package:
+    # 配布物の検査。既定設定・テンプレート・プロンプトは .py ではないため、wheel から
+    # 抜けてもテストは緑のまま通り、インストールして初めて動かないことが分かる。
+    # OS に依らない内容なので ubuntu だけで見る
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.3.2
+      - run: uv build --out-dir dist
+      - name: パッケージの全ファイルが wheel に入っているか
+        # 手書きの一覧は実体からずれる。git が知っている src/seat_analyzer/ 配下の
+        # 追跡ファイルすべてを wheel の中身と突き合わせる
+        run: |
+          python3 - <<'PY'
+          import glob
+          import subprocess
+          import sys
+          import zipfile
+
+          wheels = glob.glob("dist/*.whl")
+          if len(wheels) != 1:
+              sys.exit(f"wheel が1つに決まりません: {wheels}")
+          names = set(zipfile.ZipFile(wheels[0]).namelist())
+          tracked = subprocess.run(
+              ["git", "ls-files", "-z", "src/seat_analyzer"],
+              capture_output=True, check=True, text=True,
+          ).stdout.split("\0")
+          expected = [p.removeprefix("src/") for p in tracked if p]
+          if not expected:
+              sys.exit("src/seat_analyzer/ の追跡ファイルを取得できませんでした")
+          missing = [p for p in expected if p not in names]
+          if missing:
+              sys.exit("wheel に同梱されていません:\n  " + "\n  ".join(missing))
+          print(f"{wheels[0]}: 追跡ファイル {len(expected)} 件すべてを確認")
+          PY
+      - name: インストールした状態で動くか
+        # 実行時に読む資材（既定設定・テンプレート・プロンプト）の欠落は、リポジトリの
+        # 中で走らせている限り気づけない。隔離した venv とワークスペースで確かめる。
+        # Python は再現性のため固定する（無ければ uv が用意する）
+        run: |
+          set -eu
+          work="$(mktemp -d)"
+          uv venv --python 3.12 "$work/venv"
+          VIRTUAL_ENV="$work/venv" uv pip install dist/*.whl
+          bin="$work/venv/bin/seat-analyzer"
+          "$bin" --version
+          cd "$work"
+          "$bin" init
+          "$bin" analyze --input-dir "$GITHUB_WORKSPACE/examples/input" \
+            --month 2026-06 --output-dir "$work/out"
+          "$bin" discuss --input-dir "$GITHUB_WORKSPACE/examples/input" \
+            --org org-a --month 2026-06 --output-dir "$work/out" --dry-run > /dev/null

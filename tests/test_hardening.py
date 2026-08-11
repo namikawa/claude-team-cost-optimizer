@@ -23,7 +23,7 @@ from seat_analyzer.report.html import (
 )
 from seat_analyzer.report.text import _embed_shared_text
 
-from .conftest import SPEND_HEADER, requires_posix_filenames, spend_row
+from .conftest import CONFIG, SPEND_HEADER, requires_posix_filenames, spend_row
 
 
 # --- 出力の安全性 ---
@@ -107,7 +107,7 @@ def test_manually_created_summary_org_rejected(make_input, tmp_path, capsys):
         {"2026-06": [spend_row("a@x.jp", 1.0)]}, members=["a@x.jp,Standard"], org="summary",
     )
     rc = main([
-        "analyze", "--config", "config.yaml",
+        "analyze", "--config", CONFIG,
         "--input-dir", str(input_dir), "--output-dir", str(tmp_path / "reports"),
     ])
     assert rc == 1
@@ -238,7 +238,7 @@ def test_manually_created_bad_org_dir_rejected(make_input, tmp_path, capsys):
         {"2026-06": [spend_row("a@x.jp", 1.0)]}, members=["a@x.jp,Standard"], org="org|x",
     )
     rc = main([
-        "analyze", "--config", "config.yaml",
+        "analyze", "--config", CONFIG,
         "--input-dir", str(input_dir), "--output-dir", str(tmp_path / "reports"),
     ])
     assert rc == 1
