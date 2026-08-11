@@ -316,6 +316,12 @@ uv run seat-analyzer init-org <組織名>
      移さないと記入済みの考察が再生成時に引き継がれない
 - `check-text` や `discuss` が対象語を集められずにエラー終了する
   リポジトリのルート以外で実行している可能性が高い。ルートに移動して実行し直す。
+- `check-text` がサンプル組織名（org-a・org-b）を業務情報として検出する
+  以前の手順でサンプル出力を既定の `reports/` に生成したままになっている。
+  `reports/org-a/`・`reports/org-b/`（あれば `reports/summary/` のサンプル月の
+  サマリも）を削除するか `examples/reports/` へ移す。組織名の検査は `reports/`
+  配下にある組織を対象に含めるため、サンプルの成果物を実データの出力先に
+  置かないことが前提になっている。
 - `tests/test_golden.py` だけが落ちる
   ワークツリーの改行が CRLF のまま残っている。`core.autocrlf` や `core.eol` を有効に
   していると OS によらず起きる。`git ls-files --eol | grep 'w/crlf' | grep -v examples/input`
