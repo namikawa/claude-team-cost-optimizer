@@ -85,9 +85,16 @@ def test_month_missing_in_one_org_is_skipped(make_input, tmp_path, capsys):
 
 
 def _assert_migration_guidance(err: str) -> None:
-    """旧レイアウトを検出したときの案内（何をどこへ移すか）が出ていること。"""
+    """旧レイアウトを検出したときの案内（何をどこへ移すか）が出ていること。
+
+    spend/ だけを移しても分析は始まらないため、移す対象を漏れなく挙げていることまで
+    確かめる（members/ が無い状態は analyze のエラーになる）。
+    """
     assert "旧レイアウト" in err
     assert "init-org" in err and "<組織名>" in err
+    for item in ("spend/", "members/", "code-analytics/", "members-info"):
+        assert item in err
+    assert "docs/setup.md" in err
 
 
 def test_flat_layout_errors_with_migration_guidance(make_input, tmp_path, capsys):
@@ -480,8 +487,9 @@ def test_doctor_heading_without_org_and_month(tmp_path, capsys):
     assert "=== 入力検査 ===" in capsys.readouterr().out
 
 
-def test_doctor_rejects_org_named_spend(tmp_path, capsys):
-    # 組織名 spend は直下 spend/ と区別できないため analyze と同じくエラーにする
+def test_doctor_rejects_hand_made_org_named_spend(tmp_path, capsys):
+    # 組織名 spend は init-org が作らせないが、手で作られたものは実行時に止める
+    # （直下 spend/ と区別できないため analyze と同じ旧レイアウト扱いにする）
     org = tmp_path / "input" / "spend"
     (org / "spend").mkdir(parents=True)
     (org / "spend" / "spend_2026-06.csv").write_text(
@@ -654,7 +662,33 @@ def test_init_org_points_out_flat_layout_data(tmp_path, capsys):
     assert main(["init-org", "org-x", "--input-dir", str(input_dir),
                  "--output-dir", str(tmp_path / "reports")]) == 0
     out = capsys.readouterr().out
-    assert "旧レイアウト" in out and "<組織名>/spend/" in out
+    assert "旧レイアウト" in out and "<組織名>" in out
+    for item in ("spend/", "members/", "code-analytics/", "members-info"):
+        assert item in out
+    assert "docs/setup.md" in out
+
+
+def test_init_org_rejects_org_named_spend(tmp_path, capsys):
+    # 作れてしまうと、雛形が旧レイアウトの目印と重なり分析できないワークスペースになる。
+    # 大文字小文字を無視して拒否する（既定の Windows / macOS では同じディレクトリになる）
+    input_dir, output_dir = tmp_path / "input", tmp_path / "reports"
+    for bad in ("spend", "Spend"):
+        rc = main([
+            "init-org", bad, "--input-dir", str(input_dir), "--output-dir", str(output_dir),
+        ])
+        assert rc == 1
+        assert "予約" in capsys.readouterr().err
+    # 1つでも不正なら1つも作らない（正当な名前と併記した場合も含む）
+    assert main([
+        "init-org", "org-x", "spend",
+        "--input-dir", str(input_dir), "--output-dir", str(output_dir),
+    ]) == 1
+    assert not input_dir.exists()
+    # 正当な組織名は従来どおり作れる
+    assert main([
+        "init-org", "org-x", "--input-dir", str(input_dir), "--output-dir", str(output_dir),
+    ]) == 0
+    assert (input_dir / "org-x" / "spend").is_dir()
 
 
 def test_init_org_does_not_overwrite_filled_members_info(tmp_path):

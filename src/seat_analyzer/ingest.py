@@ -356,6 +356,15 @@ def validate_org_name(org: str) -> None:
         raise ValueError(
             "組織名 'summary' は横断サマリの出力先（reports/summary/）として予約されています"
         )
+    # input/ 直下の spend/ は旧レイアウトの目印として拒否されるため、この名前の組織は
+    # 作った時点で分析できない。大文字小文字を無視して比較するのは、既定の
+    # Windows / macOS のファイルシステムでは input/Spend も input/spend になるため
+    # （名前の可否がファイルシステムによって変わらないようにする）
+    if org.casefold() == "spend":
+        raise ValueError(
+            f"組織名 {org!r} は旧レイアウトの目印（input/ 直下の spend/）と"
+            "区別できないため予約されています"
+        )
     if not org or org != org.strip() or org.startswith("."):
         raise ValueError(
             f"組織名が不正です: {org!r}（空・先頭のドット・前後空白は使えません）"

@@ -376,8 +376,10 @@ def _run_init_org(args: argparse.Namespace) -> int:
 
     if (input_dir / "spend").is_dir():
         print(
-            f"\n! 旧レイアウトのデータが {input_dir}/spend/ にあります。"
-            f"この形では分析できないため、{input_dir}/<組織名>/spend/ へ移動してください"
+            f"\n! 旧レイアウトのデータが {input_dir}/spend/ にあります。この形では分析"
+            "できないため、spend/・members/・code-analytics/ と members-info*.csv を"
+            f" {input_dir}/<組織名>/ 配下へ移動してください"
+            "（空になったディレクトリも消す。手順は docs/setup.md 参照）"
         )
     print("\nCSV 配置後: uv run seat-analyzer analyze （エクスポート手順は docs/usage.md 参照）")
     return 0
@@ -402,8 +404,10 @@ def _resolve_targets(
         # 組織配下へ動かせば解決する）
         raise ValueError(
             f"{input_dir} 直下の spend/ は旧レイアウトのため分析できません。"
-            "seat-analyzer init-org <組織名> で雛形を作成し、"
-            f"{input_dir}/<組織名>/spend/ へ CSV を移動してください"
+            f"seat-analyzer init-org <組織名> --input-dir {input_dir} で雛形を作成し、"
+            "spend/・members/・code-analytics/ と members-info*.csv を"
+            f" {input_dir}/<組織名>/ 配下へ移動してください"
+            "（空になったディレクトリも消す。手順は docs/setup.md 参照）"
         )
     if not orgs:
         if org_args:

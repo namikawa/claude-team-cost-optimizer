@@ -191,10 +191,14 @@ def test_org_name_validation():
     validate_org_name("開発本部")        # 日本語は許可
     validate_org_name("config")         # 予約デバイス名に似ているだけの名前は許可
     validate_org_name("org.a")          # 途中のドットは許可（末尾だけが問題）
+    validate_org_name("members")        # spend 以外の入力サブディレクトリ名は許可
     bad_names = (
         "summary", ".hidden", "a/b", "org|x", "a[b]", " x", "x ",
         # 大文字小文字を区別しないファイルシステムでは reports/summary と同じ場所になる
         "SUMMARY", "Summary",
+        # input/ 直下の spend/（旧レイアウトの目印）と区別できない。大文字小文字を
+        # 区別しないファイルシステムでは Spend も同じディレクトリになる
+        "spend", "SPEND", "Spend",
         # Windows でディレクトリ名に使えない文字（NTFS の代替データストリーム等）
         "a:b", "a*b", "a?b", 'a"b',
         # 制御文字は 0x00-0x1f 全体が使えない（改行・タブだけではない）
