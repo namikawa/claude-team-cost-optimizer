@@ -219,27 +219,72 @@ def main(argv: list[str] | None = None) -> int:
 INPUT_SUBDIRS = ingest.INPUT_SUBDIRS
 
 
-def _gitignore_entries(input_dir: Path) -> list[str]:
-    """ワークスペースで git に入れてはいけないもの。
+def _gitignore_pattern(rel: str, *, directory: bool) -> str:
+    """ワークスペース相対パスを、その名前どおりに一致する .gitignore の行にする。
+
+    `*` `?` `[` `]` `\\` はパターンとして解釈されるため、名前に含まれていれば
+    エスケープする（そのまま書くと、除外したつもりのディレクトリが対象から外れる）。
+    行頭の `/` はワークスペース直下に限る指定で、`#` や `!` が先頭に来ることも防ぐ。
+    """
+    escaped = "".join("\\" + c if c in "\\*?[]" else c for c in rel)
+    return f"/{escaped}" + ("/" if directory else "")
+
+
+def _workspace_relative(path: Path) -> str | None:
+    """カレント（ワークスペース）から見た相対パス。配下でなければ None。
+
+    .gitignore のパターンはそれが置かれたディレクトリからの相対でしか書けないため、
+    ワークスペースの外を指す入力ディレクトリは行にできない。
+    """
+    try:
+        rel = path.resolve().relative_to(Path.cwd().resolve())
+    except ValueError:
+        return None
+    return rel.as_posix() if rel.parts else None
+
+
+def _gitignore_entries(input_dir: Path) -> tuple[list[str], str | None]:
+    """ワークスペースで git に入れてはいけないものと、行にできなかった場合の通知。
 
     設定には組織固有の語が入り、入力には利用実績、出力には生成したレポートが入る。
     ワークスペースが git 管理下にあると `git add .` がまとめて拾う。
     """
-    return [
-        f"/{WORKSPACE_CONFIG_NAME}",
-        f"/{input_dir.as_posix().strip('/')}/",
-        "/reports/",
-    ]
+    entries = [_gitignore_pattern(WORKSPACE_CONFIG_NAME, directory=False)]
+    note = None
+    rel = _workspace_relative(input_dir)
+    if rel is None:
+        note = (
+            f"入力ディレクトリ（{input_dir}）はワークスペース配下の相対パスにできないため"
+            " .gitignore の対象外です。git 管理下に置くなら自分で除外してください"
+        )
+    else:
+        entries.append(_gitignore_pattern(rel, directory=True))
+    entries.append(_gitignore_pattern("reports", directory=True))
+    return entries, note
 
 
-def _write_gitignore(input_dir: Path) -> str:
+def _gitignore_path() -> Path:
+    """ワークスペースの .gitignore（書ける形であることを確かめて返す）。
+
+    git は symlink の .gitignore を除外設定として読まない（リンク先が通常ファイルでも
+    無視される）。追記できても保護にならないので、書く前に拒否する。
+    """
+    path = Path(".gitignore")
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(
+            f"{path} が通常のファイルではありません"
+            "（symlink やディレクトリの .gitignore は git が除外設定として読まないため、"
+            "書いても保護になりません。取り除いてから実行してください）"
+        )
+    return path
+
+
+def _write_gitignore(path: Path, entries: list[str]) -> str:
     """.gitignore に必要な行を用意する。戻り値は表示用の状態。
 
     既にあるファイルには足りない行だけを追記する（既存の内容と改行の形は変えない）。
     """
-    path = Path(".gitignore")
-    entries = _gitignore_entries(input_dir)
-    if not path.exists() and not path.is_symlink():
+    if not path.exists():
         path.write_text(
             _GITIGNORE_NOTE + "\n" + "\n".join(entries) + "\n",
             encoding="utf-8", newline="\n",
@@ -268,11 +313,14 @@ def _run_init(args: argparse.Namespace) -> int:
     既定が使われる。
     """
     input_dir = Path(args.input_dir)
+    config_path = Path(WORKSPACE_CONFIG_NAME)
+    # 書き込み先の可否は、1つも書き始める前にまとめて確かめる
+    validate_config_path(config_path)  # ディレクトリ等を「既存」として扱わない
+    gitignore_path = _gitignore_path()
+
     input_dir.mkdir(parents=True, exist_ok=True)
     print(f"入力ディレクトリ: {input_dir}/")
 
-    config_path = Path(WORKSPACE_CONFIG_NAME)
-    validate_config_path(config_path)  # ディレクトリ等を「既存」として扱わない
     if config_path.is_file():
         # 記入済みの上書き設定を消さない（雛形で塗り替えると組織固有の設定が失われる）
         print(f"設定ファイル:     {config_path}（既存のため変更しません）")
@@ -282,7 +330,11 @@ def _run_init(args: argparse.Namespace) -> int:
             encoding="utf-8", newline="\n",
         )
         print(f"設定ファイル:     {config_path}（全行コメントの雛形。差分だけ書く）")
-    print(f"除外設定:         .gitignore（{_write_gitignore(input_dir)}）")
+
+    entries, note = _gitignore_entries(input_dir)
+    print(f"除外設定:         .gitignore（{_write_gitignore(gitignore_path, entries)}）")
+    if note:
+        print(f"  ! {note}")
 
     print("\n次の手順:")
     print("  1. seat-analyzer init-org <組織名>   ← 組織ごとの入力ディレクトリを作る")

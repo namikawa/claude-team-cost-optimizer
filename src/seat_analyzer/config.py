@@ -82,17 +82,27 @@ def validate_config_path(path: Path) -> None:
     )
 
 
+# YAML のマージキー（`<<: *anchor`）が持つタグ。キーそのものに値は無く、基底の
+# 実装が展開して取り除く
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
 class _StrictLoader(yaml.SafeLoader):
     """マッピングの重複キーを拒否する SafeLoader。
 
     既定の読み込みは同じキーが2度現れると後の値で黙って上書きする。同じセクションを
     2回書いた設定では先に書いた側が丸ごと消え、そこに混ざった綴り違いのキーも
     既定との突合に届かないまま「効いているつもり」の状態になる。
+
+    アンカーとマージキーは基底の実装に任せる（重複の判定は明示的に書かれたキー
+    どうしだけで行う。マージで来たキーを明示キーで上書きするのは YAML の仕様）。
     """
 
     def construct_mapping(self, node, deep: bool = False):
         seen: set = set()
         for key_node, _ in node.value:
+            if key_node.tag == _MERGE_TAG:
+                continue  # 値を持たないキー。構成子が無いため作ろうとすると失敗する
             key = self.construct_object(key_node, deep=deep)
             try:
                 duplicated = key in seen

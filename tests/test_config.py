@@ -6,7 +6,10 @@
 無視しないことを見る。ワークスペースの雛形を作る `init` も対象にする。
 """
 
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -154,6 +157,49 @@ def test_duplicate_keys_are_rejected(tmp_path, text, key):
     path = _override(tmp_path, text)
     with pytest.raises(ValueError, match=f"キー '{key}' が重複しています"):
         load_config(path)
+
+
+# アンカー（&std）とマージキー（<<）で allowance を共有する上書き。
+# 明示キー high は展開結果より優先される（YAML の仕様）
+_MERGE_YAML = """
+seats:
+  standard:
+    allowance_usd: &std
+      low: 30.0
+      mid: 50.0
+      high: 75.0
+  premium:
+    allowance_usd:
+      {order}
+"""
+_MERGE_LAST = "<<: *std\n      high: 400.0"
+_MERGE_FIRST = "high: 400.0\n      <<: *std"
+
+
+@pytest.mark.parametrize("order", [_MERGE_LAST, _MERGE_FIRST])
+def test_merge_keys_expand_as_yaml_specifies(tmp_path, order):
+    """アンカーとマージキーを使った上書きが、素の読み込みと同じ結果になる。
+
+    重複キーの検査はマージキーを対象にしない（マージで来たキーを明示キーで上書き
+    するのは YAML の仕様で、書き手の意図どおり）。書く順序でも結果は変わらない。
+    """
+    text = _MERGE_YAML.format(order=order)
+    cfg = load_config(_override(tmp_path, text))
+    expanded = {"low": 30.0, "mid": 50.0, "high": 400.0}
+
+    assert cfg["seats"]["premium"]["allowance_usd"] == expanded
+    assert yaml.safe_load(text)["seats"]["premium"]["allowance_usd"] == expanded
+    # 展開後のキーは既定にあるものだけなので未知キー検査も通り、兄弟キーは既定が残る
+    assert cfg["seats"]["premium"]["price_usd"] == 125.0
+    assert cfg["seats"]["standard"]["allowance_usd"] == {
+        "low": 30.0, "mid": 50.0, "high": 75.0}
+
+
+def test_duplicate_keys_are_still_detected_with_merge_keys(tmp_path):
+    """マージキーがあっても、明示キーどうしの重複は検出する。"""
+    text = _MERGE_YAML.format(order="<<: *std\n      high: 400.0\n      high: 500.0")
+    with pytest.raises(ValueError, match="キー 'high' が重複しています"):
+        load_config(_override(tmp_path, text))
 
 
 @pytest.mark.parametrize("text,fragment", [
@@ -312,6 +358,102 @@ def test_init_gitignore_follows_the_input_dir_name(tmp_path, monkeypatch):
     lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
     assert "/data/" in lines
     assert "/input/" not in lines
+
+
+def test_init_gitignore_relativizes_an_absolute_input_dir(tmp_path, monkeypatch):
+    """ワークスペース配下を絶対パスで指しても、相対の行になる。
+
+    .gitignore のパターンはそれが置かれたディレクトリからの相対でしか書けないため、
+    絶対パスをそのまま書くと何にも一致しない行になる。
+    """
+    monkeypatch.chdir(tmp_path)
+    assert main(["init", "--input-dir", str(tmp_path / "data")]) == 0
+    lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "/data/" in lines
+    assert not any(line.startswith("//") for line in lines)
+
+
+def test_init_reports_an_input_dir_outside_the_workspace(tmp_path, monkeypatch, capsys):
+    """ワークスペースの外を指した入力ディレクトリは行にできないので、そう伝える。
+
+    書けない行を書いたことにすると、保護されていないのに保護したように見える。
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    capsys.readouterr()
+
+    assert main(["init", "--input-dir", str(tmp_path / "outside")]) == 0
+    lines = (workspace / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert {"/config.yaml", "/reports/"} <= set(lines)
+    assert not any("outside" in line for line in lines)
+    assert ".gitignore の対象外" in capsys.readouterr().out
+
+
+def test_init_gitignore_escapes_pattern_characters(tmp_path, monkeypatch):
+    """名前に含まれる `*` や `[` はパターンとして解釈されないようにする。"""
+    monkeypatch.chdir(tmp_path)
+    assert main(["init", "--input-dir", "in[1]put"]) == 0
+    lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "/in\\[1\\]put/" in lines
+
+
+def test_gitignore_entries_are_effective_in_git(tmp_path, monkeypatch):
+    """書いた行が git に意図どおり解釈される（除外の実効を git 自身に確かめる）。
+
+    エスケープの規則は git の側にあるので、生成した文字列を見るだけでは
+    「保護したつもり」で終わりうる。
+    """
+    if shutil.which("git") is None:
+        pytest.skip("git を実行できない環境")
+    # 利用者の設定（core.excludesFile 等）を持ち込まない
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": str(tmp_path / "no-config"),
+           "GIT_CONFIG_SYSTEM": str(tmp_path / "no-config")}
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, env=env, check=True,
+                   capture_output=True)
+    monkeypatch.chdir(tmp_path)
+    assert main(["init", "--input-dir", "in[1]put"]) == 0
+    for rel in ("in[1]put/spend.csv", "i1put/other.csv", "config.yaml"):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n", encoding="utf-8", newline="\n")
+
+    def ignored(rel: str) -> bool:
+        return subprocess.run(
+            ["git", "check-ignore", "-q", rel], cwd=tmp_path, env=env,
+            capture_output=True,
+        ).returncode == 0
+
+    assert ignored("in[1]put/spend.csv")     # 名前どおりに一致する
+    assert ignored("config.yaml")
+    assert not ignored("i1put/other.csv")    # 文字クラスとして解釈されていない
+
+
+def test_init_rejects_a_gitignore_that_is_not_a_regular_file(tmp_path, monkeypatch, capsys):
+    """ディレクトリの .gitignore は書ける形ではない。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".gitignore").mkdir()
+    capsys.readouterr()
+
+    assert main(["init"]) == 1
+    assert "通常のファイルではありません" in capsys.readouterr().err
+
+
+@requires_symlink
+def test_init_rejects_a_symlinked_gitignore(tmp_path, monkeypatch, capsys):
+    """symlink の .gitignore は、リンク先が通常ファイルでも拒否する。
+
+    git は symlink の .gitignore を除外設定として読まないため、追記できても保護に
+    ならない。成功したように見せない。
+    """
+    monkeypatch.chdir(tmp_path)
+    target = _write(tmp_path / "ignore-rules", "/input/\n")
+    (tmp_path / ".gitignore").symlink_to(target)
+    capsys.readouterr()
+
+    assert main(["init"]) == 1
+    assert "通常のファイルではありません" in capsys.readouterr().err
+    assert target.read_text(encoding="utf-8") == "/input/\n"  # リンク先も書き換えない
 
 
 def test_init_appends_only_the_missing_gitignore_entries(tmp_path, monkeypatch):
