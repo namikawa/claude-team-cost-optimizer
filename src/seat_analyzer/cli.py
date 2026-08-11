@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from . import analyze, data_quality, discussion, ingest, public_text, report
-from .config import WORKSPACE_CONFIG_NAME, load_config
+from .config import WORKSPACE_CONFIG_NAME, load_config, validate_config_path
 from .discussion import DiscussionError
 from .domain import QualityIssue, Severity
 from .leakcheck import LeakCheckError
@@ -19,6 +19,10 @@ WORKSPACE_CONFIG_TEMPLATE = Path(__file__).parent / "templates" / "workspace-con
 
 # --config 省略時の説明。上書きファイルは任意なので「無くても動く」ことを明示する
 _CONFIG_HELP = f"設定の上書きファイル (default: ./{WORKSPACE_CONFIG_NAME} があれば適用)"
+
+# ワークスペースを git 管理下に置いても、実データと組織固有の設定が入らないようにする。
+# 追記する行の目印にもなるので、文言は変えずに使う
+_GITIGNORE_NOTE = "# 実データと組織固有の設定をコミットしない（seat-analyzer init）"
 
 
 def _force_utf8_io() -> None:
@@ -215,6 +219,47 @@ def main(argv: list[str] | None = None) -> int:
 INPUT_SUBDIRS = ingest.INPUT_SUBDIRS
 
 
+def _gitignore_entries(input_dir: Path) -> list[str]:
+    """ワークスペースで git に入れてはいけないもの。
+
+    設定には組織固有の語が入り、入力には利用実績、出力には生成したレポートが入る。
+    ワークスペースが git 管理下にあると `git add .` がまとめて拾う。
+    """
+    return [
+        f"/{WORKSPACE_CONFIG_NAME}",
+        f"/{input_dir.as_posix().strip('/')}/",
+        "/reports/",
+    ]
+
+
+def _write_gitignore(input_dir: Path) -> str:
+    """.gitignore に必要な行を用意する。戻り値は表示用の状態。
+
+    既にあるファイルには足りない行だけを追記する（既存の内容と改行の形は変えない）。
+    """
+    path = Path(".gitignore")
+    entries = _gitignore_entries(input_dir)
+    if not path.exists() and not path.is_symlink():
+        path.write_text(
+            _GITIGNORE_NOTE + "\n" + "\n".join(entries) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+        return f"{len(entries)} 行で作成"
+
+    raw = path.read_bytes()
+    # 行の照合はバイト列から復号したものに対して行い、ファイル自体は書き戻さない
+    existing = {line.strip() for line in raw.decode("utf-8", errors="replace").splitlines()}
+    missing = [e for e in entries if e not in existing]
+    if not missing:
+        return "必要な行がそろっているため変更なし"
+    # 追記なので既存のバイト列には触らない。最後の行が閉じていなければ閉じ、
+    # 既存の内容とは1行空ける
+    lead = "" if not raw else ("\n" if raw.endswith(b"\n") else "\n\n")
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(lead + _GITIGNORE_NOTE + "\n" + "\n".join(missing) + "\n")
+    return f"{len(missing)} 行を追記"
+
+
 def _run_init(args: argparse.Namespace) -> int:
     """カレントディレクトリをワークスペースにする（入力ディレクトリと設定の雛形を作る）。
 
@@ -227,7 +272,8 @@ def _run_init(args: argparse.Namespace) -> int:
     print(f"入力ディレクトリ: {input_dir}/")
 
     config_path = Path(WORKSPACE_CONFIG_NAME)
-    if config_path.exists():
+    validate_config_path(config_path)  # ディレクトリ等を「既存」として扱わない
+    if config_path.is_file():
         # 記入済みの上書き設定を消さない（雛形で塗り替えると組織固有の設定が失われる）
         print(f"設定ファイル:     {config_path}（既存のため変更しません）")
     else:
@@ -236,6 +282,7 @@ def _run_init(args: argparse.Namespace) -> int:
             encoding="utf-8", newline="\n",
         )
         print(f"設定ファイル:     {config_path}（全行コメントの雛形。差分だけ書く）")
+    print(f"除外設定:         .gitignore（{_write_gitignore(input_dir)}）")
 
     print("\n次の手順:")
     print("  1. seat-analyzer init-org <組織名>   ← 組織ごとの入力ディレクトリを作る")
@@ -560,8 +607,13 @@ def _run_check_text(args: argparse.Namespace) -> int:
     """公開予定のテキストを検査する。業務情報を検出したら終了コード 1。"""
     cfg = load_config(args.config)
     # baseline（すでに公開されている内容）はリポジトリのルートから読む。
-    # 省略時はカレントディレクトリ（リポジトリの中で実行する運用）
-    root = Path(args.repo_root) if args.repo_root else Path.cwd()
+    # 省略時はカレントディレクトリ（リポジトリの中で実行する運用）。取り違えると
+    # 別のリポジトリの内容を公開済みとして扱うため、省略時はルートの同一性を確かめる
+    if args.repo_root:
+        root = Path(args.repo_root)
+    else:
+        root = Path.cwd()
+        public_text.validate_baseline_root(root)
 
     sources: list[tuple[str, str]] = []
     if args.text is not None:

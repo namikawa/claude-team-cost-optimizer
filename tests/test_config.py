@@ -6,6 +6,7 @@
 無視しないことを見る。ワークスペースの雛形を作る `init` も対象にする。
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ import yaml
 
 from seat_analyzer.cli import WORKSPACE_CONFIG_TEMPLATE, main
 from seat_analyzer.config import PACKAGE_CONFIG_PATH, load_config
+
+from .conftest import requires_symlink
 
 
 def _write(path: Path, text: str) -> Path:
@@ -123,15 +126,65 @@ def test_unknown_key_is_rejected_with_its_path(tmp_path, text, where):
         load_config(path)
 
 
-@pytest.mark.parametrize("text,where", [
-    ("decision: 3\n", "decision"),                       # 既定は辞書
-    ("cost_basis:\n  value: computed\n", "cost_basis"),   # 既定は値
+@pytest.mark.parametrize("text,where,want", [
+    ("decision: 3\n", "decision", "辞書"),                        # 既定は辞書
+    ("decision:\n  - hysteresis_months\n", "decision", "辞書"),
+    ("cost_basis:\n  value: computed\n", "cost_basis", "値"),      # 既定は値
+    ("trend:\n  top_changes: []\n", "trend.top_changes", "値"),
+    ("model_prices:\n  patterns: 3\n", "model_prices.patterns", "リスト"),
 ])
-def test_type_mismatch_is_rejected(tmp_path, text, where):
-    """辞書と値・リストの取り違えはエラーにする。"""
+def test_value_kind_mismatch_is_rejected(tmp_path, text, where, want):
+    """辞書・リスト・値の3種別で既定と食い違う上書きはエラーにする。
+
+    種別を「辞書か否か」だけで見ると、数値の位置に書いたリストが後段の計算まで届き、
+    設定の誤りが計算の型エラーとして表に出る。
+    """
     path = _override(tmp_path, text)
-    with pytest.raises(ValueError, match=f"'{where}' は"):
+    with pytest.raises(ValueError, match=f"'{where}' は{want}で指定してください"):
         load_config(path)
+
+
+@pytest.mark.parametrize("text,key", [
+    # 同じセクションを2回書くと、先に書いた側が丸ごと消える
+    ("decision:\n  hysteresis_months: 3\ndecision:\n  buffer_ratio: 0.5\n", "decision"),
+    ("decision:\n  hysteresis_months: 3\n  hysteresis_months: 4\n", "hysteresis_months"),
+])
+def test_duplicate_keys_are_rejected(tmp_path, text, key):
+    """重複キーは後勝ちで飲み込まず、キー名を挙げてエラーにする。"""
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=f"キー '{key}' が重複しています"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("text,fragment", [
+    # 真偽値は int の一種なので、素の isinstance では回数として通ってしまう
+    ("decision:\n  hysteresis_months: yes\n", "hysteresis_months"),
+    ("seats:\n  standard:\n    price_usd: .nan\n", "price_usd"),
+    ("seats:\n  premium:\n    allowance_usd:\n      high: .inf\n", "allowance_usd.high"),
+    ("decision:\n  buffer_ratio: .nan\n", "buffer_ratio"),
+    ("decision:\n  censoring_margin: .inf\n", "censoring_margin"),
+    # 綴り違いの算出基準は auto と同じ扱いで黙って通る
+    ("cost_basis: computd\n", "cost_basis"),
+    ('model_prices:\n  patterns:\n    - { match: 123, input: 1.0, output: 2.0 }\n',
+     "patterns[0]"),
+    ("model_prices:\n  default:\n    input: .inf\n", "model_prices.default"),
+])
+def test_values_that_break_later_stages_are_rejected(tmp_path, text, fragment):
+    """種別は合っていても、後段の計算・照合が壊れる値は設定の時点で落とす。
+
+    NaN・Infinity は比較が常に偽になるため、判定を黙って変える。真偽値の回数、
+    文字列でない照合パターンも同様に、値としては読めてしまう。
+    """
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=re.escape(fragment)):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", ["computed", "net_spend", "auto", "Computed"])
+def test_cost_basis_accepts_its_documented_values(tmp_path, value):
+    """列挙の検証は算出基準の正しい値を弾かない（照合は小文字化して行う）。"""
+    path = _override(tmp_path, f"cost_basis: {value}\n")
+    assert load_config(path)["cost_basis"] == value
 
 
 @pytest.mark.parametrize("text,where", [
@@ -159,6 +212,27 @@ def test_explicit_missing_config_errors(tmp_path):
     """--config で明示したファイルが無ければ従来どおりエラー（黙って既定で走らせない）。"""
     with pytest.raises(FileNotFoundError, match="設定ファイルが見つかりません"):
         load_config(tmp_path / "nonexistent.yaml")
+
+
+def test_config_that_is_not_a_regular_file_is_rejected(tmp_path, monkeypatch):
+    """カレントの config.yaml がディレクトリなら、既定のみで続行せずエラーにする。
+
+    「無ければ既定のみ」は存在しないときの話で、読めない何かがそこにある状態で
+    黙って既定で走ると、上書きしたつもりの設定が効かないまま結果が出る。
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").mkdir()
+    with pytest.raises(ValueError, match="通常のファイルではありません"):
+        load_config()
+
+
+@requires_symlink
+def test_broken_symlink_config_is_rejected(tmp_path, monkeypatch):
+    """リンク切れの config.yaml も「存在しない」とは扱わない。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").symlink_to(tmp_path / "missing.yaml")
+    with pytest.raises(ValueError, match="通常のファイルではありません"):
+        load_config()
 
 
 def test_cli_reads_the_workspace_config(tmp_path, monkeypatch, capsys):
@@ -206,6 +280,86 @@ def test_init_is_repeatable_and_keeps_existing_config(tmp_path, monkeypatch, cap
     assert main(["init"]) == 0
     assert written.read_text(encoding="utf-8") == "decision:\n  hysteresis_months: 3\n"
     assert "既存のため変更しません" in capsys.readouterr().out
+
+
+def test_init_rejects_a_config_that_is_not_a_regular_file(tmp_path, monkeypatch, capsys):
+    """ディレクトリを「既存の設定」として扱わない（雛形が作られたと誤解させない）。"""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yaml").mkdir()
+    capsys.readouterr()
+
+    assert main(["init"]) == 1
+    assert "通常のファイルではありません" in capsys.readouterr().err
+
+
+def test_init_creates_gitignore(tmp_path, monkeypatch, capsys):
+    """ワークスペースが git 管理下でも、実データと組織固有の設定が入らないようにする。"""
+    monkeypatch.chdir(tmp_path)
+    capsys.readouterr()
+
+    assert main(["init"]) == 0
+    raw = (tmp_path / ".gitignore").read_bytes()
+    assert b"\r" not in raw
+    lines = raw.decode("utf-8").splitlines()
+    assert lines[0].startswith("#")
+    assert {"/config.yaml", "/input/", "/reports/"} <= set(lines)
+    assert ".gitignore" in capsys.readouterr().out
+
+
+def test_init_gitignore_follows_the_input_dir_name(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert main(["init", "--input-dir", "data"]) == 0
+    lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert "/data/" in lines
+    assert "/input/" not in lines
+
+
+def test_init_appends_only_the_missing_gitignore_entries(tmp_path, monkeypatch):
+    """既存の .gitignore は残し、足りない行だけを足す（行の照合は前後空白を無視する）。"""
+    monkeypatch.chdir(tmp_path)
+    head = "# 利用者が書いた行\n.venv/\n  /input/  \n"
+    path = _write(tmp_path / ".gitignore", head)
+
+    assert main(["init"]) == 0
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith(head)
+    lines = [line.strip() for line in text.splitlines()]
+    assert lines.count("/input/") == 1
+    assert "/config.yaml" in lines and "/reports/" in lines
+
+
+def test_init_leaves_a_complete_gitignore_untouched(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    path = _write(tmp_path / ".gitignore", "/config.yaml\n/input/\n/reports/\n")
+    before = path.read_bytes()
+    capsys.readouterr()
+
+    assert main(["init"]) == 0
+    assert path.read_bytes() == before
+    assert "変更なし" in capsys.readouterr().out
+
+
+def test_init_appends_lf_lines_to_a_crlf_gitignore(tmp_path, monkeypatch):
+    """既存の改行の形は変えず、足す行は LF で書く。"""
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / ".gitignore"
+    path.write_bytes(b"/input/\r\n")
+
+    assert main(["init"]) == 0
+    raw = path.read_bytes()
+    assert raw.startswith(b"/input/\r\n")
+    assert raw.count(b"\r\n") == 1
+
+
+def test_init_appends_to_a_gitignore_without_a_trailing_newline(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / ".gitignore"
+    path.write_bytes(b"/input/")
+
+    assert main(["init"]) == 0
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "/input/"          # 行が連結されない
+    assert "/config.yaml" in lines
 
 
 def test_workspace_template_has_no_effective_settings():

@@ -14,6 +14,7 @@ from __future__ import annotations
 import codecs
 import re
 import subprocess
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,10 @@ from .leakcheck import (
     find_leaks,
     forbidden_terms,
 )
+
+# baseline の読み取り元がこのリポジトリかを見分けるための名前（pyproject.toml の
+# project.name と突き合わせる）
+PROJECT_NAME = "seat-analyzer"
 
 # git が使えないとき（テストの --repo-root 等）に走査する対象。
 # 通常は git 管理下のファイル一覧を使う（下記 _tracked_files）。
@@ -108,6 +113,33 @@ class PublicCheckResult:
 
     hits: tuple[LeakHit, ...]
     n_terms: int  # 照合した禁止語の数（0 なら検査が退化しているので失敗させる）
+
+
+def validate_baseline_root(root: Path) -> None:
+    """baseline の読み取り元が、このツールのリポジトリのルートであることを確かめる。
+
+    root を取り違えると、そこにある別のリポジトリの内容が「すでに公開されている」と
+    みなされ、その語は業務情報でも検出されなくなる。省略された root（カレント
+    ディレクトリ）に対して確かめ、明示された root には適用しない。
+
+    目印は pyproject.toml の project.name。git のリモート URL は付け替えられ、
+    ディレクトリ名は複製で変わるため、リポジトリの中身そのものを見る。
+    """
+    try:
+        with (root / "pyproject.toml").open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, ValueError):
+        # 読めない・TOML として壊れている・UTF-8 でない（後の2つは ValueError の一種）。
+        # いずれもこのリポジトリだと確かめられないので同じ扱いにする
+        data = {}
+    project = data.get("project")
+    name = project.get("name") if isinstance(project, dict) else None
+    if name != PROJECT_NAME:
+        raise LeakCheckError(
+            f"{root} は {PROJECT_NAME} のリポジトリのルートではありません。"
+            "すでに公開されている内容を確定できないため中止します"
+            "（--repo-root にこのリポジトリのルートを指定してください）"
+        )
 
 
 def _git_bytes(root: Path, args: list[str], stdin: bytes | None = None) -> bytes | None:
