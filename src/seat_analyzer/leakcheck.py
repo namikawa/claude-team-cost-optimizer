@@ -120,7 +120,7 @@ def _is_org_input_dir(path: Path) -> bool:
     名前で除外する（spend 等を落とす）方式にすると、`input/members/spend/` のように
     入力サブディレクトリと同名の組織が実在した場合にその組織の禁止語が丸ごと抜ける。
     組織名の検証（ingest.validate_org_name）はこれらの名前を許すため、構造で判定する。
-    旧レイアウトの `input/spend/` は CSV しか持たないのでここで除外される。
+    CSV を直接置いただけの `input/spend/` は入力サブディレクトリを持たず除外される。
     """
     for entry in _scandir(path):
         if entry.is_dir() and entry.name in ingest.INPUT_SUBDIRS:
@@ -133,8 +133,9 @@ def _is_org_input_dir(path: Path) -> bool:
 def _is_org_output_dir(path: Path) -> bool:
     """出力側の組織ディレクトリか。月ディレクトリを子に持つかで構造的に判定する。
 
-    旧レイアウトの `reports/YYYY-MM/` と横断サマリの `reports/summary/` は月ディレクトリを
-    持たないため除外される。組織名が月の形式でも `reports/<月>/<月>/` になるので拾える。
+    横断サマリの `reports/summary/` と月ディレクトリを直接置いた `reports/YYYY-MM/` は
+    月ディレクトリを持たないため除外される。組織名が月の形式でも
+    `reports/<月>/<月>/` になるので拾える。
     """
     return any(
         e.is_dir() and MONTH_DIR_RE.match(e.name) for e in _scandir(path)
@@ -220,6 +221,9 @@ def forbidden_terms(
     *, input_dir: Path, output_dir: Path, target_org: str | None, cfg: dict,
 ) -> tuple[Term, ...]:
     """他組織に由来する語（組織名・メール・人名トークン・部署/チーム名）。
+
+    target_org=None は「対象組織を持たない検査」（公開テキストの検査）で、発見した
+    全組織の語を集める。
 
     収集元が1件でも読めない場合は LeakCheckError にする（不完全な集合で通さない）。
     """

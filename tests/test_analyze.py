@@ -26,7 +26,7 @@ def test_premium_light_user_downgrade_recommended(cfg, make_input):
         },
         members=["light@x.jp,premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     u = _user(result, "light@x.jp")
     assert u["recommended_seat"] == "standard"
     assert u["status"] == "変更推奨"
@@ -42,7 +42,7 @@ def test_premium_single_low_month_is_watch(cfg, make_input):
         },
         members=["spiky@x.jp,premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert _user(result, "spiky@x.jp")["status"] == "要観察"
 
 
@@ -55,7 +55,7 @@ def test_standard_heavy_billed_user_upgrade_recommended(cfg, make_input):
         },
         members=["heavy@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     u = _user(result, "heavy@x.jp")
     assert u["recommended_seat"] == "premium"
     assert u["status"] == "変更推奨"
@@ -76,7 +76,7 @@ def test_standard_billed_zero_never_upgraded(cfg, make_input):
         },
         members=["free@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     u = _user(result, "free@x.jp")
     assert u["cost_if_standard_usd"] == 25.0
     assert u["recommended_seat"] == "standard"
@@ -92,7 +92,7 @@ def test_standard_near_cap_flagged(cfg, make_input):
         },
         members=["cap@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     u = _user(result, "cap@x.jp")
     assert bool(u["cap_suspected"]) is True
     assert u["status"] == "現状維持"
@@ -106,7 +106,7 @@ def test_zero_usage_premium_member_included(cfg, make_input):
         },
         members=["ghost@x.jp,premium", "other@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     u = _user(result, "ghost@x.jp")
     assert u["api_cost_usd"] == 0.0
     assert u["recommended_seat"] == "standard"
@@ -118,7 +118,7 @@ def test_orphan_spend_user_is_unknown_seat(cfg, make_input):
         {"2026-06": [spend_row("orphan@x.jp", 10.0)]},
         members=["someone@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert _user(result, "orphan@x.jp")["status"] == "シート不明"
     assert any("members に存在しない" in w for w in result.warnings)
 
@@ -128,7 +128,7 @@ def test_single_month_data_is_watch(cfg, make_input):
         {"2026-06": [spend_row("light@x.jp", 20.0)]},
         members=["light@x.jp,premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert _user(result, "light@x.jp")["status"] == "要観察（データ蓄積待ち）"
 
 
@@ -141,7 +141,7 @@ def test_break_even_boundary_is_not_recommended(cfg, make_input):
         },
         members=["even@x.jp,premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     u = _user(result, "even@x.jp")
     assert u["cost_if_standard_usd"] == u["cost_if_premium_usd"] == 125.0
     assert u["status"] != "変更推奨"
@@ -155,7 +155,7 @@ def test_summary_counts(cfg, make_input):
         },
         members=["light@x.jp,premium", "std@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     s = result.summary
     assert s["n_members"] == 2
     assert s["n_premium"] == 1 and s["n_standard"] == 1
@@ -176,7 +176,7 @@ def test_org_service_rows_excluded_from_seat_table(cfg, make_input):
         },
         members=["a@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert "(org service usage)" not in set(result.users["email"])
     assert result.summary["org_service_cost_usd"] == 500.0
     assert result.summary["org_service_by_product"] == {"Code Review": 500.0}

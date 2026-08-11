@@ -33,7 +33,7 @@ def test_html_escapes_script_in_email(cfg, make_input, tmp_path):
     input_dir = make_input(
         {"2026-06": [spend_row(evil, 10.0)]}, members=[f"{evil},Standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     out = tmp_path / "dashboard.html"
     write_html(result, out)
     html = out.read_text(encoding="utf-8")
@@ -98,7 +98,7 @@ def test_future_members_fallback_warns_strongly(cfg, make_input):
         {"2026-05": [spend_row("a@x.jp", 10.0)], "2026-06": [spend_row("a@x.jp", 10.0)]},
         members=["a@x.jp,Premium"], members_month="2026-07",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert any("未来月" in w for w in result.warnings)
 
 
@@ -124,7 +124,7 @@ def test_unmatched_models_listed(cfg):
 def test_unknown_model_warns_in_analyze(cfg, make_input):
     row = "a@x.jp,uuid-x,Claude Code,mystery-model-9,mystery,10,100000,10000,1.0,1.0"
     input_dir = make_input({"2026-06": [row]}, members=["a@x.jp,Standard"])
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert any("mystery-model-9" in w for w in result.warnings)
 
 
@@ -191,10 +191,14 @@ def test_org_name_validation():
     validate_org_name("開発本部")        # 日本語は許可
     validate_org_name("config")         # 予約デバイス名に似ているだけの名前は許可
     validate_org_name("org.a")          # 途中のドットは許可（末尾だけが問題）
+    validate_org_name("members")        # spend 以外の入力サブディレクトリ名は許可
     bad_names = (
         "summary", ".hidden", "a/b", "org|x", "a[b]", " x", "x ",
         # 大文字小文字を区別しないファイルシステムでは reports/summary と同じ場所になる
         "SUMMARY", "Summary",
+        # input/ 直下の spend/（旧レイアウトの目印）と区別できない。大文字小文字を
+        # 区別しないファイルシステムでは Spend も同じディレクトリになる
+        "spend", "SPEND", "Spend",
         # Windows でディレクトリ名に使えない文字（NTFS の代替データストリーム等）
         "a:b", "a*b", "a?b", 'a"b',
         # 制御文字は 0x00-0x1f 全体が使えない（改行・タブだけではない）

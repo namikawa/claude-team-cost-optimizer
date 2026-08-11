@@ -300,8 +300,20 @@ uv run seat-analyzer init-org <組織名>
 - `claude` が見つからない、またはフラグが未対応
   Claude Code を導入・更新する。PATH に置けない場合は `config.yaml > discussion.command`
   にフルパスを書く。
-- 分析実行時に「組織ディレクトリと直下の spend/ が混在しています」と言われる
-  旧レイアウトのデータが残っている。`input/<組織名>/` 配下へ移動する。
+- 分析実行時に「直下の spend/ は旧レイアウトのため分析できません」と言われる
+  組織ディレクトリを挟まない配置（`input/spend/` 直下）のデータが残っている。
+  次の手順で組織ディレクトリ配下へ移す。
+  1. `uv run seat-analyzer init-org <組織名>` で雛形を作る。`--input-dir` で入力先を
+     変えている場合は init-org にも同じ `--input-dir` を付ける（付けないと既定の
+     `input/` に別のディレクトリができる）
+  2. `input/spend/`・`input/members/`・`input/code-analytics/` の中身を
+     `input/<組織名>/` 配下の同名ディレクトリへ移す（spend と members は必須、
+     code-analytics は任意）
+  3. `input/` 直下に `members-info.csv`（日付つきのものも含む）があれば
+     `input/<組織名>/` へ移す
+  4. 空になった `input/spend/` を削除する（中身が無くても旧レイアウトとして拒否される）
+  5. 過去のレポート（`reports/<月>/`）を引き継ぐなら `reports/<組織名>/<月>/` へ移す。
+     移さないと記入済みの考察が再生成時に引き継がれない
 - `check-text` や `discuss` が対象語を集められずにエラー終了する
   リポジトリのルート以外で実行している可能性が高い。ルートに移動して実行し直す。
 - `tests/test_golden.py` だけが落ちる

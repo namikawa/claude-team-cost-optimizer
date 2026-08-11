@@ -70,7 +70,7 @@ class AnalysisResult:
     month: str
     users: pd.DataFrame
     summary: dict
-    org: str | None = None  # 組織名（input/<org>/ レイアウト時。旧レイアウトは None）
+    org: str  # 組織名（input/<組織名>/ のディレクトリ名。レポートの表題・出力先に使う）
     warnings: list[str] = field(default_factory=list)
     months_used: list[str] = field(default_factory=list)
     sources: dict = field(default_factory=dict)
@@ -201,7 +201,7 @@ def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict,
     ]
 
 
-def analyze(input_dir: str | Path, month: str, cfg: dict, org: str | None = None) -> AnalysisResult:
+def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisResult:
     """1組織分の分析。input_dir はその組織の入力ディレクトリ（spend/ 等を直下に持つ）。"""
     input_dir = Path(input_dir)
     warnings: list[str] = []
@@ -554,7 +554,7 @@ class PreviewResult:
     summary: dict
     days_observed: int
     days_in_month: int
-    org: str | None = None
+    org: str
     warnings: list[str] = field(default_factory=list)
     sources: dict = field(default_factory=dict)
     # 月中の利用推移（同一月の複数スナップショット差分。1つ以下なら None）
@@ -596,7 +596,7 @@ def _preview_label(seat: str, api_obs: float, api_proj: float, cfg: dict,
 
 
 def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
-            org: str | None = None) -> PreviewResult:
+            org: str) -> PreviewResult:
     """部分月データの一次判断。対象月のみ使用し、ヒステリシス・変更推奨は行わない。"""
     input_dir = Path(input_dir)
     warnings: list[str] = []

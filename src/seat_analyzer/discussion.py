@@ -86,7 +86,7 @@ DISALLOWED_TOOLS = (
 class DiscussionOutcome:
     """1組織1月ぶんの考察生成の結果。"""
 
-    org: str | None
+    org: str
     month: str
     path: Path
     status: str  # written / blocked / kept / dry-run
@@ -131,14 +131,14 @@ def _correction_block(leaks: tuple[LeakHit, ...]) -> str:
 
 
 def build_prompt(
-    *, org: str | None, scope: str, materials: list[tuple[str, str]],
+    *, org: str, scope: str, materials: list[tuple[str, str]],
     preview: bool, leaks: tuple[LeakHit, ...] = (),
 ) -> str:
     shell = (PROMPTS_DIR / "discussion.md").read_text(encoding="utf-8")
     aspects_name = "aspects-preview.md" if preview else "aspects-full.md"
     aspects = (PROMPTS_DIR / aspects_name).read_text(encoding="utf-8")
     return _render(shell, {
-        "ORG": org or "（単一組織）",
+        "ORG": org,
         "SCOPE": scope,
         "ASPECTS": aspects.strip(),
         "CORRECTION": _correction_block(leaks) if leaks else "",
@@ -399,7 +399,7 @@ def _call_with_retry(runner, prompt: str, s: dict, notify) -> str:
 
 
 def generate(
-    *, org: str | None, month: str, input_dir: Path, output_dir: Path, org_output: Path,
+    *, org: str, month: str, input_dir: Path, output_dir: Path, org_output: Path,
     cfg: dict, preview: bool = False, force: bool = False, dry_run: bool = False,
     allow: tuple[str, ...] = (), include_previous: bool = False, runner=None, notify=None,
 ) -> DiscussionOutcome:
@@ -419,7 +419,7 @@ def generate(
     # 実行に限られるため、全組織実行でも効く許可の置き場としてこちらを使う
     allow = tuple(allow) + tuple(s.get("allow_terms") or ())
     doc_path = document_path(org_output, month, preview)
-    scope = f"{org} {month}" if org else month
+    scope = f"{org} {month}"
 
     terms = forbidden_terms(
         input_dir=input_dir, output_dir=output_dir, target_org=org, cfg=cfg)

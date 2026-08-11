@@ -87,7 +87,7 @@ def test_cap_suspected_suppressed_for_enabled_kept_for_disabled(make_input, cfg)
         input_dir,
         "email,追加クレジット上限\na@x.jp,無制限\nb@x.jp,0\nc@x.jp,\n",
     )
-    by = analyze(input_dir, "2026-06", cfg).users.set_index("email")
+    by = analyze(input_dir, "2026-06", cfg, org="org-a").users.set_index("email")
     # 需要 45 >= 0.85*50 で実課金 0 の Standard → 本来 cap_suspected
     assert bool(by.loc["a@x.jp", "cap_suspected"]) is False   # enabled → 抑制
     assert bool(by.loc["b@x.jp", "cap_suspected"]) is True    # disabled → 維持
@@ -105,7 +105,7 @@ def test_credit_reach_warning(make_input, cfg):
         members=["a@x.jp,Premium"],
     )
     _write_info(input_dir, "email,追加クレジット上限\na@x.jp,50\n")
-    warns = analyze(input_dir, "2026-06", cfg).warnings
+    warns = analyze(input_dir, "2026-06", cfg, org="org-a").warnings
     assert any("上限到達" in w and "a@x.jp" in w for w in warns)
 
 
@@ -117,7 +117,7 @@ def test_credit_reach_requires_billing(make_input, cfg):
         members=["a@x.jp,Premium"],
     )
     _write_info(input_dir, "email,追加クレジット上限\na@x.jp,5\n")
-    warns = analyze(input_dir, "2026-06", cfg).warnings
+    warns = analyze(input_dir, "2026-06", cfg, org="org-a").warnings
     assert not any("上限到達" in w for w in warns)
 
 
@@ -128,7 +128,7 @@ def test_credit_reach_small_cap_billed(make_input, cfg):
         members=["a@x.jp,Premium"],
     )
     _write_info(input_dir, "email,追加クレジット上限\na@x.jp,5\n")
-    warns = analyze(input_dir, "2026-06", cfg).warnings
+    warns = analyze(input_dir, "2026-06", cfg, org="org-a").warnings
     assert any("上限到達" in w and "a@x.jp" in w for w in warns)
 
 
@@ -138,7 +138,7 @@ def test_integrity_over_cap(make_input, cfg):
         members=["a@x.jp,Premium"],
     )
     _write_info(input_dir, "email,追加クレジット上限\na@x.jp,50\n")
-    warns = analyze(input_dir, "2026-06", cfg).warnings
+    warns = analyze(input_dir, "2026-06", cfg, org="org-a").warnings
     assert any("上限 κ を超過" in w and "a@x.jp" in w for w in warns)
 
 
@@ -148,7 +148,7 @@ def test_integrity_disabled_but_billed(make_input, cfg):
         members=["a@x.jp,Standard"],
     )
     _write_info(input_dir, "email,追加クレジット上限\na@x.jp,0\n")
-    warns = analyze(input_dir, "2026-06", cfg).warnings
+    warns = analyze(input_dir, "2026-06", cfg, org="org-a").warnings
     assert any("無効（κ=0）" in w and "a@x.jp" in w for w in warns)
 
 
@@ -160,7 +160,7 @@ def test_e_distribution_present_with_billers(make_input, cfg, tmp_path):
                      spend_row("b@x.jp", 100.0, net=0.0)]},
         members=["a@x.jp,Premium", "b@x.jp,Standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     ed = result.e_distribution
     assert ed is not None
     prem = next(g for g in ed["groups"] if g["seat"] == "premium")
@@ -179,7 +179,7 @@ def test_e_distribution_absent_without_billers(make_input, cfg, tmp_path):
         {"2026-06": [spend_row("a@x.jp", 50.0, net=0.0)]},
         members=["a@x.jp,Standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert result.e_distribution is None
     out = tmp_path / "report.md"
     write_markdown(result, out)
@@ -193,7 +193,7 @@ def test_e_distribution_none_for_net_spend_basis(make_input, cfg):
         {"2026-06": [spend_row("a@x.jp", 200.0, net=60.0)]},
         members=["a@x.jp,Premium"],
     )
-    assert analyze(input_dir, "2026-06", cfg_net).e_distribution is None
+    assert analyze(input_dir, "2026-06", cfg_net, org="org-a").e_distribution is None
 
 
 def test_e_distribution_ratio_comparison(make_input, cfg, tmp_path):
@@ -202,7 +202,7 @@ def test_e_distribution_ratio_comparison(make_input, cfg, tmp_path):
         {"2026-06": [spend_row("a@x.jp", 150.0, net=50.0)]},   # E=100, premium
         members=["a@x.jp,Premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     g = next(x for x in result.e_distribution["groups"] if x["seat"] == "premium")
     assert g["median"] == 100.0
     assert g["allowance_mid"] == 250.0
@@ -223,7 +223,7 @@ def test_e_distribution_row_order_is_independent_of_input_row_order(make_input, 
                      spend_row("tie-a@x.jp", 200.0, net=60.0)]},   # E=140 で同点
         members=["tie-a@x.jp,Premium", "tie-b@x.jp,Premium"],
     )
-    users = analyze(input_dir, "2026-06", cfg).users
+    users = analyze(input_dir, "2026-06", cfg, org="org-a").users
     orders = (users, users.iloc[::-1],
               users.sort_values("email"), users.sort_values("email", ascending=False))
     for frame in orders:
@@ -242,7 +242,7 @@ def test_grant_candidate_formal(make_input, cfg, tmp_path):
         members=["a@x.jp,Standard"],
     )
     _write_info(input_dir, "email,追加クレジット上限\na@x.jp,0\n")
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert [c["email"] for c in result.grant_candidates] == ["a@x.jp"]
     assert result.grant_candidates[0]["added"] == 210.0   # max(0, 260 − 50)
     out = tmp_path / "report.md"
@@ -260,7 +260,7 @@ def test_grant_candidate_disabled_zero_billed_high_demand(make_input, cfg):
         members=["a@x.jp,Standard"],
     )
     _write_info(input_dir, "email,追加クレジット上限\na@x.jp,0\n")
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     by = result.users.set_index("email")
     assert by.loc["a@x.jp", "recommended_seat"] == "standard"   # 拘束後は Standard 推奨
     assert [c["email"] for c in result.grant_candidates] == ["a@x.jp"]   # でも付与候補
@@ -274,7 +274,7 @@ def test_grant_candidates_sorted_by_overage(make_input, cfg):
         members=["low@x.jp,Standard", "high@x.jp,Standard"],
     )
     _write_info(input_dir, "email,追加クレジット上限\nlow@x.jp,0\nhigh@x.jp,0\n")
-    cands = analyze(input_dir, "2026-06", cfg).grant_candidates
+    cands = analyze(input_dir, "2026-06", cfg, org="org-a").grant_candidates
     # モデル超過見込みの降順
     assert [c["email"] for c in cands] == ["high@x.jp", "low@x.jp"]
     assert cands[0]["added"] == 190.0 and cands[1]["added"] == 110.0
@@ -285,7 +285,7 @@ def test_grant_candidate_absent_without_credit_column(make_input, cfg, tmp_path)
         {"2026-06": [spend_row("a@x.jp", 260.0, net=130.0)]},
         members=["a@x.jp,Standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert result.grant_candidates == []
     out = tmp_path / "report.md"
     write_markdown(result, out)
@@ -307,7 +307,7 @@ def test_credit_summary_composition(make_input, cfg, tmp_path):
         input_dir,
         "email,追加クレジット上限\na@x.jp,200\nb@x.jp,無制限\nc@x.jp,0\nd@x.jp,\n",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     s = result.summary
     assert s["credit_shown"] is True
     assert s["credit_enabled_n"] == 2      # a(200) + b(無制限)
@@ -327,7 +327,7 @@ def test_no_credit_column_no_mode_column(make_input, cfg):
         {"2026-06": [spend_row("a@x.jp", 10.0, net=0.0)]},
         members=["a@x.jp,Standard"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     # credit 情報が無い入力では credits_mode / credit_limit_usd 列を出力しない
     assert "credits_mode" not in result.users.columns
     assert "credit_limit_usd" not in result.users.columns
@@ -348,7 +348,7 @@ def test_preview_credit_reach_and_grant(make_input, cfg, tmp_path):
         input_dir,
         "email,追加クレジット上限\nhit@x.jp,50\nfar@x.jp,300\ncand@x.jp,0\n",
     )
-    result = preview(input_dir, "2026-07", cfg, days_observed=10)
+    result = preview(input_dir, "2026-07", cfg, days_observed=10, org="org-a")
     cr = result.credit_reach
     assert cr is not None
     by = {r["email"]: r for r in cr["rows"]}
@@ -378,7 +378,7 @@ def test_credit_reach_interval_rate(make_snapshots, cfg):
     )
     (input_dir / "members-info.csv").write_text(
         "email,追加クレジット上限\na@x.jp,200\n", encoding="utf-8")
-    result = preview(input_dir, "2026-07", cfg, days_observed=13)
+    result = preview(input_dir, "2026-07", cfg, days_observed=13, org="org-a")
     row = next(r for r in result.credit_reach["rows"] if r["email"] == "a@x.jp")
     assert row["reached"] is False
     # レート 100/8=12.5/日 → 13 + (200-100)/12.5 = 21 日頃

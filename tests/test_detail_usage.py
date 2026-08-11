@@ -36,7 +36,7 @@ def test_model_breakdown_is_token_basis(cfg, make_input):
         ]},
         members=["a@x.jp,Premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     bd = result.users.set_index("email").loc["a@x.jp", "model_breakdown"]
     # コスト基準なら 50/50 だが、トークン基準では haiku が先頭（大きい）
     assert bd.startswith("Haiku 4.5")
@@ -53,7 +53,7 @@ def test_product_breakdown_is_request_basis(cfg, make_input):
         ]},
         members=["a@x.jp,Premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     bd = result.users.set_index("email").loc["a@x.jp", "product_breakdown"]
     assert "Claude Code 50%" in bd and "Chat 50%" in bd
 
@@ -66,7 +66,7 @@ def test_detail_rows_sort_and_loc_absence(cfg, make_input):
         ]},
         members=["small@x.jp,Premium", "big@x.jp,Premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     rows, has_loc = _detail_rows(result.users)
     assert has_loc is False  # code-analytics なしなら LoC 列なし
     assert rows[0]["email"] == "big@x.jp"  # input+output 降順
@@ -86,7 +86,7 @@ def test_detail_rows_order_is_independent_of_input_row_order(cfg, make_input):
         ]},
         members=["tie-a@x.jp,Premium", "tie-b@x.jp,Premium", "big@x.jp,Premium"],
     )
-    users = analyze(input_dir, "2026-06", cfg).users
+    users = analyze(input_dir, "2026-06", cfg, org="org-a").users
     assert users.set_index("email").loc["tie-a@x.jp", "prompt_tokens"] == \
         users.set_index("email").loc["tie-b@x.jp", "prompt_tokens"]   # 同点の前提を確認
     orders = (users, users.iloc[::-1],
@@ -123,7 +123,7 @@ def test_team_summary_excludes_unset(cfg, make_input, tmp_path):
         "b@x.jp,営業,,,\n",  # b はチーム未設定
         encoding="utf-8",
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     # チーム軸: include_unset=False で（未設定）が消える／部署軸: 残る
     team_groups = [r["group"] for r in _group_summary_rows(result.users, result.summary, "team", include_unset=False)]
     dept_groups = [r["group"] for r in _group_summary_rows(result.users, result.summary, "department")]
@@ -143,7 +143,7 @@ def test_detail_section_in_markdown_and_html(cfg, make_input, tmp_path):
         {"2026-06": [spend_row("a@x.jp", 30.0, model="claude-opus-4-8", net=0.0)]},
         members=["a@x.jp,Premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     md_path = tmp_path / "report.md"
     html_path = tmp_path / "dashboard.html"
     write_markdown(result, md_path)
@@ -182,7 +182,7 @@ def test_billed_gradient_in_dashboard(cfg, make_input, tmp_path):
         ]},
         members=["over@x.jp,Premium", "zero@x.jp,Premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     html_path = tmp_path / "dashboard.html"
     write_html(result, html_path)
     html = html_path.read_text(encoding="utf-8")
@@ -195,7 +195,7 @@ def test_detail_html_escapes_model_field(cfg, make_input, tmp_path):
         {"2026-06": [spend_row("<script>@x.jp", 10.0, net=0.0)]},
         members=["<script>@x.jp,Premium"],
     )
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     html_path = tmp_path / "dashboard.html"
     write_html(result, html_path)
     html = html_path.read_text(encoding="utf-8")

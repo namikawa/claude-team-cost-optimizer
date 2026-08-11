@@ -118,7 +118,11 @@ def _issue(
     month: str | None = None,
     **scope: ScopeValue,
 ) -> QualityIssue:
-    """org・monthを先頭に置いたscopeでissueを作る。Noneのキーは省く。"""
+    """org・monthを先頭に置いたscopeでissueを作る。Noneのキーは省く。
+
+    org=Noneは「対象組織を解決する前の失敗」に限る（input_unavailable_issues）。
+    組織単位の検査は常にorgを持つ。
+    """
     base: dict[str, ScopeValue] = {}
     if org is not None:
         base["org"] = org
@@ -188,7 +192,7 @@ def _sample(emails: Iterable[str]) -> list[str]:
 
 
 def _partial_month_issues(
-    input_dir: Path, month: str, spend_months: list[str], org: str | None
+    input_dir: Path, month: str, spend_months: list[str], org: str
 ) -> list[QualityIssue]:
     """対象月までの各月で、全月データと確認できないスペンドを警告する。
 
@@ -242,7 +246,7 @@ def _partial_month_issues(
 
 
 def _history_gap_issues(
-    month: str, spend_months: list[str], cfg: dict, org: str | None
+    month: str, spend_months: list[str], cfg: dict, org: str
 ) -> list[QualityIssue]:
     """ヒステリシス窓（対象月を含む直近 N ヶ月）に欠けている月を警告する。"""
     n_hyst = int(cfg["decision"]["hysteresis_months"])
@@ -266,7 +270,7 @@ def _history_gap_issues(
 
 
 def _spend_content_issues(
-    spend: pd.DataFrame, cfg: dict, org: str | None, month: str
+    spend: pd.DataFrame, cfg: dict, org: str, month: str
 ) -> list[QualityIssue]:
     """対象月スペンドの中身（モデル単価・数値解釈）を検査する。"""
     issues: list[QualityIssue] = []
@@ -310,7 +314,7 @@ def _spend_content_issues(
 
 
 def _seat_type_issues(
-    members: pd.DataFrame, org: str | None, month: str
+    members: pd.DataFrame, org: str, month: str
 ) -> list[QualityIssue]:
     """シート種別を判別できないメンバーを警告する。"""
     unknown = members.loc[members["seat_type"] == "unknown", "email"]
@@ -327,7 +331,7 @@ def _seat_type_issues(
 
 
 def _join_issues(
-    spend: pd.DataFrame, members: pd.DataFrame, cfg: dict, org: str | None, month: str
+    spend: pd.DataFrame, members: pd.DataFrame, cfg: dict, org: str, month: str
 ) -> list[QualityIssue]:
     """Spendとメンバー一覧の突き合わせ不整合を検査する。"""
     issues: list[QualityIssue] = []
@@ -375,7 +379,7 @@ def input_unavailable_issues(input_dir: Path | str, exc: OSError) -> list[Qualit
 
 
 def _members_presence_issues(
-    input_dir: Path, cfg: dict, org: str | None
+    input_dir: Path, cfg: dict, org: str
 ) -> list[QualityIssue]:
     """対象月が決まらない場合の、メンバー一覧の有無と可読性の検査。
 
@@ -419,7 +423,7 @@ def _members_presence_issues(
 
 
 def _no_spend_month_issues(
-    input_dir: Path, cfg: dict, org: str | None, reason: str | None
+    input_dir: Path, cfg: dict, org: str, reason: str | None
 ) -> list[QualityIssue]:
     """対象月を確定できない場合の検査。Spendの状況とMembersの有無を独立に見る。
 
@@ -439,7 +443,7 @@ def _no_spend_month_issues(
 
 
 def inspect_input(
-    input_dir: Path | str, month: str | None, cfg: dict, org: str | None = None
+    input_dir: Path | str, month: str | None, cfg: dict, org: str
 ) -> list[QualityIssue]:
     """1組織分の Spend / Members を検査し、整列済みのissueを返す。
 

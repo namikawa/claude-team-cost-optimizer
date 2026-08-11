@@ -376,8 +376,10 @@ def _run_init_org(args: argparse.Namespace) -> int:
 
     if (input_dir / "spend").is_dir():
         print(
-            f"\n! 旧レイアウトのデータが {input_dir}/spend/ にあります。"
-            f"分析前に {input_dir}/<組織名>/ 配下へ移動してください"
+            f"\n! 旧レイアウトのデータが {input_dir}/spend/ にあります。この形では分析"
+            "できないため、spend/・members/・code-analytics/ と members-info*.csv を"
+            f" {input_dir}/<組織名>/ 配下へ移動してください"
+            "（空になったディレクトリも消す。手順は docs/setup.md 参照）"
         )
     print("\nCSV 配置後: uv run seat-analyzer analyze （エクスポート手順は docs/usage.md 参照）")
     return 0
@@ -385,24 +387,27 @@ def _run_init_org(args: argparse.Namespace) -> int:
 
 def _resolve_targets(
     input_dir: Path, output_dir: Path, org_args: list[str] | None,
-    orgs: list[str] | None = None, legacy: bool | None = None,
-) -> list[tuple[str | None, Path, Path]]:
+    orgs: list[str] | None = None,
+) -> list[tuple[str, Path, Path]]:
     """分析対象の (組織名, 入力dir, 出力dir) を解決する。
 
-    input/<org>/spend/ 型のマルチ組織レイアウトを基本とし、
-    input/spend/ 直下型の旧レイアウトは単一組織（org=None）として扱う。
+    入力は input/<組織名>/spend/ の形だけを受け付ける。直下に spend/ がある形は
+    組織名が決まらず出力先も組織ごとに分けられないため、移行手順を添えて停止する。
 
-    orgs / legacy を渡すと組織の発見条件を差し替えられる（doctor は spend/ が
-    欠けた組織も検査対象にするため、より広い条件で発見する）。
+    orgs を渡すと組織の発見条件を差し替えられる（doctor は spend/ が欠けた組織も
+    検査対象にするため、より広い条件で発見する）。
     """
     if orgs is None:
         orgs = ingest.discover_orgs(input_dir)
-    if legacy is None:
-        legacy = (input_dir / "spend").is_dir()
-    if orgs and legacy:
+    if (input_dir / "spend").is_dir():
+        # 組織ディレクトリと共存している場合も同じ案内にする（どちらも直下のデータを
+        # 組織配下へ動かせば解決する）
         raise ValueError(
-            f"{input_dir} に組織ディレクトリ（{orgs}）と直下の spend/ が混在しています。"
-            f"旧レイアウトのデータを {input_dir}/<組織名>/ 配下へ移動してください"
+            f"{input_dir} 直下の spend/ は旧レイアウトのため分析できません。"
+            f"seat-analyzer init-org <組織名> --input-dir {input_dir} で雛形を作成し、"
+            "spend/・members/・code-analytics/ と members-info*.csv を"
+            f" {input_dir}/<組織名>/ 配下へ移動してください"
+            "（空になったディレクトリも消す。手順は docs/setup.md 参照）"
         )
     if not orgs:
         if org_args:
@@ -410,12 +415,10 @@ def _resolve_targets(
                 f"{input_dir} に組織ディレクトリがありません（--org を使うには "
                 f"{input_dir}/<組織名>/spend/ の形でデータを配置してください）"
             )
-        if not legacy:
-            raise FileNotFoundError(
-                f"{input_dir} に入力データがありません。{input_dir}/<組織名>/spend/ に"
-                "スペンドレポートを配置してください（docs/usage.md の月次運用手順参照）"
-            )
-        return [(None, input_dir, output_dir)]
+        raise FileNotFoundError(
+            f"{input_dir} に入力データがありません。{input_dir}/<組織名>/spend/ に"
+            "スペンドレポートを配置してください（docs/usage.md の月次運用手順参照）"
+        )
 
     # 衝突は選択の前に、発見済みの組織全体で見る。--org で片方だけ選んだ実行でも、
     # もう一方が同じ出力先へ書いた成果物を上書きしうるため
@@ -457,7 +460,7 @@ def _discover_inspect_orgs(input_dir: Path) -> list[str]:
 
 def _resolve_input_targets(
     input_dir: Path, org_args: list[str] | None
-) -> list[tuple[str | None, Path]]:
+) -> list[tuple[str, Path]]:
     """検査対象の (組織名, 入力dir)。出力を書かないコマンド用に出力dirを落とす。"""
     if not input_dir.is_dir():
         # 組織名の検証より先に入力ディレクトリ自体の可否を判定する
@@ -468,15 +471,10 @@ def _resolve_input_targets(
             "（docs/usage.md の月次運用手順に従いデータを配置してください）"
         )
     orgs = _discover_inspect_orgs(input_dir)
-    # 組織があるなら混在判定は analyze と同じく直下 spend/ のみで行う（残骸の
-    # members/ 等で検査を止めない）。組織が無いときだけ、spend/ を欠いた旧レイアウトも
-    # 単一組織として拾って欠損を検査する
-    legacy = (
-        (input_dir / "spend").is_dir() if orgs
-        else any((input_dir / sub).is_dir() for sub in INPUT_SUBDIRS)
-    )
+    # 対象の解決は analyze と同じ規則に委ねる（doctor だけが受理するレイアウトを作らない）。
+    # 残骸の members/ 等が直下にあっても組織の検査は止めない
     return [(org, org_input) for org, org_input, _ in
-            _resolve_targets(input_dir, input_dir, org_args, orgs=orgs, legacy=legacy)]
+            _resolve_targets(input_dir, input_dir, org_args, orgs=orgs)]
 
 
 def _latest_month(org_input: Path) -> str | None:
@@ -561,7 +559,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
 
     results: list[analyze.AnalysisResult] = []
     skipped: list[str] = []
-    written: list[tuple[str | None, Path]] = []
+    written: list[tuple[str, Path]] = []
     n_previewed = 0
     for org, org_input, org_output in targets:
         if month not in ingest.discover_months(org_input):
@@ -569,7 +567,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 raise FileNotFoundError(
                     f"{org_input}/spend/ に {month} のスペンドレポートがありません"
                 )
-            skipped.append(org or str(org_input))
+            skipped.append(org)
             continue
         if args.preview:
             days = args.days
@@ -579,9 +577,9 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 if days is None:
                     raise ValueError(
                         f"--days <観測日数> を指定してください"
-                        f"（{org or org_input}: スペンドレポートのファイル名に期間が無いため自動判別できません）"
+                        f"（{org}: スペンドレポートのファイル名に期間が無いため自動判別できません）"
                     )
-                print(f"{org or ''}: ファイル名の期間から観測日数 {days} 日を使用")
+                print(f"{org}: ファイル名の期間から観測日数 {days} 日を使用")
             pv = analyze.preview(org_input, month, cfg, days, org=org)
             paths = report.write_preview(pv, org_output)
             _print_preview(pv, paths)
@@ -617,7 +615,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
 _MONTH_RE = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
 
 
-def _resolve_month(targets: list[tuple[str | None, Path, Path]], month: str | None) -> str:
+def _resolve_month(targets: list[tuple[str, Path, Path]], month: str | None) -> str:
     """対象月。未指定なら対象組織全体での spend の最新月。
 
     対象月は出力パスの一部（reports/<組織名>/<月>/）になるため形式を厳密に検証する。
@@ -744,7 +742,7 @@ def _run_discuss(args: argparse.Namespace) -> int:
 
 
 def _run_discussions(
-    items: list[tuple[str | None, Path]], *, month: str, input_dir: Path, output_dir: Path,
+    items: list[tuple[str, Path]], *, month: str, input_dir: Path, output_dir: Path,
     cfg: dict, preview: bool, force: bool, dry_run: bool, allow: tuple[str, ...] = (),
     include_previous: bool = False,
 ) -> int:
@@ -761,7 +759,7 @@ def _run_discussions(
             if discussion.document_path(org_output, month, preview).exists():
                 targets.append((org, org_output))
             else:
-                skipped.append(org or str(org_output))
+                skipped.append(org)
         items = targets
 
     if not dry_run:
@@ -769,7 +767,7 @@ def _run_discussions(
     failed: list[str] = []
     blocked: list[str] = []
     for org, org_output in items:
-        scope = f"{org} {month}" if org else month
+        scope = f"{org} {month}"
         try:
             outcome = discussion.generate(
                 org=org, month=month, input_dir=input_dir, output_dir=output_dir,
@@ -826,8 +824,7 @@ def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None
 
 def _print_preview(pv, paths: dict[str, Path]) -> None:
     s = pv.summary
-    scope = f"{pv.org} {pv.month}" if pv.org else pv.month
-    print(f"\n=== {scope} 速報プレビュー（{pv.days_observed}日間の観測） ===")
+    print(f"\n=== {pv.org} {pv.month} 速報プレビュー（{pv.days_observed}日間の観測） ===")
     print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']}"
           f" / 未割当 {s.get('n_unassigned', 0)} / 不明 {s['n_unknown']})")
     print(f"観測需要: ${s['total_api_observed_usd']:,.2f} → 月末ペース換算 ${s['total_api_projected_usd']:,.2f}")
@@ -846,8 +843,7 @@ def _print_preview(pv, paths: dict[str, Path]) -> None:
 
 def _print_result(result: analyze.AnalysisResult, paths: dict[str, Path]) -> None:
     s = result.summary
-    scope = f"{result.org} {result.month}" if result.org else result.month
-    print(f"\n=== {scope} 分析結果 ===")
+    print(f"\n=== {result.org} {result.month} 分析結果 ===")
     print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']}"
           f" / 未割当 {s.get('n_unassigned', 0)} / 不明 {s['n_unknown']})")
     print(f"現在のシート費用: ${s['seat_cost_now_usd']:,.2f}/月, API換算利用額: ${s['total_api_cost_usd']:,.2f}/月")

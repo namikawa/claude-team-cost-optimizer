@@ -25,7 +25,7 @@ def test_cumulative_and_delta(cfg, make_snapshots, write_code_snapshots):
         "2026-07-05": [("heavy@x.jp", 1000, 5), ("light@x.jp", 100, 1), ("zero@x.jp", 0, 0)],
         "2026-07-16": [("heavy@x.jp", 3000, 12), ("light@x.jp", 100, 1), ("zero@x.jp", 0, 0)],
     })
-    cd = analyze(input_dir, "2026-07", cfg).code_diff
+    cd = analyze(input_dir, "2026-07", cfg, org="org-a").code_diff
     assert cd is not None
     assert cd["labels"] == ["〜07-05", "〜07-16"]
     assert cd["has_prs"] is True
@@ -45,7 +45,7 @@ def test_no_prs_column(cfg, make_snapshots, write_code_snapshots):
         "2026-07-05": [("heavy@x.jp", 1000)],
         "2026-07-16": [("heavy@x.jp", 2500)],
     }, with_prs=False)
-    cd = analyze(input_dir, "2026-07", cfg).code_diff
+    cd = analyze(input_dir, "2026-07", cfg, org="org-a").code_diff
     assert cd["has_prs"] is False
     assert cd["rows"][0]["prs_delta"] is None
     assert cd["rows"][0]["loc_delta"] == 1500
@@ -59,13 +59,13 @@ def test_month_kind_not_participating(cfg, make_snapshots, write_code_snapshots)
     (input_dir / "code-analytics").mkdir(parents=True, exist_ok=True)
     (input_dir / "code-analytics" / "cc_2026-07.csv").write_text(
         "Email,Lines with CC,PRs with CC\nheavy@x.jp,9999,9\n", encoding="utf-8")
-    assert analyze(input_dir, "2026-07", cfg).code_diff is None
+    assert analyze(input_dir, "2026-07", cfg, org="org-a").code_diff is None
 
 
 def test_single_snapshot_no_section(cfg, make_snapshots, write_code_snapshots, tmp_path):
     input_dir = _spend_single(make_snapshots)
     write_code_snapshots(input_dir, {"2026-07-05": [("heavy@x.jp", 1000, 5)]})
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.code_diff is None
     out = tmp_path / "report.md"
     write_markdown(result, out)
@@ -78,7 +78,7 @@ def test_dedup_warning_reworded_when_active(cfg, make_snapshots, write_code_snap
         "2026-07-05": [("heavy@x.jp", 1000, 5)],
         "2026-07-16": [("heavy@x.jp", 3000, 12)],
     })
-    warns = analyze(input_dir, "2026-07", cfg).warnings
+    warns = analyze(input_dir, "2026-07", cfg, org="org-a").warnings
     assert any("Claude Code 活動の差分に" in w for w in warns)
     assert not any("未使用:" in w for w in warns)
 
@@ -89,7 +89,7 @@ def test_markdown_section_and_order(cfg, make_snapshots, write_code_snapshots, t
         "2026-07-05": [("heavy@x.jp", 1000, 5)],
         "2026-07-16": [("heavy@x.jp", 3000, 12)],
     })
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     out = tmp_path / "report.md"
     write_markdown(result, out)
     md = out.read_text(encoding="utf-8")
@@ -120,7 +120,7 @@ def test_stall_corroborated_by_flat_loc(cfg, make_snapshots, write_code_snapshot
         "2026-07-05": [("s@x.jp", 1000, 5)],
         "2026-07-16": [("s@x.jp", 1000, 5)],   # LoC 横ばい → 停止の傍証
     })
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     sc = result.snapshot["stalled_capped"]
     assert sc and sc[0]["email"] == "s@x.jp"
     assert sc[0]["loc_note"] == "LoC 増分も 0（停止の傍証）"
@@ -135,7 +135,7 @@ def test_stall_contradicted_by_growing_loc(cfg, make_snapshots, write_code_snaps
         "2026-07-05": [("s@x.jp", 1000, 5)],
         "2026-07-16": [("s@x.jp", 1500, 8)],   # LoC 増加 → 食い違い
     })
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     sc = result.snapshot["stalled_capped"]
     assert sc[0]["loc_note"] == (
         "一方で LoC は +500 行 増加（利用継続の形跡あり。スペンドとの食い違いは要確認）"
@@ -149,7 +149,7 @@ def test_stall_absent_in_code_diff_is_corroboration(cfg, make_snapshots, write_c
         "2026-07-05": [("other@x.jp", 500, 2)],
         "2026-07-16": [("other@x.jp", 900, 4)],
     })
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     sc = result.snapshot["stalled_capped"]
     assert sc[0]["loc_note"] == "LoC 増分も 0（停止の傍証）"
 
@@ -157,7 +157,7 @@ def test_stall_absent_in_code_diff_is_corroboration(cfg, make_snapshots, write_c
 def test_no_code_diff_no_loc_note(cfg, make_snapshots):
     # code-analytics スナップショットが無ければ注記は付かない（後方互換）
     input_dir = _stall_input(make_snapshots)
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.code_diff is None
     assert result.snapshot["stalled_capped"][0].get("loc_note", "") == ""
 
@@ -171,6 +171,6 @@ def test_preview_computes_code_diff(cfg, make_snapshots, write_code_snapshots):
         "2026-07-05": [("heavy@x.jp", 1000, 5)],
         "2026-07-13": [("heavy@x.jp", 2200, 9)],
     })
-    result = preview(input_dir, "2026-07", cfg, days_observed=13)
+    result = preview(input_dir, "2026-07", cfg, days_observed=13, org="org-a")
     assert result.code_diff is not None
     assert result.code_diff["rows"][0]["loc_delta"] == 1200

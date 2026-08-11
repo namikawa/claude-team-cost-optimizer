@@ -23,7 +23,7 @@ def test_stall_detected_and_deltas(cfg, make_snapshots):
         },
         members=["heavy@x.jp,premium", "stall@x.jp,standard"],
     )
-    snap = analyze(input_dir, "2026-07", cfg).snapshot
+    snap = analyze(input_dir, "2026-07", cfg, org="org-a").snapshot
     assert snap is not None
     assert snap["labels"] == ["〜07-05", "〜07-13", "〜07-31"]
     assert snap["judged"] is True
@@ -48,7 +48,7 @@ def test_low_cumulative_not_stall(cfg, make_snapshots):
         },
         members=["idle@x.jp,standard"],
     )
-    snap = analyze(input_dir, "2026-07", cfg).snapshot
+    snap = analyze(input_dir, "2026-07", cfg, org="org-a").snapshot
     rows = {r["email"]: r for r in snap["rows"]}
     assert rows["idle@x.jp"]["stall"] is False
     assert snap["stalled_capped"] == []
@@ -63,7 +63,7 @@ def test_short_interval_not_judged(cfg, make_snapshots, tmp_path):
         },
         members=["a@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     snap = result.snapshot
     assert snap["judged"] is False
     assert snap["latest_interval_days"] == 1
@@ -85,7 +85,7 @@ def test_cumulative_decrease_warns(cfg, make_snapshots):
         },
         members=["a@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert any("累積需要が減少" in w for w in result.warnings)
 
 
@@ -101,7 +101,7 @@ def test_non_month_start_range_excluded(cfg, make_snapshots):
             "spend-report-2026-07-10-to-2026-07-20.csv": [spend_row("a@x.jp", 5.0, net=0.0)],
         },
     )
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.snapshot is not None    # 月初開始 range が2つ → 発動
     assert any("月初開始でないため差分分析から除外" in w for w in result.warnings)
 
@@ -116,7 +116,7 @@ def test_billed_emerged_interval(cfg, make_snapshots):
         },
         members=["a@x.jp,standard"],
     )
-    be = analyze(input_dir, "2026-07", cfg).snapshot["billed_emerged"]
+    be = analyze(input_dir, "2026-07", cfg, org="org-a").snapshot["billed_emerged"]
     assert len(be) == 1
     assert be[0]["email"] == "a@x.jp"
     assert be[0]["prev_cum"] == 60.0 and be[0]["curr_cum"] == 150.0
@@ -130,7 +130,7 @@ def test_single_snapshot_no_section(cfg, make_snapshots, tmp_path):
         {"2026-07-31": [spend_row("a@x.jp", 80.0, net=0.0)]},
         members=["a@x.jp,standard"],
     )
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.snapshot is None
     out = tmp_path / "report.md"
     write_markdown(result, out)
@@ -149,7 +149,7 @@ def test_duplicate_warning_reworded_when_active(cfg, make_snapshots):
         },
         members=["a@x.jp,standard"],
     )
-    warns = analyze(input_dir, "2026-07", cfg).warnings
+    warns = analyze(input_dir, "2026-07", cfg, org="org-a").warnings
     assert any("主データには期間の広い" in w and "スナップショット差分に" in w for w in warns)
     assert not any("未使用:" in w for w in warns)
 
@@ -163,6 +163,6 @@ def test_preview_computes_snapshot(cfg, make_snapshots):
         },
         members=["a@x.jp,standard"],
     )
-    result = preview(input_dir, "2026-07", cfg, days_observed=13)
+    result = preview(input_dir, "2026-07", cfg, days_observed=13, org="org-a")
     assert result.snapshot is not None
     assert result.snapshot["labels"] == ["〜07-05", "〜07-13"]

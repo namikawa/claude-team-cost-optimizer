@@ -27,7 +27,7 @@ def test_projection_and_labels(cfg, make_input):
         members=["idle@x.jp,Premium", "light@x.jp,Premium",
                  "heavy@x.jp,Premium", "edge@x.jp,Premium", "zero@x.jp,Premium"],
     )
-    result = preview(input_dir, "2026-06", cfg, days_observed=10)
+    result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
     assert result.days_in_month == 30
     users = result.users.set_index("email")
     assert users.loc["light@x.jp", "api_cost_projected_usd"] == pytest.approx(15.0)
@@ -44,7 +44,7 @@ def test_standard_user_upgrade_direction(cfg, make_input):
         {"2026-06": [spend_row("s-heavy@x.jp", 150.0, net=0.0)]},  # 換算450 → Premium検討
         members=["s-heavy@x.jp,Standard"],
     )
-    result = preview(input_dir, "2026-06", cfg, days_observed=10)
+    result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
     assert _label_of(result, "s-heavy@x.jp") == "Premium検討"
 
 
@@ -53,7 +53,7 @@ def test_billed_premium_counted(cfg, make_input):
         {"2026-06": [spend_row("over@x.jp", 400.0, net=120.0)]},
         members=["over@x.jp,Premium"],
     )
-    result = preview(input_dir, "2026-06", cfg, days_observed=10)
+    result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
     assert result.summary["n_billed"] == 1
     assert result.users.set_index("email").loc["over@x.jp", "billed_observed_usd"] == 120.0
 
@@ -66,7 +66,7 @@ def test_preview_standard_billed_flag(cfg, make_input, tmp_path):
         {"2026-06": [spend_row("s-over@x.jp", 60.0, net=40.0)]},
         members=["s-over@x.jp,Standard"],
     )
-    result = preview(input_dir, "2026-06", cfg, days_observed=10)
+    result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
     paths = write_preview(result, tmp_path / "reports")
     md = paths["markdown"].read_text(encoding="utf-8")
     assert "⚠️従量あり" in md
@@ -86,7 +86,7 @@ def test_preview_dashboard_html(cfg, make_input, tmp_path):
         ]},
         members=["s-over@x.jp,Standard", "p-heavy@x.jp,Premium"],
     )
-    result = preview(input_dir, "2026-06", cfg, days_observed=10)
+    result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
     paths = write_preview(result, tmp_path / "reports")
     assert paths["html"].name == "preview-dashboard.html"
     html = paths["html"].read_text(encoding="utf-8")
@@ -108,7 +108,7 @@ def test_days_out_of_range_raises(cfg, make_input):
         {"2026-06": [spend_row("a@x.jp", 1.0)]}, members=["a@x.jp,Premium"],
     )
     with pytest.raises(ValueError, match="暦日数"):
-        preview(input_dir, "2026-06", cfg, days_observed=31)
+        preview(input_dir, "2026-06", cfg, days_observed=31, org="org-a")
 
 
 def _run_cli(input_dir, tmp_path, *extra):
@@ -194,7 +194,7 @@ def test_preserve_discussion_no_marker_returns_new(tmp_path):
 
 def test_cli_days_requires_preview(make_input, tmp_path, capsys):
     input_dir = make_input(
-        {"2026-06": [spend_row("a@x.jp", 1.0)]}, members=["a@x.jp,Premium"],
+        {"2026-06": [spend_row("a@x.jp", 1.0)]}, members=["a@x.jp,Premium"], org="org-x",
     )
     rc, _ = _run_cli(input_dir, tmp_path, "--days", "10")
     assert rc == 1

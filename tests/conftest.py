@@ -56,9 +56,12 @@ def spend_row(email: str, cost: float, model: str = "claude-sonnet-4-6",
 def make_input(tmp_path: Path):
     """input ディレクトリを組み立てるヘルパ。
 
-    org=None で旧レイアウト（input/spend 直下）、org 指定で input/<org>/spend 配下に
-    生成する。複数回呼べば同じ input/ にマルチ組織構成を組み立てられる。
-    戻り値は常に input/ のルート（旧レイアウトでは組織ディレクトリを兼ねる）。
+    org を指定すると input/<org>/spend 配下に生成する。複数回呼べば同じ input/ に
+    マルチ組織構成を組み立てられる。戻り値は常に input/ のルート。
+
+    org を省略すると input/ 直下に生成する。これは analyze・ingest へ「組織の入力
+    ディレクトリ」を直接渡すモジュール単体テスト用の形で、CLI の --input-dir は
+    組織ディレクトリのある形しか受け付けない。
     """
 
     def _make(spend_by_month: dict[str, list[str]], members: list[str] | None = None,

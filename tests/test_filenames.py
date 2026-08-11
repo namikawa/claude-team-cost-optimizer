@@ -75,7 +75,7 @@ def test_partial_month_spend_warns_in_analyze(cfg, tmp_path):
     p = input_dir / "members" / f"members-{UUID}-2026-07-05.csv"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("Email,Seat Type\na@x.jp,Premium\n", encoding="utf-8")
-    result = analyze(input_dir, "2026-07", cfg)
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert any("部分月データ" in w and "--preview" in w for w in result.warnings)
 
 
@@ -85,7 +85,7 @@ def test_full_month_range_does_not_warn(cfg, tmp_path):
     p = input_dir / "members" / "members_2026-06.csv"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("Email,Seat Type\na@x.jp,Premium\n", encoding="utf-8")
-    result = analyze(input_dir, "2026-06", cfg)
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert not any("部分月データ" in w for w in result.warnings)
 
 
@@ -111,7 +111,8 @@ def test_preview_days_auto_detected_from_filename(tmp_path, capsys):
 
 def test_preview_without_days_or_range_errors(make_input, tmp_path, capsys):
     input_dir = make_input({"2026-07": [spend_row("a@x.jp", 10.0)]},
-                           members=["a@x.jp,Premium"], members_month="2026-07")
+                           members=["a@x.jp,Premium"], members_month="2026-07",
+                           org="org-x")
     rc = main([
         "analyze", "--config", CONFIG, "--preview",
         "--input-dir", str(input_dir), "--output-dir", str(tmp_path / "reports"),
