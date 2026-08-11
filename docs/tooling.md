@@ -107,9 +107,8 @@ git diff | uv run seat-analyzer check-text --diff -      # コミット前
 git show HEAD | uv run seat-analyzer check-text --diff -
 ```
 
-組織名は影響が最大なので、`--allow-term` では通せず、基準による除外もしない。公開済みの
-組織名（サンプル組織名など）を書く必要がある場合は
-`config.yaml > discussion.public_org_names` に明示する。除外の根拠が差分に残りレビューできる。
+組織名は影響が最大なので常時禁止で、`--allow-term` でも設定でも通せない。基準による除外も
+しない。検出された組織名は、その語を公開文章から取り除いて対処する。
 
 前提として、コミット済みのファイルには業務情報が無いことを仮定している。仮に過去に
 コミットしてしまっていると、その語は「公開済み」として以後検出されない。新規の開示を

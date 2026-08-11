@@ -123,8 +123,10 @@ def test_list_override_replaces_whole_list(tmp_path):
 
 def test_empty_list_override_is_accepted(tmp_path):
     """空リストは正当な置換（「1件も無い」を表せる必要がある）。"""
-    path = _override(tmp_path, "discussion:\n  public_org_names: []\n")
-    assert load_config(path)["discussion"]["public_org_names"] == []
+    path = _override(tmp_path, 'discussion:\n  allow_terms: ["zephyr"]\n')
+    assert load_config(path)["discussion"]["allow_terms"] == ["zephyr"]
+    path = _override(tmp_path, "discussion:\n  allow_terms: []\n")
+    assert load_config(path)["discussion"]["allow_terms"] == []
 
 
 def test_comment_only_override_is_a_noop(tmp_path):

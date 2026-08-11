@@ -13,7 +13,7 @@ import pytest
 from seat_analyzer import cli, discussion, leakcheck, report
 from seat_analyzer.report import document
 from seat_analyzer.cli import main
-from seat_analyzer.config import load_config, discussion_settings
+from seat_analyzer.config import load_config
 
 from .conftest import CONFIG, hit_terms, requires_posix_permissions, run_analyze
 
@@ -355,7 +355,7 @@ def stub_claude(monkeypatch):
 
 def test_run_claude_returns_body_and_isolates_context(stub_claude):
     captured = stub_claude(stdout=BODY + "\n")
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     assert discussion.run_claude("prompt", s) == BODY.strip()
 
     cmd = captured["cmd"]
@@ -383,7 +383,7 @@ def test_run_claude_uses_utf8_for_subprocess_io(stub_claude):
     失敗が呼び出し元へ伝播しない）ので、変換は自分で行う。
     """
     captured = stub_claude(stdout=BODY + "\n")
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     prompt = "見出し — ⚠️"
     discussion.run_claude(prompt, s)
 
@@ -403,7 +403,7 @@ def test_run_claude_normalizes_crlf_in_output(stub_claude):
     body = "### 見出し\r\n\r\n" + "本文。" * 80   # min_output_chars を超える長さにする
     stub_claude(stdout=body + "\r\n")
 
-    out = discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
+    out = discussion.run_claude("prompt", load_config(CONFIG)["discussion"])
 
     assert "\r" not in out
     assert "### 見出し\n\n" in out
@@ -419,7 +419,7 @@ def test_run_claude_aborts_when_output_is_not_utf8(stub_claude):
     stub_claude(stdout=b"\xff\xfe broken")
 
     with pytest.raises(discussion.DiscussionError, match="UTF-8") as e:
-        discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
+        discussion.run_claude("prompt", load_config(CONFIG)["discussion"])
     # 同じ入力の再実行では直らない（CLI が非 UTF-8 を出す設定）
     assert e.value.transient is False
 
@@ -435,7 +435,7 @@ def test_unicode_failure_is_not_retried(monkeypatch):
     monkeypatch.setattr(discussion.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(discussion.subprocess, "run", fake_run)
     monkeypatch.setattr(discussion.time, "sleep", lambda _: None)
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     assert int(s["retries"]) > 0, "リトライ設定が 0 ならこのテストは何も保証しない"
 
     with pytest.raises(discussion.DiscussionError):
@@ -475,14 +475,14 @@ def test_run_claude_uses_resolved_executable_path(monkeypatch):
 
     monkeypatch.setattr(discussion.shutil, "which", lambda _: r"C:\npm\claude.cmd")
     monkeypatch.setattr(discussion.subprocess, "run", fake_run)
-    discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
+    discussion.run_claude("prompt", load_config(CONFIG)["discussion"])
 
     assert captured["cmd"][0] == r"C:\npm\claude.cmd"
 
 
 def test_run_claude_strips_code_fence(stub_claude):
     stub_claude(stdout="```markdown\n" + BODY + "\n```\n")
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     assert discussion.run_claude("prompt", s) == BODY.strip()
 
 
@@ -496,7 +496,7 @@ def test_run_claude_strips_code_fence(stub_claude):
 def test_run_claude_strips_discussion_heading(stub_claude, stdout):
     """出力に「## 考察」が付いてきても差し込み時に H2 が重複しないよう落とす。"""
     stub_claude(stdout=stdout.format(body=BODY))
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     result = discussion.run_claude("prompt", s)
     assert result.endswith(BODY.strip())
     for heading in ("## 考察", "##考察"):
@@ -506,7 +506,7 @@ def test_run_claude_strips_discussion_heading(stub_claude, stdout):
 def test_run_claude_strips_every_discussion_heading(stub_claude):
     """1つの出力に複数の考察見出しがあってもすべて落とす。"""
     stub_claude(stdout=f"## 考察\n\n{BODY}\n\n## 考察\n\n{BODY}")
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     result = discussion.run_claude("prompt", s)
     assert "## 考察" not in result
     assert result.count("### 変更推奨の妥当性") == 2
@@ -520,7 +520,7 @@ def test_run_claude_strips_every_discussion_heading(stub_claude):
 ])
 def test_run_claude_rejects_bad_output(stub_claude, proc_kw, message):
     stub_claude(**proc_kw)
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     with pytest.raises(discussion.DiscussionError, match=message):
         discussion.run_claude("prompt", s)
 
@@ -528,7 +528,7 @@ def test_run_claude_rejects_bad_output(stub_claude, proc_kw, message):
 def test_run_claude_rejects_api_error_after_body(stub_claude):
     """API エラーは出力の先頭に限らない（ストリーミング途中で失敗すると本文の後に付く）。"""
     stub_claude(stdout=BODY + "\nAPI Error: 500 Internal Server Error")
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     with pytest.raises(discussion.DiscussionError, match="API エラー") as exc:
         discussion.run_claude("prompt", s)
     assert exc.value.transient is True
@@ -544,7 +544,7 @@ def test_run_claude_rejects_api_error_after_body(stub_claude):
 def test_run_claude_rejects_malformed_output(stub_claude, stdout, message):
     """長さだけでは弾けない「形の崩れた出力」を肯定的な検査で落とす。"""
     stub_claude(stdout=stdout)
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     with pytest.raises(discussion.DiscussionError, match=message) as exc:
         discussion.run_claude("prompt", s)
     assert exc.value.transient is True  # 再試行で救えるため
@@ -553,7 +553,7 @@ def test_run_claude_rejects_malformed_output(stub_claude, stdout, message):
 def test_run_claude_isolates_mcp_and_session(stub_claude):
     """MCP サーバも二重防御で遮断し、レポート全文をトランスクリプトに残さない。"""
     captured = stub_claude(stdout=BODY)
-    discussion.run_claude("prompt", discussion_settings(load_config(CONFIG)))
+    discussion.run_claude("prompt", load_config(CONFIG)["discussion"])
     assert "--strict-mcp-config" in captured["cmd"]
     assert "--no-session-persistence" in captured["cmd"]
 
@@ -569,7 +569,7 @@ def test_run_claude_isolates_mcp_and_session(stub_claude):
 ])
 def test_run_claude_transient_classification(stub_claude, proc_kw, transient):
     stub_claude(**proc_kw)
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     with pytest.raises(discussion.DiscussionError) as exc:
         discussion.run_claude("prompt", s)
     assert exc.value.transient is transient
@@ -581,14 +581,14 @@ def test_run_claude_timeout(monkeypatch):
 
     monkeypatch.setattr(discussion.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(discussion.subprocess, "run", fake_run)
-    s = discussion_settings(load_config(CONFIG))
+    s = load_config(CONFIG)["discussion"]
     with pytest.raises(discussion.DiscussionError, match="応答しませんでした"):
         discussion.run_claude("prompt", s)
 
 
 def test_run_claude_missing_command(monkeypatch):
     monkeypatch.setattr(discussion.shutil, "which", lambda _: None)
-    s = dict(discussion_settings(load_config(CONFIG)), command="claude-not-installed")
+    s = dict(load_config(CONFIG)["discussion"], command="claude-not-installed")
     with pytest.raises(discussion.DiscussionError, match="見つかりません"):
         discussion.run_claude("prompt", s)
 

@@ -19,27 +19,6 @@ PACKAGE_CONFIG_PATH = Path(__file__).parent / "default-config.yaml"
 # ワークスペースに置く上書きファイルの名前（--config 省略時にカレントから探す）
 WORKSPACE_CONFIG_NAME = "config.yaml"
 
-# config.yaml > discussion セクションの既定値。未指定の項目は discussion_settings() が補完する
-DISCUSSION_DEFAULTS: dict = {
-    "command": "claude",
-    "model": "opus",
-    "effort": "xhigh",
-    "timeout_seconds": 1800,
-    "max_attempts": 2,
-    "min_output_chars": 200,
-    "retries": 2,
-    "retry_wait_seconds": 30,
-    "allow_terms": (),
-    "public_org_names": (),
-}
-
-
-def discussion_settings(cfg: dict) -> dict:
-    """config.yaml > discussion を既定値で補完した設定。"""
-    merged = dict(DISCUSSION_DEFAULTS)
-    merged.update(cfg.get("discussion") or {})
-    return merged
-
 
 def load_config(path: str | Path | None = None) -> dict:
     """既定設定に上書きファイルを重ねた設定。
@@ -61,7 +40,7 @@ def load_config(path: str | Path | None = None) -> dict:
         # 効かないまま分析が完走する
         validate_config_path(override_path)
 
-    for key in ("seats", "decision", "model_prices", "columns"):
+    for key in ("seats", "decision", "model_prices", "columns", "discussion"):
         if key not in cfg:
             raise ValueError(f"設定に '{key}' セクションがありません")
     _validate(cfg)
@@ -258,45 +237,39 @@ def _validate(cfg: dict) -> None:
     if not (isinstance(basis, str) and basis.lower() in bases):
         errors.append(f"cost_basis は {' / '.join(bases)} のいずれかが必要です")
 
-    # discussion は任意セクション（未指定なら DISCUSSION_DEFAULTS が使われる）
-    disc = cfg.get("discussion")
-    if disc is not None:
-        if not isinstance(disc, dict):
-            errors.append("discussion セクションが辞書ではありません")
-        else:
-            for key in ("command", "model", "effort"):
-                if key in disc and not (isinstance(disc[key], str) and disc[key].strip()):
-                    errors.append(f"discussion.{key} は空でない文字列が必要です")
-            efforts = ("low", "medium", "high", "xhigh", "max")
-            if "effort" in disc and disc["effort"] not in efforts:
-                errors.append(f"discussion.effort は {'/'.join(efforts)} のいずれかが必要です")
-            # 回数は int() で黙って切り捨てられると意図と違う挙動になるため整数を要求する。
-            # 秒数は inf/NaN を弾く（time.sleep(inf) は OverflowError で実行を止める）
-            for key in ("max_attempts", "min_output_chars", "retries"):
-                if key in disc and not _int(disc[key]):
-                    errors.append(f"discussion.{key} は整数が必要です")
-            if "max_attempts" in disc and _int(disc["max_attempts"]) and disc["max_attempts"] < 1:
-                errors.append("discussion.max_attempts は 1 以上が必要です")
-            if "min_output_chars" in disc and _int(disc["min_output_chars"]) \
-                    and disc["min_output_chars"] < 1:
-                errors.append("discussion.min_output_chars は 1 以上が必要です")
-            if "retries" in disc and _int(disc["retries"]) and disc["retries"] < 0:
-                errors.append("discussion.retries は 0 以上が必要です")
-            if "timeout_seconds" in disc and (
-                not _finite(disc["timeout_seconds"]) or disc["timeout_seconds"] <= 0
-            ):
-                errors.append("discussion.timeout_seconds は正の有限な数値が必要です")
-            if "retry_wait_seconds" in disc and (
-                not _finite(disc["retry_wait_seconds"]) or disc["retry_wait_seconds"] < 0
-            ):
-                errors.append("discussion.retry_wait_seconds は 0 以上の有限な数値が必要です")
-            for key in ("allow_terms", "public_org_names"):
-                values = disc.get(key)
-                if values is not None and not (
-                    isinstance(values, list)
-                    and all(isinstance(v, str) and v.strip() for v in values)
-                ):
-                    errors.append(f"discussion.{key} は空でない文字列のリストが必要です")
+    # discussion の各項目は既定設定が必ず持ち、上書きはキーを消せないため、値の有無を
+    # 条件にせず常に検査する（欠けている場合は既定設定の破損として同じ経路で報告する）
+    disc = cfg["discussion"]
+    if not isinstance(disc, dict):
+        errors.append("discussion セクションが辞書ではありません")
+    else:
+        for key in ("command", "model", "effort"):
+            if not (isinstance(disc.get(key), str) and disc[key].strip()):
+                errors.append(f"discussion.{key} は空でない文字列が必要です")
+        efforts = ("low", "medium", "high", "xhigh", "max")
+        if disc.get("effort") not in efforts:
+            errors.append(f"discussion.effort は {'/'.join(efforts)} のいずれかが必要です")
+        # 回数は int() で黙って切り捨てられると意図と違う挙動になるため整数を要求する。
+        # 秒数は inf/NaN を弾く（time.sleep(inf) は OverflowError で実行を止める）
+        for key in ("max_attempts", "min_output_chars", "retries"):
+            if not _int(disc.get(key)):
+                errors.append(f"discussion.{key} は整数が必要です")
+        if _int(disc.get("max_attempts")) and disc["max_attempts"] < 1:
+            errors.append("discussion.max_attempts は 1 以上が必要です")
+        if _int(disc.get("min_output_chars")) and disc["min_output_chars"] < 1:
+            errors.append("discussion.min_output_chars は 1 以上が必要です")
+        if _int(disc.get("retries")) and disc["retries"] < 0:
+            errors.append("discussion.retries は 0 以上が必要です")
+        if not _finite(disc.get("timeout_seconds")) or disc["timeout_seconds"] <= 0:
+            errors.append("discussion.timeout_seconds は正の有限な数値が必要です")
+        if not _finite(disc.get("retry_wait_seconds")) or disc["retry_wait_seconds"] < 0:
+            errors.append("discussion.retry_wait_seconds は 0 以上の有限な数値が必要です")
+        terms = disc.get("allow_terms")
+        if not (
+            isinstance(terms, list)
+            and all(isinstance(v, str) and v.strip() for v in terms)
+        ):
+            errors.append("discussion.allow_terms は空でない文字列のリストが必要です")
 
     patterns = cfg["model_prices"].get("patterns")
     if not isinstance(patterns, list) or not patterns:
