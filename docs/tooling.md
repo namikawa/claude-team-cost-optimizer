@@ -23,7 +23,8 @@ seat-analyzer analyze --with-discussion           # 分析と考察を一度に
 ```
 
 ローカルにインストールされた Claude Code CLI をヘッドレス（`claude -p`）で呼び出す。
-Anthropic API キーは不要で、Claude のサブスクリプション枠を消費する。設定は
+Anthropic API キーは不要で、Claude のサブスクリプション枠を消費する。レポートの内容
+（メールアドレス・利用額を含む）はプロンプトとして Anthropic へ送信される。設定は
 `discussion` セクション（モデル・推論レベル・タイムアウト・再試行回数）で、既定値は
 パッケージ同梱の `default-config.yaml` が持つ。変えたい項目だけをワークスペースの
 `config.yaml` に書いて上書きする。
@@ -113,7 +114,7 @@ git log --format=%B -1 | uv run seat-analyzer check-text -   # 標準入力
 必ず落ちるため、追加される内容と追加先のパスだけを対象にする。
 
 ```sh
-git diff | uv run seat-analyzer check-text --diff -      # コミット前
+git diff HEAD | uv run seat-analyzer check-text --diff -  # コミット前（ステージ済みも含めて）
 git show HEAD | uv run seat-analyzer check-text --diff -
 ```
 

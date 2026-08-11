@@ -56,6 +56,7 @@ Claude Code を想定している。macOS / Windows / Linux の差異は、Claud
   - `sudo` を伴うもの
   - システム全体へのインストール（Homebrew / winget / apt など）
   - シェルの設定ファイル・PATH・既存の Python 環境の書き換え
+  - 破壊的な git 操作（`git reset --hard`・`git clean` など、未コミットの変更を捨てるもの）
 - 既存の環境を壊さない。依存関係は uv がツール専用の隔離環境に入れる。
   `pip install` をグローバルに実行しない
 - 検証コマンドを飛ばさない。「たぶん入っている」で次のステップへ進まない
@@ -183,10 +184,12 @@ ls input config.yaml
 ## ステップ 4: 合成データで動作確認する
 
 実データを用意する前に、その場で作る最小の合成 CSV でパイプラインが最後まで走ることを
-確認する。ワークスペースを汚さないよう、使い捨てのディレクトリで行う。
+確認する。ワークスペースを汚さないよう、使い捨てのディレクトリで行う（既存のディレクトリは
+使わない。下の作成コマンドが「既に存在する」エラーになったら別名にする。最後に削除するのは
+ここで自分が作ったディレクトリだけ）。
 
 ```sh
-mkdir -p /tmp/seat-analyzer-smoke
+mkdir /tmp/seat-analyzer-smoke
 cd /tmp/seat-analyzer-smoke
 seat-analyzer init-org demo-org
 
@@ -210,7 +213,7 @@ PowerShell ではヒアドキュメントの代わりにヒア文字列を使う
 置く）。
 
 ```powershell
-New-Item -ItemType Directory -Force $env:TEMP\seat-analyzer-smoke
+New-Item -ItemType Directory $env:TEMP\seat-analyzer-smoke
 Set-Location $env:TEMP\seat-analyzer-smoke
 seat-analyzer init-org demo-org
 
@@ -240,7 +243,8 @@ Get-ChildItem reports\demo-org\2026-06
   この場合は prompt_tokens × 単価にフォールバックする
 - `members-info.csv` に未登録のユーザ — 雛形がヘッダ行だけで中身が無いため
 
-確認できたら使い捨てディレクトリを削除し、ステップ 3 で作ったワークスペースへ戻る。
+確認できたら使い捨てディレクトリを削除し、ステップ 3 で作ったワークスペースへ戻る
+（以下の `~/claude-seat-analysis` は例。ステップ 3 で選んだ場所に読み替える）。
 
 ```sh
 rm -rf /tmp/seat-analyzer-smoke
@@ -271,8 +275,10 @@ seat-analyzer init-org <組織名>
 
 `seat-analyzer discuss`（と `analyze --with-discussion`）は、ローカルの Claude Code CLI を
 ヘッドレスで呼び出してレポートの「考察」セクションを書かせる。Anthropic API キーは不要で、
-ログイン済みの Claude サブスクリプション枠を消費する。分析そのもの（`analyze`）には
-不要なので、このステップが通らなくても他の機能は使える。
+ログイン済みの Claude サブスクリプション枠を消費する。このときレポートの内容
+（メールアドレス・利用額を含む）がプロンプトとして Anthropic へ送信されるため、
+実データで使う前に、組織の方針上問題ないかをユーザに確認する。分析そのもの
+（`analyze`）には不要なので、このステップが通らなくても他の機能は使える。
 
 1. CLI があること
 
@@ -434,8 +440,9 @@ uv run pytest
   ```
 
   何も出なければ問題ない。行が出た場合はワークツリーを取り直す。次の操作は未コミットの
-  変更を捨てるので、残したい変更があれば先に退避する（`git rm --cached` が中断したときに
-  `git reset --hard` を走らせないため `&&` で繋ぐ）。
+  変更を捨てる破壊的な操作なので、`git status` で残したい変更が無いことを確かめ、承認を
+  得てから実行する（`git rm --cached` が中断したときに `git reset --hard` を走らせない
+  ため `&&` で繋ぐ）。
 
   ```sh
   git pull --ff-only
