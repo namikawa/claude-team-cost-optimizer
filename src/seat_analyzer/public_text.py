@@ -18,7 +18,6 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import discussion_settings
 from .leakcheck import (
     LeakCheckError,
     LeakHit,
@@ -299,7 +298,8 @@ def check_public_text(
 
     PR 本文・PR コメント・コミットメッセージなど、リポジトリの外に出る文章が対象。
     レポートの混入チェックと違い「対象組織」という概念がない（どの組織の情報も書けない）
-    ため、全組織の語を禁止語として集める。
+    ため、全組織の語を禁止語として集める。組織名は常時禁止で、allow にも設定にも
+    除外の経路を持たない。
 
     禁止語が1件も集まらない場合は LeakCheckError にする。--input-dir が解決できない
     等で検査が退化していると、何を渡しても「検出なし」になり、青信号にしか見えないため。
@@ -315,13 +315,6 @@ def check_public_text(
         )
     terms = forbidden_terms(
         input_dir=input_dir, output_dir=output_dir, target_org=None, cfg=cfg)
-    # 公開済みと分かっている組織名（サンプル組織等）は明示的に外す。組織名は
-    # 常時禁止のままにし、除外根拠を config の差分としてレビューできる形にする
-    public_orgs = {
-        str(o).strip().lower() for o in (discussion_settings(cfg).get("public_org_names") or ())
-    }
-    terms = tuple(
-        t for t in terms if not (t.kind == "org" and t.text.lower() in public_orgs))
     if not terms:
         raise LeakCheckError(
             "禁止語を1件も収集できませんでした（--input-dir / --output-dir を確認して"

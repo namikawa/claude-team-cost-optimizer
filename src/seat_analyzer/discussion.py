@@ -32,7 +32,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import report
-from .config import discussion_settings
 from .leakcheck import (
     MONTH_DIR_RE,
     LeakHit,
@@ -414,7 +413,7 @@ def generate(
     # 既定の runner は呼び出し時に解決する（デフォルト引数で束縛すると差し替えが効かない）
     runner = runner or run_claude
     notify = notify or (lambda _message: None)
-    s = discussion_settings(cfg)
+    s = cfg["discussion"]
     # config の allow_terms は「恒久的に無害と確認済みの語」。--allow-term は単一組織
     # 実行に限られるため、全組織実行でも効く許可の置き場としてこちらを使う
     allow = tuple(allow) + tuple(s.get("allow_terms") or ())

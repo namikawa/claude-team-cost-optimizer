@@ -200,22 +200,22 @@ uv run pytest
 パイプラインが最後まで走ることを確認する。
 
 ```sh
-uv run seat-analyzer analyze --input-dir examples/input --month 2026-06
+uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --month 2026-06
 ```
 
-`reports/org-a/2026-06/` と `reports/org-b/2026-06/` に `report.md`・`dashboard.html`・
-`recommendations.csv` が、`reports/summary/2026-06.md` に組織横断サマリが生成される。
+`examples/reports/org-a/2026-06/` と `examples/reports/org-b/2026-06/` に `report.md`・
+`dashboard.html`・`recommendations.csv` が、`examples/reports/summary/2026-06.md` に
+組織横断サマリが生成される。
 警告がいくつか表示されるのは正常（合成データはキャッシュ内訳の列などを持たないため）。
 終了コードが 0 で、上記のファイルが生成されていれば成功。
 
-注意: この出力先は既定の `reports/` である。すでに実データの分析結果が `reports/` に
-ある環境で確認する場合は、`--output-dir` に別のディレクトリを指定して既存の
-`reports/summary/2026-06.md` を上書きしないようにする。
+`--output-dir` でサンプルの出力先を分けておく。既定の `reports/` に出すと、実データの
+分析結果と混ざり `reports/summary/2026-06.md` を上書きしてしまう。
 
 検証:
 
 ```sh
-ls reports/org-a/2026-06/ reports/org-b/2026-06/
+ls examples/reports/org-a/2026-06/ examples/reports/org-b/2026-06/
 ```
 
 生成物は gitignore 済みで、消しても同じコマンドで再生成できる。
@@ -253,7 +253,7 @@ ls reports/org-a/2026-06/ reports/org-b/2026-06/
 4. LLM を呼ばずにプロンプトの組み立てだけを確認する（ステップ 6 の生成物を使う）
 
    ```sh
-   uv run seat-analyzer discuss --input-dir examples/input --org org-a --month 2026-06 --dry-run
+   uv run seat-analyzer discuss --input-dir examples/input --output-dir examples/reports --org org-a --month 2026-06 --dry-run
    ```
 
    考察執筆の指示文が表示されれば、資料の収集からプロンプト生成までが動いている。
@@ -316,6 +316,12 @@ uv run seat-analyzer init-org <組織名>
      移さないと記入済みの考察が再生成時に引き継がれない
 - `check-text` や `discuss` が対象語を集められずにエラー終了する
   リポジトリのルート以外で実行している可能性が高い。ルートに移動して実行し直す。
+- `check-text` がサンプル組織名（org-a・org-b）を業務情報として検出する
+  以前の手順でサンプル出力を既定の `reports/` に生成したままになっている。
+  `reports/org-a/`・`reports/org-b/`（あれば `reports/summary/` のサンプル月の
+  サマリも）を削除するか `examples/reports/` へ移す。組織名の検査は `reports/`
+  配下にある組織を対象に含めるため、サンプルの成果物を実データの出力先に
+  置かないことが前提になっている。
 - `tests/test_golden.py` だけが落ちる
   ワークツリーの改行が CRLF のまま残っている。`core.autocrlf` や `core.eol` を有効に
   していると OS によらず起きる。`git ls-files --eol | grep 'w/crlf' | grep -v examples/input`

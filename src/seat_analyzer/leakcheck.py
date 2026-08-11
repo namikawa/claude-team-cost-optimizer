@@ -306,9 +306,8 @@ def find_leaks(
     確認して無害と判断したものとして除外する。ただし組織名とメールアドレスは
     allow の対象外（Term.allowable）— 一般語と衝突する余地が実質なく、影響が大きいため。
 
-    公開済みと分かっている組織名を通したい場合は、source で緩めるのではなく呼び出し側で
-    terms から外す（`config.yaml > discussion.public_org_names`）。source は変動する
-    内容なので、影響が最大の組織名の除外根拠にはしない。
+    組織名を通す経路は用意しない。source は実行のたびに変わる内容で、設定は利用者の手元で
+    書き換えられるため、影響が最大の語の除外根拠にはしない。
     """
     lowered, source_lower = text.lower(), source.lower()
     allowed = {a.strip().lower() for a in allow if a.strip()}

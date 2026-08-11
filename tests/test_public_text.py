@@ -14,6 +14,7 @@ import pytest
 
 from seat_analyzer import leakcheck, public_text
 from seat_analyzer.cli import main
+from seat_analyzer.config import load_config
 
 from .conftest import CONFIG, REPO_ROOT, spend_row
 
@@ -405,19 +406,20 @@ def test_diff_mode_reports_extraction_size(publish_input, tmp_path, capsys):
     assert "追加行 0" in out and "対象パス 1" in out
 
 
-def test_check_text_public_org_names(publish_input, tmp_path):
-    """組織名は --allow-term では通せないが、config の明示リストでは通せる。"""
+def test_check_text_cannot_exempt_org_names(publish_input, tmp_path):
+    """組織名は常時禁止。--allow-term でも設定でも除外できない。"""
     assert _check("zephyr-holdings の話", publish_input, tmp_path) == 1
+    assert _check("zephyr-holdings の話", publish_input, tmp_path,
+                  "--allow-term", "zephyr-holdings") == 1
 
+    # 組織名を除外する設定項目は存在しない（書いても未知のキーとして拒否される）
     import yaml
     cfg = yaml.safe_load(Path(CONFIG).read_text(encoding="utf-8"))
     cfg["discussion"] = {**cfg["discussion"], "public_org_names": ["zephyr-holdings"]}
     path = tmp_path / "config-public-org.yaml"
     path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
-    assert main(["check-text", "--config", str(path), "--input-dir", str(publish_input),
-                 "--output-dir", str(tmp_path / "reports"),
-                 "--repo-root", str(tmp_path / "baseline"),
-                 "--text", "zephyr-holdings の話"]) == 0
+    with pytest.raises(ValueError, match="discussion.public_org_names"):
+        load_config(path)
 
 
 def test_public_baseline_excludes_local_only_paths(tmp_path):

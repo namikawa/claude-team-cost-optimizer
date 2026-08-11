@@ -77,6 +77,6 @@ Python 3.11 以上と [uv](https://docs.astral.sh/uv/) が必要。考察の自�
 
 ```sh
 uv run pytest              # テスト
-uv run seat-analyzer analyze --input-dir examples/input --month 2026-06   # サンプル2組織でE2E
-uv run seat-analyzer analyze --input-dir examples/input --org org-b       # 特定組織のみ
+uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --month 2026-06   # サンプル2組織でE2E
+uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --org org-b       # 特定組織のみ
 ```
