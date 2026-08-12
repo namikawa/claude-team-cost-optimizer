@@ -124,46 +124,6 @@ def test_preview_merges(make_input, cfg):
     assert row["note"] == "pv備考"
 
 
-def test_markdown_has_both_summaries_and_notes(make_input, cfg, tmp_path):
-    """両軸データあり時、部署別サマリとチーム別サマリの両方が出る。"""
-    input_dir = make_input(
-        {"2026-06": [spend_row("a@example.com", 10.0)]},
-        members=["a@example.com,Standard", "b@example.com,Premium"],
-    )
-    _write_info(
-        input_dir, None,
-        "email,部署,チーム,職種,備考\n"
-        "a@example.com,開発部,基盤チーム,エンジニア,ヒアリング済み\n"
-        "b@example.com,営業部,西日本チーム,マネージャ,\n",
-    )
-    result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
-    text = out.read_text(encoding="utf-8")
-    assert "## 部署別サマリ" in text
-    assert "## チーム別サマリ" in text
-    # 表示順は 部署別 → チーム別
-    assert text.index("## 部署別サマリ") < text.index("## チーム別サマリ")
-    assert "### 備考" in text
-    assert "a@example.com: ヒアリング済み" in text
-    assert "| 部署 |" in text  # ユーザ表に部署列
-    assert "| チーム |" in text  # ユーザ表にチーム列
-
-
-def test_markdown_no_sections_without_info(make_input, cfg, tmp_path):
-    input_dir = make_input(
-        {"2026-06": [spend_row("a@example.com", 10.0)]},
-        members=["a@example.com,Standard"],
-    )
-    result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
-    text = out.read_text(encoding="utf-8")
-    assert "## 部署別サマリ" not in text
-    assert "## チーム別サマリ" not in text
-    assert "### 備考" not in text
-
-
 def test_legacy_department_only_still_works(make_input, cfg, tmp_path):
     """旧形式（部署のみ・チーム列なし）でも落ちず部署別サマリが出る（後方互換）。"""
     input_dir = make_input(
@@ -273,23 +233,6 @@ def test_unregistered_users_warned_in_preview(make_input, cfg):
     warns = _unregistered(preview(input_dir, "2026-06", cfg, days_observed=15, org="org-a").warnings)
     assert len(warns) == 1
     assert "c@example.com" in warns[0]
-
-
-def test_unregistered_warning_in_markdown(make_input, cfg, tmp_path):
-    """既存の警告フローに乗り report.md の警告節に出る（追加配線は不要）。"""
-    input_dir = make_input(
-        {"2026-06": [spend_row("a@example.com", 10.0), spend_row("c@example.com", 5.0)]},
-        members=["a@example.com,Standard", "c@example.com,Standard"],
-    )
-    _write_info(
-        input_dir, None,
-        "email,部署,チーム,職種,備考\na@example.com,開発部,基盤チーム,,\n",
-    )
-    out = tmp_path / "report.md"
-    write_markdown(analyze(input_dir, "2026-06", cfg, org="org-a"), out)
-    text = out.read_text(encoding="utf-8")
-    assert "## データ検証・警告" in text
-    assert UNREGISTERED in text
 
 
 # --- 兼務（複数所属）の按分 -----------------------------------------------

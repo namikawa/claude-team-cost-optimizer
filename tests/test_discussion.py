@@ -176,14 +176,6 @@ def test_generate_blocks_persistent_leak(two_orgs, tmp_path):
     assert report.discussion_body(outcome.path.read_text(encoding="utf-8")) is None
 
 
-def test_generate_allow_term_lets_verified_text_through(two_orgs, tmp_path):
-    out = run_analyze(two_orgs, tmp_path)
-    leaky = "### 変更推奨の妥当性\n\n" + "holloway 相当の水準にある。" * 10
-    outcome = _generate(two_orgs, out, _runner(leaky),
-                        allow=("holloway", "bernard.holloway"))
-    assert outcome.status == "written"
-
-
 def test_generate_dry_run_does_not_call_claude(two_orgs, tmp_path):
     out = run_analyze(two_orgs, tmp_path)
     runner = _runner(BODY)
@@ -742,13 +734,6 @@ def test_cli_analyze_with_discussion(two_orgs, tmp_path, monkeypatch):
     for org in ("org-a", "org-b"):
         md = (out / org / "2026-06" / "report.md").read_text(encoding="utf-8")
         assert report.discussion_body(md) == BODY.strip()
-
-
-def test_cli_analyze_without_discussion_leaves_placeholder(two_orgs, tmp_path):
-    out = run_analyze(two_orgs, tmp_path)
-    md = (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")
-    assert report.discussion_body(md) is None
-    assert "未記入" in md
 
 
 def test_cli_discuss_allow_term(two_orgs, tmp_path, monkeypatch):

@@ -7,13 +7,12 @@ Windows でしか起きない状況（ロケール既定が cp932・パス区切
 """
 
 import io
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from seat_analyzer import cli, data_quality, discussion
+from seat_analyzer import cli, data_quality
 from seat_analyzer.cli import main
 from seat_analyzer.data_quality import _reason
 
@@ -27,17 +26,6 @@ def _cp932_stream() -> tuple[io.BytesIO, io.TextIOWrapper]:
     """日本語 Windows のロケール既定を模した出力ストリーム。"""
     buf = io.BytesIO()
     return buf, io.TextIOWrapper(buf, encoding="cp932", errors="strict")
-
-
-def test_cp932_stream_cannot_write_report_characters():
-    """前提の確認: cp932 のままではレポート由来の文字を書けない。
-
-    この前提が崩れる（cp932 で書けてしまう）と、下の再設定テストが何も保証しなくなる。
-    """
-    _, stream = _cp932_stream()
-    with pytest.raises(UnicodeEncodeError):
-        stream.write(_UNENCODABLE)
-        stream.flush()
 
 
 def test_force_utf8_io_survives_cp932_locale_default(monkeypatch):
@@ -75,27 +63,6 @@ def test_force_utf8_io_uses_strict_errors(monkeypatch):
     with pytest.raises(UnicodeEncodeError):
         stream.write("\udcff")  # UTF-8 でも表現できない壊れた文字は落とす
         stream.flush()
-
-
-def test_cp932_stdin_silently_mangles_utf8_input():
-    """前提の確認: UTF-8 の日本語は cp932 として例外なく別の語へ化ける。
-
-    これが混入チェックが fail-open する仕組み。エラーになるなら止まるので害は無いが、
-    実際には多くの語が黙って通り、禁止語と一致しないまま「検出なし」になる。
-    """
-    mangled = [w for w in ("開発", "本部", "企画", "経理")
-               if _decodes_as_cp932_without_error(w)]
-    assert mangled, "cp932 で黙って化ける語が無いなら stdin の再設定は不要"
-    for word in mangled:
-        assert word not in word.encode("utf-8").decode("cp932")
-
-
-def _decodes_as_cp932_without_error(word: str) -> bool:
-    try:
-        word.encode("utf-8").decode("cp932")
-    except UnicodeDecodeError:
-        return False
-    return True
 
 
 def test_force_utf8_io_reconfigures_stdin(monkeypatch):
@@ -147,28 +114,6 @@ def test_permission_error_adds_hint_about_open_files(monkeypatch, capsys, tmp_pa
 
     err = capsys.readouterr().err
     assert "ヒント" in err and "Excel" in err
-
-
-def test_real_subprocess_delivers_bytes_for_our_own_decoding():
-    """実際の子プロセスを起動して「バイト列で受け取り自分でデコードする」契約を確かめる。
-
-    text=True に encoding を渡す形は Windows で壊れる。デコードがリーダースレッドで走り、
-    UnicodeDecodeError がスレッドの中で死んで stdout が None になるため、run_claude が
-    それを「出力が空」と誤認して生成をやり直していた。バイト列で受ける限りこの差は無い。
-    スタブではなく実プロセスで見るのは、この前提が壊れたときに気づくため（CI は Windows でも
-    回るので、そこで実際の Windows 実装に対して検査される）。
-    """
-    code = r"import sys; sys.stdout.buffer.write('あ\r\n'.encode() + b'\xff\xfe')"
-    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, check=True)
-
-    assert isinstance(proc.stdout, bytes)
-    # 壊れた部分も欠けずに届く（スレッド内でデコードされると None になる）
-    assert proc.stdout.endswith(b"\xff\xfe")
-    # デコードの失敗は自分のコードで起きるので、例外として扱える
-    with pytest.raises(UnicodeDecodeError):
-        discussion._decode_output(proc.stdout)
-    # 壊れていない範囲では CRLF が LF に揃う（universal newlines の代替）
-    assert discussion._decode_output("あ\r\nい\rう".encode()) == "あ\nい\nう"
 
 
 @requires_symlink

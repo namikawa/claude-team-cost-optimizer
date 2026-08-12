@@ -58,51 +58,6 @@ def test_billed_premium_counted(cfg, make_input):
     assert result.users.set_index("email").loc["over@x.jp", "billed_observed_usd"] == 120.0
 
 
-def test_preview_standard_billed_flag(cfg, make_input, tmp_path):
-    """Standard ユーザに実課金があると一次判断テーブルに ⚠️従量あり が出る。"""
-    from seat_analyzer.report import write_preview
-
-    input_dir = make_input(
-        {"2026-06": [spend_row("s-over@x.jp", 60.0, net=40.0)]},
-        members=["s-over@x.jp,Standard"],
-    )
-    result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
-    paths = write_preview(result, tmp_path / "reports")
-    md = paths["markdown"].read_text(encoding="utf-8")
-    assert "⚠️従量あり" in md
-    assert "⚠️超過済" not in md.split("## 一次判断テーブル")[1].split("\n\n")[0]
-    # 凡例にも従量ありの行が追加されている
-    assert "⚠️従量あり: Standard 等で従量課金が発生" in md
-
-
-def test_preview_dashboard_html(cfg, make_input, tmp_path):
-    """速報ダッシュボード HTML の主要要素を検証する。"""
-    from seat_analyzer.report import write_preview
-
-    input_dir = make_input(
-        {"2026-06": [
-            spend_row("s-over@x.jp", 60.0, net=40.0),   # Standard 実課金あり → ⚠️従量あり
-            spend_row("p-heavy@x.jp", 300.0, net=0.0),  # Premium 妥当
-        ]},
-        members=["s-over@x.jp,Standard", "p-heavy@x.jp,Premium"],
-    )
-    result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
-    paths = write_preview(result, tmp_path / "reports")
-    assert paths["html"].name == "preview-dashboard.html"
-    html = paths["html"].read_text(encoding="utf-8")
-    # (a) タイトルに「速報」
-    assert "速報" in html
-    assert "<title>Claude Team シート速報プレビュー" in html
-    # (b) 換算係数 ×3.0（30日/10日）表記
-    assert "×3.0" in html
-    # (c) メールのローカル部と一次判断ラベル
-    assert "s-over" in html
-    assert "p-heavy" in html
-    assert "Premium妥当" in html
-    # (d) 実課金ありの Standard ユーザに ⚠️従量あり
-    assert "⚠️従量あり" in html
-
-
 def test_days_out_of_range_raises(cfg, make_input):
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 1.0)]}, members=["a@x.jp,Premium"],

@@ -332,13 +332,6 @@ def _sample_issues(reverse_scope_keys=False):
     ]
 
 
-def test_json_output_is_byte_identical_regardless_of_input_order():
-    first = _sample_issues()
-    second = list(reversed(_sample_issues(reverse_scope_keys=True)))
-
-    assert issues_to_json(sort_issues(first)) == issues_to_json(sort_issues(second))
-
-
 def test_canonical_json_is_identical_regardless_of_input_order():
     first = _sample_issues()
     second = list(reversed(_sample_issues(reverse_scope_keys=True)))

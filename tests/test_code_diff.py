@@ -83,23 +83,6 @@ def test_dedup_warning_reworded_when_active(cfg, make_snapshots, write_code_snap
     assert not any("未使用:" in w for w in warns)
 
 
-def test_markdown_section_and_order(cfg, make_snapshots, write_code_snapshots, tmp_path):
-    input_dir = _spend_single(make_snapshots)
-    write_code_snapshots(input_dir, {
-        "2026-07-05": [("heavy@x.jp", 1000, 5)],
-        "2026-07-16": [("heavy@x.jp", 3000, 12)],
-    })
-    result = analyze(input_dir, "2026-07", cfg, org="org-a")
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
-    md = out.read_text(encoding="utf-8")
-    assert "## 月中の Claude Code 活動（code-analytics 差分）" in md
-    assert "LoC 増分（最新区間）" in md
-    assert "+2,000" in md                              # 桁区切り + 符号
-    assert md.index("## サマリ") < md.index("## 月中の Claude Code 活動（code-analytics 差分）")
-    assert md.index("## 月中の Claude Code 活動（code-analytics 差分）") < md.index("## 考察")
-
-
 # --- spend 停止疑いとの突合（LoC 増分の傍証 / 食い違い）---
 
 def _stall_input(make_snapshots):

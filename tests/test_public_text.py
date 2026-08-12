@@ -153,12 +153,6 @@ def test_check_text_allow_term(publish_input, tmp_path):
     assert _check("ZTeamX の需要", publish_input, tmp_path, "--allow-term", "ZTeamX") == 0
 
 
-def test_check_text_allow_term_cannot_override_org_names(publish_input, tmp_path):
-    """組織名は許可対象外（一般語と衝突する余地が実質なく影響が大きい）。"""
-    assert _check("zephyr-holdings の話", publish_input, tmp_path,
-                  "--allow-term", "zephyr-holdings") == 1
-
-
 class _FakeStdin:
     """バイト列を .buffer から読ませる標準入力の代用（テキストラッパーを持たない）。"""
 

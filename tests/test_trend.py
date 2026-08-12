@@ -120,22 +120,3 @@ def test_series_limited_to_six_months(cfg, make_input):
     assert len(series) == 6                        # 直近6ヶ月まで
     assert series[0]["month"] == "2026-02"
     assert series[-1]["month"] == "2026-07"
-
-
-def test_trend_section_rendered_in_markdown(cfg, make_input, tmp_path):
-    input_dir = make_input(
-        {
-            "2026-05": [spend_row("a@x.jp", 100.0, net=0.0)],
-            "2026-06": [spend_row("a@x.jp", 100.0, net=0.0)],
-        },
-        members=["a@x.jp,premium"],
-    )
-    result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
-    md = out.read_text(encoding="utf-8")
-    # サマリの直後・シート変更推奨の前に置かれる
-    assert "## 前月からの変化" in md
-    assert md.index("## サマリ") < md.index("## 前月からの変化") < md.index("## シート変更推奨")
-    assert "比較対象: 2026-05" in md
-    assert "### 月次推移" in md

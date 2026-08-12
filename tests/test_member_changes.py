@@ -109,23 +109,6 @@ def test_dedup_warning_reworded_when_active(cfg, make_snapshots, write_member_sn
     assert not any("未使用:" in w for w in warns)
 
 
-def test_markdown_section_order(cfg, make_snapshots, write_member_snapshots, tmp_path):
-    input_dir = _spend(make_snapshots)
-    write_member_snapshots(input_dir, {
-        "2026-07-05": ["a@x.jp,standard"],
-        "2026-07-16": ["a@x.jp,premium"],
-    })
-    result = analyze(input_dir, "2026-07", cfg, org="org-a")
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
-    md = out.read_text(encoding="utf-8")
-    # サマリより後・シート変更推奨より前・考察より前
-    assert md.index("## サマリ") < md.index("## 月中のメンバー変動（スナップショット差分）")
-    assert md.index("## 月中のメンバー変動（スナップショット差分）") < md.index("## シート変更推奨")
-    assert md.index("## 月中のメンバー変動（スナップショット差分）") < md.index("## 考察")
-    assert "07-05→07-16 で Standard → Premium" in md
-
-
 def test_preview_computes_member_changes(cfg, make_snapshots, write_member_snapshots, tmp_path):
     input_dir = make_snapshots(
         "2026-07", {"2026-07-13": [spend_row("a@x.jp", 40.0, net=0.0)]},

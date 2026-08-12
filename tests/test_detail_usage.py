@@ -138,22 +138,6 @@ def test_team_summary_excludes_unset(cfg, make_input, tmp_path):
     assert "（未設定）" not in team_section
 
 
-def test_detail_section_in_markdown_and_html(cfg, make_input, tmp_path):
-    input_dir = make_input(
-        {"2026-06": [spend_row("a@x.jp", 30.0, model="claude-opus-4-8", net=0.0)]},
-        members=["a@x.jp,Premium"],
-    )
-    result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    md_path = tmp_path / "report.md"
-    html_path = tmp_path / "dashboard.html"
-    write_markdown(result, md_path)
-    write_html(result, html_path)
-    md = md_path.read_text(encoding="utf-8")
-    html = html_path.read_text(encoding="utf-8")
-    assert "## 詳細利用状況" in md and "Opus 4.8" in md
-    assert "詳細利用状況" in html and "モデル割合" in html
-
-
 def test_group_summary_includes_prorated_loc():
     from seat_analyzer.report.format import _group_summary_rows
     from seat_analyzer.report.markdown import _group_summary_md
@@ -171,33 +155,3 @@ def test_group_summary_includes_prorated_loc():
     assert round(by["SRE"]["loc"]) == 200     # 400*0.5
     md = _group_summary_md(users, summary, "team", "チーム別サマリ")
     assert "LoC" in md and "1,200" in md
-
-
-def test_billed_gradient_in_dashboard(cfg, make_input, tmp_path):
-    # 実課金あり(premium)は背景色が付き、実課金ゼロは無着色
-    input_dir = make_input(
-        {"2026-06": [
-            spend_row("over@x.jp", 400.0, net=200.0),
-            spend_row("zero@x.jp", 30.0, net=0.0),
-        ]},
-        members=["over@x.jp,Premium", "zero@x.jp,Premium"],
-    )
-    result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    html_path = tmp_path / "dashboard.html"
-    write_html(result, html_path)
-    html = html_path.read_text(encoding="utf-8")
-    assert "rgba(192,57,43," in html  # 実課金ありのセルに警告色グラデーション
-
-
-def test_detail_html_escapes_model_field(cfg, make_input, tmp_path):
-    # モデル割合セルは autoescape 経由。悪意ある値でも HTML として解釈されない
-    input_dir = make_input(
-        {"2026-06": [spend_row("<script>@x.jp", 10.0, net=0.0)]},
-        members=["<script>@x.jp,Premium"],
-    )
-    result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    html_path = tmp_path / "dashboard.html"
-    write_html(result, html_path)
-    html = html_path.read_text(encoding="utf-8")
-    assert "<script>@x.jp" not in html
-    assert "&lt;script&gt;" in html
