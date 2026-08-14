@@ -1326,10 +1326,12 @@ V2が安定するまで既定値は`v1`。
   最小・最大に見積もった範囲を出し、結論が動かないときだけ値を確定させ、それ以外は`NA`に
   する。明細行数での代替はしない
   - 当初は「`product`列が無ければCode系の特徴量は`NA`」のように列の有無で書いていたが、
-    それだと証明できる値まで`NA`になる（総需要が閾値未満なら`supplementary_high`は偽が
-    確定する、primary行が1つも無ければCode回数は0が確定する、など）。守りたいのは
-    「証明できない値を出さない」ことなので、条件をそちらへ書き換えた
-- 確定できなかった特徴量があるときは`CAPACITY_SIGNAL_UNAVAILABLE`を出す。
+    それだと証明できる値まで`NA`になる（分からない行の正の寄与をすべて含めた上限が
+    閾値未満なら`supplementary_high`は偽が確定する、primary行が1つも無ければCode回数は
+    0が確定する、など。負の`cost_usd`がありうるため総需要では判定できず、上限で見る）。
+    守りたいのは「証明できない値を出さない」ことなので、条件をそちらへ書き換えた
+- `CAPACITY_SIGNAL_UNAVAILABLE`は`product`の列欠落またはセル欠損（product名が空の行）の
+  ときに出す。`requests`の欠落にはissueを出さず、既存のingest警告に委ねる。
   `product`は`REQUIRED_COLUMNS["spend"]`に含まれておらず、旧CSVは有効な入力として
   受け付けたままにする
 - prohibitedに一致するproductの行があれば`PROHIBITED_PRODUCT_OBSERVED`を出す。

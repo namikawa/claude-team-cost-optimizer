@@ -396,6 +396,81 @@ def test_breadth_is_unknown_when_total_requests_is_zero(policy):
     assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
 
 
+def test_breadth_is_settled_when_the_unknown_rows_cannot_change_the_lineup(policy):
+    # 不明行は1リクエスト（全体の 1%）。新しい product にしても既知 product へ足しても
+    # 5% の顔ぶれは変わらないので、breadth=1 が確定する
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 10.0, 99.0, "Claude Code"),
+        ("alice@x.jp", 0.5, 1.0, ""),
+    ]), policy).features
+
+    assert features.loc["alice@x.jp", "product_breadth"] == 1
+
+
+def test_breadth_is_settled_when_every_known_product_already_counts(policy):
+    # 下限に届いていない既知 product が無く、不明行だけでは 5% に届かない
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 1.0, 50.0, "Claude Code"),
+        ("alice@x.jp", 1.0, 49.0, "Chat"),
+        ("alice@x.jp", 1.0, 1.0, ""),
+    ]), policy).features
+
+    assert features.loc["alice@x.jp", "product_breadth"] == 2
+
+
+def test_breadth_is_unknown_when_a_short_product_can_be_pushed_over(policy):
+    # Chat は 4%（未カウント）。不明行の 2 リクエストを注ぎ込むと 6% で届いてしまう
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 1.0, 94.0, "Claude Code"),
+        ("alice@x.jp", 1.0, 4.0, "Chat"),
+        ("alice@x.jp", 1.0, 2.0, ""),
+    ]), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
+
+
+def test_breadth_is_unknown_when_the_unknown_rows_can_form_a_product(policy):
+    # 不明行だけで 10%。新しい product として数えられると顔ぶれが変わる
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 1.0, 90.0, "Claude Code"),
+        ("alice@x.jp", 1.0, 10.0, ""),
+    ]), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
+
+
+def test_breadth_is_unknown_when_an_unknown_row_has_negative_requests(policy):
+    # 負の値があると「既知 product は増える方向にしか動かない」が崩れ、下限を割りうる
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 1.0, 101.0, "Claude Code"),
+        ("alice@x.jp", 1.0, -1.0, ""),
+    ]), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
+
+
+def test_certain_sums_come_from_a_direct_scenario_sum(policy):
+    """確定値は、実際にありうる行の組をそのまま合計した値と一致する。
+
+    確定分と不明分を別々に合計してから足し直すと、2段の丸めが直接合計と食い違い、
+    どのシナリオでも出ない値を確定しうる。ここでは「不明行を入れない合計」と「全部
+    入れた合計」が倍精度で別の値になる並びを使い、確定させないことを固定する。
+    """
+    frame = detail([
+        ("alice@x.jp", 1e-17, 1.0, ""),
+        ("alice@x.jp", 5e-17, 1.0, ""),
+        ("alice@x.jp", 1e-16, 1.0, "Claude Code"),
+        ("alice@x.jp", 1.0, 1.0, "Claude Code"),
+    ])
+    is_code = frame["product"] == "Claude Code"
+    lowest = frame[is_code].groupby("email")["cost_usd"].sum()["alice@x.jp"]
+    highest = frame.groupby("email")["cost_usd"].sum()["alice@x.jp"]
+    assert lowest != highest
+
+    features = product_usage.compute(frame, policy).features
+    assert pd.isna(features.loc["alice@x.jp", "code_demand_usd"])
+
+
 def test_breadth_counts_products_at_the_lower_bound(policy):
     # 下限ちょうど（5%）は数える。分母・分子とも整数で丸めが除算1回に閉じる値を使う
     features = product_usage.compute(detail([

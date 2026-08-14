@@ -22,6 +22,9 @@ prohibited は primary / supplementary の分類と直交する属性で、同�
   確定する。範囲の下限と上限が一致することがその条件になる
 - 閾値判定（supplementary_high）は、範囲が閾値のどちら側に収まるかで確定する。寄与は
   正とは限らない（cost_basis=net_spend では返金等で負の値がありうる）ので下限も見る
+- 個数（product_breadth）は、分母が全 requests で固定されているため、分からない行の
+  割り当ては既知 product を増やす方向にしか働かない。その単調性を使い、どの割り当てでも
+  顔ぶれが変わらないと言えるときだけ確定する
 - 存在（prohibited_observed）は、1行でも観測していれば真が確定する。偽の側は、分からない
   行がその product だった可能性が残る限り確定しない
 - policy に名前が1つも無い分類は、分からない行が一致しようがないので確定する
@@ -200,12 +203,11 @@ def compute(spend_df: pd.DataFrame, policy: Mapping) -> ProductUsage:
     features["code_requests"] = _certain_sum(
         _sum_bounds(requests, email, index, certain=is_code, possible=maybe_code))
     # product_breadth は分類ではなく product の粒度で数えるため、名前の分からない行は
-    # 名前のある分類かどうかに関係なく結論を変えうる（既存の product の比を押し上げたのか、
-    # 別の product だったのかが決まらない）。分母にも効くので回数の欠損は全行を見る
-    breadth_swing = _sum_bounds(requests, email, index, certain=no_rows, possible=unknown_name)
+    # 名前のある分類かどうかに関係なく効きうる。確定できる範囲の判定は個数の性質を使うので
+    # _product_breadth 側に置く。分母にも効くので回数の欠損は全行を見る
     features["product_breadth"] = _product_breadth(
-        requests, email, keys, all_requests.total, index
-    ).mask((breadth_swing.low != breadth_swing.high) | all_requests.unbounded)
+        requests, email, keys, all_requests.total, unknown_name, index
+    ).mask(all_requests.unbounded)
 
     features["supplementary_high"] = _certain_threshold(
         _sum_bounds(demand, email, index,
@@ -250,18 +252,22 @@ def _sum_bounds(values: pd.Series, email: pd.Series, index: pd.Index, *,
                 certain: pd.Series, possible: pd.Series) -> _Bounds:
     """email 単位の合計と、分からない行が動かしうる範囲。
 
-    certain は必ず合計に入る行、possible は入るかどうかが決まらない行。possible の寄与は
-    「負の値の合計」（下限）から「正の値の合計」（上限）までの範囲に収まる。下限と上限が
-    一致するのは、possible の値がすべて 0 のとき、つまりその行が何であっても結果が
-    変わらないときだけ。値そのものが欠損している行は範囲を定められないため、certain・
-    possible のどちらかに入っていれば確定しないものとして扱う。
+    certain は必ず合計に入る行、possible は入るかどうかが決まらない行。possible のうち
+    負の値だけを入れた合計が下限、正の値だけを入れた合計が上限になる。下限と上限が一致
+    するのは、possible の値がすべて 0 のとき、つまりその行が何であっても結果が変わらない
+    ときだけ。値そのものが欠損している行は範囲を定められないため、certain・possible の
+    どちらかに入っていれば確定しないものとして扱う。
+
+    下限・上限は「実際にありうる行の組をそのまま合計した値」にする（確定分と不明分を
+    別々に合計してから足し直すと、その2段の丸めが直接合計と食い違い、直接計算では出ない
+    値を確定しうる）。
     """
-    total = _sum_by_email(values.where(certain, 0.0), email, index)
-    swing = values.where(possible, 0.0)
     return _Bounds(
-        total=total,
-        low=total + _sum_by_email(swing.clip(upper=0.0), email, index),
-        high=total + _sum_by_email(swing.clip(lower=0.0), email, index),
+        total=_sum_by_email(values.where(certain, 0.0), email, index),
+        low=_sum_by_email(
+            values.where(certain | (possible & (values < 0)), 0.0), email, index),
+        high=_sum_by_email(
+            values.where(certain | (possible & (values > 0)), 0.0), email, index),
         unbounded=_any_by_email(values.isna() & (certain | possible), email, index),
     )
 
@@ -338,22 +344,49 @@ def _category_keys(policy: Mapping, key: str) -> set[str]:
 
 
 def _product_breadth(requests: pd.Series, email: pd.Series, keys: pd.Series,
-                     totals: pd.Series, index: pd.Index) -> pd.Series:
-    """requests 比が下限以上の product の数（比を定義できないユーザは欠損）。
+                     totals: pd.Series, unknown_name: pd.Series,
+                     index: pd.Index) -> pd.Series:
+    """requests 比が下限以上の product の数（結論が動きうるユーザは欠損）。
 
-    分母はそのユーザの全 requests（product 名が空の行の分も含む）。product は照合用の
-    正準形で束ねるので、表記ゆれは1つの product として数える。requests の合計が 0 の
-    ユーザは比を定義できないため欠損にする（「比を計算した結果、下限を超える product が
-    無かった」を表す 0 とは意味が違う）。
+    分母はそのユーザの全 requests（product 名の分からない行の分もすでに入っている）。
+    product は照合用の正準形で束ねるので、表記ゆれは1つの product として数える。
+
+    分母が動かないため、名前の分からない行をどの product へ割り当てても、既知 product の
+    requests は増える方向にしか動かない。つまり顔ぶれが変わりうるのは「下限に届いていない
+    product が届くようになる」向きだけで、次の2つが成り立てば、どの割り当てでも結果は同じ
+    ＝確定する:
+      - 分からない行を全部まとめて新しい product にしても下限に届かない
+      - 下限に届いていない既知 product のうち最大のものへ全部注ぎ込んでも届かない
+        （最大のものが届かないなら、他のどれも届かない）
+    どちらかが崩れるときは結論を変える割り当てが実在するので欠損にする。分からない行に
+    負の値があるとこの単調性が崩れる（既知 product を下限未満へ落としうる）ため、その場合も
+    欠損にする。
+
+    requests の合計が 0 のユーザは比を定義できないため欠損にする（「比を計算した結果、
+    下限を超える product が無かった」を表す 0 とは意味が違う）。
     """
+    safe_totals = totals.where(totals > 0)
     per_product = requests.groupby([email, keys]).sum()
     denominator = pd.Series(
-        totals.reindex(per_product.index.get_level_values(0)).to_numpy(),
+        safe_totals.reindex(per_product.index.get_level_values(0)).to_numpy(),
         index=per_product.index,
     )
-    share = per_product.div(denominator.where(denominator > 0))
-    counts = (share >= _BREADTH_MIN_SHARE).groupby(level=0).sum()
-    return counts.reindex(index).where(totals > 0)
+    counted = per_product.div(denominator) >= _BREADTH_MIN_SHARE
+    counts = counted.groupby(level=0).sum().reindex(index)
+
+    # 下限に届いていない既知 product のうち最大のもの（1つも無ければ 0 として扱う）。
+    # 比較は counted と同じ「requests / 全 requests」の形にして、分からない行が 0 の
+    # ユーザでは counted の否定とそのまま一致するようにする
+    largest_short = (
+        per_product.where(~counted).groupby(level=0).max().reindex(index).fillna(0.0)
+    )
+    unknown_total = _sum_by_email(requests.where(unknown_name, 0.0), email, index)
+    settled = (
+        (unknown_total.div(safe_totals) < _BREADTH_MIN_SHARE)
+        & ((largest_short + unknown_total).div(safe_totals) < _BREADTH_MIN_SHARE)
+        & ~_any_by_email(unknown_name & (requests < 0), email, index)
+    )
+    return counts.where(settled)
 
 
 def _unavailable_features(features: pd.DataFrame) -> tuple[str, ...]:
