@@ -1,7 +1,7 @@
 # Claude利活用・シート適正化機能 実装設計書
 
 - ステータス: Draft
-- 最終更新: 2026-07-30
+- 最終更新: 2026-08-14
 - 対象: `seat-analyzer` 0.1系からの段階的拡張
 - 関連文書: [Claude利活用・シート適正化機能提案書](./claude-adoption-cost-management-proposal.md)
 - 進捗管理: [実装ステータス](./implementation-status.md)
@@ -219,7 +219,14 @@ src/seat_analyzer/
   report_v2.py          # 新規CSV/Markdown
 ```
 
-上の2つのブロックは設計時点の想定で、現状とは次の点が異なる。`report.py`は`report/`パッケージになっており、`__init__.py`が公開APIとオーケストレーション、出力形式ごとに`markdown.py`/`html.py`/`csv_out.py`、共通処理が`document.py`/`format.py`/`text.py`という構成。`analyze.py`は単一モジュールのままで、分割は別タスクとする。段階的に追加する一覧のうち`domain.py`/`data_quality.py`/`identity.py`は追加済みで、一覧に無いものとして考察執筆まわりの`discussion.py`/`leakcheck.py`/`public_text.py`がある。
+上の2つのブロックは設計時点の想定で、現状とは次の点が異なる（v1.0.0 時点）。
+
+- `report.py`は`report/`パッケージになっている。`__init__.py`が公開APIとオーケストレーション、出力形式ごとに`markdown.py`/`html.py`/`csv_out.py`、共通処理が`document.py`/`format.py`/`text.py`という構成
+- `analyze.py`も`analyze/`パッケージになっている（`__init__.py`/`credits.py`/`midmonth.py`）
+- 段階的に追加する一覧のうち`domain.py`/`data_quality.py`/`identity.py`は追加済み。一覧に無いものとして考察執筆まわりの`discussion.py`/`leakcheck.py`/`public_text.py`がある
+- `report_v2.py`という単一モジュールは作らない。新しい出力は`report/`パッケージの中へ、出力形式ごとに足す（CSVなら`report/*_csv.py`）。以降のStepで対象として`report_v2.py`または`report.py`と書かれている箇所は、この方針に読み替える。責務ごとの実ファイル名は各Trackの着手時に個別に確定させる（着手しないTrackを先回りして書き換えない。§2.4）
+- 設定の既定は`src/seat_analyzer/default-config.yaml`が唯一の源。リポジトリ直下・ワークスペースの`config.yaml`は差分だけを書く任意の上書きファイルで、gitignore済み。以降のStepで対象として`config.yaml`と書かれている箇所は`default-config.yaml`に読み替える
+- モジュールを増やすときは`tests/test_module_deps.py`の`LAYERS`へ層を割り当てる。パッケージ内importは自分より厳密に下の層だけを指してよく、同層どうしのimportも認めない。層に無いモジュールを足すとテストが落ちる
 
 ## 6. ディレクトリ
 
@@ -250,7 +257,15 @@ reports/<org>/<month>/
   report.md
   dashboard.html
   recommendations.csv
+  preview.md              # 速報モードのみ
+  preview-dashboard.html  # 速報モードのみ
+reports/summary/
+  <month>.md              # 複数組織を一括実行した場合のみ
 ```
+
+`preview.md`・`preview-dashboard.html`・`summary/<month>.md`はこの設計書の作成後に
+追加された既存出力で、いずれもgoldenテストのバイト一致比較の対象。不変条件を書くときは
+これらを落とさない。
 
 追加:
 
@@ -459,7 +474,11 @@ product_policy:
     - "Code Review"
     - "Claude in Slack"
   prohibited: []
+  supplementary_high_usd: 100.0
 ```
+
+`supplementary_high_usd`は`supplementary_high`の閾値。supplementary productの需要が
+この額以上なら真とする。
 
 `prohibited`は導入組織のポリシーに応じて設定する。公開する既定例には、
 特定組織のセキュリティ方針を含めない。
@@ -1249,7 +1268,7 @@ V2が安定するまで既定値は`v1`。
 
 対象:
 
-- `config.yaml`
+- `src/seat_analyzer/default-config.yaml`
 - `src/seat_analyzer/config.py`
 - `tests/test_hardening.py`
 
@@ -1258,11 +1277,13 @@ V2が安定するまで既定値は`v1`。
 - primary
 - supplementary
 - prohibited
+- `supplementary_high`の閾値
 
 受け入れ条件:
 
-- 省略時default
+- 省略時default（既定は`default-config.yaml`が持ち、ワークスペースの`config.yaml`は差分だけで上書きできる）
 - 空primaryはerror
+- 閾値の型・範囲を検証する
 - 現行分析不変
 
 今回は行わない:
@@ -1278,20 +1299,35 @@ V2が安定するまで既定値は`v1`。
 対象:
 
 - `src/seat_analyzer/product_usage.py`
+- `src/seat_analyzer/analyze/__init__.py`
 - `tests/test_product_usage.py`
+- `tests/test_module_deps.py`
 
 実装:
 
-- total demand
-- Code demand
-- Code share
-- product breadth
+- §9.2の特徴量を過不足なく実装する（`total_demand_usd`・`code_demand_usd`・
+  `code_demand_share`・`total_requests`・`code_requests`・`product_breadth`・
+  `supplementary_high`・`prohibited_observed`）
 
 受け入れ条件:
 
 - Code alias対応
 - 分母0は`NA`
 - 全product費用とCode活用を分離
+- `LAYERS`へ層15を割り当てる。`analyze`(20)と`report`(30)の双方から呼べる必要があり、
+  同層importが禁止されているため20は使えない
+- policyは引数で受け取り、`config`をimportしない。特徴量の計算を「DataFrameとpolicyを
+  受けて返す純粋関数」に保つ
+- 価格適用済みの明細から一度だけ呼び、結果を`AnalysisResult`へ保持する。Step 8以降は
+  保持済みの値を出力するだけとし、Spendの再読込・再価格計算をしない（cost basisと
+  採用snapshotが分析本体とCSVで食い違うのを防ぐ）
+- `product`列が無い入力ではCode系の特徴量を`NA`にし、`CAPACITY_SIGNAL_UNAVAILABLE`を出す。
+  `product`は`REQUIRED_COLUMNS["spend"]`に含まれておらず、旧CSVは有効な入力として
+  受け付けたままにする
+- `requests`列が無い入力ではrequests系の特徴量と`product_breadth`を`NA`にする。
+  明細行数で代替しない
+- prohibitedに一致するproductの行があれば`PROHIBITED_PRODUCT_OBSERVED`を出す。
+  seat判定へは影響させない
 
 今回は行わない:
 
@@ -1306,23 +1342,98 @@ V2が安定するまで既定値は`v1`。
 
 対象:
 
-- `src/seat_analyzer/report_v2.py`
+- `src/seat_analyzer/report/usage_csv.py`
+- `src/seat_analyzer/report/__init__.py`
 - `src/seat_analyzer/cli.py`
 - `tests/test_cli.py`
+- `tests/golden/`
 
 実装:
 
-- 既存analyze時に任意の追加CSV
+- 通常の`analyze`の成果物として`usage-summary.csv`を生成する
 
 受け入れ条件:
 
-- 既存出力不変
+- 常に生成する。opt-inのフラグは設けず、goldenのファイル集合へ追加する
+- 既存出力不変（`report.md`・`recommendations.csv`・`dashboard.html`・`preview.md`・
+  `preview-dashboard.html`・`summary/<month>.md`がバイト一致で変わらない）
 - Code/totalを表示
 - prohibited product warning
 
 今回は行わない:
 
 - dashboard
+
+#### Step 8D: dashboardの再設計
+
+v1.1.0で追加したStep。原設計には無い。§2.2は「既存のHTML全体を書き換えない」としているが、
+これは機能追加のついでに書き換えることを禁じる規則であり、再設計そのものを独立したStepに
+する限りは趣旨に反しない。product軸の掲載はStep 8Eへ分ける。
+
+依存:
+
+- Step 8
+
+対象:
+
+- `src/seat_analyzer/templates/dashboard.css`
+- `src/seat_analyzer/templates/dashboard.html.j2`
+- `src/seat_analyzer/templates/preview-dashboard.html.j2`
+- `src/seat_analyzer/templates/partials/*.html.j2`
+- `src/seat_analyzer/report/html.py`
+- `tests/golden/`
+
+実装:
+
+- `dashboard.html`と`preview-dashboard.html`の再設計
+
+受け入れ条件:
+
+- 表示する項目・数値を増やさない。変わるのは見た目だけ
+- `dashboard.html`と`preview-dashboard.html`以外の出力がバイト一致で不変
+  （`report.md`・`recommendations.csv`・`usage-summary.csv`・`preview.md`・
+  `summary/<month>.md`）。数値が変われば必ずこれらにも現れるので、これをもって
+  「再設計がデータを壊していない」ことの検査とする
+- 既定の列構成で横スクロールが出ないことを確認する。`.tablebox`の`overflow-x:auto`は
+  列が増えた場合の安全網であり、それに依存しない
+- 判定・推奨の内容を変更しない（表示のみ）
+- CSSとpartialは正式・速報で共有したままにする。速報側を旧デザインで固定するために
+  テンプレートを二重化しない
+
+今回は行わない:
+
+- product軸の掲載（Step 8E）
+
+#### Step 8E: dashboardへのproduct軸の掲載
+
+v1.1.0で追加したStep。原設計には無い。
+
+依存:
+
+- Step 8D
+
+対象:
+
+- `src/seat_analyzer/templates/dashboard.html.j2`
+- `src/seat_analyzer/templates/partials/`（product用のpartialを追加）
+- `src/seat_analyzer/report/html.py`
+- `tests/golden/`
+
+実装:
+
+- Code需要・product構成の掲載
+
+受け入れ条件:
+
+- `dashboard.html`以外の出力がバイト一致で不変（`preview-dashboard.html`を含む）
+- 差分が「productのセクションが増えただけ」であること
+- 既存8列を増やさない
+- 任意入力なしでも崩れない
+
+今回は行わない:
+
+- 判定への反映（Track 4）
+
 
 ### Track 3: シート変更履歴
 
@@ -2156,6 +2267,8 @@ V2が安定するまで既定値は`v1`。
 
 依存:
 
+- Step 8D
+- Step 8E
 - Step 24
 - Step 38
 - Step 41
@@ -2168,7 +2281,7 @@ V2が安定するまで既定値は`v1`。
 実装:
 
 - review summary
-- Code usage
+- Code usage（Step 8Eで追加済みの表示を維持する。ここで作り直さない）
 - GitHub reference
 - Billing
 
@@ -2183,11 +2296,12 @@ V2が安定するまで既定値は`v1`。
 
 ### Milestone A: Core data
 
-Step 1〜8
+Step 1〜8E
 
 - stable IDの準備
 - Data Doctor
 - Code/全product分離
+- dashboardの再設計とproduct軸の掲載
 
 ### Milestone B: Independent audit
 
