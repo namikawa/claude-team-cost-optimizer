@@ -80,9 +80,11 @@ snapshot_diff:
 #                 supplementary_high とみなす [USD/月]
 #   prohibited    導入組織のポリシーで使わせない product。既定は空
 #                 （特定組織のセキュリティ方針を配布物に含めない）
-# 同じ product 名を複数の分類に書くと、どちらとして数えるかが決まらないためエラーにする。
-# 同一の分類の中で重複した場合も書き間違いとしてエラーにする
-# （どちらの判定でも、前後空白・大小文字の違いは同じ product 名とみなす）。
+# primary と supplementary は互いに排他で、同じ product 名を両方に書くとどちらとして
+# 数えるかが決まらないためエラーにする。prohibited はこの分類と直交する指定なので、
+# primary・supplementary に載っている product を重ねて書いてよい。
+# 同一の分類の中での重複は書き間違いとしてエラーにする
+# （どちらの判定でも、前後空白・大小文字・Unicode の正規化形式の違いは同じ名前とみなす）。
 product_policy:
   primary:
     - "Claude Code"

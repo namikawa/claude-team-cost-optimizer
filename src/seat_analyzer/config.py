@@ -8,6 +8,7 @@ config.yaml は差分だけを書く上書きファイルとして扱う。モ�
 from __future__ import annotations
 
 import math
+import unicodedata
 from pathlib import Path
 
 import yaml
@@ -243,6 +244,21 @@ def _validate(cfg: dict) -> None:
     if not isinstance(policy, dict):
         errors.append("product_policy セクションが辞書ではありません")
     else:
+        def _names(key: str) -> list[tuple[str, str]]:
+            """(照合用に正規化した product 名, 設定に書かれた名前) を記述順で返す。
+
+            前後空白・大小文字・Unicode の正規化形式の違いは同じ product 名として扱う
+            （設定ミスを拾うのが目的なので取りこぼしより誤検出に倒す。正規化の順序は
+            組織名の衝突判定 ingest.validate_org_names と揃える）。
+            """
+            names = policy.get(key)
+            if not isinstance(names, list):
+                return []
+            return [
+                (unicodedata.normalize("NFC", v.strip()).casefold(), v.strip())
+                for v in names if _text(v)
+            ]
+
         for key in ("primary", "supplementary", "prohibited"):
             names = policy.get(key)
             if not (isinstance(names, list) and all(_text(v) for v in names)):
@@ -255,27 +271,27 @@ def _validate(cfg: dict) -> None:
         if not _finite(threshold) or threshold < 0:
             errors.append(
                 "product_policy.supplementary_high_usd は 0 以上の有限な数値が必要です")
-        # 同じ product 名が2つの分類に書かれていると、どちらとして数えるかが設定の
-        # 書き方次第で決まってしまう。設定ミスを拾うのが目的なので、前後空白と大小文字の
-        # 違いは同じ名前とみなして（取りこぼしより誤検出に倒して）照合する。
-        # 同一リスト内の重複は分類こそ決まるが書き間違いなので、同じ経路で弾く
-        seen: set[str] = set()
-        duplicated: list[str] = []   # 報告の並びは設定の記述順（集合の反復順に依らない）
+        # 同一リスト内の重複は分類こそ決まるが書き間違いなので弾く
         for key in ("primary", "supplementary", "prohibited"):
-            names = policy.get(key)
-            if not isinstance(names, list):
-                continue
-            for name in names:
-                if not _text(name):
-                    continue
-                normalized = name.strip().casefold()
+            seen: set[str] = set()
+            repeated: list[str] = []   # 報告は設定の記述順（集合の反復順に依らない）
+            for normalized, written in _names(key):
                 if normalized in seen:
-                    duplicated.append(name.strip())
+                    repeated.append(written)
                 seen.add(normalized)
-        if duplicated:
+            if repeated:
+                errors.append(
+                    f"product_policy.{key} に同じ product 名が複数あります: "
+                    + ", ".join(repeated)
+                )
+        # 分類として排他なのは primary と supplementary だけ。prohibited は「この組織で
+        # 使わせない」という直交する指定なので、primary・supplementary と重ねて書ける
+        supplementary = {normalized for normalized, _ in _names("supplementary")}
+        overlap = [w for normalized, w in _names("primary") if normalized in supplementary]
+        if overlap:
             errors.append(
-                "product_policy の primary / supplementary / prohibited に重複する "
-                f"product 名があります: {', '.join(duplicated)}"
+                "product_policy の primary と supplementary に同じ product 名があります"
+                "（どちらの分類として数えるかが決まりません）: " + ", ".join(overlap)
             )
 
     # discussion の各項目は既定設定が必ず持ち、上書きはキーを消せないため、値の有無を

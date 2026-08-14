@@ -7,7 +7,7 @@ import pytest
 
 from seat_analyzer.analyze import analyze
 from seat_analyzer.cli import main
-from seat_analyzer.config import _validate
+from seat_analyzer.config import _validate, load_config
 from seat_analyzer.ingest import discover_months
 from seat_analyzer.pricing import unmatched_models
 from seat_analyzer.report import write_csv, write_html
@@ -236,34 +236,66 @@ def test_product_policy_threshold_validated(cfg, value):
 
 
 def test_product_policy_zero_threshold_accepted(cfg):
-    """0 は「supplementary の利用があれば真」を表す正当な設定。"""
+    """0 は正当な境界値。判定は「閾値以上」なので、需要ゼロでも真になる。"""
     _validate(_policy(cfg, supplementary_high_usd=0.0))
 
 
 @pytest.mark.parametrize("name", ["Chat", "chat", "  CHAT  "])
-def test_product_policy_duplicate_across_kinds_rejected(cfg, name):
-    """同じ product を2つの分類に書くと、どちらとして数えるかが決まらない。
+def test_product_policy_primary_supplementary_overlap_rejected(cfg, name):
+    """primary と supplementary は排他。両方にあると、どちらとして数えるか決まらない。
 
     設定ミスを拾うのが目的なので、前後空白と大小文字の違いは同じ名前として扱う。
     """
     with pytest.raises(ValueError) as e:
         _validate(_policy(cfg, primary=["Claude Code", name]))
     msg = str(e.value)
-    assert "重複する" in msg
-    assert "Chat" in msg       # どの product が重複したかを示す
+    assert "primary と supplementary に同じ product 名があります" in msg
+    assert name.strip() in msg       # どの product が重なったかを示す
 
 
 def test_product_policy_duplicate_within_one_list_rejected(cfg):
     """同じリスト内の重複も設定ミスとして拾う（分類は決まるが書き間違いのため）。"""
+    for key in ("primary", "supplementary", "prohibited"):
+        with pytest.raises(ValueError) as e:
+            _validate(_policy(cfg, **{key: ["Example Product", "example product"]}))
+        assert f"product_policy.{key} に同じ product 名が複数あります" in str(e.value)
+
+
+def test_product_policy_duplicate_normalizes_unicode(cfg):
+    """合成済みと分解済みの同じ名前は同一とみなす（組織名の衝突判定と同じ規則）。
+
+    ソースの見た目では区別できないのでコードポイントで書く。
+    """
+    composed, decomposed = "Caf\u00e9", "Cafe\u0301"
+    assert composed != decomposed
     with pytest.raises(ValueError) as e:
-        _validate(_policy(cfg, primary=["Claude Code", "claude code"]))
-    assert "重複する" in str(e.value)
+        _validate(_policy(cfg, primary=[composed, decomposed]))
+    assert "product_policy.primary に同じ product 名が複数あります" in str(e.value)
 
 
 def test_product_policy_prohibited_may_be_empty(cfg):
     """prohibited は「該当なし」を表せる必要がある（既定も空）。"""
     _validate(_policy(cfg, prohibited=[]))
     _validate(_policy(cfg, prohibited=["Example Product"]))
+
+
+def test_product_policy_prohibited_may_repeat_other_kinds(cfg, tmp_path):
+    """prohibited は primary / supplementary と直交する指定なので重ねて書ける。
+
+    workspace-config.yaml が案内する「prohibited だけを上書きする」書き方が通ること
+    の回帰テスト。既定の supplementary にある product 名を禁止に指定できないと、
+    案内どおりに書いた設定がロードできない（避けるために supplementary から消すと、
+    今度は supplementary_high の集計対象が変わってしまう）。
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        'product_policy:\n  prohibited: ["Chat"]\n', encoding="utf-8", newline="\n")
+    loaded = load_config(path)
+    assert loaded["product_policy"]["prohibited"] == ["Chat"]
+    # 分類の側は既定のまま（禁止指定が supplementary の顔ぶれを変えない）
+    assert loaded["product_policy"]["supplementary"] == cfg["product_policy"]["supplementary"]
+    # primary との重なりも同じ理由で許す
+    _validate(_policy(cfg, prohibited=list(cfg["product_policy"]["primary"])))
 
 
 # --- 組織名バリデーション（共通） ---

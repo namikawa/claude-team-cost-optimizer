@@ -218,6 +218,31 @@
 - `uv run pytest`（536件成功。追加前は516件）
 - `git diff HEAD`を`check-text --diff`に通し、業務情報の混入なしを確認
 
+外部レビュー Round 1（指摘3件・全件をコードで再現確認のうえ修正。high severityなし）:
+
+1. `prohibited`と`primary`・`supplementary`の重複まで拒否していた。既定の`supplementary`に
+   ある product を禁止指定できず、ワークスペース設定の雛形が案内する
+   「`prohibited`だけを上書きする」書き方がロードエラーになっていた（一時ディレクトリで
+   再現）。回避のため`supplementary`から消すと`supplementary_high`の集計対象が変わる。
+   §9.2の`prohibited_observed`は独立した特徴量、§9.3は「禁止productはseat判定へ影響させず
+   policy warning」であり、`prohibited`は分類と直交する属性だった。排他なのは
+   `primary`と`supplementary`だけなので、重複の検査を「同一リスト内」と
+   「primaryとsupplementaryの重なり」に限定した。エラーメッセージもどのリストで落ちたかが
+   分かる文面へ分けた
+2. 閾値0のテストのdocstringが「supplementaryの利用があれば真」となっていたが、
+   判定は「閾値以上」なので需要ゼロでも真になる。Step 7の実装者が比較演算子を誤らないよう
+   実挙動に合わせて書き直した（閾値0は常に真になる境界値として許可のまま）
+3. 重複判定にUnicode正規化がなく、合成済みと分解済みの同じ名前を別名として扱っていた。
+   組織名の衝突判定（`ingest.validate_org_names`）が`NFC`正規化を使っており規則が
+   不整合だったため、同じ順序・同じ関数の組み合わせに揃えた
+
+テスト（Round 1 修正後）:
+
+- `uv run ruff check .`
+- `uv run pytest`（538件成功）
+- 一時ディレクトリに`prohibited`だけを書いた上書き設定を置いてロードし、成功すること・
+  `supplementary`が既定のまま変わらないことを確認
+
 ### 2026-07-30 — Step 0A GitHub認証の手動smoke test
 
 ステータス: `完了`
