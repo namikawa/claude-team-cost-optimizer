@@ -1,8 +1,8 @@
 # 実装ステータス
 
-- 最終更新: 2026-08-14
+- 最終更新: 2026-08-15
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 7 Code/全product特徴量
+- 次のタスク: Step 8 usage-summary.csv
 - 現在のリリーススコープ: v1.1.0 = Track 2（Step 6〜8E）。設計書のMilestone Aがここで完了する
 
 ## 1. この文書の目的
@@ -70,14 +70,14 @@
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
 | 1 | 入力と品質 | 5 | 0 | 0 | 0 | 0 |
-| 2 | Code中心の利用可視化 | 1 | 0 | 0 | 4 | 0 |
+| 2 | Code中心の利用可視化 | 2 | 0 | 0 | 3 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **9** | **0** | **0** | **38** | **0** |
+| **合計** |  | **10** | **0** | **0** | **37** | **0** |
 
 ## 5. Step一覧
 
@@ -104,7 +104,7 @@
 | Step | タスク | ステータス | 完了日 |
 |---|---|---|---|
 | 6 | product policy config | `完了` | 2026-08-14 |
-| 7 | Code/全product特徴量 | `未着手` |  |
+| 7 | Code/全product特徴量 | `完了` | 2026-08-15 |
 | 8 | usage-summary.csv | `未着手` |  |
 | 8D | dashboardの再設計 | `未着手` |  |
 | 8E | dashboardへのproduct軸の掲載 | `未着手` |  |
@@ -174,6 +174,63 @@
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-08-15 — Step 7 Code/全product特徴量
+
+ステータス: `完了`
+
+実装したこと:
+
+- `src/seat_analyzer/product_usage.py`（層15）を新設し、設計書§9.2の8特徴量を計算する
+  `compute(spend_df, policy) -> ProductUsage` を実装した。`ProductUsage`は
+  `features`（index=email・8列）と`issues`（構造化品質issue）を持つ
+- policyは引数で受け取り、`config`をimportしない。DataFrameとpolicyだけで結果が決まる
+  純粋な計算に保った
+- product名の照合は正規化（前後空白の除去 → NFC → casefold）後の完全一致にした。
+  部分一致・あいまい一致は実装しない。表記ゆれはpolicyに名前を並べて吸収する設計とし、
+  その判断をモジュールのdocstringへ書いた
+- `prohibited`は分類と直交する属性なので、禁止指定されたsupplementary productの需要も
+  `supplementary_high`の集計に含める。禁止productの行があれば`prohibited_observed`を真に
+  して`PROHIBITED_PRODUCT_OBSERVED`を返す（seat判定へは影響させない）
+- `product`列が無い入力では、その列に依存する6特徴量を欠損にし
+  `CAPACITY_SIGNAL_UNAVAILABLE`を1件返す。`requests`列が無い入力では回数系と
+  `product_breadth`を欠損にし、明細行数で代替しない。表示用の構成比
+  （`analyze.aggregate_month`）は行数で代替しているが、目安の表示と判定に効きうる数値では
+  件数を作ってよいかの基準が違うため、揃えずに理由をコードへ残した
+- 欠損は0で埋めず、pandasの欠損表現が使える型（`Float64`・`Int64`・`boolean`）で保持する。
+  真偽値に`bool`を使うと「算出できなかった」が偽と同じ値になるため`boolean`にした
+- `analyze()`が価格適用済み明細から対象月に1度だけ呼び、`AnalysisResult.product_usage`
+  へ保持する。`users`・`warnings`・速報モードには手を入れていない
+- `tests/test_module_deps.py`の`LAYERS`へ層15を割り当てた。`analyze`(20)と`report`(30)の
+  双方から呼べる位置が要るため、同層importが禁止されている20は使えない
+
+確認したこと:
+
+- 8特徴量が定義どおりに計算される（primary・supplementary・分類外・禁止を含む合成データで
+  期待値を手計算して固定）
+- primaryに複数の名前を並べると両方がCodeとして数えられる
+- "Code Review"がprimaryの"Claude Code"に一致しない（部分一致しない）
+- 前後空白・大小文字・Unicode正規化形式（NFD/NFC）の違いを跨いで一致する
+- `product`列なしで該当特徴量が欠損になり、issueが1件返る
+- `requests`列なしで回数系が欠損になり、明細行数（行数2）で代替されない
+- 需要合計0のとき`code_demand_share`が欠損になる
+- 禁止かつsupplementaryのproductの需要が`supplementary_high`に含まれる
+- 既定設定（`prohibited`が空）では`prohibited_observed`が偽でissueが出ない
+- 同じ入力を2回計算した結果と、行の順序を入れ替えた入力の結果が一致する
+- レポート成果物（golden）が1つも変わらない。`ingest`・`pricing`・`report`は変更なし
+
+コード・ファイル変更:
+
+- `src/seat_analyzer/product_usage.py`（新規）
+- `src/seat_analyzer/analyze/__init__.py`
+- `tests/test_product_usage.py`（新規）
+- `tests/test_module_deps.py`
+
+テスト:
+
+- `uv run ruff check .`
+- `uv run pytest`（552件成功。追加前は538件）
+- `git diff HEAD`を`check-text --diff`に通し、業務情報の混入なしを確認
 
 ### 2026-08-14 — Step 6 product policy config
 
