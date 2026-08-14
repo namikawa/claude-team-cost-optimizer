@@ -248,8 +248,10 @@ def _validate(cfg: dict) -> None:
             """(照合用に正規化した product 名, 設定に書かれた名前) を記述順で返す。
 
             前後空白・大小文字・Unicode の正規化形式の違いは同じ product 名として扱う
-            （設定ミスを拾うのが目的なので取りこぼしより誤検出に倒す。正規化の順序は
-            組織名の衝突判定 ingest.validate_org_names と揃える）。
+            （設定ミスを拾うのが目的なので取りこぼしより誤検出に倒す）。NFC 正規化して
+            casefold する比較そのものは組織名の衝突判定 ingest.check_org_name_collisions
+            と同じ。組織名は前後空白を含むこと自体を不正にしているのに対し、product 名は
+            前後空白を落としてから比較する点だけが異なる。
             """
             names = policy.get(key)
             if not isinstance(names, list):
