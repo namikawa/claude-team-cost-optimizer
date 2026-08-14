@@ -2,7 +2,7 @@
 
 - 最終更新: 2026-08-14
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 6 product policy config
+- 次のタスク: Step 7 Code/全product特徴量
 - 現在のリリーススコープ: v1.1.0 = Track 2（Step 6〜8E）。設計書のMilestone Aがここで完了する
 
 ## 1. この文書の目的
@@ -70,14 +70,14 @@
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
 | 1 | 入力と品質 | 5 | 0 | 0 | 0 | 0 |
-| 2 | Code中心の利用可視化 | 0 | 0 | 0 | 5 | 0 |
+| 2 | Code中心の利用可視化 | 1 | 0 | 0 | 4 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **8** | **0** | **0** | **39** | **0** |
+| **合計** |  | **9** | **0** | **0** | **38** | **0** |
 
 ## 5. Step一覧
 
@@ -103,7 +103,7 @@
 
 | Step | タスク | ステータス | 完了日 |
 |---|---|---|---|
-| 6 | product policy config | `未着手` |  |
+| 6 | product policy config | `完了` | 2026-08-14 |
 | 7 | Code/全product特徴量 | `未着手` |  |
 | 8 | usage-summary.csv | `未着手` |  |
 | 8D | dashboardの再設計 | `未着手` |  |
@@ -174,6 +174,49 @@
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-08-14 — Step 6 product policy config
+
+ステータス: `完了`
+
+実装したこと:
+
+- `product_policy`セクションを既定設定へ追加（`primary`・`supplementary`・`prohibited`・
+  `supplementary_high_usd`）。設計書§9.1の内容に合わせ、`prohibited`の既定は空にした
+- ロード時の検証を追加。3つのリストが「空でない文字列のリスト」であること、`primary`が
+  空でないこと、閾値が0以上の有限な数値であることを検査する
+- 同じproduct名が複数の分類に書かれた場合をerrorにした。どちらとして数えるかが設定の
+  書き方次第で決まってしまい、後続Stepの特徴量が黙って変わるため。同一リスト内の重複も
+  書き間違いとして同じ経路で弾く
+- 重複の照合は前後空白を除去し大小文字を無視して行う。設定ミスを拾うのが目的なので、
+  取りこぼしより誤検出に倒す
+- `product_policy`を必須セクション一覧へ追加し、欠落時のメッセージを他セクションと揃えた
+- ワークスペース設定の雛形へ`prohibited`のコメント例を追加。導入組織ごとに設定する項目で、
+  雛形の趣旨（この環境・この組織に固有で他の利用者と共有しない設定）に合致するため
+
+確認したこと:
+
+- 既定設定がそのままロードでき、各キーが期待どおりの型で読める
+- `primary`が空・空文字・空白のみ・非文字列・リストでない場合にerrorになる
+- 閾値が負・非数値・真偽値・NaN・±Infinityの場合にerrorになる。0は正当な設定として通る
+- 同じproduct名の重複を、大小文字違い・前後空白違いでも検出し、messageにproduct名が入る
+- `prohibited`は空でも値入りでもロードできる
+- 重複の報告順が集合の反復順に依らず、設定の記述順になる
+- 集計・レポート・product列の照合ロジックは実装していない（Step 7以降の担当）
+- `ingest`・`pricing`・`analyze`・`report`を変更していない。新規モジュールなし
+
+コード・ファイル変更:
+
+- `src/seat_analyzer/default-config.yaml`
+- `src/seat_analyzer/config.py`
+- `src/seat_analyzer/templates/workspace-config.yaml`
+- `tests/test_hardening.py`
+
+テスト:
+
+- `uv run ruff check .`
+- `uv run pytest`（536件成功。追加前は516件）
+- `git diff HEAD`を`check-text --diff`に通し、業務情報の混入なしを確認
 
 ### 2026-07-30 — Step 0A GitHub認証の手動smoke test
 

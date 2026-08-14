@@ -183,6 +183,89 @@ def test_config_validation_missing_members_optional_alias(cfg):
     assert "columns.members.member_status" in str(e.value)
 
 
+# --- product policy の検証 ---
+
+def _policy(cfg, **overrides) -> dict:
+    """product_policy の一部を差し替えた設定（既定は cfg のまま）。"""
+    edited = copy.deepcopy(cfg)
+    edited["product_policy"].update(overrides)
+    return edited
+
+
+def test_product_policy_defaults(cfg):
+    """既定設定がそのままロードでき、各キーが期待どおりの型で読める。"""
+    policy = cfg["product_policy"]
+    for key in ("primary", "supplementary", "prohibited"):
+        assert isinstance(policy[key], list)
+        assert all(isinstance(v, str) and v.strip() for v in policy[key])
+    assert policy["primary"] == ["Claude Code"]
+    assert "Chat" in policy["supplementary"]
+    # 既定に具体的な product を入れない（配布物に特定組織の方針を含めないため）
+    assert policy["prohibited"] == []
+    assert isinstance(policy["supplementary_high_usd"], float)
+    assert policy["supplementary_high_usd"] == 100.0
+
+
+def test_product_policy_empty_primary_rejected(cfg):
+    """primary が空だと「開発利用の主軸」を定義できない。"""
+    with pytest.raises(ValueError) as e:
+        _validate(_policy(cfg, primary=[]))
+    assert "product_policy.primary" in str(e.value)
+
+
+@pytest.mark.parametrize("primary", [
+    ["Claude Code", ""],        # 空文字
+    ["Claude Code", "   "],     # 空白のみ
+    ["Claude Code", None],      # 値を書き忘れた行
+    ["Claude Code", 3],         # 文字列でない
+    "Claude Code",              # リストでない
+])
+def test_product_policy_blank_product_name_rejected(cfg, primary):
+    with pytest.raises(ValueError) as e:
+        _validate(_policy(cfg, primary=primary))
+    assert "product_policy.primary は空でない文字列のリストが必要です" in str(e.value)
+
+
+@pytest.mark.parametrize("value", [
+    -0.01, "100", None, True, float("nan"), float("inf"), float("-inf"),
+])
+def test_product_policy_threshold_validated(cfg, value):
+    with pytest.raises(ValueError) as e:
+        _validate(_policy(cfg, supplementary_high_usd=value))
+    assert "product_policy.supplementary_high_usd" in str(e.value)
+
+
+def test_product_policy_zero_threshold_accepted(cfg):
+    """0 は「supplementary の利用があれば真」を表す正当な設定。"""
+    _validate(_policy(cfg, supplementary_high_usd=0.0))
+
+
+@pytest.mark.parametrize("name", ["Chat", "chat", "  CHAT  "])
+def test_product_policy_duplicate_across_kinds_rejected(cfg, name):
+    """同じ product を2つの分類に書くと、どちらとして数えるかが決まらない。
+
+    設定ミスを拾うのが目的なので、前後空白と大小文字の違いは同じ名前として扱う。
+    """
+    with pytest.raises(ValueError) as e:
+        _validate(_policy(cfg, primary=["Claude Code", name]))
+    msg = str(e.value)
+    assert "重複する" in msg
+    assert "Chat" in msg       # どの product が重複したかを示す
+
+
+def test_product_policy_duplicate_within_one_list_rejected(cfg):
+    """同じリスト内の重複も設定ミスとして拾う（分類は決まるが書き間違いのため）。"""
+    with pytest.raises(ValueError) as e:
+        _validate(_policy(cfg, primary=["Claude Code", "claude code"]))
+    assert "重複する" in str(e.value)
+
+
+def test_product_policy_prohibited_may_be_empty(cfg):
+    """prohibited は「該当なし」を表せる必要がある（既定も空）。"""
+    _validate(_policy(cfg, prohibited=[]))
+    _validate(_policy(cfg, prohibited=["Example Product"]))
+
+
 # --- 組織名バリデーション（共通） ---
 
 def test_org_name_validation():

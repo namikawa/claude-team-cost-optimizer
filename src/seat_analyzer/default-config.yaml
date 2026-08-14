@@ -73,6 +73,29 @@ snapshot_diff:
   min_cumulative_usd: 10.0   # 停止疑いの前提となる累積需要（遊休との区別）
   min_interval_days: 3       # 最新区間がこの日数未満なら停止判定しない
 
+# product（Claude Code・Chat 等の利用面）の分類。費用比較は全 product の需要で行い、
+# 活用の評価は primary（開発利用の主軸）に絞って見るための設定。
+#   primary       活用評価の主軸。ここが空だと「開発利用」を定義できないためエラー
+#   supplementary 補助的な利用面。需要が supplementary_high_usd 以上なら
+#                 supplementary_high とみなす [USD/月]
+#   prohibited    導入組織のポリシーで使わせない product。既定は空
+#                 （特定組織のセキュリティ方針を配布物に含めない）
+# 同じ product 名を複数の分類に書くと、どちらとして数えるかが決まらないためエラーにする。
+# 同一の分類の中で重複した場合も書き間違いとしてエラーにする
+# （どちらの判定でも、前後空白・大小文字の違いは同じ product 名とみなす）。
+product_policy:
+  primary:
+    - "Claude Code"
+  supplementary:
+    - "Chat"
+    - "Cowork"
+    - "Design"
+    - "Research"
+    - "Code Review"
+    - "Claude in Slack"
+  prohibited: []
+  supplementary_high_usd: 100.0
+
 # 入力 CSV のカラム名マッピング（実ファイルのヘッダに合わせて追記可能）。
 # ヘッダは 小文字化・前後空白除去・連続空白/アンダースコア→単一スペース に
 # 正規化してから照合する。

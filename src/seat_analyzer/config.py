@@ -40,7 +40,7 @@ def load_config(path: str | Path | None = None) -> dict:
         # 効かないまま分析が完走する
         validate_config_path(override_path)
 
-    for key in ("seats", "decision", "model_prices", "columns", "discussion"):
+    for key in ("seats", "decision", "model_prices", "columns", "discussion", "product_policy"):
         if key not in cfg:
             raise ValueError(f"設定に '{key}' セクションがありません")
     _validate(cfg)
@@ -236,6 +236,47 @@ def _validate(cfg: dict) -> None:
     bases = ("computed", "net_spend", "auto")
     if not (isinstance(basis, str) and basis.lower() in bases):
         errors.append(f"cost_basis は {' / '.join(bases)} のいずれかが必要です")
+
+    # product の分類。既定設定が必ず持ち、上書きはキーを消せないため常に検査する
+    # （欠けている場合は既定設定の破損として同じ経路で報告する）
+    policy = cfg["product_policy"]
+    if not isinstance(policy, dict):
+        errors.append("product_policy セクションが辞書ではありません")
+    else:
+        for key in ("primary", "supplementary", "prohibited"):
+            names = policy.get(key)
+            if not (isinstance(names, list) and all(_text(v) for v in names)):
+                errors.append(f"product_policy.{key} は空でない文字列のリストが必要です")
+        # 空リストは supplementary・prohibited では正当（該当なし）だが、primary が空だと
+        # 「開発利用の主軸」を定義できず、活用の評価そのものが成立しない
+        if isinstance(policy.get("primary"), list) and not policy["primary"]:
+            errors.append("product_policy.primary には1つ以上の product 名が必要です")
+        threshold = policy.get("supplementary_high_usd")
+        if not _finite(threshold) or threshold < 0:
+            errors.append(
+                "product_policy.supplementary_high_usd は 0 以上の有限な数値が必要です")
+        # 同じ product 名が2つの分類に書かれていると、どちらとして数えるかが設定の
+        # 書き方次第で決まってしまう。設定ミスを拾うのが目的なので、前後空白と大小文字の
+        # 違いは同じ名前とみなして（取りこぼしより誤検出に倒して）照合する。
+        # 同一リスト内の重複は分類こそ決まるが書き間違いなので、同じ経路で弾く
+        seen: set[str] = set()
+        duplicated: list[str] = []   # 報告の並びは設定の記述順（集合の反復順に依らない）
+        for key in ("primary", "supplementary", "prohibited"):
+            names = policy.get(key)
+            if not isinstance(names, list):
+                continue
+            for name in names:
+                if not _text(name):
+                    continue
+                normalized = name.strip().casefold()
+                if normalized in seen:
+                    duplicated.append(name.strip())
+                seen.add(normalized)
+        if duplicated:
+            errors.append(
+                "product_policy の primary / supplementary / prohibited に重複する "
+                f"product 名があります: {', '.join(duplicated)}"
+            )
 
     # discussion の各項目は既定設定が必ず持ち、上書きはキーを消せないため、値の有無を
     # 条件にせず常に検査する（欠けている場合は既定設定の破損として同じ経路で報告する）
