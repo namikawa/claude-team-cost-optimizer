@@ -24,3 +24,9 @@
 # 判定のヒステリシス。既定より慎重にしたい（連続 N ヶ月の一致を求める）場合に上げる
 # decision:
 #   hysteresis_months: 3
+
+# この組織で使わせない product。既定は空で、組織のポリシーに応じてここに書く
+# （リストは丸ごと置き換わるので、必要な product 名をすべて並べる。既定の primary /
+# supplementary に載っている product 名もそのまま書ける）
+# product_policy:
+#   prohibited: ["<この組織で使わせない product 名>"]

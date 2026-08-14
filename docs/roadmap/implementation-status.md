@@ -2,7 +2,7 @@
 
 - 最終更新: 2026-08-14
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 6 product policy config
+- 次のタスク: Step 7 Code/全product特徴量
 - 現在のリリーススコープ: v1.1.0 = Track 2（Step 6〜8E）。設計書のMilestone Aがここで完了する
 
 ## 1. この文書の目的
@@ -70,14 +70,14 @@
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
 | 1 | 入力と品質 | 5 | 0 | 0 | 0 | 0 |
-| 2 | Code中心の利用可視化 | 0 | 0 | 0 | 5 | 0 |
+| 2 | Code中心の利用可視化 | 1 | 0 | 0 | 4 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **8** | **0** | **0** | **39** | **0** |
+| **合計** |  | **9** | **0** | **0** | **38** | **0** |
 
 ## 5. Step一覧
 
@@ -103,7 +103,7 @@
 
 | Step | タスク | ステータス | 完了日 |
 |---|---|---|---|
-| 6 | product policy config | `未着手` |  |
+| 6 | product policy config | `完了` | 2026-08-14 |
 | 7 | Code/全product特徴量 | `未着手` |  |
 | 8 | usage-summary.csv | `未着手` |  |
 | 8D | dashboardの再設計 | `未着手` |  |
@@ -174,6 +174,78 @@
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-08-14 — Step 6 product policy config
+
+ステータス: `完了`
+
+実装したこと:
+
+- `product_policy`セクションを既定設定へ追加（`primary`・`supplementary`・`prohibited`・
+  `supplementary_high_usd`）。設計書§9.1の内容に合わせ、`prohibited`の既定は空にした
+- ロード時の検証を追加。3つのリストが「空でない文字列のリスト」であること、`primary`が
+  空でないこと、閾値が0以上の有限な数値であることを検査する
+- 同じproduct名が`primary`と`supplementary`の両方に書かれた場合をerrorにした。互いに
+  排他な分類で、どちらとして数えるかが設定の書き方次第で決まってしまい、後続Stepの特徴量が
+  黙って変わるため。同一リスト内の重複も書き間違いとして弾く
+- `prohibited`は分類と直交する指定なので、`primary`・`supplementary`と重ねて書ける。
+  禁止に指定したproductも元の分類に残り、別途policy warningの対象になる（§9.3）
+- 重複の照合は前後空白を除去し、NFC正規化してから大小文字を無視して行う。設定ミスを
+  拾うのが目的なので、取りこぼしより誤検出に倒す
+- `product_policy`を必須セクション一覧へ追加し、欠落時のメッセージを他セクションと揃えた
+- ワークスペース設定の雛形へ`prohibited`のコメント例を追加。導入組織ごとに設定する項目で、
+  雛形の趣旨（この環境・この組織に固有で他の利用者と共有しない設定）に合致するため
+
+確認したこと:
+
+- 既定設定がそのままロードでき、各キーが期待どおりの型で読める
+- `primary`が空・空文字・空白のみ・非文字列・リストでない場合にerrorになる
+- 閾値が負・非数値・真偽値・NaN・±Infinityの場合にerrorになる。0は正当な設定として通る
+- 同じproduct名の重複を、大小文字違い・前後空白違いでも検出し、messageにproduct名が入る
+- `prohibited`は空でも値入りでもロードできる
+- 重複の報告順が集合の反復順に依らず、設定の記述順になる
+- 集計・レポート・product列の照合ロジックは実装していない（Step 7以降の担当）
+- `ingest`・`pricing`・`analyze`・`report`を変更していない。新規モジュールなし
+
+コード・ファイル変更:
+
+- `src/seat_analyzer/default-config.yaml`
+- `src/seat_analyzer/config.py`
+- `src/seat_analyzer/templates/workspace-config.yaml`
+- `tests/test_hardening.py`
+
+テスト:
+
+- `uv run ruff check .`
+- `uv run pytest`（536件成功。追加前は516件）
+- `git diff HEAD`を`check-text --diff`に通し、業務情報の混入なしを確認
+
+外部レビュー Round 1（指摘3件・全件をコードで再現確認のうえ修正。high severityなし）:
+
+1. `prohibited`と`primary`・`supplementary`の重複まで拒否していた。既定の`supplementary`に
+   ある product を禁止指定できず、ワークスペース設定の雛形が案内する
+   「`prohibited`だけを上書きする」書き方がロードエラーになっていた（一時ディレクトリで
+   再現）。回避のため`supplementary`から消すと`supplementary_high`の集計対象が変わる。
+   §9.2の`prohibited_observed`は独立した特徴量、§9.3は「禁止productはseat判定へ影響させず
+   policy warning」であり、`prohibited`は分類と直交する属性だった。排他なのは
+   `primary`と`supplementary`だけなので、重複の検査を「同一リスト内」と
+   「primaryとsupplementaryの重なり」に限定した。エラーメッセージもどのリストで落ちたかが
+   分かる文面へ分けた
+2. 閾値0のテストのdocstringが「supplementaryの利用があれば真」となっていたが、
+   判定は「閾値以上」なので需要ゼロでも真になる。Step 7の実装者が比較演算子を誤らないよう
+   実挙動に合わせて書き直した（閾値0は常に真になる境界値として許可のまま）
+3. 重複判定にUnicode正規化がなく、合成済みと分解済みの同じ名前を別名として扱っていた。
+   組織名の衝突判定（`ingest.check_org_name_collisions`）が`NFC`正規化を使っており規則が
+   不整合だったため、`NFC`正規化してから`casefold`する比較に揃えた。組織名は前後空白を
+   含むこと自体を不正にしているのに対し、product名は前後空白を落としてから比較する点だけが
+   異なる
+
+テスト（Round 1 修正後）:
+
+- `uv run ruff check .`
+- `uv run pytest`（538件成功）
+- 一時ディレクトリに`prohibited`だけを書いた上書き設定を置いてロードし、成功すること・
+  `supplementary`が既定のまま変わらないことを確認
 
 ### 2026-07-30 — Step 0A GitHub認証の手動smoke test
 
