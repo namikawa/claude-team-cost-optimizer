@@ -100,12 +100,12 @@ def test_matching_ignores_spacing_case_and_unicode_form(policy):
 def test_missing_product_column_leaves_code_features_unknown(policy):
     result = product_usage.compute(detail([
         ("alice@x.jp", 300.0, 30.0, "Claude Code"),
-        ("bob@x.jp", 10.0, 5.0, "Chat"),
-    ], product=False), policy)
+        ("bob@x.jp", 200.0, 5.0, "Chat"),
+    ], product=False), dict(policy, prohibited=["Prototype Console"]))
     features = result.features
 
     # 全 product の費用・回数は product 列が無くても分かる
-    assert features["total_demand_usd"].tolist() == [300.0, 10.0]
+    assert features["total_demand_usd"].tolist() == [300.0, 200.0]
     assert features["total_requests"].tolist() == [30.0, 5.0]
     for column in ("code_demand_usd", "code_demand_share", "code_requests",
                    "product_breadth", "supplementary_high", "prohibited_observed"):
@@ -117,13 +117,42 @@ def test_missing_product_column_leaves_code_features_unknown(policy):
     assert issue.severity is Severity.WARNING
     assert issue.scope["column"] == "product"
     assert issue.scope["reason"] == "column_missing"
+    assert issue.scope["features"] == (
+        "code_demand_usd", "code_demand_share", "code_requests",
+        "product_breadth", "supplementary_high", "prohibited_observed",
+    )
+
+
+def test_missing_product_column_still_settles_empty_categories(policy):
+    # product 名が分からなくても、名前が1つも無い分類には一致しようがない。列が無い
+    # 経路でもセル欠けの経路と同じ規則で確定させる
+    result = product_usage.compute(detail([
+        ("alice@x.jp", 300.0, 30.0, "Claude Code"),
+    ], product=False), dict(policy, supplementary=[]))
+    features = result.features
+
+    assert policy["prohibited"] == []
+    assert not features.loc["alice@x.jp", "prohibited_observed"]
+    assert not features.loc["alice@x.jp", "supplementary_high"]
+    # 確定値が入った列は「算出できなかった列」ではないので issue に挙げない
+    assert result.issues[0].scope["features"] == (
+        "code_demand_usd", "code_demand_share", "code_requests", "product_breadth")
+
+
+def test_missing_product_column_with_zero_threshold_settles_true(policy):
+    # supplementary が空なら需要は常に 0。閾値 0 との比較は真で確定する
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 300.0, 30.0, "Claude Code"),
+    ], product=False), dict(policy, supplementary=[], supplementary_high_usd=0.0)).features
+
+    assert features.loc["alice@x.jp", "supplementary_high"]
 
 
 def test_blank_product_cells_leave_that_user_unconfirmed(policy):
-    # 空の行が Code・禁止 product だった可能性を否定できないため、その行しだいで変わる
-    # 値は確定しない
+    # 空の行が Code・補助・禁止 product だった可能性を否定できないため、その行しだいで
+    # 変わる値は確定しない（空の行の需要 $150 は閾値 $100 をまたぐ）
     features = product_usage.compute(detail([
-        ("alice@x.jp", 10.0, 100.0, ""),
+        ("alice@x.jp", 150.0, 100.0, ""),
         ("alice@x.jp", 5.0, 50.0, "Claude Code"),
         ("bob@x.jp", 20.0, 10.0, "Chat"),
     ]), dict(policy, prohibited=["Prototype Console"])).features
@@ -132,7 +161,7 @@ def test_blank_product_cells_leave_that_user_unconfirmed(policy):
                    "product_breadth", "supplementary_high", "prohibited_observed"):
         assert pd.isna(features.loc["alice@x.jp", column]), column
     # product に依存しない特徴量は、空の行の分も含めて確定する
-    assert features.loc["alice@x.jp", "total_demand_usd"] == 15.0
+    assert features.loc["alice@x.jp", "total_demand_usd"] == 155.0
     assert features.loc["alice@x.jp", "total_requests"] == 150.0
     # 伝播はユーザ単位。同じ入力に居ても欠損の無いユーザの特徴量は欠損にならない
     assert features.loc["bob@x.jp"].notna().all()
@@ -140,21 +169,21 @@ def test_blank_product_cells_leave_that_user_unconfirmed(policy):
 
 def test_all_blank_product_cells_leave_every_product_feature_unknown(policy):
     features = product_usage.compute(detail([
-        ("alice@x.jp", 10.0, 100.0, "   "),
-        ("alice@x.jp", 5.0, 50.0, None),
+        ("alice@x.jp", 100.0, 100.0, "   "),
+        ("alice@x.jp", 50.0, 50.0, None),
     ]), dict(policy, prohibited=["Prototype Console"])).features
 
     for column in ("code_demand_usd", "code_demand_share", "code_requests",
                    "product_breadth", "supplementary_high", "prohibited_observed"):
         assert pd.isna(features.loc["alice@x.jp", column]), column
-    assert features.loc["alice@x.jp", "total_demand_usd"] == 15.0
+    assert features.loc["alice@x.jp", "total_demand_usd"] == 150.0
 
 
 def test_empty_category_stays_false_with_blank_product_cells(policy):
     # 既定の prohibited は空。空の行が何であっても一致しようがないので「使っていない」は
     # 確定する。名前のある supplementary は同じ行のせいで確定しない
     features = product_usage.compute(detail([
-        ("alice@x.jp", 10.0, 100.0, ""),
+        ("alice@x.jp", 150.0, 100.0, ""),
         ("alice@x.jp", 5.0, 50.0, "Claude Code"),
     ]), policy).features
 
@@ -162,6 +191,75 @@ def test_empty_category_stays_false_with_blank_product_cells(policy):
     assert policy["prohibited"] == []
     assert pd.notna(observed) and not observed
     assert pd.isna(features.loc["alice@x.jp", "supplementary_high"])
+
+
+def test_supplementary_high_is_false_when_the_unknown_rows_cannot_reach(policy):
+    # 空の行が全部 supplementary でも $10 で閾値 $100 に届かない → 偽が確定する
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 0.0, 1.0, "Claude Code"),
+        ("alice@x.jp", 10.0, 1.0, ""),
+    ]), policy).features
+
+    high = features.loc["alice@x.jp", "supplementary_high"]
+    assert pd.notna(high) and not high
+
+
+def test_supplementary_high_is_true_when_the_lower_bound_reaches(policy):
+    # 既知の補助需要だけで閾値を超えていれば、空の行が何であっても覆らない
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 150.0, 1.0, "Cowork"),
+        ("alice@x.jp", 10.0, 1.0, ""),
+    ]), policy).features
+
+    assert features.loc["alice@x.jp", "supplementary_high"]
+
+
+def test_supplementary_high_is_unknown_when_negative_cost_can_drop_it(policy):
+    # cost_basis=net_spend では返金等で負の値がありうる。空の行が補助 product なら
+    # 合計は $50 で閾値を割るため、上限だけを見て真を残さない
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 150.0, 1.0, "Cowork"),
+        ("alice@x.jp", -100.0, 1.0, ""),
+    ]), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "supplementary_high"])
+
+
+def test_blank_product_cells_with_no_contribution_stay_certain(policy):
+    # 需要も回数も 0 の行は、どの product であっても結果を動かさない
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 100.0, 10.0, "Claude Code"),
+        ("alice@x.jp", 0.0, 0.0, ""),
+        # 需要だけ 0（回数は動く）→ 費用側は確定・回数側は確定しない
+        ("bob@x.jp", 100.0, 10.0, "Claude Code"),
+        ("bob@x.jp", 0.0, 5.0, ""),
+        # 回数だけ 0（需要は動く）→ 回数側は確定・費用側は確定しない
+        ("carol@x.jp", 100.0, 10.0, "Claude Code"),
+        ("carol@x.jp", 5.0, 0.0, ""),
+    ]), policy).features
+
+    assert features.loc["alice@x.jp", "code_demand_usd"] == 100.0
+    assert features.loc["alice@x.jp", "code_demand_share"] == 1.0
+    assert features.loc["alice@x.jp", "code_requests"] == 10.0
+    assert features.loc["alice@x.jp", "product_breadth"] == 1
+
+    assert features.loc["bob@x.jp", "code_demand_usd"] == 100.0
+    assert pd.isna(features.loc["bob@x.jp", "code_requests"])
+    assert pd.isna(features.loc["bob@x.jp", "product_breadth"])
+
+    assert pd.isna(features.loc["carol@x.jp", "code_demand_usd"])
+    assert features.loc["carol@x.jp", "code_requests"] == 10.0
+    assert features.loc["carol@x.jp", "product_breadth"] == 1
+
+
+def test_prohibited_observed_ignores_amounts(policy):
+    # 禁止 product を $0・0 回で使っていても、観測した事実は変わらない
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 0.0, 0.0, "Prototype Console"),
+        ("alice@x.jp", 10.0, 10.0, "Claude Code"),
+    ]), dict(policy, prohibited=["Prototype Console"])).features
+
+    assert features.loc["alice@x.jp", "prohibited_observed"]
 
 
 def test_observed_prohibited_stays_true_with_blank_product_cells(policy):
@@ -224,6 +322,18 @@ def test_missing_requests_column_does_not_fall_back_to_row_count(policy):
     assert result.issues == []
 
 
+def test_missing_requests_column_still_settles_users_without_code_rows(policy):
+    # primary の行が1つも無ければ、回数が全く分からなくても Code の回数は 0 で確定する
+    # （行数からの代替ではなく「primary の行が無い」という観測から出る値）
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 100.0, 0.0, "Chat"),
+    ], requests=False), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "total_requests"])
+    assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
+    assert features.loc["alice@x.jp", "code_requests"] == 0.0
+
+
 def test_missing_requests_cells_are_treated_like_a_missing_column(policy):
     # 合計は欠損を読み飛ばすため、全件欠損なら 0、一部欠損なら観測できた分だけが返る。
     # どちらも「回数」として渡さない
@@ -241,6 +351,38 @@ def test_missing_requests_cells_are_treated_like_a_missing_column(policy):
     assert features.loc["bob@x.jp", "code_demand_usd"] == 10.0
     assert features.loc["carol@x.jp", "total_requests"] == 20.0
     assert features.loc["carol@x.jp", "product_breadth"] == 1
+
+
+def test_missing_requests_on_a_classified_non_primary_row(policy):
+    # 欠けているのが Chat と分かっている行なら、primary の回数は動かない。分母には
+    # 効くので total_requests と product_breadth は確定しない
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 10.0, 10.0, "Claude Code"),
+        ("alice@x.jp", 5.0, float("nan"), "Chat"),
+    ]), policy).features
+
+    assert features.loc["alice@x.jp", "code_requests"] == 10.0
+    assert pd.isna(features.loc["alice@x.jp", "total_requests"])
+    assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
+
+
+def test_missing_requests_on_a_primary_row_leaves_code_requests_unknown(policy):
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 10.0, float("nan"), "Claude Code"),
+        ("alice@x.jp", 5.0, 10.0, "Chat"),
+    ]), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "code_requests"])
+
+
+def test_missing_requests_on_a_blank_product_row_leaves_code_requests_unknown(policy):
+    # 名前も回数も分からない行は primary だった可能性があるため確定しない
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 10.0, 10.0, "Claude Code"),
+        ("alice@x.jp", 5.0, float("nan"), ""),
+    ]), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "code_requests"])
 
 
 def test_breadth_is_unknown_when_total_requests_is_zero(policy):

@@ -14,11 +14,19 @@ prohibited は primary / supplementary の分類と直交する属性で、同�
 指定できる。禁止指定は「その product を使わせない方針である」ことを表すだけで分類を
 書き換えないため、prohibited かつ supplementary の需要は supplementary として数える。
 
-観測していないものは 0・False で埋めない。列が無い場合だけでなく、product 名が空で
-分類できない行や requests が欠けた行があるユーザでも、その行の内容しだいで変わる特徴量は
-欠損にする。例外は「1行でも観測した」という存在の主張（prohibited_observed と
-supplementary_high の真）で、他の行が何であれ確定するため残す。確定しないのは不在の主張
-（偽）の側だけ、という非対称をそのまま特徴量に持たせる。
+観測していないものは 0・False で埋めない。product 名が空の行・requests が欠けた行・
+列そのものが無い入力は、どれも「その行の値が分からない」として同じ規則で扱う。分からない
+行の寄与を最小・最大に見積もった範囲を出し、結論が動かないときだけ値を確定させる:
+
+- 合計（total_demand_usd・code_demand_usd・回数）は、分からない行の寄与が 0 のときだけ
+  確定する。範囲の下限と上限が一致することがその条件になる
+- 閾値判定（supplementary_high）は、範囲が閾値のどちら側に収まるかで確定する。寄与は
+  正とは限らない（cost_basis=net_spend では返金等で負の値がありうる）ので下限も見る
+- 存在（prohibited_observed）は、1行でも観測していれば真が確定する。偽の側は、分からない
+  行がその product だった可能性が残る限り確定しない
+- policy に名前が1つも無い分類は、分からない行が一致しようがないので確定する
+
+伝播はユーザ単位に閉じる（同じ入力に居る他のユーザの特徴量は変わらない）。
 
 金額・回数の合計は浮動小数点の加算で行うため、入力行の順序によって最下位ビットが
 変わりうる。閾値ちょうど（supplementary_high の境界・product_breadth の下限）の比較は
@@ -31,6 +39,7 @@ import math
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -62,8 +71,8 @@ _DTYPES = {
     "prohibited_observed": "boolean",
 }
 
-# product 列が無いと算出できない特徴量
-_PRODUCT_DEPENDENT = (
+# product 名が分かって初めて意味を持つ特徴量（issue へ載せる順序もこの順）
+_PRODUCT_FEATURES = (
     "code_demand_usd",
     "code_demand_share",
     "code_requests",
@@ -88,7 +97,7 @@ _MAX_LISTED = 5
 class ProductUsage:
     """ユーザ（email）単位の product 利用特徴量と、算出時に生じた品質issue。
 
-    features は index=email・列=FEATURE_COLUMNS。算出できなかった特徴量は欠損で、
+    features は index=email・列=FEATURE_COLUMNS。確定できなかった特徴量は欠損で、
     0 や明細行数では代替しない。
     """
 
@@ -96,13 +105,25 @@ class ProductUsage:
     issues: list[QualityIssue]
 
 
+class _Bounds(NamedTuple):
+    """ある集計について、分からない行の寄与を最小・最大に見積もった範囲。
+
+    low == high なら、分からない行が何であっても結果は total で確定する。
+    unbounded なユーザは値そのものが欠損した行を含み、範囲を定められない。
+    """
+
+    total: pd.Series
+    low: pd.Series
+    high: pd.Series
+    unbounded: pd.Series
+
+
 def compute(spend_df: pd.DataFrame, policy: Mapping) -> ProductUsage:
     """価格適用済みのスペンド明細から product 利用特徴量を計算する。
 
     spend_df は pricing.apply_cost_basis 適用済みのユーザ明細（組織サービス利用の行を
     除いたもの）。email と cost_usd が必須で、product と requests は任意。任意列が無い
-    場合と、その列のセルが欠けている場合のどちらでも、確定できない特徴量は欠損にする
-    （セル欠けの伝播はそのユーザの行だけを見るので、他のユーザの特徴量は変わらない）。
+    入力は「その列の値が全行で分からない」として、セルが欠けている場合と同じ規則で扱う。
 
     policy は config で検証済みの product_policy をそのまま渡す前提とする
     （primary・supplementary・prohibited・supplementary_high_usd）。
@@ -127,47 +148,21 @@ def compute(spend_df: pd.DataFrame, policy: Mapping) -> ProductUsage:
 
     email = work["email"]
     index = pd.Index(email.dropna().unique(), name="email").sort_values()
-    issues: list[QualityIssue] = []
-    features = pd.DataFrame(index=index)
+    all_rows = pd.Series(True, index=work.index)
+    no_rows = pd.Series(False, index=work.index)
 
-    features["total_demand_usd"] = _sum_by_email(work["cost_usd"], email, index)
+    # 列が無い入力は「全行のその値が分からない」と同じ。列の有無で経路を分けないことで、
+    # 片方だけに確定の規則が入る（列が無いと確定できるものまで欠損になる）のを防ぐ
+    demand = work["cost_usd"]
+    requests = (
+        work["requests"] if has_requests
+        else pd.Series(float("nan"), index=work.index)
+    )
+    names = (
+        _display_names(work["product"]) if has_product
+        else pd.Series(pd.NA, index=work.index, dtype="string")
+    )
 
-    # requests は任意列。無い場合に明細行数で代替しない。表示用の構成比
-    # （analyze.aggregate_month の product_breakdown）は行数で代替しているが、あちらは
-    # 目安の表示で、こちらは後段の判定に効きうる数値なので、観測していない件数を作らない。
-    # セルが欠けている場合も同じ扱いにする（合計は欠損を読み飛ばすため、全件欠損でも 0、
-    # 一部欠損でも観測できた分だけの値が「回数」として返ってしまう）。欠損が1つでもあれば
-    # requests 由来の特徴量をすべて欠損にする。primary 行の欠損だけを code_requests へ
-    # 効かせる切り分けは、分類できない行の requests が primary だった可能性を排除できず
-    # 正確にならないため採らない
-    if has_requests:
-        unknown_requests = _any_by_email(work["requests"].isna(), email, index)
-        request_totals = _sum_by_email(work["requests"], email, index)
-        features["total_requests"] = request_totals.mask(unknown_requests)
-    else:
-        unknown_requests = None
-        request_totals = None
-        features["total_requests"] = _missing(index, "Float64")
-
-    if not has_product:
-        for column in _PRODUCT_DEPENDENT:
-            features[column] = _missing(index, _DTYPES[column])
-        issues.append(QualityIssue(
-            severity=Severity.WARNING,
-            code=IssueCode.CAPACITY_SIGNAL_UNAVAILABLE,
-            message=(
-                "スペンドに product 列が無いため、product 別の特徴量を算出できません"
-                "（Code 利用の分離・利用の広がりが不明）"
-            ),
-            scope={
-                "column": "product",
-                "reason": _REASON_COLUMN_MISSING,
-                "features": _PRODUCT_DEPENDENT,
-            },
-        ))
-        return ProductUsage(features=_finalize(features), issues=issues)
-
-    names = _display_names(work["product"])
     keys = _match_keys(names)
     primary_keys = _category_keys(policy, "primary")
     supplementary_keys = _category_keys(policy, "supplementary")
@@ -177,17 +172,17 @@ def compute(spend_df: pd.DataFrame, policy: Mapping) -> ProductUsage:
     is_supplementary = keys.isin(supplementary_keys)
     is_prohibited = keys.isin(prohibited_keys)
 
-    # product 名が空の行は分類できない。その行が Code だった可能性を否定できないため、
-    # 同じユーザの product 由来の特徴量を確定させない（伝播はユーザ単位に閉じる）
-    unclassified = keys.isna()
-    unknown_product = _any_by_email(unclassified, email, index)
-    unknown_code = _uncertain(unknown_product, primary_keys)
-    if bool(unknown_product.any()):
-        issues.append(_unclassified_issue(
-            n_users=int(unknown_product.sum()), n_rows=int(unclassified.sum())))
+    # product 名が分からない行は、名前のある分類ならどれにも入りうる
+    unknown_name = keys.isna()
+    maybe_code = _maybe(unknown_name, primary_keys)
+    maybe_supplementary = _maybe(unknown_name, supplementary_keys)
+    maybe_prohibited = _maybe(unknown_name, prohibited_keys)
 
-    features["code_demand_usd"] = _sum_by_email(
-        work["cost_usd"].where(is_code, 0.0), email, index).mask(unknown_code)
+    features = pd.DataFrame(index=index)
+    features["total_demand_usd"] = _certain_sum(
+        _sum_bounds(demand, email, index, certain=all_rows, possible=no_rows))
+    features["code_demand_usd"] = _certain_sum(
+        _sum_bounds(demand, email, index, certain=is_code, possible=maybe_code))
     # 分母 0 の比は定義できない。0 とは意味が違うため欠損にする
     # （分子が欠損のユーザは、その伝播で share も欠損になる）
     total_demand = features["total_demand_usd"]
@@ -195,31 +190,41 @@ def compute(spend_df: pd.DataFrame, policy: Mapping) -> ProductUsage:
         features["code_demand_usd"] / total_demand
     ).where(total_demand != 0)
 
-    if has_requests:
-        features["code_requests"] = _sum_by_email(
-            work["requests"].where(is_code, 0.0), email, index
-        ).mask(unknown_code | unknown_requests)
-        # product_breadth は分類ではなく product の粒度で数えるので、policy の中身に
-        # かかわらず分類できない行があれば確定しない（その行が既存の product の比を
-        # 押し上げたのか、別の product だったのかが決まらない）
-        features["product_breadth"] = _product_breadth(
-            work["requests"], email, keys, request_totals, index
-        ).mask(unknown_product | unknown_requests)
-    else:
-        features["code_requests"] = _missing(index, "Float64")
-        features["product_breadth"] = _missing(index, "Int64")
+    # 回数は明細行数で代替しない。表示用の構成比（analyze.aggregate_month の
+    # product_breakdown）は行数で代替しているが、あちらは目安の表示で、こちらは後段の
+    # 判定に効きうる数値なので、観測していない件数を作らない
+    all_requests = _sum_bounds(requests, email, index, certain=all_rows, possible=no_rows)
+    features["total_requests"] = _certain_sum(all_requests)
+    # code_requests が見るのは primary 行と、primary かもしれない行の欠損だけ。分類の
+    # はっきりした非 primary 行（Chat 等）の回数が欠けていても、primary の回数は動かない
+    features["code_requests"] = _certain_sum(
+        _sum_bounds(requests, email, index, certain=is_code, possible=maybe_code))
+    # product_breadth は分類ではなく product の粒度で数えるため、名前の分からない行は
+    # 名前のある分類かどうかに関係なく結論を変えうる（既存の product の比を押し上げたのか、
+    # 別の product だったのかが決まらない）。分母にも効くので回数の欠損は全行を見る
+    breadth_swing = _sum_bounds(requests, email, index, certain=no_rows, possible=unknown_name)
+    features["product_breadth"] = _product_breadth(
+        requests, email, keys, all_requests.total, index
+    ).mask((breadth_swing.low != breadth_swing.high) | all_requests.unbounded)
 
-    # 存在の主張（1行でも観測した）は、分類できない行があっても確定する。不在の主張は
-    # 確定しない（空の行が禁止 product・補助 product だった可能性が残るため）
-    supplementary_demand = _sum_by_email(
-        work["cost_usd"].where(is_supplementary, 0.0), email, index)
-    features["supplementary_high"] = _only_true_is_certain(
-        supplementary_demand >= threshold,
-        _uncertain(unknown_product, supplementary_keys))
+    features["supplementary_high"] = _certain_threshold(
+        _sum_bounds(demand, email, index,
+                    certain=is_supplementary, possible=maybe_supplementary),
+        threshold,
+    )
 
     observed = _any_by_email(is_prohibited, email, index)
+    # 存在の主張は金額・回数に依らない（禁止 product を $0 で使っていても観測は観測）
     features["prohibited_observed"] = _only_true_is_certain(
-        observed, _uncertain(unknown_product, prohibited_keys))
+        observed, _any_by_email(maybe_prohibited, email, index))
+
+    issues: list[QualityIssue] = []
+    if not has_product:
+        issues.append(_product_column_issue(_unavailable_features(features)))
+    elif bool(unknown_name.any()):
+        issues.append(_unknown_name_issue(
+            n_users=int(_any_by_email(unknown_name, email, index).sum()),
+            n_rows=int(unknown_name.sum())))
     if bool(observed.any()):
         issues.append(_prohibited_issue(names[is_prohibited], int(observed.sum())))
 
@@ -241,29 +246,62 @@ def _any_by_email(mask: pd.Series, email: pd.Series, index: pd.Index) -> pd.Seri
     return mask.groupby(email).any().reindex(index).fillna(False).astype(bool)
 
 
-def _uncertain(unknown_product: pd.Series, category_keys: set[str]) -> pd.Series:
-    """分類できない行が、その分類についての結論を変えうるか。
+def _sum_bounds(values: pd.Series, email: pd.Series, index: pd.Index, *,
+                certain: pd.Series, possible: pd.Series) -> _Bounds:
+    """email 単位の合計と、分からない行が動かしうる範囲。
 
-    policy に名前が1つも無い分類（既定の prohibited 等）は、空の行が何であっても
-    一致しようがない。この場合だけは「使っていない」が確定するので伝播させない。
+    certain は必ず合計に入る行、possible は入るかどうかが決まらない行。possible の寄与は
+    「負の値の合計」（下限）から「正の値の合計」（上限）までの範囲に収まる。下限と上限が
+    一致するのは、possible の値がすべて 0 のとき、つまりその行が何であっても結果が
+    変わらないときだけ。値そのものが欠損している行は範囲を定められないため、certain・
+    possible のどちらかに入っていれば確定しないものとして扱う。
     """
-    if category_keys:
-        return unknown_product
-    return pd.Series(False, index=unknown_product.index)
+    total = _sum_by_email(values.where(certain, 0.0), email, index)
+    swing = values.where(possible, 0.0)
+    return _Bounds(
+        total=total,
+        low=total + _sum_by_email(swing.clip(upper=0.0), email, index),
+        high=total + _sum_by_email(swing.clip(lower=0.0), email, index),
+        unbounded=_any_by_email(values.isna() & (certain | possible), email, index),
+    )
+
+
+def _certain_sum(bounds: _Bounds) -> pd.Series:
+    """分からない行が動かしえないユーザだけ合計を残す。"""
+    return bounds.total.where((bounds.low == bounds.high) & ~bounds.unbounded)
+
+
+def _certain_threshold(bounds: _Bounds, threshold: float) -> pd.Series:
+    """下限が閾値以上なら真、上限が閾値未満なら偽、範囲が閾値をまたぐなら欠損。
+
+    合計に対する閾値判定は「1行でも観測したか」ではないため、存在の主張と同じ扱いには
+    できない。分からない行が全部その分類でも届かないなら偽が確定し、分からない行を
+    最小に見積もっても超えているなら真が確定する。
+    """
+    known = ~bounds.unbounded
+    result = pd.Series(pd.NA, index=bounds.low.index, dtype="boolean")
+    return result.mask((bounds.low >= threshold) & known, True).mask(
+        (bounds.high < threshold) & known, False)
 
 
 def _only_true_is_certain(observed: pd.Series, unknown: pd.Series) -> pd.Series:
     """真はそのまま残し、偽は確定しないユーザで欠損にする。
 
-    観測できた事実（真）は、分類できない行が別に何であっても覆らない。観測できなかった
-    こと（偽）は、分類できない行がその product だった可能性が残るため確定しない。
+    観測できた事実（真）は、分からない行が別に何であっても覆らない。観測できなかった
+    こと（偽）は、分からない行がその product だった可能性が残るため確定しない。
     """
     return observed.astype("boolean").mask(unknown & ~observed)
 
 
-def _missing(index: pd.Index, dtype: str) -> pd.Series:
-    """欠損で埋めた列。算出できない特徴量を 0 や行数で代替しないことを型で表す。"""
-    return pd.Series(pd.NA, index=index, dtype=dtype)
+def _maybe(unknown_name: pd.Series, category_keys: set[str]) -> pd.Series:
+    """product 名の分からない行が、その分類に入りうるか（行単位）。
+
+    policy に名前が1つも無い分類（既定の prohibited 等）は、名前が何であっても一致
+    しようがない。この場合だけは寄与が 0 で確定するので、分からない行として扱わない。
+    """
+    if category_keys:
+        return unknown_name
+    return pd.Series(False, index=unknown_name.index)
 
 
 def _display_names(products: pd.Series) -> pd.Series:
@@ -318,7 +356,35 @@ def _product_breadth(requests: pd.Series, email: pd.Series, keys: pd.Series,
     return counts.reindex(index).where(totals > 0)
 
 
-def _unclassified_issue(n_users: int, n_rows: int) -> QualityIssue:
+def _unavailable_features(features: pd.DataFrame) -> tuple[str, ...]:
+    """1人も確定できなかった特徴量の名前（宣言順）。
+
+    product 名が分からなくても確定するものはある（名前が1つも無い分類・範囲が閾値を
+    またがないユーザ等）。値の入った列は「算出できなかった列」ではないので挙げない。
+    """
+    return tuple(
+        name for name in _PRODUCT_FEATURES if bool(features[name].isna().all())
+    )
+
+
+def _product_column_issue(unavailable: tuple[str, ...]) -> QualityIssue:
+    """product 列そのものが無いことの警告。"""
+    return QualityIssue(
+        severity=Severity.WARNING,
+        code=IssueCode.CAPACITY_SIGNAL_UNAVAILABLE,
+        message=(
+            "スペンドに product 列が無いため、product 別の特徴量を算出できません"
+            "（Code 利用の分離・利用の広がりが不明）"
+        ),
+        scope={
+            "column": "product",
+            "reason": _REASON_COLUMN_MISSING,
+            "features": unavailable,
+        },
+    )
+
+
+def _unknown_name_issue(n_users: int, n_rows: int) -> QualityIssue:
     """product 名が空の行があり、そのユーザの特徴量を確定できないことの警告。"""
     return QualityIssue(
         severity=Severity.WARNING,

@@ -1321,11 +1321,17 @@ V2が安定するまで既定値は`v1`。
 - 価格適用済みの明細から一度だけ呼び、結果を`AnalysisResult`へ保持する。Step 8以降は
   保持済みの値を出力するだけとし、Spendの再読込・再価格計算をしない（cost basisと
   採用snapshotが分析本体とCSVで食い違うのを防ぐ）
-- `product`列が無い入力ではCode系の特徴量を`NA`にし、`CAPACITY_SIGNAL_UNAVAILABLE`を出す。
+- 観測できない値を作らない。`product`名が空の行・`requests`が欠けた行・列そのものが無い
+  入力は、どれも「その行の値が分からない」として同じ規則で扱う。分からない行の寄与を
+  最小・最大に見積もった範囲を出し、結論が動かないときだけ値を確定させ、それ以外は`NA`に
+  する。明細行数での代替はしない
+  - 当初は「`product`列が無ければCode系の特徴量は`NA`」のように列の有無で書いていたが、
+    それだと証明できる値まで`NA`になる（総需要が閾値未満なら`supplementary_high`は偽が
+    確定する、primary行が1つも無ければCode回数は0が確定する、など）。守りたいのは
+    「証明できない値を出さない」ことなので、条件をそちらへ書き換えた
+- 確定できなかった特徴量があるときは`CAPACITY_SIGNAL_UNAVAILABLE`を出す。
   `product`は`REQUIRED_COLUMNS["spend"]`に含まれておらず、旧CSVは有効な入力として
   受け付けたままにする
-- `requests`列が無い入力ではrequests系の特徴量と`product_breadth`を`NA`にする。
-  明細行数で代替しない
 - prohibitedに一致するproductの行があれば`PROHIBITED_PRODUCT_OBSERVED`を出す。
   seat判定へは影響させない
 
