@@ -452,10 +452,11 @@ def test_breadth_is_unknown_when_an_unknown_row_has_negative_requests(policy):
 def test_breadth_is_conservatively_unknown_when_unknown_rows_dominate(policy):
     """確定できるケースでも、確定条件を満たさなければ欠損に倒す（既知の保守性）。
 
-    この例は分からない行をどこへ入れても breadth=1 になる（新しい product にしても Chat に
-    足しても、下限を超える product は1つ）。それでも「分からない行の比が下限未満」を満たさ
-    ないので欠損になる。正確に判定するには束ね方の組合せを解く必要があるため、
-    _product_breadth の docstring のとおり保守的な欠損を仕様としている。
+    下限を超える既知 product が1つも無く、既知は requests 0 の Chat だけなので、分からない
+    行をどこへ帰属させても（新しい product にしても Chat に足しても）下限を超える product は
+    同じ1つで breadth=1 になる。それでも「分からない行の比が下限未満」を満たさないので
+    欠損になる。正確に判定するには束ね方の組合せを解く必要があるため、_product_breadth の
+    docstring のとおり保守的な欠損を仕様としている。
     """
     features = product_usage.compute(detail([
         ("alice@x.jp", 1.0, 0.0, "Chat"),
@@ -478,6 +479,45 @@ def test_breadth_is_unknown_when_unknown_rows_can_be_split(policy):
     ]), policy).features
 
     assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
+
+
+def test_breadth_is_unknown_when_known_requests_can_cancel_out(policy):
+    """分からない行を持つユーザに負の requests があれば確定させない。
+
+    ここでは既知 product の合計が桁落ちで 0 になる一方、分からない行をその product へ
+    割り当てたシナリオの正確な合計は 2（全体の 6.7%）で、下限を超えて breadth が 2 に
+    なりうる。別々に集計した値の加算では届かないと誤判定するため保守的に倒す。
+    分からない行を持たないユーザには適用しない（割り当ての自由度が無い）。
+    """
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 1.0, 1e16, "Prototype Console"),
+        ("alice@x.jp", 1.0, 1.0, ""),
+        ("alice@x.jp", 1.0, 1.0, "Prototype Console"),
+        ("alice@x.jp", 1.0, -1e16, "Prototype Console"),
+        ("alice@x.jp", 1.0, 28.0, "Other"),
+        ("bob@x.jp", 1.0, -1.0, "Chat"),
+        ("bob@x.jp", 1.0, 100.0, "Claude Code"),
+    ]), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
+    assert features.loc["bob@x.jp", "product_breadth"] == 1
+
+
+def test_non_finite_values_are_not_settled_as_zero(policy):
+    """相殺して NaN になった合計を 0 として確定しない。
+
+    行が1つも無いユーザの空和（0）と、集計の結果が NaN になったユーザを混同すると、
+    観測していない 0 を確定値として出すことになる。
+    """
+    features = product_usage.compute(detail([
+        ("alice@x.jp", float("inf"), 1.0, "Claude Code"),
+        ("alice@x.jp", float("-inf"), 1.0, "Claude Code"),
+        ("bob@x.jp", 10.0, 1.0, "Claude Code"),
+    ]), policy).features
+
+    for column in ("total_demand_usd", "code_demand_usd", "code_demand_share"):
+        assert pd.isna(features.loc["alice@x.jp", column]), column
+    assert features.loc["bob@x.jp", "code_demand_usd"] == 10.0
 
 
 def test_excluded_rows_do_not_settle_a_nonzero_unknown_contribution(policy):

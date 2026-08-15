@@ -248,7 +248,10 @@ def _subset_sum(values: pd.Series, email: pd.Series, index: pd.Index,
     合計が一致してしまう）。並びと欠けは index に合わせる。
     """
     selected = values[rows]
-    return selected.groupby(email[rows]).sum().reindex(index).fillna(0.0)
+    # fill_value は reindex で新しく足すラベル（＝選択行が無いユーザ）にだけ効く。
+    # fillna で埋めると、集計の結果として本当に NaN になったユーザ（inf の相殺等）まで
+    # 0 で確定してしまう
+    return selected.groupby(email[rows]).sum().reindex(index, fill_value=0.0)
 
 
 def _any_by_email(mask: pd.Series, email: pd.Series, index: pd.Index) -> pd.Series:
@@ -366,11 +369,17 @@ def _product_breadth(requests: pd.Series, email: pd.Series, keys: pd.Series,
       - 分からない行を全部まとめて新しい product にしても下限に届かない
       - 下限に届いていない既知 product のうち最大のものへ全部注ぎ込んでも届かない
         （最大のものが届かないなら、他のどれも届かない）
-    分からない行に負の値があるとこの単調性が崩れる（既知 product を下限未満へ落としうる）
-    ため、その場合は確定させない。
+    分からない行を持つユーザに負の requests があると確定させない。分からない行の負値は
+    単調性そのものを壊す（既知 product を下限未満へ落としうる）。既知の行の負値は、
+    2つめの条件が「別々に集計した値の加算」であるために効く: 桁落ちのある product では
+    その和が「分からない行をそこへ割り当てたシナリオの直接合計」と食い違い、届かないと
+    誤判定しうる。requests は実データでは非負のカウントなので、この保守的な条件が実運用の
+    出力を変えることはない。分からない行が無いユーザには適用しない（割り当ての自由度が
+    無く、桁落ちがあっても結論は1つに決まるため）。
 
     この2つは確定の十分条件であって必要条件ではない。崩れても結論が変わらない場合はある
-    （例: 下限を超える分からない行が1行しかなく、束ね方に選択肢が無いとき）が、その判定は
+    （例: 下限を超える既知 product が1つも無く、既知が requests 0 の product だけで、
+    分からない行をどこへ帰属させても同じ1つの product が下限を超えるとき）が、その判定は
     「分からない行をどう束ねると下限以上の product をいくつ作れるか」という組合せ問題に
     なるため追わず、保守的に欠損へ倒す。確定と言った値が誤ることはない側の保証は保つ。
 
@@ -393,10 +402,15 @@ def _product_breadth(requests: pd.Series, email: pd.Series, keys: pd.Series,
         per_product.where(~counted).groupby(level=0).max().reindex(index).fillna(0.0)
     )
     unknown_total = _subset_sum(requests, email, index, unknown_name)
+    # 負値の検査は、分からない行を持つユーザについては全行に広げる（上記の理由）
+    unsafe = (
+        _any_by_email(unknown_name, email, index)
+        & _any_by_email(requests < 0, email, index)
+    )
     settled = (
         (unknown_total.div(safe_totals) < _BREADTH_MIN_SHARE)
         & ((largest_short + unknown_total).div(safe_totals) < _BREADTH_MIN_SHARE)
-        & ~_any_by_email(unknown_name & (requests < 0), email, index)
+        & ~unsafe
     )
     return counts.where(settled)
 
