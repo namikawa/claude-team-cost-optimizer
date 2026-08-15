@@ -1,4 +1,4 @@
-"""レポート生成: report.md / dashboard.html / recommendations.csv"""
+"""レポート生成: report.md / dashboard.html / recommendations.csv / usage-summary.csv"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from .csv_out import write_csv
 from .document import discussion_body, document_body, write_discussion
 from .html import write_html, write_preview_html
 from .markdown import write_markdown, write_org_summary, write_preview_markdown
+from .usage_csv import write_usage_csv
 
 # 公開 API。write_preview_markdown は write_preview の内部実装なので含めない。
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "write_html",
     "write_preview_html",
     "write_csv",
+    "write_usage_csv",
     "write_org_summary",
     "write_discussion",
     "document_body",
@@ -33,10 +35,12 @@ def write_all(result: AnalysisResult, output_dir: str | Path) -> dict[str, Path]
     out.mkdir(parents=True, exist_ok=True)
     paths = {
         "csv": out / "recommendations.csv",
+        "usage": out / "usage-summary.csv",
         "markdown": out / "report.md",
         "html": out / "dashboard.html",
     }
     write_csv(result, paths["csv"])
+    write_usage_csv(result, paths["usage"])
     write_markdown(result, paths["markdown"])
     write_html(result, paths["html"])
     return paths

@@ -1,6 +1,8 @@
 """CLI のマルチ組織対応（組織解決・--org・横断サマリ・旧レイアウトの拒否）と doctor のテスト。"""
 
+import csv
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,7 @@ from pathlib import Path
 from seat_analyzer import analyze, ingest
 from seat_analyzer.cli import main
 from seat_analyzer.ingest import discover_orgs
+from seat_analyzer.product_usage import FEATURE_COLUMNS
 
 from .conftest import CONFIG, spend_row
 
@@ -66,6 +69,67 @@ def test_org_name_in_report_title(make_input, tmp_path):
     assert rc == 0
     md = (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")
     assert "org-a — 2026-06" in md.splitlines()[0]
+
+
+def _usage_rows(path: Path) -> list[list[str]]:
+    text = path.read_bytes().decode("utf-8-sig")
+    return list(csv.reader(io.StringIO(text, newline="")))
+
+
+def test_analyze_writes_usage_summary(make_input, tmp_path, cfg, capsys):
+    """usage-summary.csv が成果物として生成され、出力一覧に載る。"""
+    input_dir = _make_two_orgs(make_input)
+    rc, out = _run(input_dir, tmp_path, "--month", "2026-06", "--org", "org-a")
+    assert rc == 0
+    path = out / "org-a" / "2026-06" / "usage-summary.csv"
+    assert f"usage: {path}" in capsys.readouterr().out
+
+    rows = _usage_rows(path)
+    assert rows[0] == ["email", *FEATURE_COLUMNS]
+    # 内容は分析結果が持つ特徴量そのもの（CSV 側で読み直し・再計算をしていない）
+    features = analyze.analyze(input_dir / "org-a", "2026-06", cfg, org="org-a") \
+        .product_usage.features
+    assert [r[0] for r in rows[1:]] == list(features.index)
+    values = dict(zip(rows[0], rows[1]))
+    assert values["total_demand_usd"] == f"{float(features.iloc[0, 0]):.2f}"
+    assert values["code_demand_share"] == "1.0000"     # 明細は Claude Code のみ
+
+
+def _prohibited_config(tmp_path: Path, product: str) -> str:
+    """指定した product を禁止扱いにする上書き設定（他のキーは既定のまま）。"""
+    path = tmp_path / "config.yaml"
+    path.write_text(f'product_policy:\n  prohibited: ["{product}"]\n',
+                    encoding="utf-8", newline="\n")
+    return str(path)
+
+
+def _run_with_config(input_dir: Path, tmp_path: Path, config: str) -> int:
+    return main([
+        "analyze", "--config", config, "--input-dir", str(input_dir),
+        "--output-dir", str(tmp_path / "reports"), "--month", "2026-06",
+    ])
+
+
+def test_prohibited_product_is_warned(make_input, tmp_path, capsys):
+    """禁止指定した product の利用行があれば実行時に警告する。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 10.0, product="Chat")]},
+        members=["a@x.jp,Standard"], org="org-a",
+    )
+    assert _run_with_config(input_dir, tmp_path, _prohibited_config(tmp_path, "Chat")) == 0
+    out = capsys.readouterr().out
+    assert "--- 警告 ---" in out
+    assert "禁止指定された product" in out and "Chat" in out
+
+
+def test_prohibited_warning_absent_without_observation(make_input, tmp_path, capsys):
+    """同じ設定でも、その product の利用行が無ければ警告しない。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 10.0, product="Claude Code")]},
+        members=["a@x.jp,Standard"], org="org-a",
+    )
+    assert _run_with_config(input_dir, tmp_path, _prohibited_config(tmp_path, "Chat")) == 0
+    assert "禁止指定された product" not in capsys.readouterr().out
 
 
 def test_unknown_org_errors(make_input, tmp_path, capsys):

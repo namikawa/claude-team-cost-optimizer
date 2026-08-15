@@ -234,8 +234,8 @@ Get-ChildItem reports\demo-org\2026-06
 ```
 
 期待される結果: 終了コード 0 で、メンバー 2 名・シート費用 $150.00/月 の分析結果が表示され、
-`reports/demo-org/2026-06/` に `report.md`・`dashboard.html`・`recommendations.csv` の
-3 ファイルが生成される。
+`reports/demo-org/2026-06/` に `report.md`・`dashboard.html`・`recommendations.csv`・
+`usage-summary.csv` の 4 ファイルが生成される。
 
 警告が 2 件出るのは正常。
 

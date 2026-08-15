@@ -11,7 +11,7 @@ from pathlib import Path
 from . import analyze, data_quality, discussion, ingest, public_text, report
 from .config import WORKSPACE_CONFIG_NAME, load_config, validate_config_path
 from .discussion import DiscussionError
-from .domain import QualityIssue, Severity
+from .domain import IssueCode, QualityIssue, Severity
 from .leakcheck import LeakCheckError
 
 # ワークスペース雛形用の設定テンプレート（init がコピーする。中身は全行コメント）
@@ -841,6 +841,23 @@ def _print_preview(pv, paths: dict[str, Path]) -> None:
     print(f"\n--- 出力 ---\n  preview:   {paths['markdown']}\n  dashboard: {paths['html']}")
 
 
+def _prohibited_warnings(result: analyze.AnalysisResult) -> list[str]:
+    """policy で禁止指定した product を観測したことの警告。
+
+    宛先は分析の実行者なので、共有物であるレポートには載せず実行時の出力にだけ出す
+    （レポートの内容は判定に使う値だけで決まることを保つ）。product 名の欠落
+    （CAPACITY_SIGNAL_UNAVAILABLE）は特徴量が空欄になることで usage-summary.csv から
+    見えるため、ここでは扱わない。
+    """
+    usage = result.product_usage
+    if usage is None:
+        return []
+    return [
+        issue.message for issue in usage.issues
+        if issue.code == IssueCode.PROHIBITED_PRODUCT_OBSERVED
+    ]
+
+
 def _print_result(result: analyze.AnalysisResult, paths: dict[str, Path]) -> None:
     s = result.summary
     print(f"\n=== {result.org} {result.month} 分析結果 ===")
@@ -853,9 +870,10 @@ def _print_result(result: analyze.AnalysisResult, paths: dict[str, Path]) -> Non
     print(f"要観察: {s['n_watching']} 名, 上限到達疑い: {s['n_cap_suspected']} 名")
     print(f"使用データ: {', '.join(s['months_used'])}")
 
-    if result.warnings:
+    prohibited = _prohibited_warnings(result)
+    if result.warnings or prohibited:
         print("\n--- 警告 ---")
-        for w in result.warnings:
+        for w in [*result.warnings, *prohibited]:
             print(f"  ! {w}")
 
     print("\n--- 出力 ---")

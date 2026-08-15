@@ -116,6 +116,7 @@ seat-analyzer init-org <組織名>
    - `report.md` — 前月からの変化 + 推奨テーブル + 部署別/チーム別サマリ + 詳細利用状況 + 感度分析 + 考察
    - `dashboard.html` — 経営層共有用ダッシュボード（自己完結 HTML）
    - `recommendations.csv` — スプレッドシート二次加工用
+   - `usage-summary.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
 
    report.md / dashboard.html には「詳細利用状況」として、ユーザごとの input/output
    トークン量、モデル利用割合（トークン量基準）、LoC（code-analytics がある場合）を

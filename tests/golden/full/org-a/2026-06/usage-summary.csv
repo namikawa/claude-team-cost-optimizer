@@ -1,0 +1,12 @@
+﻿email,total_demand_usd,code_demand_usd,code_demand_share,total_requests,code_requests,product_breadth,supplementary_high,prohibited_observed
+guest@example.co.jp,15.00,12.00,0.8000,60,48,2,False,False
+kato@example.co.jp,18.00,14.40,0.8000,71,57,2,False,False
+kobayashi@example.co.jp,48.50,38.80,0.8000,193,155,2,False,False
+nakamura@example.co.jp,335.00,268.00,0.8000,1338,1071,2,False,False
+sato@example.co.jp,24.00,19.20,0.8000,95,76,2,False,False
+suzuki@example.co.jp,415.00,332.00,0.8000,1660,1328,2,False,False
+tanaka@example.co.jp,610.00,488.00,0.8000,2437,1951,2,True,False
+watanabe@example.co.jp,12.00,9.60,0.8000,47,38,2,False,False
+yamada@example.co.jp,27.00,21.60,0.8000,107,86,2,False,False
+yamamoto@example.co.jp,30.00,24.00,0.8000,120,96,2,False,False
+yoshida@example.co.jp,11.00,8.80,0.8000,43,35,2,False,False
