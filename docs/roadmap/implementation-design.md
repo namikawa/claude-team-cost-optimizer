@@ -1331,7 +1331,9 @@ V2が安定するまで既定値は`v1`。
     0が確定する、など。負の`cost_usd`がありうるため総需要では判定できず、上限で見る）。
     守りたいのは「証明できない値を出さない」ことなので、条件をそちらへ書き換えた
 - `CAPACITY_SIGNAL_UNAVAILABLE`は`product`の列欠落またはセル欠損（product名が空の行）の
-  ときに出す。`requests`の欠落にはissueを出さず、既存のingest警告に委ねる。
+  ときに出す。`requests`の欠落にはissueも警告も出ない（列欠落はingestが警告せず、
+  セルの空欄・数値変換失敗も黙って欠損になる）。回数由来の特徴量が`NA`になることで
+  出力側から見える。
   `product`は`REQUIRED_COLUMNS["spend"]`に含まれておらず、旧CSVは有効な入力として
   受け付けたままにする
 - prohibitedに一致するproductの行があれば`PROHIBITED_PRODUCT_OBSERVED`を出す。

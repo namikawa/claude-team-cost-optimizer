@@ -238,9 +238,17 @@ def _finalize(features: pd.DataFrame) -> pd.DataFrame:
     return features[list(FEATURE_COLUMNS)].astype(_DTYPES)
 
 
-def _sum_by_email(values: pd.Series, email: pd.Series, index: pd.Index) -> pd.Series:
-    """email 単位の合計。並びと欠けを index に合わせる（groupby の結果順に依存させない）。"""
-    return values.groupby(email).sum().reindex(index)
+def _subset_sum(values: pd.Series, email: pd.Series, index: pd.Index,
+                rows: pd.Series) -> pd.Series:
+    """rows の行だけを email 単位で合計する（行の無いユーザは空和の 0）。
+
+    除外する行を 0 で置き換えるのではなく、実際に選んだ行だけを合計する。0 を挟むと
+    加算のブロック割りが「その行だけを合計した場合」と変わり、部分集合の合計として
+    正しくない丸めになりうる（複数の部分集合の値が同じ丸め先へ寄り、本来は違うはずの
+    合計が一致してしまう）。並びと欠けは index に合わせる。
+    """
+    selected = values[rows]
+    return selected.groupby(email[rows]).sum().reindex(index).fillna(0.0)
 
 
 def _any_by_email(mask: pd.Series, email: pd.Series, index: pd.Index) -> pd.Series:
@@ -258,16 +266,16 @@ def _sum_bounds(values: pd.Series, email: pd.Series, index: pd.Index, *,
     ときだけ。値そのものが欠損している行は範囲を定められないため、certain・possible の
     どちらかに入っていれば確定しないものとして扱う。
 
-    下限・上限は「実際にありうる行の組をそのまま合計した値」にする（確定分と不明分を
-    別々に合計してから足し直すと、その2段の丸めが直接合計と食い違い、直接計算では出ない
-    値を確定しうる）。
+    3つの値はどれも「実際にありうる行の組をそのまま合計した値」にする。合計を分けて
+    足し直したり、除外行に 0 を挟んだりして生まれる計算経路の食い違いは作らない
+    （不明な寄与があるのに下限と上限が一致し、欠損の伝播が解ける形になるため）。
+    別々の行の組の合計が同じ表現へ丸められること自体は残るが、それはどちらのシナリオでも
+    同じ値になるという意味なので確定してよい（docstring 冒頭の免責の範囲）。
     """
     return _Bounds(
-        total=_sum_by_email(values.where(certain, 0.0), email, index),
-        low=_sum_by_email(
-            values.where(certain | (possible & (values < 0)), 0.0), email, index),
-        high=_sum_by_email(
-            values.where(certain | (possible & (values > 0)), 0.0), email, index),
+        total=_subset_sum(values, email, index, certain),
+        low=_subset_sum(values, email, index, certain | (possible & (values < 0))),
+        high=_subset_sum(values, email, index, certain | (possible & (values > 0))),
         unbounded=_any_by_email(values.isna() & (certain | possible), email, index),
     )
 
@@ -358,9 +366,13 @@ def _product_breadth(requests: pd.Series, email: pd.Series, keys: pd.Series,
       - 分からない行を全部まとめて新しい product にしても下限に届かない
       - 下限に届いていない既知 product のうち最大のものへ全部注ぎ込んでも届かない
         （最大のものが届かないなら、他のどれも届かない）
-    どちらかが崩れるときは結論を変える割り当てが実在するので欠損にする。分からない行に
-    負の値があるとこの単調性が崩れる（既知 product を下限未満へ落としうる）ため、その場合も
-    欠損にする。
+    分からない行に負の値があるとこの単調性が崩れる（既知 product を下限未満へ落としうる）
+    ため、その場合は確定させない。
+
+    この2つは確定の十分条件であって必要条件ではない。崩れても結論が変わらない場合はある
+    （例: 下限を超える分からない行が1行しかなく、束ね方に選択肢が無いとき）が、その判定は
+    「分からない行をどう束ねると下限以上の product をいくつ作れるか」という組合せ問題に
+    なるため追わず、保守的に欠損へ倒す。確定と言った値が誤ることはない側の保証は保つ。
 
     requests の合計が 0 のユーザは比を定義できないため欠損にする（「比を計算した結果、
     下限を超える product が無かった」を表す 0 とは意味が違う）。
@@ -380,7 +392,7 @@ def _product_breadth(requests: pd.Series, email: pd.Series, keys: pd.Series,
     largest_short = (
         per_product.where(~counted).groupby(level=0).max().reindex(index).fillna(0.0)
     )
-    unknown_total = _sum_by_email(requests.where(unknown_name, 0.0), email, index)
+    unknown_total = _subset_sum(requests, email, index, unknown_name)
     settled = (
         (unknown_total.div(safe_totals) < _BREADTH_MIN_SHARE)
         & ((largest_short + unknown_total).div(safe_totals) < _BREADTH_MIN_SHARE)

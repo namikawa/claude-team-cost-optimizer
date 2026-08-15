@@ -449,6 +449,66 @@ def test_breadth_is_unknown_when_an_unknown_row_has_negative_requests(policy):
     assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
 
 
+def test_breadth_is_conservatively_unknown_when_unknown_rows_dominate(policy):
+    """確定できるケースでも、確定条件を満たさなければ欠損に倒す（既知の保守性）。
+
+    この例は分からない行をどこへ入れても breadth=1 になる（新しい product にしても Chat に
+    足しても、下限を超える product は1つ）。それでも「分からない行の比が下限未満」を満たさ
+    ないので欠損になる。正確に判定するには束ね方の組合せを解く必要があるため、
+    _product_breadth の docstring のとおり保守的な欠損を仕様としている。
+    """
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 1.0, 0.0, "Chat"),
+        ("alice@x.jp", 1.0, 100.0, ""),
+    ]), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
+
+
+def test_breadth_is_unknown_when_unknown_rows_can_be_split(policy):
+    """分からない行の束ね方で結果が変わるケース（こちらは本当に不確定）。
+
+    2行を同じ product とみなせば 1、別々の product とみなせば 2 になる。上の保守的な
+    欠損と違い、ここは確定させてはいけない側の例。
+    """
+    features = product_usage.compute(detail([
+        ("alice@x.jp", 1.0, 0.0, "Chat"),
+        ("alice@x.jp", 1.0, 50.0, ""),
+        ("alice@x.jp", 1.0, 50.0, ""),
+    ]), policy).features
+
+    assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
+
+
+def test_excluded_rows_do_not_settle_a_nonzero_unknown_contribution(policy):
+    """不明行に非ゼロの寄与があるユーザを確定させない。
+
+    除外する行を 0 で埋めて合計すると加算のブロック割りが「その行だけを合計した場合」と
+    変わり、確定分の合計と全部入りの合計が同じ丸め先へ落ちて欠損の伝播が解けることがある。
+    行の組をそのまま合計していれば2つのシナリオは別の値になり、確定しない。
+    """
+    frame = detail([
+        ("alice@x.jp", 0.0, 1.0, "Other"),
+        ("alice@x.jp", 1e-16, 1.0, "Claude Code"),
+        ("alice@x.jp", 0.0, 1.0, "Other"),
+        ("alice@x.jp", 1e-16, 1.0, "Claude Code"),
+        ("alice@x.jp", 1e-16, 1.0, "Claude Code"),
+        ("alice@x.jp", 0.0, 1.0, "Other"),
+        ("alice@x.jp", 1.0, 1.0, "Claude Code"),
+        ("alice@x.jp", 1e-16, 1.0, ""),
+        ("alice@x.jp", 1e-17, 1.0, ""),
+        ("alice@x.jp", 0.0, 1.0, "Other"),
+    ])
+    is_code = frame["product"] == "Claude Code"
+    unknown = frame["product"] == ""
+    lowest = frame[is_code].groupby("email")["cost_usd"].sum()["alice@x.jp"]
+    highest = frame[is_code | unknown].groupby("email")["cost_usd"].sum()["alice@x.jp"]
+    assert lowest != highest
+
+    features = product_usage.compute(frame, policy).features
+    assert pd.isna(features.loc["alice@x.jp", "code_demand_usd"])
+
+
 def test_certain_sums_come_from_a_direct_scenario_sum(policy):
     """確定値は、実際にありうる行の組をそのまま合計した値と一致する。
 
