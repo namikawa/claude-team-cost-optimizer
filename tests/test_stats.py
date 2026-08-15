@@ -266,27 +266,36 @@ def test_rank_uses_the_same_population_as_the_distribution(cfg, make_input, tmp_
 
 
 def test_no_guide_lines_when_every_user_is_idle(cfg, make_input, tmp_path):
-    """全員の需要がゼロの組織ではガイド線を引かない（$0 の線が2本重なるため）。
+    """母集団の需要が全員ゼロならガイド線を引かない（$0 の線が2本重なるため）。
 
-    棒の幅の除算に使うスケールは 0 除算を避けて 1.0 に倒すので、その値でガイド線の
-    可否を判定すると条件が到達不能になる。分布の表自体は 0 の分布として残す。
+    線の有無は分布そのもの（母集団の最大）で決める。棒と座標を揃えるためのスケールは
+    ガイド線の判定には使えない。0 除算を避けて 1.0 へ倒した値にも、母集団の外にいる
+    未割当ユーザの需要にもなるためで、どちらで判定しても $0 の線が出てしまう。
+    分布の表自体は 0 の分布として残す。
     """
-    input_dir = make_input(
-        {"2026-06": [spend_row("a@x.jp", 0.0, net=0.0)]},
-        members=["a@x.jp,Premium", "b@x.jp,Standard"],
-    )
-    result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    dists = distributions(result.users, result.product_usage)
-    assert _by_key(dists)[KEY_API_COST].maximum == 0.0
-    assert _cost_guide(dists, 0.0) is None
-    # 棒のスケール（0 回避で 1.0 に倒した値）を渡すと線が出る。だから生の最大を渡す
-    assert _cost_guide(dists, 1.0) is not None
+    for label, rows, members in (
+        ("割当済みのみ・全員ゼロ",
+         [spend_row("a@x.jp", 0.0, net=0.0)],
+         ["a@x.jp,Premium", "b@x.jp,Standard"]),
+        # 未割当だけに需要がある組織。スケール（棒の最大）は 900 になるが母集団は全員ゼロ
+        ("未割当だけ需要あり",
+         [spend_row("a@x.jp", 0.0, net=0.0), spend_row("off@x.jp", 900.0, net=0.0)],
+         ["a@x.jp,Premium", "b@x.jp,Standard", "off@x.jp,Unassigned"]),
+    ):
+        input_dir = make_input({"2026-06": rows}, members=members)
+        result = analyze(input_dir, "2026-06", cfg, org="org-a")
+        dists = distributions(result.users, result.product_usage)
+        assert _by_key(dists)[KEY_API_COST].maximum == 0.0, label
+        # スケールに何を渡しても線は引かない（倒した 1.0 も、未割当を含む最大 900 も）
+        for scale in (0.0, 1.0, 900.0):
+            assert _cost_guide(dists, scale) is None, f"{label}: scale={scale}"
 
-    write_html(result, tmp_path / "dashboard.html")
-    html = (tmp_path / "dashboard.html").read_text(encoding="utf-8")
-    assert 'class="guide g-median"' not in html
-    assert "縦線:" not in html
-    assert "<h2>組織内の分布（参考値）</h2>" in html   # 分布の表は出る
+        out = tmp_path / f"dashboard-{len(rows)}.html"
+        write_html(result, out)
+        html = out.read_text(encoding="utf-8")
+        assert 'class="guide g-median"' not in html, label
+        assert "縦線:" not in html, label
+        assert "<h2>組織内の分布（参考値）</h2>" in html, label   # 分布の表は出る
 
 
 def test_unassigned_only_org_renders_without_the_section(cfg, make_input, tmp_path):

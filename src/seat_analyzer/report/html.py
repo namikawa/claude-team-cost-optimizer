@@ -226,19 +226,24 @@ def _stats_view(dists: list[Distribution]) -> list[dict]:
 def _cost_guide(dists: list[Distribution], max_demand: float) -> dict | None:
     """ユーザ別 API 換算コストの棒に引く中央値・平均のガイド線（引けなければ None）。
 
-    位置は棒の長さと同じ基準（値 / 最大需要）で出す。棒の並びは判定ステータス順で
+    位置は棒の長さと同じ基準（値 / max_demand）で出す。棒の並びは判定ステータス順で
     金額順ではないため、ガイド線は行の位置ではなく金額軸の上の点を指す。
 
-    max_demand は棒の幅計算に使うスケール（0 除算を避けるため 1.0 に倒したもの）では
-    なく、観測された最大需要そのものを受け取る。倒した値で判定すると、全員の需要が
-    ゼロの組織（導入直後の月）で $0.00 のガイド線が2本重なって描かれる。線を引くのは
-    最大需要が正で、中央値・平均がその範囲（0 以上・最大以下）に収まるときだけにする。
+    線を引くかどうかは分布そのもの（母集団の最大が正か）で決める。max_demand は棒と
+    座標を揃えるためのスケールで、母集団の外にいる未割当ユーザの需要も、0 除算を
+    避けるために 1.0 へ倒した値も入りうるため、有無の判定には使えない
+    （どちらで判定しても、母集団の需要が全員ゼロの組織で $0.00 の線が2本重なる）。
+    座標が棒の中に収まること（0 以上・スケール以下）は別に確かめる。
     """
     demand = next((d for d in dists if d.key == KEY_API_COST), None)
-    if demand is None or not math.isfinite(max_demand) or max_demand <= 0:
+    if demand is None:
         return None
-    if not all(math.isfinite(v) and 0.0 <= v <= max_demand
-               for v in (demand.median, demand.mean)):
+    if not all(math.isfinite(v)
+               for v in (max_demand, demand.maximum, demand.median, demand.mean)):
+        return None
+    if max_demand <= 0 or demand.maximum <= 0:
+        return None
+    if not all(0.0 <= v <= max_demand for v in (demand.median, demand.mean)):
         return None
     return {
         "median_pct": 100.0 * demand.median / max_demand,
@@ -319,32 +324,54 @@ _STATS_HTML = _asset("partials/stats.html.j2")
 
 
 _HTML_TEMPLATE_SRC = _asset("dashboard.html.j2")
+_PREVIEW_HTML_TEMPLATE_SRC = _asset("preview-dashboard.html.j2")
 
-# テンプレートは2段階で組み立てる。断片を差し込んだ _ASSEMBLED と、共有文言
-# （<!--text:キー-->）まで解決した _SOURCE を定数として持つのは、未解決マーカーの検査
-# （tests/test_hardening.py）が組み立て済みのソースそのものを見られるようにするため。
-# 検査が断片を手で列挙しなくて済み、partial を足しても対象へ自動で入る。
-_HTML_ASSEMBLED = (
-    _HTML_TEMPLATE_SRC.replace("<!--TREND_SECTION-->", _TREND_HTML)
-    .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
-    .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
-    .replace("<!--CREDIT_SECTION-->", _E_DIST_HTML + _GRANT_HTML)
-    .replace("<!--STATS_SECTION-->", _STATS_HTML)
-)
+# テンプレート本体の placeholder → そこへ順に差し込む断片。組み立てはこの表だけから
+# 行う（.replace() を手で並べない）。並べる形だと、断片を足すときに「差し込みの追加」と
+# 「検査への追加」が別々の作業になり、片方を忘れても静かに通る。
+_DASHBOARD_SECTIONS = {
+    "<!--CREDIT_COMPOSITION-->": (_CREDIT_COMPOSITION_HTML,),
+    "<!--TREND_SECTION-->": (_TREND_HTML,),
+    "<!--SNAPSHOT_SECTION-->": (_SNAPSHOT_HTML, _CODE_DIFF_HTML, _MEMBER_CHANGES_HTML),
+    "<!--CREDIT_SECTION-->": (_E_DIST_HTML, _GRANT_HTML),
+    "<!--STATS_SECTION-->": (_STATS_HTML,),
+}
+
+_PREVIEW_SECTIONS = {
+    "<!--CREDIT_COMPOSITION-->": (_CREDIT_COMPOSITION_HTML,),
+    "<!--CREDIT_REACH-->": (_CREDIT_REACH_HTML,),
+    "<!--SNAPSHOT_SECTION-->": (_SNAPSHOT_HTML, _CODE_DIFF_HTML, _MEMBER_CHANGES_HTML),
+    "<!--GRANT_SECTION-->": (_GRANT_HTML,),
+}
+
+
+def _assemble(src: str, sections: dict[str, tuple[str, ...]]) -> str:
+    """テンプレート本体へ断片を差し込む（共有文言 <!--text:キー--> はまだ解決しない）。
+
+    差し込み先がちょうど1つあることを確かめてから置換する。placeholder は HTML
+    コメントなので、綴り違いや本体からの消失で差し込みが空振りしても画面には何も
+    現れず、そのセクションが黙って消える。
+    """
+    for placeholder, parts in sections.items():
+        found = src.count(placeholder)
+        if found != 1:
+            raise ValueError(
+                f"テンプレートの差し込み先 {placeholder} が {found} 個あります"
+                "（ちょうど1個であること）"
+            )
+        src = src.replace(placeholder, "".join(parts))
+    return src
+
+
+# 組み立ては2段階。断片を差し込んだ _ASSEMBLED と、共有文言まで解決した _SOURCE を
+# 定数として持つのは、テンプレートの検査（tests/test_hardening.py）が組み立て済みの
+# ソースそのものを見られるようにするため。
+_HTML_ASSEMBLED = _assemble(_HTML_TEMPLATE_SRC, _DASHBOARD_SECTIONS)
 _HTML_SOURCE = _embed_shared_text(_HTML_ASSEMBLED)
 
 _HTML_TEMPLATE = _HTML_ENV.from_string(_HTML_SOURCE)
 
-
-_PREVIEW_HTML_TEMPLATE_SRC = _asset("preview-dashboard.html.j2")
-
-_PREVIEW_HTML_ASSEMBLED = (
-    _PREVIEW_HTML_TEMPLATE_SRC.replace(
-        "<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
-    .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
-    .replace("<!--CREDIT_REACH-->", _CREDIT_REACH_HTML)
-    .replace("<!--GRANT_SECTION-->", _GRANT_HTML)
-)
+_PREVIEW_HTML_ASSEMBLED = _assemble(_PREVIEW_HTML_TEMPLATE_SRC, _PREVIEW_SECTIONS)
 _PREVIEW_HTML_SOURCE = _embed_shared_text(_PREVIEW_HTML_ASSEMBLED)
 
 _PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(_PREVIEW_HTML_SOURCE)
