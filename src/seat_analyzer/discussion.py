@@ -164,7 +164,10 @@ def _prev_month_dir(org_output: Path, month: str) -> Path | None:
 # details.md が資料として使える形かを見分ける番兵。全ユーザ表は details.md に無条件で
 # 載り（report/details.py）、再構成前の report.md にも必ずあった。条件つきの section を
 # 番兵にすると、そのデータを持たない組織で「壊れている」と誤判定する。
+# 見出し行そのもの（行頭〜行末）で照合する。部分文字列だと、組織名は # を許すため
+# タイトル行（「… — <組織名> — <月>」）や表のセルに同じ文字列が入ると誤一致する。
 _ALL_USERS_HEADING = "## 全ユーザ"
+_ALL_USERS_HEADING_RE = re.compile(rf"^{re.escape(_ALL_USERS_HEADING)}[ \t]*$", re.M)
 
 
 def _details_material(org_output: Path, month: str, report_body: str) -> str | None:
@@ -181,9 +184,9 @@ def _details_material(org_output: Path, month: str, report_body: str) -> str | N
     """
     path = org_output / month / "details.md"
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    if _ALL_USERS_HEADING in text:
+    if _ALL_USERS_HEADING_RE.search(text):
         return text
-    if _ALL_USERS_HEADING in report_body:
+    if _ALL_USERS_HEADING_RE.search(report_body):
         return None
     raise DiscussionError(
         f"{path} が無い、または内容が不完全です（「{_ALL_USERS_HEADING}」が見つかりません）。"

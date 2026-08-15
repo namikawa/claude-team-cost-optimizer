@@ -281,6 +281,32 @@ def test_broken_details_stops_dry_run_too(two_orgs, tmp_path):
         _generate(two_orgs, out, _runner(BODY), dry_run=True)
 
 
+def test_sentinel_matches_heading_lines_only(tmp_path):
+    """番兵は見出し行そのものにだけ一致する（タイトル・表セル内の同名文字列は無視）。
+
+    組織名は # を許すため、「acme ## 全ユーザ」のような組織のタイトル行や表のセルに
+    番兵と同じ文字列が現れうる。部分文字列で照合すると、details.md が欠けた月を
+    旧形式と誤認して続行してしまう。
+    """
+    month_dir = tmp_path / "2026-06"
+    month_dir.mkdir()
+    # タイトル行に番兵文字列を含むが、見出し行としては持たない report.md 本文
+    body_with_titled_org = "# レポート — acme ## 全ユーザ — 2026-06\n\n## サマリ\n"
+    with pytest.raises(discussion.DiscussionError):
+        discussion._details_material(tmp_path, "2026-06", body_with_titled_org)
+
+    # details.md 側も同様（タイトルだけ書けた途中切れファイルを正常扱いしない）
+    (month_dir / "details.md").write_text(
+        "# 分析詳細資料 — acme ## 全ユーザ — 2026-06\n", encoding="utf-8")
+    with pytest.raises(discussion.DiscussionError):
+        discussion._details_material(tmp_path, "2026-06", body_with_titled_org)
+
+    # 見出し行として持つ旧形式の本文は従来どおり続行（資料は足さない）
+    (month_dir / "details.md").unlink()
+    legacy_body = "# レポート — acme — 2026-06\n\n## 全ユーザ\n\n| ユーザ |\n"
+    assert discussion._details_material(tmp_path, "2026-06", legacy_body) is None
+
+
 def test_generate_dry_run_shows_prompt_even_when_already_written(two_orgs, tmp_path):
     """--dry-run はプロンプト確認用なので、記入済みでもプロンプトを返す。"""
     out = run_analyze(two_orgs, tmp_path)
