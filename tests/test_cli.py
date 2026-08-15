@@ -103,11 +103,21 @@ def _prohibited_config(tmp_path: Path, product: str) -> str:
     return str(path)
 
 
-def _run_with_config(input_dir: Path, tmp_path: Path, config: str) -> int:
-    return main([
+def _run_with_config(input_dir: Path, tmp_path: Path, config: str) -> tuple[int, Path]:
+    output_dir = tmp_path / "reports"
+    rc = main([
         "analyze", "--config", config, "--input-dir", str(input_dir),
-        "--output-dir", str(tmp_path / "reports"), "--month", "2026-06",
+        "--output-dir", str(output_dir), "--month", "2026-06",
     ])
+    return rc, output_dir
+
+
+# email に "@" を含まない行は、シート判定の対象外の組織サービス利用として扱われる
+ORG_SERVICE_EMAIL = "(org service usage)"
+
+# ユーザ向けの警告（人数で数える）と組織サービス向けの警告（行数で数える）の目印
+USER_PROHIBITED = "product の利用行があります"
+ORG_PROHIBITED = "product の組織サービス利用行があります"
 
 
 def test_prohibited_product_is_warned(make_input, tmp_path, capsys):
@@ -116,10 +126,10 @@ def test_prohibited_product_is_warned(make_input, tmp_path, capsys):
         {"2026-06": [spend_row("a@x.jp", 10.0, product="Chat")]},
         members=["a@x.jp,Standard"], org="org-a",
     )
-    assert _run_with_config(input_dir, tmp_path, _prohibited_config(tmp_path, "Chat")) == 0
+    assert _run_with_config(input_dir, tmp_path, _prohibited_config(tmp_path, "Chat"))[0] == 0
     out = capsys.readouterr().out
     assert "--- 警告 ---" in out
-    assert "禁止指定された product" in out and "Chat" in out
+    assert USER_PROHIBITED in out and "Chat" in out
 
 
 def test_prohibited_warning_absent_without_observation(make_input, tmp_path, capsys):
@@ -128,8 +138,48 @@ def test_prohibited_warning_absent_without_observation(make_input, tmp_path, cap
         {"2026-06": [spend_row("a@x.jp", 10.0, product="Claude Code")]},
         members=["a@x.jp,Standard"], org="org-a",
     )
-    assert _run_with_config(input_dir, tmp_path, _prohibited_config(tmp_path, "Chat")) == 0
+    assert _run_with_config(input_dir, tmp_path, _prohibited_config(tmp_path, "Chat"))[0] == 0
     assert "禁止指定された product" not in capsys.readouterr().out
+
+
+def test_prohibited_product_in_org_service_rows_is_warned(make_input, tmp_path, capsys):
+    """禁止 product が組織サービス利用の行にしか無くても警告する。
+
+    特徴量はシート判定の対象になるユーザ行だけで計算するため、この行は
+    usage-summary.csv には現れない。警告が唯一の経路になる。
+    """
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 10.0, product="Claude Code"),
+                     spend_row(ORG_SERVICE_EMAIL, 3.0, product="Code Review")]},
+        members=["a@x.jp,Standard"], org="org-a",
+    )
+    config = _prohibited_config(tmp_path, "Code Review")
+    rc, out_dir = _run_with_config(input_dir, tmp_path, config)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert ORG_PROHIBITED in out and "Code Review" in out and "1 行" in out
+    assert USER_PROHIBITED not in out          # ユーザは誰も使っていない
+
+    # ユーザ単位の特徴量は組織サービス利用行の影響を受けない
+    rows = _usage_rows(out_dir / "org-a" / "2026-06" / "usage-summary.csv")
+    assert [r[0] for r in rows[1:]] == ["a@x.jp"]
+    assert dict(zip(rows[0], rows[1]))["prohibited_observed"] == "False"
+
+
+def test_prohibited_product_warned_for_users_and_org_service_separately(
+    make_input, tmp_path, capsys
+):
+    """ユーザ行と組織サービス利用行の両方にあれば、単位の違う警告が両方出る。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 10.0, product="Code Review"),
+                     spend_row(ORG_SERVICE_EMAIL, 3.0, product="Code Review")]},
+        members=["a@x.jp,Standard"], org="org-a",
+    )
+    config = _prohibited_config(tmp_path, "Code Review")
+    assert _run_with_config(input_dir, tmp_path, config)[0] == 0
+    out = capsys.readouterr().out
+    assert USER_PROHIBITED in out and "1 名" in out
+    assert ORG_PROHIBITED in out and "1 行" in out
 
 
 def test_unknown_org_errors(make_input, tmp_path, capsys):

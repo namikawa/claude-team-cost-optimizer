@@ -130,10 +130,28 @@ def test_negative_amount_is_written_as_is(tmp_path):
     assert row["code_demand_usd"] == "-12.50"
 
 
-@pytest.mark.parametrize("email", ["=cmd@x.jp", "+cmd@x.jp", "-cmd@x.jp", "@cmd@x.jp"])
+@pytest.mark.parametrize(
+    "email", ["=cmd@x.jp", "+cmd@x.jp", "-cmd@x.jp", "@cmd@x.jp", "\tcmd@x.jp"])
 def test_email_that_looks_like_a_formula_is_escaped(tmp_path, email):
     path = write(result({email: FILLED}), tmp_path)
     assert read_rows(path)[1][0] == "'" + email
+
+
+def test_email_newlines_are_normalized_to_lf(tmp_path):
+    """セル内の改行も LF に揃える（レコード区切りの指定だけでは CR が残る）。"""
+    path = write(result({"alice@x.jp\r\nbob@x.jp\rcarol@x.jp": FILLED}), tmp_path)
+    assert b"\r" not in path.read_bytes()
+    assert read_rows(path)[1][0] == "alice@x.jp\nbob@x.jp\ncarol@x.jp"
+
+
+def test_email_starting_with_cr_is_escaped_before_normalizing(tmp_path):
+    """CR 始まりのセルは式のエスケープが先に効く。
+
+    改行を先に均すと式の先頭文字と一致しなくなり、引用符が付かないまま出る。
+    """
+    path = write(result({"\ralice@x.jp": FILLED}), tmp_path)
+    assert b"\r" not in path.read_bytes()
+    assert read_rows(path)[1][0] == "'\nalice@x.jp"
 
 
 def test_file_has_bom_and_lf_newlines(tmp_path):

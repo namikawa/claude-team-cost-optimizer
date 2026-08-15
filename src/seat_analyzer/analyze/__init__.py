@@ -10,7 +10,11 @@ from pathlib import Path
 import pandas as pd
 
 from .. import ingest, pricing
-from ..product_usage import ProductUsage, compute as compute_product_usage
+from ..product_usage import (
+    ProductUsage,
+    compute as compute_product_usage,
+    find_org_service_prohibited,
+)
 from .credits import (
     CREDIT_DISABLED as CREDIT_DISABLED,
     CREDIT_ENABLED as CREDIT_ENABLED,
@@ -273,6 +277,12 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisR
             # 価格適用済みの明細から一度だけ計算する（後段が spend を読み直すと
             # cost basis や採用ファイルが分析本体と食い違いうるため）
             usage = compute_product_usage(df[is_user], cfg["product_policy"])
+            # 禁止 product の観測は判定対象のユーザ行に限らず報告する。特徴量は
+            # ユーザ行だけで計算するので、組織サービス利用行の分をここで足す
+            org_issue = find_org_service_prohibited(org_df, cfg["product_policy"])
+            if org_issue is not None:
+                usage = ProductUsage(
+                    features=usage.features, issues=[*usage.issues, org_issue])
         monthly[m] = aggregate_month(df[is_user])
 
     members_result = ingest.load_members(input_dir, month, cfg, snapshot_active=active.members)

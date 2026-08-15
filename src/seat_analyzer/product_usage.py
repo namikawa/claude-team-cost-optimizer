@@ -13,6 +13,9 @@ policy の primary・supplementary に名前を並べて吸収する設計とす
 prohibited は primary / supplementary の分類と直交する属性で、同じ product 名を重ねて
 指定できる。禁止指定は「その product を使わせない方針である」ことを表すだけで分類を
 書き換えないため、prohibited かつ supplementary の需要は supplementary として数える。
+禁止指定の観測は、シート判定の対象になるユーザ行に限らず報告する。ユーザに帰属しない
+行（組織サービス利用）は特徴量の計算対象ではないので、compute とは別の関数
+（find_org_service_prohibited）で同じ照合規則をあてる。
 
 観測していないものは 0・False で埋めない。product 名が空の行・requests が欠けた行・
 列そのものが無い入力は、どれも「その行の値が分からない」として同じ規則で扱う。分からない
@@ -232,6 +235,28 @@ def compute(spend_df: pd.DataFrame, policy: Mapping) -> ProductUsage:
         issues.append(_prohibited_issue(names[is_prohibited], int(observed.sum())))
 
     return ProductUsage(features=_finalize(features), issues=issues)
+
+
+def find_org_service_prohibited(spend_df: pd.DataFrame,
+                                policy: Mapping) -> QualityIssue | None:
+    """ユーザに帰属しない明細（組織サービス利用の行）の禁止 product を報告する。
+
+    compute はシート判定の対象になるユーザ行だけを見るため、組織サービス利用の行に
+    しか現れない禁止 product はそちらでは観測されない。照合の規則は compute と同じ
+    （正規化後の完全一致）で、email 単位に束ねず行の有無だけを見る。
+
+    product 名の分からない行は「その product だったかもしれない」だけなので観測とは
+    数えない（compute の prohibited_observed が真を確定させる条件と同じ）。観測が
+    無ければ None を返す。
+    """
+    prohibited_keys = _category_keys(policy, "prohibited")
+    if not prohibited_keys or "product" not in spend_df.columns:
+        return None
+    names = _display_names(spend_df["product"])
+    observed = _match_keys(names).isin(prohibited_keys)
+    if not bool(observed.any()):
+        return None
+    return _org_service_prohibited_issue(names[observed], int(observed.sum()))
 
 
 def _finalize(features: pd.DataFrame) -> pd.DataFrame:
@@ -463,19 +488,48 @@ def _unknown_name_issue(n_users: int, n_rows: int) -> QualityIssue:
     )
 
 
-def _prohibited_issue(names: pd.Series, n_users: int) -> QualityIssue:
-    """禁止指定の product が観測されたことの警告（seat 判定には影響しない）。"""
-    # 設定に書かれた名前ではなく、実データに現れた表記を挙げる（該当行を探せるように）
-    products = sorted({str(name) for name in names.dropna().unique()})
-    listed = "、".join(products[:_MAX_LISTED])
+def _observed_products(names: pd.Series) -> tuple[str, ...]:
+    """観測された product の表記（昇順）。
+
+    設定に書かれた名前ではなく、実データに現れた表記を挙げる（該当行を探せるように）。
+    """
+    return tuple(sorted({str(name) for name in names.dropna().unique()}))
+
+
+def _listed(products: tuple[str, ...]) -> str:
+    """message へ載せる表記の列挙（多い場合は件数で打ち切る。全件は scope が持つ）。"""
     rest = len(products) - _MAX_LISTED
     more = f" ほか{rest}件" if rest > 0 else ""
+    return "、".join(products[:_MAX_LISTED]) + more
+
+
+def _prohibited_issue(names: pd.Series, n_users: int) -> QualityIssue:
+    """禁止指定の product が観測されたことの警告（seat 判定には影響しない）。"""
+    products = _observed_products(names)
     return QualityIssue(
         severity=Severity.WARNING,
         code=IssueCode.PROHIBITED_PRODUCT_OBSERVED,
         message=(
-            f"policy で禁止指定された product の利用行があります: {listed}{more}"
+            f"policy で禁止指定された product の利用行があります: {_listed(products)}"
             f"（{n_users} 名）。seat 判定には影響しません"
         ),
-        scope={"products": tuple(products), "n_users": n_users},
+        scope={"products": products, "n_users": n_users},
+    )
+
+
+def _org_service_prohibited_issue(names: pd.Series, n_rows: int) -> QualityIssue:
+    """禁止指定の product が組織サービス利用の行に現れたことの警告。
+
+    ユーザに帰属しない行なので人数では数えられない。行数で表し、scope の持ち物
+    （n_rows / n_users）でユーザ側の警告と区別できるようにする。
+    """
+    products = _observed_products(names)
+    return QualityIssue(
+        severity=Severity.WARNING,
+        code=IssueCode.PROHIBITED_PRODUCT_OBSERVED,
+        message=(
+            f"policy で禁止指定された product の組織サービス利用行があります: "
+            f"{_listed(products)}（{n_rows} 行）。seat 判定には影響しません"
+        ),
+        scope={"products": products, "n_rows": n_rows},
     )
