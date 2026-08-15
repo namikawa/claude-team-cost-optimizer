@@ -2,7 +2,7 @@
 
 - 最終更新: 2026-08-15
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 8 usage-summary.csv
+- 次のタスク: Step 8D dashboardの再設計（着手前にデザイン方針の確認が必要）
 - 現在のリリーススコープ: v1.1.0 = Track 2（Step 6〜8E）。設計書のMilestone Aがここで完了する
 
 ## 1. この文書の目的
@@ -70,14 +70,14 @@
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
 | 1 | 入力と品質 | 5 | 0 | 0 | 0 | 0 |
-| 2 | Code中心の利用可視化 | 2 | 0 | 0 | 3 | 0 |
+| 2 | Code中心の利用可視化 | 3 | 0 | 0 | 2 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **10** | **0** | **0** | **37** | **0** |
+| **合計** |  | **11** | **0** | **0** | **36** | **0** |
 
 ## 5. Step一覧
 
@@ -105,7 +105,7 @@
 |---|---|---|---|
 | 6 | product policy config | `完了` | 2026-08-14 |
 | 7 | Code/全product特徴量 | `完了` | 2026-08-15 |
-| 8 | usage-summary.csv | `未着手` |  |
+| 8 | usage-summary.csv | `完了` | 2026-08-15 |
 | 8D | dashboardの再設計 | `未着手` |  |
 | 8E | dashboardへのproduct軸の掲載 | `未着手` |  |
 
@@ -174,6 +174,107 @@
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-08-15 — Step 8 usage-summary.csv
+
+ステータス: `完了`
+
+実装したこと:
+
+- `src/seat_analyzer/report/usage_csv.py` を新設し（`report/` 配下なので層30の単位内・
+  `LAYERS` の変更なし）、通常の `analyze` の成果物として `usage-summary.csv` を常に生成する。
+  opt-in のフラグは設けず、`write_all` が recommendations.csv と同じディレクトリへ書く
+- 内容は `AnalysisResult.product_usage.features` に保持済みの値そのもの。行の追加・削除・
+  再計算をしない（Step 7 の受け入れ条件のとおり、Spend の再読込・再価格計算をしない）。
+  行の範囲は対象月のスペンド明細に現れたユーザで、利用ゼロのメンバーは行を持たない。
+  この対象範囲はモジュールの docstring に明記した
+- 列は `email` + `FEATURE_COLUMNS`（列順の唯一の源は `product_usage`）。書式は金額が小数2桁、
+  構成比が小数4桁、回数は整数で表せる値は整数表記・表せない値は repr で桁を落とさない、
+  真偽値は recommendations.csv と同じ `True`/`False`。確定できなかった値（欠損）は空欄にする。
+  0 や `False` で埋めると「観測した結果が 0 だった」と区別できなくなるため
+- 式のエスケープ（formula injection 対策）と改行の正規化は email 列にだけ適用する。数値から
+  自前で組み立てた文字列に掛けると、負の金額の `-` が式の先頭文字と一致して引用符が付き
+  値が壊れる。ヘルパは csv_out の公開名へ昇格して2つの CSV 出力で共有した
+- `product_usage` を持たない分析結果は `ValueError` にする（「常に生成する」の fail-loud。
+  黙ってスキップしない）
+- prohibited product warning: `analyze` 実行時の警告ブロックに `PROHIBITED_PRODUCT_OBSERVED`
+  の message を表示する。宛先は分析の実行者なので、共有物であるレポートには載せない
+  （レポートの内容が判定に使う値だけで決まることを保ち、既存出力のバイト一致を構造的に守る）。
+  `CAPACITY_SIGNAL_UNAVAILABLE` は表示しない（Step 7 の裁定どおり、特徴量が空欄になることで
+  出力側から見える）
+- 速報モード（`write_preview`）は変更しない。`product_usage.py`・`analyze/`・markdown・html の
+  各出力も変更なし
+
+確認したこと:
+
+- 既存出力がバイト一致で不変（golden の追跡ファイルに diff ゼロ。追加は正式分析 3 ケースの
+  usage-summary.csv のみで、preview 系ツリーには増減なし）
+- 列構成と書式（金額・構成比・整数/非整数の回数・真偽値）、欠損の空欄、email の式エスケープ、
+  負の金額がエスケープで壊れないこと、BOM + LF、明細に誰も現れない月のヘッダのみのファイル
+- product 列の無い入力では、product 名に依らず確定する列（全 product の需要・回数）だけが
+  値を持ち、Code 系の列は空欄になる
+- 禁止 product の利用行があると実行時に警告が出て、同じ設定でも観測が無ければ出ないこと
+- テストが組み立てる features の dtype が `compute` の出力と一致すること（型の表を private に
+  依存せず持ち、ズレたら落ちる）
+- 生成した usage-summary.csv が CLI の出力一覧に載り、内容が分析結果の特徴量と一致すること
+
+コード・ファイル変更:
+
+- `src/seat_analyzer/report/usage_csv.py`（新規）
+- `src/seat_analyzer/report/__init__.py`
+- `src/seat_analyzer/report/csv_out.py`
+- `src/seat_analyzer/cli.py`
+- `README.md`・`docs/usage.md`・`docs/setup.md`（成果物リストへ追加）
+- `tests/test_usage_csv.py`（新規）
+- `tests/test_cli.py`
+- `tests/golden/`（usage-summary.csv を 3 ケースへ追加）
+
+テスト:
+
+- `uv run ruff check .`
+- `uv run pytest`（601件成功。追加前は583件）
+- 追跡ファイルの差分と未追跡の新規ファイルをあわせて `check-text --diff` に通し、
+  業務情報の混入なしを確認
+
+外部レビュー Round 1（指摘2件・全件を再現確認のうえ対応。high severityなし）:
+
+1. 禁止 product の警告がユーザ帰属行に限定され、組織サービス利用の行（email に `@` を
+   含まない行）にだけ現れる禁止 product を見逃していた。特徴量の計算対象（ユーザ行）と
+   警告の対象範囲を取り違えたもので、組織サービス利用として現れる product を禁止指定した
+   場合に警告が一度も出ない。特徴量はユーザ行だけのままにし、組織サービス行には
+   `find_org_service_prohibited` が compute と同じ照合規則（正規化後の完全一致・空セルは
+   観測に数えない）をあてて検出し、`analyze()` が issue を加えた新しい `ProductUsage` を
+   保持するようにした。message は人数で数えられないため行数で表し、scope の持ち物
+   （`n_rows` / `n_users`）でユーザ向けの警告と区別する。`compute()` の契約・既存 message の
+   文字列・issue の生成順は不変（列挙の共通部分は関数へ切り出して実装を1つにした）
+2. email セル内の改行正規化がテストで固定されておらず、呼び出しを削除してもスイートが
+   通る状態だった。CRLF・単独 CR を含む email と、CR 始まりの email（式のエスケープが
+   正規化より先に効く順序）のテストを追加し、変異（呼び出しの削除）で追加テストだけが
+   落ちることを確認した。式エスケープの検証にタブ始まりも追加
+
+テスト（Round 1 修正後）:
+
+- `uv run ruff check .`
+- `uv run pytest`（610件成功）
+- 指摘1の再現手順（禁止 product が組織サービス行にのみある入力）で修正後に警告が
+  出ることを確認。golden は不変（成果物のバイト列に影響しない）
+
+外部レビュー Round 2: 指摘なし（high / mid / low いずれもゼロ）。2巡で収束と判断した。
+レビュアの環境（read-only）ではテストを再実行できないため、テストの通過はローカルの
+全件実行と CI（ubuntu / windows / macos）の結果で確認した。
+
+レビュー全体の記録（累計2件・すべて再現確認のうえ対応）:
+
+| 巡 | 指摘 | high | mid | low | 前巡の修正由来 |
+|---|---:|---:|---:|---:|---:|
+| 1 | 2 | 0 | 1 | 1 | — |
+| 2 | 0 | 0 | 0 | 0 | — |
+
+このStepで得た教訓:
+
+- 「観測したら警告する」という要件は、観測の母集団がどこまでかを実装前に確認する。
+  特徴量の計算対象（ユーザ行）と警告の対象範囲（全明細）は別の集合で、計算の入力を
+  そのまま警告の入力に流用すると、対象外の行だけに現れた事象を静かに見逃す
 
 ### 2026-08-15 — Step 7 Code/全product特徴量
 

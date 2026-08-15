@@ -10,13 +10,14 @@ from ..analyze import AnalysisResult
 _FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
-def _sanitize_csv_cell(v):
+def sanitize_csv_cell(v):
+    """式として解釈されうるセルの先頭に引用符を付ける（同パッケージの CSV 出力で共有）。"""
     if isinstance(v, str) and v.startswith(_FORMULA_PREFIXES):
         return "'" + v
     return v
 
 
-def _normalize_cell_newlines(v):
+def normalize_cell_newlines(v):
     """セル内の改行を LF に揃える。
 
     lineterminator が持つのはレコード区切りだけで、引用符に囲まれたセルの中の改行は
@@ -35,5 +36,5 @@ def write_csv(result: AnalysisResult, path: Path) -> None:
     """
     # 式のエスケープを先に判定する。改行を先に均すと、CR で始まるセルが
     # _FORMULA_PREFIXES に一致しなくなり引用符が付かないまま出る
-    cells = result.users.map(_sanitize_csv_cell).map(_normalize_cell_newlines)
+    cells = result.users.map(sanitize_csv_cell).map(normalize_cell_newlines)
     cells.to_csv(path, index=False, encoding="utf-8-sig", lineterminator="\n")

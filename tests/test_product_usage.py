@@ -638,6 +638,63 @@ def test_no_prohibited_product_by_default(policy):
     assert result.issues == []
 
 
+# --- 組織サービス利用行の禁止 product（ユーザ帰属行を見る compute とは別経路）---
+
+ORG_EMAIL = "(org service usage)"
+
+
+def test_org_service_prohibited_returns_none_without_observation(policy):
+    """禁止指定が空・一致する行が無い・product 列が無い、のいずれでも観測ゼロ。"""
+    rows = [(ORG_EMAIL, 30.0, 3.0, "Code Review")]
+    assert product_usage.find_org_service_prohibited(detail(rows), policy) is None
+    assert product_usage.find_org_service_prohibited(
+        detail(rows), dict(policy, prohibited=["Prototype Console"])) is None
+    assert product_usage.find_org_service_prohibited(
+        detail(rows, product=False), dict(policy, prohibited=["Code Review"])) is None
+
+
+def test_org_service_prohibited_is_reported_by_rows(policy):
+    """観測があれば issue を返す。人数で数えられないので行数で表す。"""
+    issue = product_usage.find_org_service_prohibited(detail([
+        (ORG_EMAIL, 30.0, 3.0, "Code Review"),
+        (ORG_EMAIL, 20.0, 2.0, "code review"),
+        (ORG_EMAIL, 10.0, 1.0, "Claude Code"),
+    ]), dict(policy, prohibited=["Code Review"]))
+
+    assert issue is not None
+    assert issue.code is IssueCode.PROHIBITED_PRODUCT_OBSERVED
+    assert issue.severity is Severity.WARNING
+    # 実データに現れた表記を挙げる（該当行を探せるようにするため）
+    assert issue.scope["products"] == ("Code Review", "code review")
+    assert issue.scope["n_rows"] == 2
+    assert "組織サービス利用行" in issue.message and "2 行" in issue.message
+    # ユーザ向けの警告と区別できる（数える単位が違う）
+    assert "n_users" not in issue.scope
+
+
+def test_org_service_prohibited_ignores_blank_product_cells(policy):
+    """product 名の分からない行は「その product だったかもしれない」だけで観測ではない。"""
+    assert product_usage.find_org_service_prohibited(detail([
+        (ORG_EMAIL, 30.0, 3.0, ""),
+        (ORG_EMAIL, 20.0, 2.0, None),
+    ]), dict(policy, prohibited=["Code Review"])) is None
+
+
+def test_org_service_prohibited_truncates_the_listed_products(policy):
+    """列挙は打ち切っても件数を示し、全件は scope が持つ。"""
+    products = [f"Prohibited Product {i}" for i in range(1, 8)]
+    issue = product_usage.find_org_service_prohibited(
+        detail([(ORG_EMAIL, 1.0, 1.0, name) for name in products]),
+        dict(policy, prohibited=products),
+    )
+
+    assert issue is not None
+    assert issue.scope["products"] == tuple(products)
+    assert issue.scope["n_rows"] == 7
+    assert "ほか2件" in issue.message
+    assert products[0] in issue.message and products[-1] not in issue.message
+
+
 def test_result_is_stable_across_repeated_runs(policy):
     """同じ入力からは常に同じ結果になる（実行間の決定性）。
 
