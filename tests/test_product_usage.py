@@ -497,10 +497,15 @@ def test_breadth_is_unknown_when_known_requests_can_cancel_out(policy):
         ("alice@x.jp", 1.0, 28.0, "Other"),
         ("bob@x.jp", 1.0, -1.0, "Chat"),
         ("bob@x.jp", 1.0, 100.0, "Claude Code"),
+        # carol は不明行を持つが負値は持たない。負値（bob）が別ユーザに居ても
+        # 巻き込まれない（負値の検査がユーザ単位に閉じている）ことの検証
+        ("carol@x.jp", 1.0, 99.0, "Claude Code"),
+        ("carol@x.jp", 1.0, 1.0, ""),
     ]), policy).features
 
     assert pd.isna(features.loc["alice@x.jp", "product_breadth"])
     assert features.loc["bob@x.jp", "product_breadth"] == 1
+    assert features.loc["carol@x.jp", "product_breadth"] == 1
 
 
 def test_non_finite_values_are_not_settled_as_zero(policy):
