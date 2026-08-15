@@ -1659,6 +1659,9 @@ templatesへ分解して取り込み、全組織・全データ状況で成立�
 #### Step 8E: dashboardへのproduct軸の掲載
 
 v1.1.0で追加したStep。原設計には無い。Step 8Dより先に行う（§Step 8Fの実行順を参照）。
+提案書§5.3「Codeと他プロダクトを分離して表示する」の掲載面。既存の詳細利用状況の
+product構成は利用回数基準で金額とはズレるため、金額（API換算需要）基準の分離を
+dashboardで読めるようにする。
 
 依存:
 
@@ -1666,14 +1669,42 @@ v1.1.0で追加したStep。原設計には無い。Step 8Dより先に行う（
 
 対象:
 
-- `src/seat_analyzer/templates/dashboard.html.j2`
-- `src/seat_analyzer/templates/partials/`（product用のpartialを追加）
+- `src/seat_analyzer/templates/dashboard.html.j2`（placeholder `<!--PRODUCT_SECTION-->`）
+- `src/seat_analyzer/templates/partials/product.html.j2`（新規）
 - `src/seat_analyzer/report/html.py`
+- `src/seat_analyzer/analyze/__init__.py`（summaryへ表示用しきい値を1キー追加）
 - `tests/golden/`
 
 実装:
 
-- Code需要・product構成の掲載
+- 正式ダッシュボードへセクション「Codeと他プロダクトの需要（API換算）」を追加する。
+  位置は「詳細利用状況」の直後・「組織内の分布（参考値）」の前。速報は対象外
+  （PreviewResultはproduct_usageを持たない）
+- データ源は`AnalysisResult.product_usage.features`のみで、再計算をしない。行の範囲は
+  featuresの行（対象月のスペンドに明細のあるユーザ）で、利用ゼロのメンバーと
+  組織サービス利用は含まれない（注記に明記する）
+- 並びはtotal_demand_usdの降順・emailタイブレーク・欠損値は末尾
+- 冒頭に組織サマリ1行:「Code需要 $X / 全需要 $Y（Z%）・対象 n名」。X・Yはcodeとtotalの
+  両方が確定した行（m名）だけの合計とし、m < nなら確定分m名であることを併記、m = 0なら
+  この行を出さない。比率はY > 0のときだけ出す
+- 積み上げバー: ユーザ別API換算コストと同型（.bar / .track / .fill）。1本の棒を
+  Code（var(--ok)）と他プロダクト（#9aa3ad）の2セグメントにinline styleで塗り分ける。
+  code_demand_usdが欠損のユーザは全幅を斜線ハッチ（内訳不明）にし、total_demand_usdが
+  欠損なら塗らない。値ラベルは「$X (Code Y%)」（欠損は—）
+- テーブル6列: ユーザ / 需要（計） / Code需要 / Code比率 / 他product需要 / product数。
+  他product需要 = total − code（どちらか欠損なら—）。Code比率は整数%。確定できない値は
+  すべて—で、0や空文字で埋めない（usage-summary.csvと同じ規則）
+- supplementary_highがTrueの行は他product需要セルに⚑を付ける（False・欠損は無印）。
+  凡例に「⚑ = 補助プロダクトの需要がしきい値以上。Codeが低く他が高いユーザは自動変更
+  ではなくレビュー対象（判定・推奨には未反映）」の趣旨を書く。しきい値の金額は
+  `summary["supplementary_high_usd"]`（analyzeがconfigのproduct_policyから詰める。
+  grant_suggested_cap_usdと同じ流儀）から表示し、テンプレートへ直書きしない
+- prohibited_observedは載せない（禁止指定の報告はCLIのみ・§Step 8）
+- セクションの表示条件: product_usageがあり、featuresが非空で、code_demand_usdに確定値が
+  1つ以上あること。満たさなければセクションごと省略する（product列が無い入力の理由説明は
+  CLIのCAPACITY_SIGNAL_UNAVAILABLE警告が担う）
+- CSSは変更しない: dashboard.cssは速報と共有され、変更するとpreview-dashboard.htmlの
+  バイト一致が壊れる。既存クラスの再利用とpartial内のinline styleで作る
 
 受け入れ条件:
 
@@ -1685,6 +1716,8 @@ v1.1.0で追加したStep。原設計には無い。Step 8Dより先に行う（
 今回は行わない:
 
 - 判定への反映（Track 4）
+- 速報ダッシュボードへの掲載
+- report.md / details.md への掲載
 
 
 ### Track 3: シート変更履歴

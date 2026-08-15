@@ -455,6 +455,98 @@
 </table></div>
 <div class="note">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
 
+
+<h2>Codeと他プロダクトの需要（API換算）</h2>
+<div class="card note"><p>Code需要 $1,044 / 全需要 $1,044（100%）・対象 5名</p></div>
+
+<div class="card">
+
+  <div class="bar">
+    <div class="name" title="mori@example.co.jp">mori</div>
+    <div class="track"><div class="fill" style="width: 100.0%; background: linear-gradient(to right, var(--ok) 100.0%, #9aa3ad 100.0%);"></div></div>
+    <div class="val" style="width:150px">$470 (Code 100%)</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="ikeda@example.co.jp">ikeda</div>
+    <div class="track"><div class="fill" style="width: 55.3%; background: linear-gradient(to right, var(--ok) 100.0%, #9aa3ad 100.0%);"></div></div>
+    <div class="val" style="width:150px">$260 (Code 100%)</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="kudo@example.co.jp">kudo</div>
+    <div class="track"><div class="fill" style="width: 55.3%; background: linear-gradient(to right, var(--ok) 100.0%, #9aa3ad 100.0%);"></div></div>
+    <div class="val" style="width:150px">$260 (Code 100%)</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="shimizu@example.co.jp">shimizu</div>
+    <div class="track"><div class="fill" style="width: 9.7%; background: linear-gradient(to right, var(--ok) 100.0%, #9aa3ad 100.0%);"></div></div>
+    <div class="val" style="width:150px">$45.40 (Code 100%)</div>
+  </div>
+
+  <div class="bar">
+    <div class="name" title="abe@example.co.jp">abe</div>
+    <div class="track"><div class="fill" style="width: 1.9%; background: linear-gradient(to right, var(--ok) 100.0%, #9aa3ad 100.0%);"></div></div>
+    <div class="val" style="width:150px">$9.00 (Code 100%)</div>
+  </div>
+
+  <div class="note">棒の色: <span style="color:var(--ok)">■ Code</span> / <span style="color:#9aa3ad">■ 他プロダクト</span>　斜線 = 内訳不明（Code の需要を確定できないユーザ）</div>
+</div>
+
+<div class="tablebox"><table>
+<tr><th>ユーザ</th><th class="num">需要（計）</th><th class="num">Code需要</th><th class="num">Code比率</th><th class="num">他product需要</th><th class="num">product数</th></tr>
+
+<tr>
+  <td class="user" title="mori@example.co.jp">mori</td>
+  <td class="num">$470</td>
+  <td class="num">$470</td>
+  <td class="num">100%</td>
+  <td class="num">$0.00</td>
+  <td class="num">1</td>
+</tr>
+
+<tr>
+  <td class="user" title="ikeda@example.co.jp">ikeda</td>
+  <td class="num">$260</td>
+  <td class="num">$260</td>
+  <td class="num">100%</td>
+  <td class="num">$0.00</td>
+  <td class="num">1</td>
+</tr>
+
+<tr>
+  <td class="user" title="kudo@example.co.jp">kudo</td>
+  <td class="num">$260</td>
+  <td class="num">$260</td>
+  <td class="num">100%</td>
+  <td class="num">$0.00</td>
+  <td class="num">1</td>
+</tr>
+
+<tr>
+  <td class="user" title="shimizu@example.co.jp">shimizu</td>
+  <td class="num">$45.40</td>
+  <td class="num">$45.40</td>
+  <td class="num">100%</td>
+  <td class="num">$0.00</td>
+  <td class="num">1</td>
+</tr>
+
+<tr>
+  <td class="user" title="abe@example.co.jp">abe</td>
+  <td class="num">$9.00</td>
+  <td class="num">$9.00</td>
+  <td class="num">100%</td>
+  <td class="num">$0.00</td>
+  <td class="num">1</td>
+</tr>
+
+</table></div>
+<div class="note">対象は対象月のスペンドに明細のあるユーザです（利用ゼロのメンバーと組織サービス利用は含みません）。他product需要 = 需要（計） − Code需要。「—」は確定できなかった値で、0 ではありません。<br>⚑ = 補助プロダクト（設定で Code 以外に分類した product）の需要が $100 以上。Code が低く他が高いユーザは、自動での変更ではなくレビューの対象です（判定・推奨には未反映）。</div>
+
+
+
 <h2>組織内の分布（参考値）</h2>
 <div class="tablebox"><table>
 <tr><th>指標</th><th class="num">n</th><th class="num">平均</th><th class="num">中央値</th><th class="num">標準偏差</th><th class="num">p25</th><th class="num">p75</th><th class="num">p90</th><th class="num">最大</th></tr>

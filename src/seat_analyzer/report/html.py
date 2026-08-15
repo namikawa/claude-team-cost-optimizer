@@ -26,6 +26,7 @@ from ..analyze import (
     AnalysisResult,
     PreviewResult,
 )
+from ..product_usage import ProductUsage
 from .format import (
     _detail_rows,
     _fmt_compact,
@@ -246,6 +247,113 @@ def _cost_ranks(users: pd.DataFrame) -> dict[str, int]:
     return dict(zip(judged["email"], ranks.astype(int), strict=True))
 
 
+def _fmt_share_pct(value) -> str:
+    """構成比の整数パーセント表示（確定できない値は —）。"""
+    if value is None or pd.isna(value):
+        return "—"
+    return f"{round(100.0 * float(value))}%"
+
+
+def _bar_pct(value, scale: float) -> float:
+    """棒の幅（スケールに対する %）。スケールの外へ出る値は端へ寄せる。
+
+    需要は cost_basis によっては負になりうる（返金等）。負の幅や 100% 超の幅を
+    そのまま書くと CSS 側で宣言ごと捨てられ、棒の長さが他の行と比較できない値
+    （幅の指定なし＝中身なりの長さ）になるため、描ける範囲へ丸める。
+    """
+    return min(100.0, max(0.0, 100.0 * float(value) / scale))
+
+
+def _product_summary_line(totals: pd.Series, codes: pd.Series) -> str | None:
+    """「Code と他プロダクトの需要」の組織サマリ1行（出せなければ None）。
+
+    合計は Code と全需要の両方が確定した行だけを足す。片方だけ確定した行を混ぜると、
+    分子と分母で対象ユーザが違う比率になる。確定した行が1人も無ければ行ごと出さない。
+    """
+    both = totals.notna() & codes.notna()
+    n_confirmed = int(both.sum())
+    if n_confirmed == 0:
+        return None
+    code_sum = float(codes[both].sum())
+    total_sum = float(totals[both].sum())
+    line = f"Code需要 {_fmt_compact(code_sum)} / 全需要 {_fmt_compact(total_sum)}"
+    # 分母が 0（または負）だと比率が意味を持たないため、そのときは比率を出さない
+    if total_sum > 0:
+        line += f"（{round(100.0 * code_sum / total_sum)}%）"
+    line += f"・対象 {len(totals)}名"
+    if n_confirmed < len(totals):
+        line += f"・金額は内訳の確定した {n_confirmed}名の合計"
+    return line
+
+
+def _product_view(usage: ProductUsage | None, threshold_usd: float) -> dict | None:
+    """dashboard.html 用に整形した「Code と他プロダクトの需要」（出さないなら None）。
+
+    データ源は product 利用特徴量だけで金額を計算し直さない。行は features の行
+    （対象月のスペンドに明細のあるユーザ）で、利用ゼロのメンバーと組織サービス利用は
+    含まれない。確定できなかった値は — にして 0 で埋めない（usage-summary.csv と同じ
+    規則。0 で埋めると「観測した結果が 0 だった」ことと区別できなくなる）。
+
+    Code の需要が1人も確定しない組織ではセクションごと出さない（棒も比率も全部 —
+    になり、読み手が得るものが無い）。product 列が無いことの説明は CLI の
+    CAPACITY_SIGNAL_UNAVAILABLE 警告が担う。
+    """
+    if usage is None:
+        return None
+    features = usage.features
+    needed = {"total_demand_usd", "code_demand_usd", "code_demand_share"}
+    if features.empty or not needed <= set(features.columns):
+        return None
+    totals, codes = features["total_demand_usd"], features["code_demand_usd"]
+    if not bool(codes.notna().any()):
+        return None
+
+    # 棒のスケールは確定した需要の最大値。1人も確定しない場合と 0 以下の場合は 1.0 に
+    # 倒す（0 除算を避けるための値で、棒の長さの基準としての意味は持たない）
+    max_total = totals.max()
+    scale = float(max_total) if pd.notna(max_total) and max_total > 0 else 1.0
+
+    ordered = features.assign(
+        _email=features.index,
+        _other=totals - codes,      # どちらかが欠損なら欠損が伝播する
+    ).sort_values(["total_demand_usd", "_email"],
+                  ascending=[False, True], na_position="last")
+
+    rows = []
+    for email, r in ordered.iterrows():
+        total, share, breadth = (
+            r["total_demand_usd"], r["code_demand_share"], r["product_breadth"])
+        total_fmt, share_fmt = _fmt_compact(total), _fmt_share_pct(share)
+        if pd.isna(total):
+            bar_kind = "none"                       # 長さが決まらない: 棒を描かない
+        elif pd.isna(r["code_demand_usd"]):
+            bar_kind = "unknown"                    # 長さは決まるが内訳が不明: 斜線
+        else:
+            bar_kind = "split"
+        rows.append({
+            "email": str(email),
+            "total_fmt": total_fmt,
+            "code_fmt": _fmt_compact(r["code_demand_usd"]),
+            "share_fmt": share_fmt,
+            "other_fmt": _fmt_compact(r["_other"]),
+            # 個数は欠損を持てる型（Int64）なので、0 と「分からない」を取り違えない
+            "breadth_fmt": "—" if pd.isna(breadth) else str(int(breadth)),
+            # 真だけを印にする（偽と「分からない」はどちらも無印）
+            "flag": bool(pd.notna(r["supplementary_high"]) and r["supplementary_high"]),
+            "val_fmt": "—" if pd.isna(total) else f"{total_fmt} (Code {share_fmt})",
+            "bar_kind": bar_kind,
+            "bar_pct": 0.0 if pd.isna(total) else _bar_pct(total, scale),
+            # 棒の中での色の切り替え位置（比なので全幅が 1.0）。比が定義できない
+            # （需要 0）ときは全部 Code 以外に倒すが、その棒の長さは 0 で画面に出ない
+            "split_pct": 0.0 if pd.isna(share) else _bar_pct(share, 1.0),
+        })
+    return {
+        "summary_line": _product_summary_line(totals, codes),
+        "rows": rows,
+        "threshold_fmt": _fmt_compact(threshold_usd),
+    }
+
+
 def _credit_reach_view(cr: dict | None) -> dict | None:
     """preview-dashboard.html 用に整形した追加クレジット残額ブロック（None なら None）。"""
     if not cr:
@@ -295,6 +403,10 @@ _CREDIT_REACH_HTML = _asset("partials/credit-reach.html.j2")
 # 「追加クレジット構成」の HTML 断片（サマリカード直下・正式/速報で共有）。
 _CREDIT_COMPOSITION_HTML = _asset("partials/credit-composition.html.j2")
 
+# 「Codeと他プロダクトの需要（API換算）」の HTML 断片（正式ダッシュボードのみ。
+# 速報は product 利用特徴量を持たない）。
+_PRODUCT_HTML = _asset("partials/product.html.j2")
+
 # 「組織内の分布（参考値）」の HTML 断片（正式ダッシュボードのみ。速報は product 利用
 # 特徴量を持たず、日割り換算した値の分布も意味が変わるため出さない）。
 _STATS_HTML = _asset("partials/stats.html.j2")
@@ -311,6 +423,7 @@ _DASHBOARD_SECTIONS = {
     "<!--TREND_SECTION-->": (_TREND_HTML,),
     "<!--SNAPSHOT_SECTION-->": (_SNAPSHOT_HTML, _CODE_DIFF_HTML, _MEMBER_CHANGES_HTML),
     "<!--CREDIT_SECTION-->": (_GRANT_HTML,),
+    "<!--PRODUCT_SECTION-->": (_PRODUCT_HTML,),
     "<!--STATS_SECTION-->": (_STATS_HTML,),
 }
 
@@ -476,6 +589,8 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         has_team_summary=any(g["heading"] == "チーム別サマリ" for g in group_summaries),
         detail_rows=detail_rows,
         detail_has_loc=detail_has_loc,
+        product=_product_view(result.product_usage,
+                              result.summary["supplementary_high_usd"]),
         stats=_stats_view(dists),
         cost_guide=_cost_guide(dists, max_demand),
         max_cost=max_cost,

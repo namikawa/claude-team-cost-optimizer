@@ -28,15 +28,20 @@ tests/test_golden.py は生成物を丸ごと固定するが、examples/input �
 断片に新しい分岐を足したときは、ここにもケースを足すこと。
 """
 
+import pandas as pd
+
+from seat_analyzer.product_usage import ProductUsage
 from seat_analyzer.report.html import (
     _CODE_DIFF_HTML,
     _HTML_ENV,
     _MEMBER_CHANGES_HTML,
+    _PRODUCT_HTML,
     _SNAPSHOT_HTML,
     _STATS_HTML,
     _TREND_HTML,
     _code_diff_view,
     _member_changes_view,
+    _product_view,
     _snapshot_view,
     _stats_view,
     _trend_view,
@@ -349,3 +354,89 @@ def test_stats_money_and_count_use_different_formats():
     ]))
     assert '<td class="num">$120</td>' in html      # usd: $100 以上は整数表示
     assert '<td class="num">1.23M</td>' in html     # count: 1e6 以上は M・小数2桁
+
+
+# --- product.html.j2 ---
+
+# features の dtype。compute の出力と同じであることは
+# tests/test_product_section.py の test_feature_dtypes_match_compute が守る
+_FEATURE_DTYPES = {
+    "total_demand_usd": "Float64",
+    "code_demand_usd": "Float64",
+    "code_demand_share": "Float64",
+    "total_requests": "Float64",
+    "code_requests": "Float64",
+    "product_breadth": "Int64",
+    "supplementary_high": "boolean",
+    "prohibited_observed": "boolean",
+}
+
+# ⚑ の凡例に出る閾値。この断片の分岐には関与しない
+_THRESHOLD_USD = 100.0
+
+
+def _row(**over) -> dict:
+    """compute が返す features の1行分。既定は8特徴量すべてが確定した行。"""
+    return {"total_demand_usd": 400.0, "code_demand_usd": 300.0,
+            "code_demand_share": 0.75, "total_requests": 100.0, "code_requests": 80.0,
+            "product_breadth": 2, "supplementary_high": False,
+            "prohibited_observed": False, **over}
+
+
+def _product_html(*, extra: dict | None = None, **over) -> str:
+    """a@x.jp 1人分の断片。extra を渡すと2人目（z@x.jp）を足す。
+
+    Code の需要が1人も確定しないとセクションごと消えるため、確定しない行を見る
+    ケースでは extra に確定した行を足して、セクションが出る文脈を作る。
+    """
+    people = {"a@x.jp": _row(**over)}
+    if extra is not None:
+        people["z@x.jp"] = _row(**extra)
+    features = pd.DataFrame(
+        list(people.values()), index=pd.Index(list(people), name="email"),
+    ).astype(_FEATURE_DTYPES)
+    usage = ProductUsage(features=features, issues=[])
+    return _render(_PRODUCT_HTML, product=_product_view(usage, _THRESHOLD_USD))
+
+
+def test_product_section_absent_without_confirmed_code_demand():
+    """Code の需要が1人も確定しない組織ではセクションを一切出さない。"""
+    # 片側は product が無いため差分の一致は取れない（見出しも表も丸ごと出ない）
+    assert _render(_PRODUCT_HTML, product=None).strip() == ""
+    assert "<h2>Codeと他プロダクトの需要（API換算）</h2>" in _product_html()
+
+
+def test_product_summary_line_only_when_amounts_are_confirmed():
+    """合計できる行が1つも無い月は、組織サマリの1行ごと出さない。"""
+    # サマリ行の有無は行データそのもので決まり、他の要素も同時に変わるため、
+    # 差分の一致ではなく両側を全文（と枠の不在）で固定する
+    confirmed = _product_html()
+    unconfirmed = _product_html(total_demand_usd=pd.NA, code_demand_share=pd.NA)
+    assert ('<div class="card note"><p>Code需要 $300 / 全需要 $400（75%）・対象 1名'
+            "</p></div>") in confirmed
+    assert '<div class="card note">' not in unconfirmed
+
+
+def test_product_bar_shape_follows_what_is_known():
+    """内訳が分かれば2色、需要だけなら斜線、需要も不明なら棒を描かない。"""
+    # 3通りは排他なので、track の中身を両側とも全文で固定する
+    split = _product_html()
+    hatched = _product_html(extra={}, code_demand_usd=pd.NA, code_demand_share=pd.NA)
+    nothing = _product_html(extra={}, total_demand_usd=pd.NA, code_demand_share=pd.NA)
+    assert ('<div class="track"><div class="fill" style="width: 100.0%; background: '
+            "linear-gradient(to right, var(--ok) 75.0%, #9aa3ad 75.0%);\"></div></div>"
+            ) in split
+    assert ('<div class="track"><div class="fill" style="width: 100.0%; background: '
+            "repeating-linear-gradient(45deg, #b9c0c8 0, #b9c0c8 4px, #dfe3e8 4px, "
+            "#dfe3e8 8px);\"></div></div>") in hatched
+    assert '<div class="track"></div>' in nothing
+
+
+def test_product_flag_marks_only_confirmed_supplementary_high():
+    """⚑ は真のときだけ他product需要のセルに付く（偽と欠損はどちらも無印）。"""
+    flagged = _product_html(supplementary_high=True)
+    plain = _product_html(supplementary_high=False)
+    unknown = _product_html(supplementary_high=pd.NA)
+    mark = ' <span class="cap">⚑</span>'
+    assert _without(flagged, mark) == plain     # 足すのはこの印だけ
+    assert unknown == plain
