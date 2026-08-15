@@ -34,13 +34,16 @@ from seat_analyzer.report.html import (
     _HTML_ENV,
     _MEMBER_CHANGES_HTML,
     _SNAPSHOT_HTML,
+    _STATS_HTML,
     _TREND_HTML,
     _code_diff_view,
     _e_distribution_view,
     _member_changes_view,
     _snapshot_view,
+    _stats_view,
     _trend_view,
 )
+from seat_analyzer.report.stats import Distribution
 from seat_analyzer.report.text import _embed_shared_text
 
 
@@ -323,3 +326,50 @@ def test_e_distribution_section_absent_without_billers():
                                   e_distribution=_e_distribution_view(None))
     assert heading in _render(_E_DIST_HTML,
                               e_distribution=_e_distribution_view(_e_dist()))
+
+
+# --- stats.html.j2 ---
+
+def _distribution(**over) -> Distribution:
+    """distributions() が返す形（1指標分）。"""
+    return Distribution(**{
+        "key": "api_cost", "label": "API換算需要", "kind": "usd", "n": 3,
+        "mean": 120.0, "median": 40.0, "std": 90.0,
+        "p25": 20.0, "p75": 180.0, "p90": 240.0, "maximum": 300.0,
+        **over,
+    })
+
+
+def test_stats_section_absent_when_population_is_empty():
+    """母集団がいない（未割当しかいない）組織では分布のセクションを出さない。"""
+    # 片側は行が1つも無いため差分の一致は取れない（表も注記も丸ごと出ない）
+    empty = _render(_STATS_HTML, stats=_stats_view([]))
+    assert empty.strip() == ""
+    assert "<h2>組織内の分布（参考値）</h2>" in _render(
+        _STATS_HTML, stats=_stats_view([_distribution()]))
+
+
+def test_stats_row_is_added_per_metric():
+    """指標が1つ増えると行が1つだけ増える（n も統計量もその指標のものを出す）。"""
+    one = _render(_STATS_HTML, stats=_stats_view([_distribution()]))
+    two = _render(_STATS_HTML, stats=_stats_view([
+        _distribution(),
+        _distribution(key="loc", label="LoC", kind="count", n=2, mean=1500.0,
+                      median=1500.0, std=500.0, p25=1250.0, p75=1750.0, p90=1900.0,
+                      maximum=2000.0),
+    ]))
+    row = ('\n<tr><td>LoC</td><td class="num">2</td><td class="num">1,500</td>'
+           '<td class="num">1,500</td><td class="num">500</td><td class="num">1,250</td>'
+           '<td class="num">1,750</td><td class="num">1,900</td>'
+           '<td class="num">2,000</td></tr>\n')
+    assert _without(two, row) == one          # 足すのはこの1行だけ
+
+
+def test_stats_money_and_count_use_different_formats():
+    """金額はダッシュボードの短縮金額、個数は K/M の短縮表記で出す。"""
+    html = _render(_STATS_HTML, stats=_stats_view([
+        _distribution(),
+        _distribution(key="input", label="input", kind="count", mean=1_234_567.0),
+    ]))
+    assert '<td class="num">$120</td>' in html      # usd: $100 以上は整数表示
+    assert '<td class="num">1.23M</td>' in html     # count: 1e6 以上は M・小数2桁

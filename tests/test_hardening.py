@@ -1,6 +1,7 @@
 """外部レビュー対応（出力の安全性・入力取り違え防止・設定検証）のテスト。"""
 
 import copy
+import re
 
 import pandas as pd
 import pytest
@@ -12,16 +13,16 @@ from seat_analyzer.ingest import discover_months
 from seat_analyzer.pricing import unmatched_models
 from seat_analyzer.report import write_csv, write_html
 from seat_analyzer.report.html import (
-    _CODE_DIFF_HTML,
-    _CREDIT_REACH_HTML,
-    _E_DIST_HTML,
-    _GRANT_HTML,
+    _DASHBOARD_SECTIONS,
+    _HTML_ASSEMBLED,
+    _HTML_SOURCE,
     _HTML_TEMPLATE_SRC,
-    _MEMBER_CHANGES_HTML,
+    _PREVIEW_HTML_ASSEMBLED,
+    _PREVIEW_HTML_SOURCE,
     _PREVIEW_HTML_TEMPLATE_SRC,
-    _SNAPSHOT_HTML,
+    _PREVIEW_SECTIONS,
+    _assemble,
 )
-from seat_analyzer.report.text import _embed_shared_text
 
 from .conftest import CONFIG, SPEND_HEADER, requires_posix_filenames, spend_row
 
@@ -41,14 +42,75 @@ def test_html_escapes_script_in_email(cfg, make_input, tmp_path):
     assert "&lt;script&gt;" in html
 
 
+# テンプレート1本分の (名前, 本体, 差し込み表, 差し込み後, 文言解決後)。
+_TEMPLATES = (
+    ("dashboard.html", _HTML_TEMPLATE_SRC, _DASHBOARD_SECTIONS,
+     _HTML_ASSEMBLED, _HTML_SOURCE),
+    ("preview-dashboard.html", _PREVIEW_HTML_TEMPLATE_SRC, _PREVIEW_SECTIONS,
+     _PREVIEW_HTML_ASSEMBLED, _PREVIEW_HTML_SOURCE),
+)
+
+# 断片の差し込み先（HTML コメント形式・大文字とアンダースコアのみ）。共有文言の
+# <!--text:キー--> は小文字とコロンを含むので一致しない
+_PLACEHOLDER_RE = re.compile(r"<!--[A-Z][A-Z_]*-->")
+
+
+def test_every_section_placeholder_is_filled_exactly_once():
+    """差し込み表の placeholder が本体にちょうど1つあり、組み立て後には残らない。
+
+    placeholder は HTML コメントなので、表と本体が食い違っても画面には何も出ず、
+    そのセクションが黙って消える。
+    """
+    for name, src, sections, assembled, _ in _TEMPLATES:
+        assert sections, f"{name}: 差し込み表が空です"
+        for placeholder in sections:
+            assert src.count(placeholder) == 1, (
+                f"{name}: 差し込み表の {placeholder} が本体に "
+                f"{src.count(placeholder)} 個あります（ちょうど1個であること）"
+            )
+            assert placeholder not in assembled, (
+                f"{name}: {placeholder} が組み立て後も残っています"
+            )
+
+
+def test_no_section_placeholder_is_left_unfilled():
+    """本体にあって差し込み表に無い placeholder が残っていない。
+
+    テンプレートへ placeholder を書いただけでは差し込まれない。表への追記漏れは
+    ここで落ちる。
+    """
+    for name, _, _, assembled, _ in _TEMPLATES:
+        left = _PLACEHOLDER_RE.findall(assembled)
+        assert not left, f"{name}: 差し込み表に無い placeholder が残っています: {left}"
+
+
+def test_assemble_requires_exactly_one_destination():
+    """差し込み先が0個・2個以上なら組み立てを止める（規則そのものの検査）。"""
+    assert _assemble("a<!--X-->b", {"<!--X-->": ("1", "2")}) == "a12b"
+    for body in ("ab", "a<!--X-->b<!--X-->"):
+        with pytest.raises(ValueError, match="<!--X-->"):
+            _assemble(body, {"<!--X-->": ("1",)})
+
+
 def test_no_unresolved_shared_text_markers_in_templates():
-    # md/HTML 共有文言の <!--text:キー--> は組み立て時に全て置換されること。
-    # キー名を打ち間違えるとマーカーがそのままダッシュボードに出るため、機械的に防ぐ
-    for src in (_embed_shared_text(_HTML_TEMPLATE_SRC),
-                _embed_shared_text(_PREVIEW_HTML_TEMPLATE_SRC),
-                _embed_shared_text(_SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML
-                                   + _E_DIST_HTML + _GRANT_HTML + _CREDIT_REACH_HTML)):
-        assert "<!--text:" not in src
+    """md/HTML 共有文言の <!--text:キー--> が組み立て後に1つも残っていない。
+
+    _embed_shared_text は未知のキーを置換せずそのまま残すため、キー名を打ち間違えると
+    その注記は HTML コメントになって出力から消える（画面上は何も起きない）。見るのは
+    断片ではなく差し込み後のテンプレート本体なので、断片を足しても対象へ自動で入る。
+    """
+    for name, _, _, _, source in _TEMPLATES:
+        assert "<!--text:" not in source, f"{name}: 未解決の共有文言マーカーが残っています"
+
+
+def test_shared_text_check_is_not_vacuous():
+    """共有文言の検査が空振りしていない（置換の対象が実在する）。
+
+    保証するのは差し込み後のテンプレートにマーカーが1つ以上あることだけで、どの断片に
+    何個あるかは見ない（個々の断片が入っていることは placeholder 側の検査が受け持つ）。
+    """
+    for name, _, _, assembled, _ in _TEMPLATES:
+        assert "<!--text:" in assembled, f"{name}: 共有文言マーカーが1つもありません"
 
 
 def test_csv_formula_cells_are_sanitized(tmp_path):

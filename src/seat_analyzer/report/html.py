@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
+import pandas as pd
 from jinja2 import Environment
 
 from ..analyze import (
@@ -30,12 +32,14 @@ from .format import (
     _fmt_count,
     _fmt_delta,
     _fmt_delta_int,
+    _fmt_stat_count,
     _fmt_tokens,
     _group_summary_rows,
     _has_values,
     _scope_label,
     _sort_for_display,
 )
+from .stats import KEY_API_COST, KIND_USD, Distribution, distributions, population
 from .text import (
     GROUP_AXES,
     PREVIEW_ORDER,
@@ -205,6 +209,63 @@ def _grant_candidates_view(candidates: list) -> list[dict]:
             for c in candidates]
 
 
+def _stats_view(dists: list[Distribution]) -> list[dict]:
+    """dashboard.html 用に整形した分布表（対象がなければ空リスト）。"""
+    view = []
+    for d in dists:
+        fmt = _fmt_compact if d.kind == KIND_USD else _fmt_stat_count
+        view.append({
+            "label": d.label, "n": d.n,
+            "mean_fmt": fmt(d.mean), "median_fmt": fmt(d.median), "std_fmt": fmt(d.std),
+            "p25_fmt": fmt(d.p25), "p75_fmt": fmt(d.p75), "p90_fmt": fmt(d.p90),
+            "max_fmt": fmt(d.maximum),
+        })
+    return view
+
+
+def _cost_guide(dists: list[Distribution], max_demand: float) -> dict | None:
+    """ユーザ別 API 換算コストの棒に引く中央値・平均のガイド線（引けなければ None）。
+
+    位置は棒の長さと同じ基準（値 / max_demand）で出す。棒の並びは判定ステータス順で
+    金額順ではないため、ガイド線は行の位置ではなく金額軸の上の点を指す。
+
+    線を引くかどうかは分布そのもの（母集団の最大が正か）で決める。max_demand は棒と
+    座標を揃えるためのスケールで、母集団の外にいる未割当ユーザの需要も、0 除算を
+    避けるために 1.0 へ倒した値も入りうるため、有無の判定には使えない
+    （どちらで判定しても、母集団の需要が全員ゼロの組織で $0.00 の線が2本重なる）。
+    座標が棒の中に収まること（0 以上・スケール以下）は別に確かめる。
+    """
+    demand = next((d for d in dists if d.key == KEY_API_COST), None)
+    if demand is None:
+        return None
+    if not all(math.isfinite(v)
+               for v in (max_demand, demand.maximum, demand.median, demand.mean)):
+        return None
+    if max_demand <= 0 or demand.maximum <= 0:
+        return None
+    if not all(0.0 <= v <= max_demand for v in (demand.median, demand.mean)):
+        return None
+    return {
+        "median_pct": 100.0 * demand.median / max_demand,
+        "mean_pct": 100.0 * demand.mean / max_demand,
+        "median_fmt": _fmt_compact(demand.median),
+        "mean_fmt": _fmt_compact(demand.mean),
+    }
+
+
+def _cost_ranks(users: pd.DataFrame) -> dict[str, int]:
+    """email → API 換算需要の降順順位（同額は同順位）。
+
+    母集団は分布・ガイド線と同じ（`stats.population`＝シート未割当を除く分析対象
+    ユーザ）。同じ図の中に母集団を2つ作らないため、未割当のユーザはキーを持たない
+    （＝順位を付けない）。棒の並びは判定ステータス順なので行番号は順位にならず、
+    値から計算する。
+    """
+    judged = population(users)
+    ranks = judged["api_cost_usd"].fillna(0).rank(method="min", ascending=False)
+    return dict(zip(judged["email"], ranks.astype(int), strict=True))
+
+
 def _credit_reach_view(cr: dict | None) -> dict | None:
     """preview-dashboard.html 用に整形した追加クレジット残額ブロック（None なら None）。"""
     if not cr:
@@ -257,30 +318,63 @@ _CREDIT_REACH_HTML = _asset("partials/credit-reach.html.j2")
 # 「追加クレジット構成」の HTML 断片（サマリカード直下・正式/速報で共有）。
 _CREDIT_COMPOSITION_HTML = _asset("partials/credit-composition.html.j2")
 
+# 「組織内の分布（参考値）」の HTML 断片（正式ダッシュボードのみ。速報は product 利用
+# 特徴量を持たず、日割り換算した値の分布も意味が変わるため出さない）。
+_STATS_HTML = _asset("partials/stats.html.j2")
+
 
 _HTML_TEMPLATE_SRC = _asset("dashboard.html.j2")
-
-_HTML_TEMPLATE = _HTML_ENV.from_string(
-    _embed_shared_text(
-        _HTML_TEMPLATE_SRC.replace("<!--TREND_SECTION-->", _TREND_HTML)
-        .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
-        .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
-        .replace("<!--CREDIT_SECTION-->", _E_DIST_HTML + _GRANT_HTML)
-    )
-)
-
-
 _PREVIEW_HTML_TEMPLATE_SRC = _asset("preview-dashboard.html.j2")
 
-_PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(
-    _embed_shared_text(
-        _PREVIEW_HTML_TEMPLATE_SRC.replace(
-            "<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
-        .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
-        .replace("<!--CREDIT_REACH-->", _CREDIT_REACH_HTML)
-        .replace("<!--GRANT_SECTION-->", _GRANT_HTML)
-    )
-)
+# テンプレート本体の placeholder → そこへ順に差し込む断片。組み立てはこの表だけから
+# 行う（.replace() を手で並べない）。並べる形だと、断片を足すときに「差し込みの追加」と
+# 「検査への追加」が別々の作業になり、片方を忘れても静かに通る。
+_DASHBOARD_SECTIONS = {
+    "<!--CREDIT_COMPOSITION-->": (_CREDIT_COMPOSITION_HTML,),
+    "<!--TREND_SECTION-->": (_TREND_HTML,),
+    "<!--SNAPSHOT_SECTION-->": (_SNAPSHOT_HTML, _CODE_DIFF_HTML, _MEMBER_CHANGES_HTML),
+    "<!--CREDIT_SECTION-->": (_E_DIST_HTML, _GRANT_HTML),
+    "<!--STATS_SECTION-->": (_STATS_HTML,),
+}
+
+_PREVIEW_SECTIONS = {
+    "<!--CREDIT_COMPOSITION-->": (_CREDIT_COMPOSITION_HTML,),
+    "<!--CREDIT_REACH-->": (_CREDIT_REACH_HTML,),
+    "<!--SNAPSHOT_SECTION-->": (_SNAPSHOT_HTML, _CODE_DIFF_HTML, _MEMBER_CHANGES_HTML),
+    "<!--GRANT_SECTION-->": (_GRANT_HTML,),
+}
+
+
+def _assemble(src: str, sections: dict[str, tuple[str, ...]]) -> str:
+    """テンプレート本体へ断片を差し込む（共有文言 <!--text:キー--> はまだ解決しない）。
+
+    差し込み先がちょうど1つあることを確かめてから置換する。placeholder は HTML
+    コメントなので、綴り違いや本体からの消失で差し込みが空振りしても画面には何も
+    現れず、そのセクションが黙って消える。
+    """
+    for placeholder, parts in sections.items():
+        found = src.count(placeholder)
+        if found != 1:
+            raise ValueError(
+                f"テンプレートの差し込み先 {placeholder} が {found} 個あります"
+                "（ちょうど1個であること）"
+            )
+        src = src.replace(placeholder, "".join(parts))
+    return src
+
+
+# 組み立ては2段階。断片を差し込んだ _ASSEMBLED と、共有文言まで解決した _SOURCE を
+# 定数として持つのは、テンプレートの検査（tests/test_hardening.py）が組み立て済みの
+# ソースそのものを見られるようにするため。
+_HTML_ASSEMBLED = _assemble(_HTML_TEMPLATE_SRC, _DASHBOARD_SECTIONS)
+_HTML_SOURCE = _embed_shared_text(_HTML_ASSEMBLED)
+
+_HTML_TEMPLATE = _HTML_ENV.from_string(_HTML_SOURCE)
+
+_PREVIEW_HTML_ASSEMBLED = _assemble(_PREVIEW_HTML_TEMPLATE_SRC, _PREVIEW_SECTIONS)
+_PREVIEW_HTML_SOURCE = _embed_shared_text(_PREVIEW_HTML_ASSEMBLED)
+
+_PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(_PREVIEW_HTML_SOURCE)
 
 
 def write_preview_html(result: PreviewResult, path: Path) -> None:
@@ -353,7 +447,16 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         u["prem_fmt"] = _fmt_compact(u["cost_if_premium_usd"])
         u["saving_fmt"] = _fmt_compact(u.get("monthly_saving_usd"))
         u["badge_class"] = _STATUS_BADGE_CLASS.get(u["status"], "b-keep")
-    max_cost = max((u["api_cost_usd"] for u in users_sorted), default=0) or 1.0
+    # 観測された最大需要と、棒の幅の除算に使うスケールを分ける。スケールは 0 除算を
+    # 避けるため 1.0 に倒すが、ガイド線の可否は倒す前の値で決める（_cost_guide 参照）
+    max_demand = max((u["api_cost_usd"] for u in users_sorted), default=0.0)
+    max_cost = max_demand or 1.0
+    # 順位は分布・ガイド線と同じ母集団。未割当のユーザには順位を付けない
+    ranks = _cost_ranks(result.users)
+    for u in users_sorted:
+        rank = ranks.get(u["email"])
+        u["rank_fmt"] = "—" if rank is None else f"#{rank}"
+    dists = distributions(result.users, result.product_usage)
     # 部署別 → チーム別の順で、データがある軸のみサマリ表を出す
     group_summaries = []
     for col, heading, include_unset in GROUP_AXES:
@@ -397,6 +500,8 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         has_team_summary=any(g["heading"] == "チーム別サマリ" for g in group_summaries),
         detail_rows=detail_rows,
         detail_has_loc=detail_has_loc,
+        stats=_stats_view(dists),
+        cost_guide=_cost_guide(dists, max_demand),
         max_cost=max_cost,
         seat_short=SEAT_LABELS,
     )

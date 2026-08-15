@@ -112,6 +112,7 @@ uv run ruff check .        # lint
 ```sh
 uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --month 2026-06   # サンプル2組織でE2E
 uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --org org-b       # 特定組織のみ
+uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --org org-b --month 2026-08   # 条件つきセクションが全部出る月
 ```
 
 設定の既定値は `src/seat_analyzer/default-config.yaml`（単価・カラムエイリアス・閾値）。

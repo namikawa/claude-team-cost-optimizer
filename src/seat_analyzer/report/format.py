@@ -112,6 +112,21 @@ def _fmt_tokens(v) -> str:
     return str(int(n))
 
 
+def _fmt_stat_count(v) -> str:
+    """分布表のトークン・LoC・回数（1.2e6 → 1.23M、25e3 → 25.0K、それ未満は桁区切り）。
+
+    _fmt_tokens より桁を1つ多く残す。統計量は同じ列に平均・中央値・分位点が並び、
+    近い値どうしの差が読めないと分布の形が分からなくなるため。詳細利用状況の
+    桁区切り整数はそのまま（あちらは1ユーザ1行で比較の対象が縦に並ばない）。
+    """
+    n = float(v or 0)
+    if n >= 1e6:
+        return f"{n / 1e6:.2f}M"
+    if n >= 1e4:
+        return f"{n / 1e3:.1f}K"
+    return f"{n:,.0f}"
+
+
 def _detail_rows(users: pd.DataFrame) -> tuple[list[dict], bool]:
     """詳細利用状況テーブルの行データ。input+output トークンの降順で返す。"""
     u = users.copy()

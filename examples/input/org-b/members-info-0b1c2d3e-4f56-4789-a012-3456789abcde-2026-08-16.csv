@@ -1,0 +1,10 @@
+email,部署,チーム,職種,追加クレジット上限,備考
+mori@example.co.jp,プラットフォーム開発部,基盤チーム,テックリード,250,
+hayashi@example.co.jp,プロダクト開発部,Webチーム,エンジニア,0,2026-07 ヒアリング済み: 8月も利用予定なし
+ikeda@example.co.jp,プラットフォーム開発部,基盤チーム,エンジニア,250,
+shimizu@example.co.jp,プロダクト開発部,モバイルチーム,エンジニア,無制限,
+abe@example.co.jp,コーポレート,情シスチーム,エンジニア,,
+okada@example.co.jp,コーポレート,,マネージャー,,別組織でシート割当済みのため未割当
+kudo@example.co.jp,プロダクト開発部,Webチーム,エンジニア,0,追加クレジットが無効のため実課金は発生しない
+tanabe@example.co.jp,プラットフォーム開発部,SREチーム,エンジニア,100,
+endo@example.co.jp,コーポレート,情シスチーム,エンジニア,,

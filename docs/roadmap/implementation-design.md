@@ -1374,15 +1374,152 @@ V2が安定するまで既定値は`v1`。
 
 - dashboard
 
+#### Step 8F: 統計参考値の掲載
+
+v1.1.0で追加したStep。原設計には無い。個々のユーザの数値が組織の中でどの位置にあるかを
+読み手が判断できるようにする。
+
+Step 8D・8Eとの実行順は`8F → 8E → 8D`とする。番号はPRの記録と対応しているため振り直さず、
+順序だけをここで定める。デザイン（8D）は載せる中身が確定してから当てる。8Eを8Dの後に回すと
+product sectionだけが後付けになり、デザインから浮くため。
+
+依存:
+
+- Step 8
+
+対象:
+
+- `src/seat_analyzer/report/stats.py`（新設）
+- `src/seat_analyzer/report/format.py`
+- `src/seat_analyzer/report/text.py`
+- `src/seat_analyzer/report/markdown.py`
+- `src/seat_analyzer/report/html.py`
+- `src/seat_analyzer/templates/dashboard.html.j2`
+- `src/seat_analyzer/templates/dashboard.css`
+- `src/seat_analyzer/templates/partials/stats.html.j2`（新設）
+- `src/seat_analyzer/prompts/aspects-full.md`
+- `examples/generate_sample_data.py`
+- `tests/golden/`
+
+実装:
+
+分布の計算（`report/stats.py`）
+
+- 母集団は`current_seat == "unassigned"`を除いた分析対象ユーザ。利用ゼロのユーザは含める
+  （除くと中央値が上振れし、遊休の存在が統計から消える）。`unknown`は含める（membersの
+  更新漏れ疑いであって、シートが割り当てられていないとは限らない）。組織サービス行は
+  analyzeの段階で分離済みのため元から対象外
+- 指標ごとに欠損の扱いが違うため`n`が揃わない。`n`は指標ごとに必ず表示する
+
+  | 指標 | 取得元 | 欠損の扱い |
+  |---|---|---|
+  | API換算需要 | `api_cost_usd` | `NaN`は0 |
+  | input | `prompt_tokens` | `NaN`は0 |
+  | output | `completion_tokens` | `NaN`は0 |
+  | LoC | `loc_with_cc` | 列が無ければ行ごと省略。値が0のユーザは母集団から除く |
+  | 実課金 | `billed_extra_usd` | `NaN`は0 |
+  | リクエスト数 | `product_usage.features.total_requests` | 下記 |
+
+- 統計量は`n`・平均・中央値・標準偏差・p25・p75・p90・最大。標準偏差は母標準偏差
+  （`ddof=0`）とする。全数調査であり、`n=1`で未定義にならない
+- 分位点はpandasの`Series.quantile`既定（線形補間）に固定し、docstringへ定義を書く。
+  標準ライブラリの`statistics.quantiles`とは値が異なるため、どちらを使うかを決めておく
+- 判定・推奨には一切使わない。表示専用の値であり、`analyze`には手を入れない
+
+LoCの母集団
+
+- `analyze`はcode-analyticsに行が無いユーザを`fillna(0)`で0にするため、`users`の段階では
+  「行が無い」と「0行」を区別できない。LoCの欠落は「コードを書いていない」を意味しない
+  ので、0を母集団から除いて`n`を併記する
+
+リクエスト数
+
+- `users`には無い。Step 8の`product_usage.features`（index=email）を左結合して得る
+- `users`へ列を足さない。`recommendations.csv`は`result.users`の全列をそのまま書き出す
+  ため、列を足すとこのCSVの列構成が変わる
+- spendに行が無いユーザは0（回数ゼロが確定する）
+- `total_requests`が`NA`のユーザは母集団から除く（`requests`列が無い・値が欠けている＝
+  回数が分からない。0と区別する）
+- spendに現れたユーザのうち確定値を持つ人が1人もいなければ、リクエスト数の行ごと省略する
+  （残るのは利用ゼロのメンバーだけになり、全員0の退化した行になるため）
+
+report.mdへの掲載
+
+- 「## 組織内の分布（参考値）」を「詳細利用状況」の直後・「感度分析」の前に置く
+- `discuss`へは追加の配線なしで渡る。`collect_materials`の資料1が`report.md`本体を
+  そのまま渡すため
+- `prompts/aspects-full.md`へ観点を1つ足す。個人の数値を分布上の位置として解釈すること、
+  および歪みと打ち切りの注意を踏まえること
+
+dashboard.htmlへの掲載
+
+- 分布表を「詳細利用状況」の直後に置く（`partials/stats.html.j2`）
+- 「ユーザ別 API 換算コスト」の棒に中央値・平均のガイド線を引く（`.track`内に絶対配置し、
+  位置は`値 / max_cost`）
+- 各棒の金額の右に順位を小さく添える（`api_cost_usd`の降順順位）。棒の並びは判定ステータス
+  順（`_sorted_by_status`）のままなので、行番号ではなく値から計算した順位を出す
+- 列を増やさない。推奨一覧・詳細利用状況テーブルの列構成は変えない
+
+書式
+
+- 金額はreport.mdが`_fmt_usd`、dashboardが`_fmt_compact`（既存の使い分けに従う）
+- トークン・LoC・回数は統計表用の短縮表記を新設し、`format.py`へ置いて両形式で共有する
+  （1e6以上はM・小数2桁、1e4以上はK・小数1桁、それ未満は桁区切り整数）。詳細利用状況の
+  桁区切り整数はそのまま
+
+注記（表の直下・固定文言は`text.py`で両形式が共有する）
+
+- 分布は右に強く歪むため平均は中央値より大きくなりやすく、「平均以下＝低活用」ではない
+- 追加クレジット上限に到達したユーザは需要そのものが上限で止まっており、分布の右裾は
+  実態より低い（既存の注意事項のセンサリングと同じ話を、分布の読み方として書く）
+- LoCとspendは網羅範囲が一致せず、LoCの行が無いことは「書いていない」を意味しない
+- 比較の母集団は当該組織内に閉じる
+
+examplesの全部入りサンプル
+
+- 条件つきsectionがすべて出る合成データを用意する。Step 8Dのデザイン作業を実データ抜きで
+  行えるようにし、かつ欠けたsectionのまま作られたデザインが他組織で崩れるのを防ぐ
+- 出る状態にする対象: 追加クレジット構成・前月からの変化・月中の利用推移・月中のメンバー
+  変動・月中のClaude Code活動・込み枠の実測・追加クレジット付与候補・部署別/チーム別
+  サマリ・LoC列・分布（リクエスト数の行を含む）
+- 出力先は`examples/reports`（`reports/`へ出すと`org-a`・`org-b`が禁止語収集の対象になる）
+
+受け入れ条件:
+
+- `recommendations.csv`・`usage-summary.csv`・`preview.md`・`summary/<month>.md`が
+  バイト一致で不変。数値が変わればこれらのどれかに必ず現れるので、これをもって
+  「統計の追加がデータを壊していない」ことの検査とする
+- `preview-dashboard.html`の差分は共有CSSの追加だけに限る。CSSは正式・速報で共有して
+  いるため（Step 8Dでも共有を維持すると決めている）バイト一致にはできない。追加した
+  セレクタに一致する要素が速報側に無いことをもって、表示が変わらないことを担保する
+- 速報は対象外とする（`PreviewResult`は`product_usage`を持たない）
+- 判定・推奨・警告の内容が変わらない
+- 母集団の需要合計が、サマリの「全体のAPI換算需要」から未割当ユーザ分を引いた値と一致する
+  ことをテストで突合する（統計が別経路の再計算になっていないことの検査）
+- 既定の列構成で横スクロールが出ない
+- 統計量の単体テスト（既知の小配列で中央値・母標準偏差・分位点を検証する）
+- 境界: `n=0`・`n=1`、全員ゼロ、LoC列なし、`requests`列なし、実課金が全員ゼロ、
+  未割当のみの組織
+
+今回は行わない:
+
+- dashboardの再設計（Step 8D）
+- product軸の掲載（Step 8E）
+- 個人の位置をテーブルの列として出すこと。詳細利用状況はトークン降順に並んでいるので順位列
+  は行番号と同じになり、推奨一覧は8列の上限にある。棒グラフのガイド線と順位で代える
+
 #### Step 8D: dashboardの再設計
 
 v1.1.0で追加したStep。原設計には無い。§2.2は「既存のHTML全体を書き換えない」としているが、
 これは機能追加のついでに書き換えることを禁じる規則であり、再設計そのものを独立したStepに
 する限りは趣旨に反しない。product軸の掲載はStep 8Eへ分ける。
 
+デザイン自体はユーザがClaude Designで作る。このStepの作業は、仕上がったHTML1本を
+templatesへ分解して取り込み、全組織・全データ状況で成立させることになる。
+
 依存:
 
-- Step 8
+- Step 8E
 
 対象:
 
@@ -1396,10 +1533,16 @@ v1.1.0で追加したStep。原設計には無い。§2.2は「既存のHTML全�
 実装:
 
 - `dashboard.html`と`preview-dashboard.html`の再設計
+- デザインの入力は、Step 8Fで用意した全部入りサンプルから生成した`dashboard.html`とする。
+  実データのHTMLを渡さずに済み、かつ条件つきsectionをすべて含んだ状態でデザインできる。
+  出ないsectionを欠いたままデザインすると、それが出る組織で崩れる
+- 仕上がったHTMLを`dashboard.html.j2`・`dashboard.css`・`partials/`へ分解して取り込む。
+  1本のHTMLに畳み込まれたスタイルを、条件分岐を持つtemplateへ戻す作業になる
 
 受け入れ条件:
 
 - 表示する項目・数値を増やさない。変わるのは見た目だけ
+- 条件つきsectionが出ない組織・LoC列が無い組織・実課金が全員ゼロの組織でも崩れない
 - `dashboard.html`と`preview-dashboard.html`以外の出力がバイト一致で不変
   （`report.md`・`recommendations.csv`・`usage-summary.csv`・`preview.md`・
   `summary/<month>.md`）。数値が変われば必ずこれらにも現れるので、これをもって
@@ -1416,11 +1559,11 @@ v1.1.0で追加したStep。原設計には無い。§2.2は「既存のHTML全�
 
 #### Step 8E: dashboardへのproduct軸の掲載
 
-v1.1.0で追加したStep。原設計には無い。
+v1.1.0で追加したStep。原設計には無い。Step 8Dより先に行う（§Step 8Fの実行順を参照）。
 
 依存:
 
-- Step 8D
+- Step 8F
 
 対象:
 
@@ -2306,11 +2449,12 @@ v1.1.0で追加したStep。原設計には無い。
 
 ### Milestone A: Core data
 
-Step 1〜8E
+Step 1〜8（8F・8E・8Dを含む。この3つはこの順で行う）
 
 - stable IDの準備
 - Data Doctor
 - Code/全product分離
+- 統計参考値の掲載
 - dashboardの再設計とproduct軸の掲載
 
 ### Milestone B: Independent audit
