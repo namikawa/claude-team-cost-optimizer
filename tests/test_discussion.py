@@ -187,6 +187,126 @@ def test_generate_dry_run_does_not_call_claude(two_orgs, tmp_path):
     assert report.discussion_body(outcome.path.read_text(encoding="utf-8")) is None
 
 
+def test_details_is_passed_as_material(two_orgs, tmp_path):
+    """資料は report.md 本文 → details.md → recommendations.csv の順で渡る。
+
+    report.md は考察中心の短い文書になったので、ユーザ単位の表は details.md が
+    資料として補う。照合元（混入チェック）にも同じ本文が入る。
+    """
+    out = run_analyze(two_orgs, tmp_path)
+    org_output = out / "org-a"
+    details = (org_output / "2026-06" / "details.md").read_text(encoding="utf-8")
+
+    prompt = _generate(two_orgs, out, _runner(BODY), dry_run=True).prompt
+    assert "資料2: 分析詳細資料 details.md（2026-06）" in prompt
+    assert "資料3: ユーザ別推奨一覧 recommendations.csv（2026-06）" in prompt
+    assert "## 全ユーザ" in prompt          # report.md 本体には無い表が資料に入る
+    assert details.strip() in prompt
+
+    materials, source = discussion.collect_materials(
+        org_output=org_output, month="2026-06", preview=False)
+    assert [t for t, _ in materials] == [
+        "資料1: 分析レポート本文（2026-06）",
+        "資料2: 分析詳細資料 details.md（2026-06）",
+        "資料3: ユーザ別推奨一覧 recommendations.csv（2026-06）",
+    ]
+    assert details in source
+
+
+def _make_legacy_layout(month_dir: Path) -> None:
+    """details.md 分離前のレポート構成に戻す（表を report.md 本体へ差し戻して削除）。
+
+    当時の report.md はユーザ表を本文に持っていたので、details.md が無くても資料は
+    欠けていない。この形を後方互換の対象として固定する。
+    """
+    details = month_dir / "details.md"
+    users_section = details.read_text(encoding="utf-8").split("## 全ユーザ", 1)[1]
+    report = month_dir / "report.md"
+    md = report.read_text(encoding="utf-8")
+    report.write_text(
+        md.replace("## 注意事項", f"## 全ユーザ{users_section.rstrip()}\n\n## 注意事項", 1),
+        encoding="utf-8", newline="\n",
+    )
+    details.unlink()
+
+
+def test_legacy_report_without_details_still_works(two_orgs, tmp_path):
+    """details.md 分離前に生成した月は、資料2を省略して従来どおり動く。"""
+    out = run_analyze(two_orgs, tmp_path)
+    _make_legacy_layout(out / "org-a" / "2026-06")
+
+    prompt = _generate(two_orgs, out, _runner(BODY), dry_run=True).prompt
+    assert "details.md" not in prompt
+    assert "資料2: ユーザ別推奨一覧 recommendations.csv（2026-06）" in prompt
+    assert "## 全ユーザ" in prompt          # 表は report.md 本文の側にある
+
+    outcome = _generate(two_orgs, out, _runner(BODY))
+    assert outcome.status == "written"
+
+
+@pytest.mark.parametrize("break_details", [
+    pytest.param(lambda p: p.unlink(), id="欠落"),
+    pytest.param(lambda p: p.write_text("", encoding="utf-8"), id="空"),
+    # 書き込みが途中で切れた形（見出しの前まで）
+    pytest.param(lambda p: p.write_text("# 分析詳細資料 — org-a — 2026-06\n",
+                                        encoding="utf-8"), id="途中まで"),
+])
+def test_broken_details_is_fail_closed(two_orgs, tmp_path, break_details):
+    """再構成後のレポートで details.md が使えなければ、考察を書かずに止める。
+
+    表を欠いた資料でも考察は書けてしまう（モデルは残った資料で書く）。エラーも警告も
+    出ないと、考察の質だけが静かに落ちる。
+    """
+    out = run_analyze(two_orgs, tmp_path)
+    path = out / "org-a" / "2026-06" / "details.md"
+    break_details(path)
+
+    runner = _runner(BODY)
+    with pytest.raises(discussion.DiscussionError) as e:
+        _generate(two_orgs, out, runner)
+    message = str(e.value)
+    assert "details.md" in message and "## 全ユーザ" in message
+    assert "analyze --month 2026-06" in message      # 作り直しの案内
+    assert e.value.transient is False                # 再試行では直らない
+    assert not runner.calls                          # Claude を呼ばない
+    assert report.discussion_body(
+        (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")) is None
+
+
+def test_broken_details_stops_dry_run_too(two_orgs, tmp_path):
+    """--dry-run も同じ検査を通る（プロンプトの確認と本番で資料が食い違わない）。"""
+    out = run_analyze(two_orgs, tmp_path)
+    (out / "org-a" / "2026-06" / "details.md").unlink()
+    with pytest.raises(discussion.DiscussionError):
+        _generate(two_orgs, out, _runner(BODY), dry_run=True)
+
+
+def test_sentinel_matches_heading_lines_only(tmp_path):
+    """番兵は見出し行そのものにだけ一致する（タイトル・表セル内の同名文字列は無視）。
+
+    組織名は # を許すため、「acme ## 全ユーザ」のような組織のタイトル行や表のセルに
+    番兵と同じ文字列が現れうる。部分文字列で照合すると、details.md が欠けた月を
+    旧形式と誤認して続行してしまう。
+    """
+    month_dir = tmp_path / "2026-06"
+    month_dir.mkdir()
+    # タイトル行に番兵文字列を含むが、見出し行としては持たない report.md 本文
+    body_with_titled_org = "# レポート — acme ## 全ユーザ — 2026-06\n\n## サマリ\n"
+    with pytest.raises(discussion.DiscussionError):
+        discussion._details_material(tmp_path, "2026-06", body_with_titled_org)
+
+    # details.md 側も同様（タイトルだけ書けた途中切れファイルを正常扱いしない）
+    (month_dir / "details.md").write_text(
+        "# 分析詳細資料 — acme ## 全ユーザ — 2026-06\n", encoding="utf-8")
+    with pytest.raises(discussion.DiscussionError):
+        discussion._details_material(tmp_path, "2026-06", body_with_titled_org)
+
+    # 見出し行として持つ旧形式の本文は従来どおり続行（資料は足さない）
+    (month_dir / "details.md").unlink()
+    legacy_body = "# レポート — acme — 2026-06\n\n## 全ユーザ\n\n| ユーザ |\n"
+    assert discussion._details_material(tmp_path, "2026-06", legacy_body) is None
+
+
 def test_generate_dry_run_shows_prompt_even_when_already_written(two_orgs, tmp_path):
     """--dry-run はプロンプト確認用なので、記入済みでもプロンプトを返す。"""
     out = run_analyze(two_orgs, tmp_path)

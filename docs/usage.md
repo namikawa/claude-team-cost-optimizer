@@ -113,12 +113,17 @@ seat-analyzer init-org <組織名>
    分析に加えて警告の検証と考察の執筆までを対話的に行える。
 
 6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される
-   - `report.md` — 前月からの変化 + 推奨テーブル + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 感度分析 + 考察
+   - `report.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + データ検証・警告 + 考察
+   - `details.md` — 機械生成の詳細資料（全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + 込み枠の実測 + 感度分析）
    - `dashboard.html` — 経営層共有用ダッシュボード（自己完結 HTML）
    - `recommendations.csv` — スプレッドシート二次加工用
    - `usage-summary.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
 
-   report.md / dashboard.html には「詳細利用状況」として、ユーザごとの input/output
+   report.md はアクションと考察を読むための短い文書で、ユーザ単位の数値は details.md と
+   dashboard.html が持つ。details.md は dashboard.html と同じ数値の Markdown 版で、
+   考察の執筆（`discuss`）へ渡す資料も兼ねる
+
+   details.md / dashboard.html には「詳細利用状況」として、ユーザごとの input/output
    トークン量、モデル利用割合（トークン量基準）、LoC（code-analytics がある場合）を
    出力する。input トークンはキャッシュ読取分を含むため実入力量より大きく見えることがある
 

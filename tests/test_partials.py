@@ -30,14 +30,12 @@ tests/test_golden.py は生成物を丸ごと固定するが、examples/input �
 
 from seat_analyzer.report.html import (
     _CODE_DIFF_HTML,
-    _E_DIST_HTML,
     _HTML_ENV,
     _MEMBER_CHANGES_HTML,
     _SNAPSHOT_HTML,
     _STATS_HTML,
     _TREND_HTML,
     _code_diff_view,
-    _e_distribution_view,
     _member_changes_view,
     _snapshot_view,
     _stats_view,
@@ -134,16 +132,6 @@ def _code_diff(has_prs: bool, prs_delta: int | None) -> dict:
         "rows": [{"email": "a@x.jp", "loc_cum": [1200, 1900], "loc_delta": 700,
                   "prs_delta": prs_delta}],
     }
-
-
-def _e_dist() -> dict:
-    """_compute_e_distribution が返す形（Standard 1名）。"""
-    return {"groups": [{
-        "seat": "standard", "count": 1,
-        "median": 50.0, "min": 50.0, "max": 50.0,
-        "allowance_mid": 25.0, "ratio": 2.0,
-        "rows": [{"email": "a@x.jp", "demand": 80.0, "billed": 30.0, "e": 50.0}],
-    }]}
 
 
 # --- trend.html.j2 ---
@@ -314,18 +302,6 @@ def test_code_diff_pr_column_only_when_prs_available():
     assert header not in without
     # 足すのは見出し1つとセル1つだけ（列数のズレも余計な要素の追加も検出する）
     assert _without(with_prs, header, cell) == without
-
-
-# --- e-dist.html.j2 ---
-
-def test_e_distribution_section_absent_without_billers():
-    """実課金が1人も発生していない組織では E 分布のセクションを出さない。"""
-    # 片側は e_distribution が無い（描画すると Undefined で落ちる）ため差分の一致は取れない
-    heading = "<h2>込み枠の実測（E = API換算需要 − 実課金）</h2>"
-    assert heading not in _render(_E_DIST_HTML,
-                                  e_distribution=_e_distribution_view(None))
-    assert heading in _render(_E_DIST_HTML,
-                              e_distribution=_e_distribution_view(_e_dist()))
 
 
 # --- stats.html.j2 ---

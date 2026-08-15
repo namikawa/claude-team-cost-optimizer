@@ -26,9 +26,8 @@ from .format import (
     _scope_label,
     _sort_for_display,
 )
-from .stats import KIND_USD, Distribution, distributions
+from .stats import KIND_USD, Distribution
 from .text import (
-    GROUP_AXES,
     PREVIEW_ORDER,
     STATUS_ORDER,
     _CREDIT_MODE_LABEL,
@@ -87,6 +86,28 @@ def _user_table_md(users: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def _user_legend_md(summary: dict) -> str:
+    """ユーザ表の列の読み方（凡例）。
+
+    report.md のシート変更推奨（表が空でないとき）と details.md の全ユーザ表で共有する。
+    どちらも同じ列構成（_user_table_md）なので、読み方の説明も1つにする。
+    """
+    lines = [
+        "- **API換算需要**: 当月の全利用量をAPI料金（キャッシュ実効単価込み）に換算した金額。シート込み分を含む「需要」の指標",
+        "- **実課金(従量)**: スペンドレポートの net_spend 合計。シート込み利用は $0 で、上限超過の従量課金分のみ計上される",
+        "- **Standard時 / Premium時**: そのシートの場合の想定月額。**現シート側はシート料+実課金の観測実績**、変更先側は allowance（込み利用量）モデルによる試算",
+        "- **⚠️上限?**: 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ。「実効込み量が推定より大きい」か「上限で停止した」かの要確認",
+    ]
+    cap_supplement = _cap_legend_supplement(summary.get("credit_shown", False))
+    if cap_supplement:
+        lines.append(f"- {cap_supplement}")
+    lines += [
+        "- **確度**: 込み利用量（allowance）の low/mid/high 3シナリオで推奨が一致するか（高=3/3, 中=2/3, 低=1/3）",
+        "- **対象外（シート未割当）**: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。損益分岐判定は行わない",
+    ]
+    return "\n".join(lines)
+
+
 def _notes_md(users: pd.DataFrame) -> str:
     """備考（note）が非空のユーザを「- email: note」の箇条書きにする。無ければ空文字列。"""
     if "note" not in users.columns:
@@ -98,6 +119,18 @@ def _notes_md(users: pd.DataFrame) -> str:
     lines += [f"- {_md_cell(r['email'])}: {_md_cell(str(r['note']).strip())}"
               for _, r in noted.iterrows()]
     return "\n".join(lines) + "\n"
+
+
+def _sensitivity_md(users: pd.DataFrame) -> str:
+    """「## 感度分析」セクション（allowance の仮定で推奨が変わるユーザ）。"""
+    disagree = users[users["confidence"].isin(["中", "低"])]
+    table = (_user_table_md(disagree) if not disagree.empty
+             else "なし（全ユーザで3シナリオの推奨が一致）。")
+    return (
+        "## 感度分析\n\n"
+        "allowance（シート込み利用量のUSD換算・非公開のため推定）の仮定によって推奨が変わるユーザ:"
+        f"\n\n{table}\n"
+    )
 
 
 def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str,
@@ -401,46 +434,36 @@ def _org_products(summary: dict) -> str:
 
 
 def write_markdown(result: AnalysisResult, path: Path) -> None:
+    """report.md（サマリ・推奨・考察を中心にした本文）。
+
+    ユーザ単位の表・月中の推移・分布は details.md が受け持つ（report/details.py）。
+    チーム別サマリの縦合計の断りも、説明対象の表と一緒に details.md 側にある。
+    """
     s = result.summary
     users = _sort_for_display(result.users, "status", STATUS_ORDER, "monthly_saving_usd")
 
     changes = users[users["status"] == STATUS_CHANGE]
-    sensitivity_disagree = users[users["confidence"].isin(["中", "低"])]
 
     nl = "\n"
-    notes_block = _notes_md(users)
-    group_md = ""
-    has_team_summary = False
-    for col, heading, include_unset in GROUP_AXES:
-        block = _group_summary_md(users, s, col, heading, include_unset=include_unset)
-        if block:
-            group_md += nl + block
-            if col == "team":
-                has_team_summary = True
-    team_note = f"\n- {_TEXT['note_team_total']}。" if has_team_summary else ""
-    detail_block = _detail_table_md(users)
-    # 分布は詳細利用状況の直後・感度分析の前（個々の数値を見た直後に位置を確かめられる）
-    stats_block = _stats_md(distributions(result.users, result.product_usage))
-    stats_block = (nl + stats_block) if stats_block else ""
     warnings_md = nl.join(f"- {w}" for w in result.warnings) if result.warnings else "- なし"
 
-    # サマリ直後に置く追加セクション（前月からの変化 → 月中の利用推移 → Claude Code 活動
-    # → メンバー変動 → 込み枠の実測 → 追加クレジット付与候補）。無ければ空文字列で
-    # 従来出力と完全一致（後方互換。E 分布は実課金発生ユーザがいるときのみ現れる）
+    # サマリ直後に置く追加セクション（前月からの変化 → 追加クレジット付与候補）。
+    # 無ければ空文字列（後方互換）
     cap_usd = s["grant_suggested_cap_usd"]
     extra_sections = ""
-    for block in (_trend_md(result.trend), _snapshot_md(result.snapshot),
-                  _code_diff_md(result.code_diff), _member_changes_md(result.member_changes),
-                  _e_distribution_md(result.e_distribution),
+    for block in (_trend_md(result.trend),
                   _grant_candidates_md(result.grant_candidates, cap_usd)):
         if block:
             extra_sections += nl + block + nl
 
+    # 列の読み方は表があるときだけ添える（「該当なし。」の下に凡例だけが残らないように）
+    changes_block = _user_table_md(changes) if not changes.empty else "該当なし。"
+    if not changes.empty:
+        changes_block += nl + nl + _user_legend_md(s)
+
     # 追加クレジット関連の凡例・注記（credit_shown / 無効ユーザの有無で条件付き）
     credit_row = _credit_summary_md_row(s)
     credit_row = (credit_row + nl) if credit_row else ""
-    cap_supplement = _cap_legend_supplement(s.get("credit_shown", False))
-    cap_supplement_line = f"{nl}- {cap_supplement}" if cap_supplement else ""
     disabled_note = _disabled_cost_note(users)
     disabled_note_line = f"{nl}- {disabled_note}。" if disabled_note else ""
 
@@ -462,32 +485,14 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 {extra_sections}
 ## シート変更推奨
 
-{_user_table_md(changes) if not changes.empty else "該当なし。"}
-
-## 全ユーザ
-
-{_user_table_md(users)}
-
-- **API換算需要**: 当月の全利用量をAPI料金（キャッシュ実効単価込み）に換算した金額。シート込み分を含む「需要」の指標
-- **実課金(従量)**: スペンドレポートの net_spend 合計。シート込み利用は $0 で、上限超過の従量課金分のみ計上される
-- **Standard時 / Premium時**: そのシートの場合の想定月額。**現シート側はシート料+実課金の観測実績**、変更先側は allowance（込み利用量）モデルによる試算
-- **⚠️上限?**: 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ。「実効込み量が推定より大きい」か「上限で停止した」かの要確認{cap_supplement_line}
-- **確度**: 込み利用量（allowance）の low/mid/high 3シナリオで推奨が一致するか（高=3/3, 中=2/3, 低=1/3）
-- **対象外（シート未割当）**: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。損益分岐判定は行わない
-{(nl + notes_block) if notes_block else ''}{group_md}
-{detail_block}{stats_block}
-## 感度分析
-
-allowance（シート込み利用量のUSD換算・非公開のため推定）の仮定によって推奨が変わるユーザ:
-
-{_user_table_md(sensitivity_disagree) if not sensitivity_disagree.empty else "なし（全ユーザで3シナリオの推奨が一致）。"}
+{changes_block}
 
 ## 注意事項
 
 - 従量課金（usage credits）が無効の場合、Standardユーザの利用量は上限で頭打ちになるため、
   実際の需要はここに表示された値より大きい可能性があります（センサリング）。
 - 「Standard時/Premium時」の従量課金額は allowance の推定値（mid シナリオ）に基づく試算です。{disabled_note_line}
-- スペンドデータは前日分まで・過去90日分のみ参照可能です。毎月のエクスポートを忘れずに。{team_note}
+- スペンドデータは前日分まで・過去90日分のみ参照可能です。毎月のエクスポートを忘れずに。
 
 ## データ検証・警告
 

@@ -87,6 +87,7 @@ def test_cli_preview_writes_preview_files_only(make_input, tmp_path):
     assert (report_dir / "preview.md").exists()
     assert (report_dir / "preview-dashboard.html").exists()
     assert not (report_dir / "report.md").exists()        # 正式レポートには触れない
+    assert not (report_dir / "details.md").exists()
     assert not (report_dir / "dashboard.html").exists()
     assert not (report_dir / "recommendations.csv").exists()
     md = (report_dir / "preview.md").read_text(encoding="utf-8")

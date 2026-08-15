@@ -182,26 +182,6 @@ def _member_changes_view(mc: dict | None) -> dict | None:
     }
 
 
-def _e_distribution_view(edist: dict | None) -> dict | None:
-    """dashboard.html 用に整形した込み枠の実測 E 分布（None なら None）。"""
-    if not edist:
-        return None
-    groups = [{
-        "seat_label": SEAT_LABELS.get(g["seat"], g["seat"]),
-        "count": g["count"],
-        "median_fmt": _fmt_compact(g["median"]),
-        "min_fmt": _fmt_compact(g["min"]),
-        "max_fmt": _fmt_compact(g["max"]),
-        # config allowance(mid) との倍率（standard/premium のみ。それ以外は None）
-        "ratio": g.get("ratio"),
-        "allowance_mid_fmt": _fmt_compact(g["allowance_mid"]) if g.get("allowance_mid") else "",
-        "rows": [{"email": r["email"], "demand_fmt": _fmt_compact(r["demand"]),
-                  "billed_fmt": _fmt_compact(r["billed"]), "e_fmt": _fmt_compact(r["e"])}
-                 for r in g["rows"]],
-    } for g in edist["groups"]]
-    return {"groups": groups}
-
-
 def _grant_candidates_view(candidates: list) -> list[dict]:
     """dashboard.html / preview-dashboard.html 用の付与候補（モードを表示ラベルに）。"""
     return [{"email": c["email"], "mode_label": _CREDIT_MODE_LABEL.get(c["mode"], c["mode"]),
@@ -306,9 +286,6 @@ _CODE_DIFF_HTML = _asset("partials/code-diff.html.j2")
 # 「月中のメンバー変動（スナップショット差分）」の HTML 断片（正式・速報の両方で共有）。
 _MEMBER_CHANGES_HTML = _asset("partials/member-changes.html.j2")
 
-# 「込み枠の実測（E 分布）」の HTML 断片（正式ダッシュボードのみ）。
-_E_DIST_HTML = _asset("partials/e-dist.html.j2")
-
 # 「追加クレジット付与候補」の HTML 断片（正式・速報の両方で共有）。
 _GRANT_HTML = _asset("partials/grant.html.j2")
 
@@ -333,7 +310,7 @@ _DASHBOARD_SECTIONS = {
     "<!--CREDIT_COMPOSITION-->": (_CREDIT_COMPOSITION_HTML,),
     "<!--TREND_SECTION-->": (_TREND_HTML,),
     "<!--SNAPSHOT_SECTION-->": (_SNAPSHOT_HTML, _CODE_DIFF_HTML, _MEMBER_CHANGES_HTML),
-    "<!--CREDIT_SECTION-->": (_E_DIST_HTML, _GRANT_HTML),
+    "<!--CREDIT_SECTION-->": (_GRANT_HTML,),
     "<!--STATS_SECTION-->": (_STATS_HTML,),
 }
 
@@ -490,7 +467,6 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         snapshot=_snapshot_view(result.snapshot),
         code_diff=_code_diff_view(result.code_diff),
         member_changes=_member_changes_view(result.member_changes),
-        e_distribution=_e_distribution_view(result.e_distribution),
         grant_candidates=_grant_candidates_view(result.grant_candidates),
         grant_cap_fmt=_fmt_compact(cap_usd),
         cap_supplement=_cap_legend_supplement(result.summary.get("credit_shown", False)),

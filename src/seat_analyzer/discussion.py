@@ -161,11 +161,49 @@ def _prev_month_dir(org_output: Path, month: str) -> Path | None:
     return org_output / months[-1] if months else None
 
 
+# details.md が資料として使える形かを見分ける番兵。全ユーザ表は details.md に無条件で
+# 載り（report/details.py）、再構成前の report.md にも必ずあった。条件つきの section を
+# 番兵にすると、そのデータを持たない組織で「壊れている」と誤判定する。
+# 見出し行そのもの（行頭〜行末）で照合する。部分文字列だと、組織名は # を許すため
+# タイトル行（「… — <組織名> — <月>」）や表のセルに同じ文字列が入ると誤一致する。
+_ALL_USERS_HEADING = "## 全ユーザ"
+_ALL_USERS_HEADING_RE = re.compile(rf"^{re.escape(_ALL_USERS_HEADING)}[ \t]*$", re.M)
+
+
+def _details_material(org_output: Path, month: str, report_body: str) -> str | None:
+    """資料に足す details.md の本文（足さない場合は None）。
+
+    details.md が無い状態は2つに分かれ、続行してよいのは片方だけ。
+
+    - 再構成前に生成した月: report.md 自体がユーザ表を持つ。資料は欠けていないので続行する
+    - 再構成後の月で details.md だけが無い・空・途中まで: 表を持たない資料でモデルに
+      考察を書かせることになる。エラーも警告も出ずに考察の質だけが落ちるため中止する
+      （書き込みの中断・手動削除でこの状態は作れる）
+
+    再実行で解消しうるが、ヘッドレス実行のリトライで直る類ではないので transient にしない。
+    """
+    path = org_output / month / "details.md"
+    text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if _ALL_USERS_HEADING_RE.search(text):
+        return text
+    if _ALL_USERS_HEADING_RE.search(report_body):
+        return None
+    raise DiscussionError(
+        f"{path} が無い、または内容が不完全です（「{_ALL_USERS_HEADING}」が見つかりません）。"
+        "ユーザ単位の表を欠いた資料で考察を書かせないため中止します。"
+        f"`seat-analyzer analyze --month {month}` でレポートを作り直してください"
+    )
+
+
 def collect_materials(
     *, org_output: Path, month: str, preview: bool,
     terms: tuple[Term, ...] = (), include_previous: bool = False, notify=None,
 ) -> tuple[list[tuple[str, str]], str]:
     """(プロンプトへ渡す資料, 混入チェックの照合元テキスト) を返す。
+
+    正式分析の資料は report.md 本文 → details.md → recommendations.csv の順。
+    report.md は考察中心の短い文書なので、ユーザ単位の表・月中の推移・分布は
+    details.md が資料として補う。
 
     照合元には機械生成された当月の資料だけを入れる。前月の考察は人・LLM の散文で、
     そこに混入があった場合に今月の混入を見逃す照合元になってしまうため含めない。
@@ -187,12 +225,21 @@ def collect_materials(
     materials = [(f"資料1: 分析レポート本文（{month}）", body)]
     source = [body]
 
+    def add(title: str, text: str) -> None:
+        """資料を末尾に足す（番号は並び順から付ける）。照合元にも同じ本文を入れる。"""
+        materials.append((f"資料{len(materials) + 1}: {title}", text))
+        source.append(text)
+
     if not preview:
+        # details.md は report.md から移した表の受け皿。再構成前に生成した月には
+        # 無いので、その場合だけ省略して従来どおり動かす（_details_material 参照）
+        details_text = _details_material(org_output, month, body)
+        if details_text is not None:
+            add(f"分析詳細資料 details.md（{month}）", details_text)
         csv_path = org_output / month / "recommendations.csv"
         if csv_path.exists():
-            csv_text = csv_path.read_text(encoding="utf-8")
-            materials.append((f"資料2: ユーザ別推奨一覧 recommendations.csv（{month}）", csv_text))
-            source.append(csv_text)
+            add(f"ユーザ別推奨一覧 recommendations.csv（{month}）",
+                csv_path.read_text(encoding="utf-8"))
 
     source_text = "\n".join(source)
     prev_dir = _prev_month_dir(org_output, month) if include_previous else None

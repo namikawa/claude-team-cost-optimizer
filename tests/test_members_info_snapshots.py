@@ -7,7 +7,7 @@
 from pathlib import Path
 
 from seat_analyzer.analyze import analyze
-from seat_analyzer.report import write_markdown
+from seat_analyzer.report import write_details
 
 from .conftest import spend_row
 
@@ -85,8 +85,8 @@ def test_kappa_change_detected_and_rendered(make_input, cfg, tmp_path):
     assert mc["credit_changes"][0]["from"] == "$100"
     assert mc["credit_changes"][0]["to"] == "$200"
     assert any("追加クレジット上限の変更を検出" in w for w in result.warnings)
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     md = out.read_text(encoding="utf-8")
     assert "追加クレジット上限 $100 → $200" in md
 

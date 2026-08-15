@@ -5,7 +5,7 @@
 """
 
 from seat_analyzer.analyze import analyze, preview
-from seat_analyzer.report import write_markdown, write_preview
+from seat_analyzer.report import write_details, write_preview
 
 from .conftest import spend_row
 
@@ -46,8 +46,8 @@ def test_no_changes_shows_no_change(cfg, make_snapshots, write_member_snapshots,
     mc = result.member_changes
     assert mc is not None                       # 変動が無くてもセクションは出す
     assert not (mc["seat_changes"] or mc["joined"] or mc["left"])
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     md = out.read_text(encoding="utf-8")
     assert "## 月中のメンバー変動（スナップショット差分）" in md
     assert "変動なし" in md
@@ -93,8 +93,8 @@ def test_single_snapshot_no_section(cfg, make_snapshots, write_member_snapshots,
     write_member_snapshots(input_dir, {"2026-07-05": ["a@x.jp,standard"]})
     result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.member_changes is None
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     assert "月中のメンバー変動" not in out.read_text(encoding="utf-8")
 
 

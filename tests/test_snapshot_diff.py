@@ -5,7 +5,7 @@ min_cumulative=10.0 / min_interval_days=3。需要基準は computed 固定。
 """
 
 from seat_analyzer.analyze import analyze, preview
-from seat_analyzer.report import write_markdown
+from seat_analyzer.report import write_details
 
 from .conftest import spend_row
 
@@ -69,8 +69,8 @@ def test_short_interval_not_judged(cfg, make_snapshots, tmp_path):
     assert snap["latest_interval_days"] == 1
     assert all(not r["stall"] for r in snap["rows"])
     assert snap["stalled_capped"] == []
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     md = out.read_text(encoding="utf-8")
     assert "## 月中の利用推移（スナップショット差分）" in md
     assert "短いため停止判定は行っていません" in md
@@ -132,8 +132,8 @@ def test_single_snapshot_no_section(cfg, make_snapshots, tmp_path):
     )
     result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.snapshot is None
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     md = out.read_text(encoding="utf-8")
     assert "月中の利用推移" not in md
     # 単一スペンドなので重複警告も出ない（既存出力と同一）

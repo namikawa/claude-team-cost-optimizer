@@ -3,7 +3,7 @@
 import pandas as pd
 
 from seat_analyzer.analyze import _short_model, analyze
-from seat_analyzer.report import write_html, write_markdown
+from seat_analyzer.report import write_details, write_html
 from seat_analyzer.report.format import _detail_rows, _fmt_tokens
 from seat_analyzer.report.markdown import _detail_table_md
 
@@ -130,9 +130,9 @@ def test_team_summary_excludes_unset(cfg, make_input, tmp_path):
     assert "（未設定）" not in team_groups and "基盤" in team_groups
     assert "（未設定）" not in dept_groups   # この例では部署は両者設定済み
 
-    write_markdown(result, tmp_path / "report.md")
+    write_details(result, tmp_path / "details.md")
     write_html(result, tmp_path / "dashboard.html")
-    md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    md = (tmp_path / "details.md").read_text(encoding="utf-8")
     # チーム別サマリ見出し以降に（未設定）が出ない
     team_section = md.split("## チーム別サマリ")[1].split("##")[0]
     assert "（未設定）" not in team_section

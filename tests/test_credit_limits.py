@@ -17,7 +17,7 @@ from seat_analyzer.analyze import (
 )
 from seat_analyzer.analyze.credits import _compute_e_distribution
 from seat_analyzer.ingest import parse_credit_limit
-from seat_analyzer.report import write_markdown, write_preview
+from seat_analyzer.report import write_details, write_markdown, write_preview
 
 from .conftest import spend_row
 
@@ -166,8 +166,8 @@ def test_e_distribution_present_with_billers(make_input, cfg, tmp_path):
     prem = next(g for g in ed["groups"] if g["seat"] == "premium")
     row = next(r for r in prem["rows"] if r["email"] == "a@x.jp")
     assert row["e"] == 140.0   # 200 需要 − 60 実課金
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     md = out.read_text(encoding="utf-8")
     assert "## 込み枠の実測（E = API換算需要 − 実課金）" in md
     # 実課金ゼロの b は billers に含めない
@@ -181,8 +181,8 @@ def test_e_distribution_absent_without_billers(make_input, cfg, tmp_path):
     )
     result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert result.e_distribution is None
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     assert "込み枠の実測" not in out.read_text(encoding="utf-8")
 
 
@@ -207,8 +207,8 @@ def test_e_distribution_ratio_comparison(make_input, cfg, tmp_path):
     assert g["median"] == 100.0
     assert g["allowance_mid"] == 250.0
     assert g["ratio"] == 0.4    # 100 / 250
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     assert "config の allowance（mid $250.00）の 0.4 倍" in out.read_text(encoding="utf-8")
 
 
