@@ -10,6 +10,7 @@ from pathlib import Path
 import pandas as pd
 
 from .. import ingest, pricing
+from ..product_usage import ProductUsage, compute as compute_product_usage
 from .credits import (
     CREDIT_DISABLED as CREDIT_DISABLED,
     CREDIT_ENABLED as CREDIT_ENABLED,
@@ -86,6 +87,8 @@ class AnalysisResult:
     e_distribution: dict | None = None
     # 追加クレジット付与候補（昇格前に上限つきクレジットで課金実測を薦めるユーザ）
     grant_candidates: list = field(default_factory=list)
+    # 対象月の product 利用特徴量（費用は全 product・活用は Code。判定には使わない）
+    product_usage: ProductUsage | None = None
 
 
 def _seat_cost(api_cost: float, seat: str, scenario: str, cfg: dict) -> float:
@@ -249,6 +252,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisR
 
     monthly: dict[str, pd.DataFrame] = {}
     org_usage: dict = {}
+    usage: ProductUsage | None = None
     for m, df_raw in raw.items():
         df = pricing.apply_cost_basis(df_raw, basis)
         if m == month and basis == "net_spend":
@@ -265,6 +269,10 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisR
                     for k, v in org_df.groupby("product")["billed_usd"].sum().items()
                 } if "product" in org_df.columns else {},
             }
+        if m == month:
+            # 価格適用済みの明細から一度だけ計算する（後段が spend を読み直すと
+            # cost basis や採用ファイルが分析本体と食い違いうるため）
+            usage = compute_product_usage(df[is_user], cfg["product_policy"])
         monthly[m] = aggregate_month(df[is_user])
 
     members_result = ingest.load_members(input_dir, month, cfg, snapshot_active=active.members)
@@ -465,6 +473,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisR
         warnings=warnings, months_used=months_used, sources=sources,
         trend=trend, snapshot=snapshot, code_diff=code_diff, member_changes=member_changes,
         e_distribution=e_distribution, grant_candidates=grant_candidates,
+        product_usage=usage,
     )
 
 
