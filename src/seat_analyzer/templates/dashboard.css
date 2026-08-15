@@ -28,5 +28,10 @@
   .bar .track { flex:1; background:#eceef1; border-radius:4px; height:16px; position:relative; }
   .bar .fill { height:100%; border-radius:4px; }
   .bar .val { width:80px; text-align:right; font-size:.78rem; font-variant-numeric:tabular-nums; }
+  .bar .rank { width:34px; text-align:right; font-size:.7rem; color:#9aa3ad; font-variant-numeric:tabular-nums; }
+  .bar .guide { position:absolute; top:-2px; bottom:-2px; width:1px; }
+  .guide-key { display:inline-block; width:2px; height:.8em; vertical-align:-2px; }
+  .g-median { background:#1f2933; }
+  .g-mean { background: repeating-linear-gradient(#6b7280, #6b7280 2px, transparent 2px, transparent 4px); }
   .cap { color:var(--warn); font-weight:700; }
   .note { font-size:.8rem; color:#6b7280; line-height:1.7; }

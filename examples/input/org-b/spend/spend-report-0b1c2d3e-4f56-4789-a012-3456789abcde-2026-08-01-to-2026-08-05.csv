@@ -1,0 +1,12 @@
+Email,Account UUID,Product,Model,Model Family,Request Count,Prompt Tokens,Completion Tokens,Total Gross Spend USD,Total Net Spend USD
+mori@example.co.jp,uuid-83567d9d,Claude Code,claude-opus-4-8,claude-opus,336,11200000,1120000,0.0000,0.0000
+mori@example.co.jp,uuid-83567d9d,Cowork,claude-opus-4-8,claude-opus,96,3200000,320000,0.0000,0.0000
+mori@example.co.jp,uuid-83567d9d,Chat,claude-opus-4-8,claude-opus,48,1600000,160000,0.0000,0.0000
+kudo@example.co.jp,uuid-cccfb0f6,Claude Code,claude-opus-4-8,claude-opus,216,7200000,720000,0.0000,0.0000
+kudo@example.co.jp,uuid-cccfb0f6,Chat,claude-opus-4-8,claude-opus,144,4800000,480000,0.0000,0.0000
+tanabe@example.co.jp,uuid-c4d92aa4,Claude Code,claude-sonnet-4-6,claude-sonnet,192,10666666,1066666,0.0000,0.0000
+tanabe@example.co.jp,uuid-c4d92aa4,Design,claude-sonnet-4-6,claude-sonnet,48,2666666,266666,0.0000,0.0000
+shimizu@example.co.jp,uuid-6d746156,Claude Code,claude-sonnet-4-6,claude-sonnet,160,8888888,888888,0.0000,0.0000
+abe@example.co.jp,uuid-39e417ae,Chat,claude-haiku-4-5,claude-haiku,48,8000000,800000,0.0000,0.0000
+endo@example.co.jp,uuid-e3b58735,Chat,claude-haiku-4-5,claude-haiku,32,5333333,533333,0.0000,0.0000
+(org service usage),uuid-45e7543d,Code Review,claude-sonnet-4-6,claude-sonnet,80,4444444,444444,20.0000,20.0000

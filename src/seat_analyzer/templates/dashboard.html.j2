@@ -24,11 +24,12 @@
 {% for u in users_sorted %}
   <div class="bar">
     <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
-    <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_usd / max_cost * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('#9aa3ad' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div></div>
+    <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_usd / max_cost * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('#9aa3ad' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div>{% if cost_guide %}<div class="guide g-median" style="left: {{ '%.1f' % cost_guide.median_pct }}%" title="中央値 {{ cost_guide.median_fmt }}"></div><div class="guide g-mean" style="left: {{ '%.1f' % cost_guide.mean_pct }}%" title="平均 {{ cost_guide.mean_fmt }}"></div>{% endif %}</div>
     <div class="val">${{ '%.2f' % u.api_cost_usd }}{% if u.cap_suspected %}<span class="cap"> ⚠</span>{% endif %}</div>
+    <div class="rank">#{{ u.rank }}</div>
   </div>
 {% endfor %}
-  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い</div>
+  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い　#n = API換算需要の順位（同額は同順位）{% if cost_guide %}<br>縦線: <span class="guide-key g-median"></span> 中央値 {{ cost_guide.median_fmt }} / <span class="guide-key g-mean"></span> 平均 {{ cost_guide.mean_fmt }}（シート未割当を除く母集団）{% endif %}</div>
 </div>
 
 <h2>推奨一覧</h2>
@@ -84,7 +85,7 @@
 {% endfor %}
 </table></div>
 <div class="note">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
-
+<!--STATS_SECTION-->
 <h2>前提と注意</h2>
 <div class="card note">
   <ul>

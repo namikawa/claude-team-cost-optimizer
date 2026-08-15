@@ -18,6 +18,7 @@ from .format import (
     _fmt_count,
     _fmt_delta,
     _fmt_delta_int,
+    _fmt_stat_count,
     _fmt_tokens,
     _fmt_usd,
     _group_summary_rows,
@@ -25,6 +26,7 @@ from .format import (
     _scope_label,
     _sort_for_display,
 )
+from .stats import KIND_USD, Distribution, distributions
 from .text import (
     GROUP_AXES,
     PREVIEW_ORDER,
@@ -140,6 +142,30 @@ def _detail_table_md(users: pd.DataFrame) -> str:
     lines.append("")
     lines.append("- input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります")
     lines.append("- product構成 は利用回数（リクエスト数）基準。Cowork/Chat は API コストが小さく出るため回数で示す")
+    return "\n".join(lines) + "\n"
+
+
+def _stats_md(dists: list[Distribution]) -> str:
+    """「## 組織内の分布（参考値）」セクション（対象がなければ空文字列）。"""
+    if not dists:
+        return ""
+    lines = [f"## {_TEXT['h_stats']}", "",
+             "| 指標 | n | 平均 | 中央値 | 標準偏差 | p25 | p75 | p90 | 最大 |",
+             "|" + "---|" * 9]
+    for d in dists:
+        fmt = _fmt_usd if d.kind == KIND_USD else _fmt_stat_count
+        lines.append("| " + " | ".join([
+            d.label, f"{d.n} 名", fmt(d.mean), fmt(d.median), fmt(d.std),
+            fmt(d.p25), fmt(d.p75), fmt(d.p90), fmt(d.maximum),
+        ]) + " |")
+    lines += [
+        "",
+        f"- {_TEXT['note_stats_population']}",
+        f"- {_TEXT['note_stats_skew']}",
+        f"- {_TEXT['note_stats_censored']}",
+        f"- {_TEXT['note_stats_loc']}",
+        f"- {_TEXT['note_stats_scope']}",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -393,6 +419,9 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
                 has_team_summary = True
     team_note = f"\n- {_TEXT['note_team_total']}。" if has_team_summary else ""
     detail_block = _detail_table_md(users)
+    # 分布は詳細利用状況の直後・感度分析の前（個々の数値を見た直後に位置を確かめられる）
+    stats_block = _stats_md(distributions(result.users, result.product_usage))
+    stats_block = (nl + stats_block) if stats_block else ""
     warnings_md = nl.join(f"- {w}" for w in result.warnings) if result.warnings else "- なし"
 
     # サマリ直後に置く追加セクション（前月からの変化 → 月中の利用推移 → Claude Code 活動
@@ -446,7 +475,7 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 - **確度**: 込み利用量（allowance）の low/mid/high 3シナリオで推奨が一致するか（高=3/3, 中=2/3, 低=1/3）
 - **対象外（シート未割当）**: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。損益分岐判定は行わない
 {(nl + notes_block) if notes_block else ''}{group_md}
-{detail_block}
+{detail_block}{stats_block}
 ## 感度分析
 
 allowance（シート込み利用量のUSD換算・非公開のため推定）の仮定によって推奨が変わるユーザ:

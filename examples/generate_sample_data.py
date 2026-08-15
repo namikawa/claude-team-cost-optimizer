@@ -15,6 +15,12 @@ org-b には 2026-07 の月中差分デモ用に、次のスナップショッ�
     ikeda の κ が $100→$50 に変わる（κ 変更検出）。正数(250)・0(無効)・無制限・空欄の
     4パターンを含み、上限到達・整合性警告・付与候補・E 分布・構成行のデモになる
 
+org-b の 2026-08 は条件つきセクションがすべて出る「全部入り」サンプル（値は架空）。
+レポートの見た目を作るとき、実データを使わずに欠けたセクションのない状態を用意できる:
+
+    uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports \
+        --org org-b --month 2026-08
+
 org-a の members-info.csv は追加クレジット上限の列を持たない固定名ファイルのまま残す
 （列なしでも従来どおり動く後方互換の確認用）。
 
@@ -193,6 +199,136 @@ CODE_SNAPSHOTS_ORG_B = {
     ],
 }
 
+# --- org-b 2026-08: 条件つきセクションを網羅する「全部入り」サンプル（すべて架空値） ---
+#
+# 出るようにしている条件つきセクション:
+#   追加クレジット構成 / 前月からの変化（利用開始・停止・主な増減・実課金の新規発生） /
+#   月中の利用推移（停止疑い・込み量の消化） / 月中の Claude Code 活動 /
+#   月中のメンバー変動（シート変更・追加・削除・上限変更） / 込み枠の実測 /
+#   追加クレジット付与候補 / 備考 / 部署別・チーム別サマリ / LoC 列 /
+#   組織内の分布（リクエスト数の行を含む） / 組織サービス利用 / ⚠️上限到達疑い /
+#   シート不明（月中に members から消えたユーザ）
+#
+# 月初開始の累積スナップショット3時点。(email, 累積需要, 累積実課金, model, product構成)。
+# ikeda は 2026-07 に利用があり 2026-08 は行を持たない（＝利用停止の検出）。
+# email に @ を含まない行は組織サービス利用（シート判定の対象外・サマリに別枠計上）。
+SNAPSHOTS_ORG_B_08 = {
+    "2026-08-01-to-2026-08-05": [
+        ("mori@example.co.jp",     120.0,  0.0, "claude-opus-4-8",
+         (("Claude Code", 0.7), ("Cowork", 0.2), ("Chat", 0.1))),
+        ("kudo@example.co.jp",      90.0,  0.0, "claude-opus-4-8",
+         (("Claude Code", 0.6), ("Chat", 0.4))),
+        ("tanabe@example.co.jp",    60.0,  0.0, "claude-sonnet-4-6",
+         (("Claude Code", 0.8), ("Design", 0.2))),
+        ("shimizu@example.co.jp",   40.0,  0.0, "claude-sonnet-4-6", (("Claude Code", 1.0),)),
+        ("abe@example.co.jp",       12.0,  0.0, "claude-haiku-4-5", (("Chat", 1.0),)),
+        ("endo@example.co.jp",       8.0,  0.0, "claude-haiku-4-5", (("Chat", 1.0),)),
+        ("(org service usage)",     20.0, 20.0, "claude-sonnet-4-6", (("Code Review", 1.0),)),
+    ],
+    "2026-08-01-to-2026-08-15": [
+        ("mori@example.co.jp",     300.0, 40.0, "claude-opus-4-8",
+         (("Claude Code", 0.7), ("Cowork", 0.2), ("Chat", 0.1))),
+        ("kudo@example.co.jp",     200.0,  0.0, "claude-opus-4-8",
+         (("Claude Code", 0.6), ("Chat", 0.4))),
+        ("tanabe@example.co.jp",   120.0, 10.0, "claude-sonnet-4-6",
+         (("Claude Code", 0.8), ("Design", 0.2))),
+        ("shimizu@example.co.jp",   47.6,  0.0, "claude-sonnet-4-6", (("Claude Code", 1.0),)),
+        ("abe@example.co.jp",       30.0,  0.0, "claude-haiku-4-5", (("Chat", 1.0),)),
+        ("endo@example.co.jp",       8.0,  0.0, "claude-haiku-4-5", (("Chat", 1.0),)),
+        ("(org service usage)",     45.0, 45.0, "claude-sonnet-4-6", (("Code Review", 1.0),)),
+    ],
+    "2026-08-01-to-2026-08-31": [
+        ("mori@example.co.jp",     520.0, 260.0, "claude-opus-4-8",
+         (("Claude Code", 0.7), ("Cowork", 0.2), ("Chat", 0.1))),
+        ("kudo@example.co.jp",     320.0,   0.0, "claude-opus-4-8",
+         (("Claude Code", 0.6), ("Chat", 0.4))),
+        ("tanabe@example.co.jp",   180.0,  30.0, "claude-sonnet-4-6",
+         (("Claude Code", 0.8), ("Design", 0.2))),
+        # 〜08-15 からの増分が小さく累積は十分ある = 停止疑い（Standard・実課金ゼロ）
+        ("shimizu@example.co.jp",   48.0,   0.0, "claude-sonnet-4-6", (("Claude Code", 1.0),)),
+        ("abe@example.co.jp",       46.0,   0.0, "claude-haiku-4-5", (("Chat", 1.0),)),
+        # 累積が小さいまま横ばい（遊休であり停止疑いにはしない＝閾値の区別）
+        ("endo@example.co.jp",       8.0,   0.0, "claude-haiku-4-5", (("Chat", 1.0),)),
+        ("(org service usage)",     60.0,  60.0, "claude-sonnet-4-6", (("Code Review", 1.0),)),
+    ],
+}
+
+# org-b 2026-08 の members 単日スナップショット。08-05 → 08-16 で tanabe が
+# Standard→Premium（シート変更）、sasaki が新規追加、endo が削除（＝当月の spend に
+# 利用があるのに members に居ない「シート不明」になる）。
+MEMBER_SNAPSHOTS_ORG_B_08 = {
+    "2026-08-05": [
+        ("mori@example.co.jp",    "Premium"),
+        ("hayashi@example.co.jp", "Premium"),
+        ("ikeda@example.co.jp",   "Premium"),
+        ("shimizu@example.co.jp", "Standard"),
+        ("abe@example.co.jp",     "Standard"),
+        ("okada@example.co.jp",   "Unassigned"),
+        ("kudo@example.co.jp",    "Standard"),
+        ("tanabe@example.co.jp",  "Standard"),
+        ("endo@example.co.jp",    "Standard"),
+    ],
+    "2026-08-16": [
+        ("mori@example.co.jp",    "Premium"),
+        ("hayashi@example.co.jp", "Premium"),
+        ("ikeda@example.co.jp",   "Premium"),
+        ("shimizu@example.co.jp", "Standard"),
+        ("abe@example.co.jp",     "Standard"),
+        ("okada@example.co.jp",   "Unassigned"),
+        ("kudo@example.co.jp",    "Standard"),
+        ("tanabe@example.co.jp",  "Premium"),    # Standard → Premium（シート変更）
+        ("sasaki@example.co.jp",  "Standard"),   # 月中の新規追加
+    ],
+}
+
+# org-b 2026-08 の members-info 単日スナップショット（部署・チーム・職種・上限・備考）。
+# 08-05 → 08-16 で ikeda の κ が $50→$250 に変わる（κ 変更検出）。sasaki は載せない
+# （管理画面への追加に members-info の追記が追従していない状態＝未登録の警告）。
+# (email, 追加クレジット上限, 部署, チーム, 職種, 備考)
+_MEMBERS_INFO_ORG_B_08 = [
+    ("mori@example.co.jp",    "250", "プラットフォーム開発部", "基盤チーム",     "テックリード", ""),
+    ("hayashi@example.co.jp", "0",   "プロダクト開発部",       "Webチーム",      "エンジニア",
+     "2026-07 ヒアリング済み: 8月も利用予定なし"),
+    ("ikeda@example.co.jp",   "50",  "プラットフォーム開発部", "基盤チーム",     "エンジニア", ""),
+    ("shimizu@example.co.jp", "無制限", "プロダクト開発部",    "モバイルチーム", "エンジニア", ""),
+    ("abe@example.co.jp",     "",    "コーポレート",           "情シスチーム",   "エンジニア", ""),
+    ("okada@example.co.jp",   "",    "コーポレート",           "",               "マネージャー",
+     "別組織でシート割当済みのため未割当"),
+    ("kudo@example.co.jp",    "0",   "プロダクト開発部",       "Webチーム",      "エンジニア",
+     "追加クレジットが無効のため実課金は発生しない"),
+    ("tanabe@example.co.jp",  "100", "プラットフォーム開発部", "SREチーム",      "エンジニア", ""),
+    ("endo@example.co.jp",    "",    "コーポレート",           "情シスチーム",   "エンジニア", ""),
+]
+
+MEMBERS_INFO_SNAPSHOTS_ORG_B_08 = {
+    "2026-08-05": _MEMBERS_INFO_ORG_B_08,
+    # ikeda の上限だけ $50 → $250 に変える（それ以外は 08-05 と同じ）
+    "2026-08-16": [
+        (email, "250" if email == "ikeda@example.co.jp" else cap, *rest)
+        for email, cap, *rest in _MEMBERS_INFO_ORG_B_08
+    ],
+}
+
+# org-b 2026-08 の code-analytics 単日スナップショット（累積 LoC / PR）。
+# shimizu は横ばい（spend の停止疑いと突合して「停止の傍証」になる）。
+# ikeda は行が無い（spend も止まっているユーザ）。
+CODE_SNAPSHOTS_ORG_B_08 = {
+    "2026-08-05": [
+        ("mori@example.co.jp",    2400,  9),
+        ("kudo@example.co.jp",     900,  4),
+        ("tanabe@example.co.jp",   400,  2),
+        ("shimizu@example.co.jp",  310,  3),
+        ("abe@example.co.jp",      100,  1),
+    ],
+    "2026-08-16": [
+        ("mori@example.co.jp",    5900, 22),
+        ("kudo@example.co.jp",    2600, 11),
+        ("tanabe@example.co.jp",  1500,  7),
+        ("shimizu@example.co.jp",  310,  3),   # 横ばい → shimizu 停止疑いの傍証
+        ("abe@example.co.jp",      180,  2),
+    ],
+}
+
 # 部署・チーム・職種・備考のマッピング（任意ファイル members-info.csv のデモ）。
 # 組織階層は 部署 > チーム。日本語ヘッダ（email,部署,チーム,職種,備考）で日本語
 # エイリアスの動作確認も兼ねる。org-a のみ生成。
@@ -276,25 +412,35 @@ def write_spend(org: str, month: str, users: list, orphans: list) -> None:
 
 
 def write_spend_snapshot(org: str, date_suffix: str, entries: list) -> None:
-    """月初開始の累積スナップショット1件を range 命名の CSV で書く（差分分析デモ用）。"""
+    """月初開始の累積スナップショット1件を range 命名の CSV で書く（差分分析デモ用）。
+
+    entries は (email, 累積需要, 累積実課金, model) か、末尾に product 構成
+    ((product, 割合), ...) を足した5要素。省略時は Claude Code 100%。累積実課金は
+    ユーザ単位の合計なので先頭の product 行にまとめて載せる。
+    """
     name = f"spend-report-{SNAPSHOT_UUID}-{date_suffix}.csv"
     path = BASE / org / "spend" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = []
-    for email, cum_cost, cum_net, model in entries:
-        p_tok, c_tok = tokens_for_cost(cum_cost, model)
-        rows.append({
-            "Email": email,
-            "Account UUID": f"uuid-{hashlib.md5(email.encode()).hexdigest()[:8]}",
-            "Product": "Claude Code",
-            "Model": model,
-            "Model Family": model.rsplit("-", 2)[0],
-            "Request Count": max(1, int(cum_cost * 4)),
-            "Prompt Tokens": p_tok,
-            "Completion Tokens": c_tok,
-            "Total Gross Spend USD": f"{cum_net:.4f}",
-            "Total Net Spend USD": f"{cum_net:.4f}",
-        })
+    for entry in entries:
+        email, cum_cost, cum_net, model = entry[:4]
+        products = entry[4] if len(entry) > 4 else (("Claude Code", 1.0),)
+        for i, (product, share) in enumerate(products):
+            cost = round(cum_cost * share, 4)
+            net = cum_net if i == 0 else 0.0
+            p_tok, c_tok = tokens_for_cost(cost, model)
+            rows.append({
+                "Email": email,
+                "Account UUID": f"uuid-{hashlib.md5(email.encode()).hexdigest()[:8]}",
+                "Product": product,
+                "Model": model,
+                "Model Family": model.rsplit("-", 2)[0],
+                "Request Count": max(1, int(cost * 4)),
+                "Prompt Tokens": p_tok,
+                "Completion Tokens": c_tok,
+                "Total Gross Spend USD": f"{net:.4f}",
+                "Total Net Spend USD": f"{net:.4f}",
+            })
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
@@ -357,7 +503,8 @@ def write_members_info(org: str, info: list) -> None:
 def write_members_info_snapshot(org: str, date: str, entries: list) -> None:
     """members-info の日付つきスナップショット1件（追加クレジット上限のデモ用）。
 
-    entries は [(email, 追加クレジット上限), ...]。部署・チーム・職種・備考は空欄で書く。
+    entries は [(email, 追加クレジット上限), ...] か、末尾に
+    (部署, チーム, 職種, 備考) を足した6要素。省略した項目は空欄で書く。
     """
     name = f"members-info-{SNAPSHOT_UUID}-{date}.csv"
     path = BASE / org / name
@@ -365,8 +512,10 @@ def write_members_info_snapshot(org: str, date: str, entries: list) -> None:
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["email", "部署", "チーム", "職種", "追加クレジット上限", "備考"])
-        for email, credit_limit in entries:
-            writer.writerow([email, "", "", "", credit_limit, ""])
+        for entry in entries:
+            email, credit_limit = entry[:2]
+            dept, team, role, note = (list(entry[2:]) + [""] * 4)[:4]
+            writer.writerow([email, dept, team, role, credit_limit, note])
     print(f"wrote {path}")
 
 
@@ -402,4 +551,14 @@ if __name__ == "__main__":
         write_code_snapshot("org-b", date, entries)
     # org-b の追加クレジット上限（日付つき members-info スナップショット）
     for date, entries in MEMBERS_INFO_SNAPSHOTS_ORG_B.items():
+        write_members_info_snapshot("org-b", date, entries)
+
+    # org-b の 2026-08: 条件つきセクションがすべて出る「全部入り」サンプル
+    for date_suffix, entries in SNAPSHOTS_ORG_B_08.items():
+        write_spend_snapshot("org-b", date_suffix, entries)
+    for date, entries in MEMBER_SNAPSHOTS_ORG_B_08.items():
+        write_members_snapshot("org-b", date, entries)
+    for date, entries in CODE_SNAPSHOTS_ORG_B_08.items():
+        write_code_snapshot("org-b", date, entries)
+    for date, entries in MEMBERS_INFO_SNAPSHOTS_ORG_B_08.items():
         write_members_info_snapshot("org-b", date, entries)

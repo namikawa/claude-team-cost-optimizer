@@ -1,0 +1,18 @@
+{% if stats %}
+<h2><!--text:h_stats--></h2>
+<div class="tablebox"><table>
+<tr><th>指標</th><th class="num">n</th><th class="num">平均</th><th class="num">中央値</th><th class="num">標準偏差</th><th class="num">p25</th><th class="num">p75</th><th class="num">p90</th><th class="num">最大</th></tr>
+{% for d in stats %}
+<tr><td>{{ d.label }}</td><td class="num">{{ d.n }}</td><td class="num">{{ d.mean_fmt }}</td><td class="num">{{ d.median_fmt }}</td><td class="num">{{ d.std_fmt }}</td><td class="num">{{ d.p25_fmt }}</td><td class="num">{{ d.p75_fmt }}</td><td class="num">{{ d.p90_fmt }}</td><td class="num">{{ d.max_fmt }}</td></tr>
+{% endfor %}
+</table></div>
+<div class="card note">
+  <ul>
+    <li><!--text:note_stats_population-->。</li>
+    <li><!--text:note_stats_skew-->。</li>
+    <li><!--text:note_stats_censored-->。</li>
+    <li><!--text:note_stats_loc-->。</li>
+    <li><!--text:note_stats_scope-->。</li>
+  </ul>
+</div>
+{% endif %}

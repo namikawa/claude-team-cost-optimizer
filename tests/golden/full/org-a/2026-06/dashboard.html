@@ -34,6 +34,11 @@
   .bar .track { flex:1; background:#eceef1; border-radius:4px; height:16px; position:relative; }
   .bar .fill { height:100%; border-radius:4px; }
   .bar .val { width:80px; text-align:right; font-size:.78rem; font-variant-numeric:tabular-nums; }
+  .bar .rank { width:34px; text-align:right; font-size:.7rem; color:#9aa3ad; font-variant-numeric:tabular-nums; }
+  .bar .guide { position:absolute; top:-2px; bottom:-2px; width:1px; }
+  .guide-key { display:inline-block; width:2px; height:.8em; vertical-align:-2px; }
+  .g-median { background:#1f2933; }
+  .g-mean { background: repeating-linear-gradient(#6b7280, #6b7280 2px, transparent 2px, transparent 4px); }
   .cap { color:var(--warn); font-weight:700; }
   .note { font-size:.8rem; color:#6b7280; line-height:1.7; }
 </style>
@@ -144,77 +149,89 @@
 
   <div class="bar">
     <div class="name" title="tanaka@example.co.jp">tanaka</div>
-    <div class="track"><div class="fill" style="width: 100.0%; background: var(--prem);"></div></div>
+    <div class="track"><div class="fill" style="width: 100.0%; background: var(--prem);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$610.00</div>
+    <div class="rank">#1</div>
   </div>
 
   <div class="bar">
     <div class="name" title="suzuki@example.co.jp">suzuki</div>
-    <div class="track"><div class="fill" style="width: 68.0%; background: var(--prem);"></div></div>
+    <div class="track"><div class="fill" style="width: 68.0%; background: var(--prem);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$415.00</div>
+    <div class="rank">#2</div>
   </div>
 
   <div class="bar">
     <div class="name" title="nakamura@example.co.jp">nakamura</div>
-    <div class="track"><div class="fill" style="width: 54.9%; background: var(--std);"></div></div>
+    <div class="track"><div class="fill" style="width: 54.9%; background: var(--std);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$335.00</div>
+    <div class="rank">#3</div>
   </div>
 
   <div class="bar">
     <div class="name" title="yamamoto@example.co.jp">yamamoto</div>
-    <div class="track"><div class="fill" style="width: 4.9%; background: var(--prem);"></div></div>
+    <div class="track"><div class="fill" style="width: 4.9%; background: var(--prem);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$30.00</div>
+    <div class="rank">#5</div>
   </div>
 
   <div class="bar">
     <div class="name" title="sato@example.co.jp">sato</div>
-    <div class="track"><div class="fill" style="width: 3.9%; background: var(--prem);"></div></div>
+    <div class="track"><div class="fill" style="width: 3.9%; background: var(--prem);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$24.00</div>
+    <div class="rank">#7</div>
   </div>
 
   <div class="bar">
     <div class="name" title="watanabe@example.co.jp">watanabe</div>
-    <div class="track"><div class="fill" style="width: 2.0%; background: var(--prem);"></div></div>
+    <div class="track"><div class="fill" style="width: 2.0%; background: var(--prem);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$12.00</div>
+    <div class="rank">#10</div>
   </div>
 
   <div class="bar">
     <div class="name" title="ito@example.co.jp">ito</div>
-    <div class="track"><div class="fill" style="width: 0.0%; background: var(--prem);"></div></div>
+    <div class="track"><div class="fill" style="width: 0.0%; background: var(--prem);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$0.00</div>
+    <div class="rank">#12</div>
   </div>
 
   <div class="bar">
     <div class="name" title="guest@example.co.jp">guest</div>
-    <div class="track"><div class="fill" style="width: 2.5%; background: #9aa3ad;"></div></div>
+    <div class="track"><div class="fill" style="width: 2.5%; background: #9aa3ad;"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$15.00</div>
+    <div class="rank">#9</div>
   </div>
 
   <div class="bar">
     <div class="name" title="kobayashi@example.co.jp">kobayashi</div>
-    <div class="track"><div class="fill" style="width: 8.0%; background: var(--std);"></div></div>
+    <div class="track"><div class="fill" style="width: 8.0%; background: var(--std);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$48.50</div>
+    <div class="rank">#4</div>
   </div>
 
   <div class="bar">
     <div class="name" title="yamada@example.co.jp">yamada</div>
-    <div class="track"><div class="fill" style="width: 4.4%; background: var(--std);"></div></div>
+    <div class="track"><div class="fill" style="width: 4.4%; background: var(--std);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$27.00</div>
+    <div class="rank">#6</div>
   </div>
 
   <div class="bar">
     <div class="name" title="kato@example.co.jp">kato</div>
-    <div class="track"><div class="fill" style="width: 3.0%; background: var(--std);"></div></div>
+    <div class="track"><div class="fill" style="width: 3.0%; background: var(--std);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$18.00</div>
+    <div class="rank">#8</div>
   </div>
 
   <div class="bar">
     <div class="name" title="yoshida@example.co.jp">yoshida</div>
-    <div class="track"><div class="fill" style="width: 1.8%; background: var(--std);"></div></div>
+    <div class="track"><div class="fill" style="width: 1.8%; background: var(--std);"></div><div class="guide g-median" style="left: 4.2%" title="中央値 $25.50"></div><div class="guide g-mean" style="left: 21.1%" title="平均 $129"></div></div>
     <div class="val">$11.00</div>
+    <div class="rank">#11</div>
   </div>
 
-  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い</div>
+  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い　#n = API換算需要の順位（同額は同順位）<br>縦線: <span class="guide-key g-median"></span> 中央値 $25.50 / <span class="guide-key g-mean"></span> 平均 $129（シート未割当を除く母集団）</div>
 </div>
 
 <h2>推奨一覧</h2>
@@ -609,6 +626,34 @@
 
 </table></div>
 <div class="note">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
+
+<h2>組織内の分布（参考値）</h2>
+<div class="tablebox"><table>
+<tr><th>指標</th><th class="num">n</th><th class="num">平均</th><th class="num">中央値</th><th class="num">標準偏差</th><th class="num">p25</th><th class="num">p75</th><th class="num">p90</th><th class="num">最大</th></tr>
+
+<tr><td>API換算需要</td><td class="num">12</td><td class="num">$129</td><td class="num">$25.50</td><td class="num">$196</td><td class="num">$14.25</td><td class="num">$120</td><td class="num">$407</td><td class="num">$610</td></tr>
+
+<tr><td>input</td><td class="num">12</td><td class="num">25.95M</td><td class="num">5.67M</td><td class="num">38.94M</td><td class="num">3.83M</td><td class="num">21.92M</td><td class="num">89.71M</td><td class="num">119.11M</td></tr>
+
+<tr><td>output</td><td class="num">12</td><td class="num">2.60M</td><td class="num">566.7K</td><td class="num">3.89M</td><td class="num">383.3K</td><td class="num">2.19M</td><td class="num">8.97M</td><td class="num">11.91M</td></tr>
+
+<tr><td>LoC</td><td class="num">10</td><td class="num">1,803</td><td class="num">800</td><td class="num">1,913</td><td class="num">250</td><td class="num">3,375</td><td class="num">4,750</td><td class="num">5,200</td></tr>
+
+<tr><td>実課金</td><td class="num">12</td><td class="num">$129</td><td class="num">$25.50</td><td class="num">$196</td><td class="num">$14.25</td><td class="num">$120</td><td class="num">$407</td><td class="num">$610</td></tr>
+
+<tr><td>リクエスト数</td><td class="num">12</td><td class="num">514</td><td class="num">101</td><td class="num">785</td><td class="num">57</td><td class="num">479</td><td class="num">1,628</td><td class="num">2,437</td></tr>
+
+</table></div>
+<div class="card note">
+  <ul>
+    <li>母集団はシート未割当を除く分析対象ユーザで、利用ゼロのユーザも含みます。欠損の扱いが指標ごとに違うため n も指標ごとに示します。</li>
+    <li>分布は右に強く歪むため平均は中央値より大きくなりやすく、平均以下であることは低活用を意味しません。</li>
+    <li>追加クレジット上限に到達したユーザは需要そのものが上限で止まっているため、分布の右裾は実態より低く出ます。</li>
+    <li>LoC と spend は網羅範囲が一致せず、LoC の行が無いことはコードを書いていないことを意味しません。</li>
+    <li>比較の母集団は当該組織内に閉じています。他組織や一般的な水準との比較には使えません。</li>
+  </ul>
+</div>
+
 
 <h2>前提と注意</h2>
 <div class="card note">

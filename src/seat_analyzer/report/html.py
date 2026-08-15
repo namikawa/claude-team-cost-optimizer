@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 from jinja2 import Environment
 
 from ..analyze import (
@@ -30,12 +31,14 @@ from .format import (
     _fmt_count,
     _fmt_delta,
     _fmt_delta_int,
+    _fmt_stat_count,
     _fmt_tokens,
     _group_summary_rows,
     _has_values,
     _scope_label,
     _sort_for_display,
 )
+from .stats import KEY_API_COST, KIND_USD, Distribution, distributions
 from .text import (
     GROUP_AXES,
     PREVIEW_ORDER,
@@ -205,6 +208,46 @@ def _grant_candidates_view(candidates: list) -> list[dict]:
             for c in candidates]
 
 
+def _stats_view(dists: list[Distribution]) -> list[dict]:
+    """dashboard.html 用に整形した分布表（対象がなければ空リスト）。"""
+    view = []
+    for d in dists:
+        fmt = _fmt_compact if d.kind == KIND_USD else _fmt_stat_count
+        view.append({
+            "label": d.label, "n": d.n,
+            "mean_fmt": fmt(d.mean), "median_fmt": fmt(d.median), "std_fmt": fmt(d.std),
+            "p25_fmt": fmt(d.p25), "p75_fmt": fmt(d.p75), "p90_fmt": fmt(d.p90),
+            "max_fmt": fmt(d.maximum),
+        })
+    return view
+
+
+def _cost_guide(dists: list[Distribution], max_cost: float) -> dict | None:
+    """ユーザ別 API 換算コストの棒に引く中央値・平均のガイド線（引けなければ None）。
+
+    位置は棒の長さと同じ基準（値 / max_cost）で出す。棒の並びは判定ステータス順で
+    金額順ではないため、ガイド線は行の位置ではなく金額軸の上の点を指す。
+    """
+    demand = next((d for d in dists if d.key == KEY_API_COST), None)
+    if demand is None or max_cost <= 0:
+        return None
+    return {
+        "median_pct": 100.0 * demand.median / max_cost,
+        "mean_pct": 100.0 * demand.mean / max_cost,
+        "median_fmt": _fmt_compact(demand.median),
+        "mean_fmt": _fmt_compact(demand.mean),
+    }
+
+
+def _cost_ranks(users: pd.DataFrame) -> dict[str, int]:
+    """email → API 換算需要の降順順位（同額は同順位）。
+
+    棒の並びは判定ステータス順なので、行番号は順位にならない。値から計算する。
+    """
+    ranks = users["api_cost_usd"].fillna(0).rank(method="min", ascending=False)
+    return dict(zip(users["email"], ranks.astype(int), strict=True))
+
+
 def _credit_reach_view(cr: dict | None) -> dict | None:
     """preview-dashboard.html 用に整形した追加クレジット残額ブロック（None なら None）。"""
     if not cr:
@@ -257,6 +300,10 @@ _CREDIT_REACH_HTML = _asset("partials/credit-reach.html.j2")
 # 「追加クレジット構成」の HTML 断片（サマリカード直下・正式/速報で共有）。
 _CREDIT_COMPOSITION_HTML = _asset("partials/credit-composition.html.j2")
 
+# 「組織内の分布（参考値）」の HTML 断片（正式ダッシュボードのみ。速報は product 利用
+# 特徴量を持たず、日割り換算した値の分布も意味が変わるため出さない）。
+_STATS_HTML = _asset("partials/stats.html.j2")
+
 
 _HTML_TEMPLATE_SRC = _asset("dashboard.html.j2")
 
@@ -266,6 +313,7 @@ _HTML_TEMPLATE = _HTML_ENV.from_string(
         .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
         .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
         .replace("<!--CREDIT_SECTION-->", _E_DIST_HTML + _GRANT_HTML)
+        .replace("<!--STATS_SECTION-->", _STATS_HTML)
     )
 )
 
@@ -354,6 +402,10 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         u["saving_fmt"] = _fmt_compact(u.get("monthly_saving_usd"))
         u["badge_class"] = _STATUS_BADGE_CLASS.get(u["status"], "b-keep")
     max_cost = max((u["api_cost_usd"] for u in users_sorted), default=0) or 1.0
+    ranks = _cost_ranks(result.users)
+    for u in users_sorted:
+        u["rank"] = ranks[u["email"]]
+    dists = distributions(result.users, result.product_usage)
     # 部署別 → チーム別の順で、データがある軸のみサマリ表を出す
     group_summaries = []
     for col, heading, include_unset in GROUP_AXES:
@@ -397,6 +449,8 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         has_team_summary=any(g["heading"] == "チーム別サマリ" for g in group_summaries),
         detail_rows=detail_rows,
         detail_has_loc=detail_has_loc,
+        stats=_stats_view(dists),
+        cost_guide=_cost_guide(dists, max_cost),
         max_cost=max_cost,
         seat_short=SEAT_LABELS,
     )
