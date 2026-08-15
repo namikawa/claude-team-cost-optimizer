@@ -213,17 +213,72 @@ def test_details_is_passed_as_material(two_orgs, tmp_path):
     assert details in source
 
 
-def test_missing_details_falls_back_to_the_previous_material_set(two_orgs, tmp_path):
-    """details.md が無い月（このステップ以前のレポート）は資料2を省略して動く。"""
+def _make_legacy_layout(month_dir: Path) -> None:
+    """details.md 分離前のレポート構成に戻す（表を report.md 本体へ差し戻して削除）。
+
+    当時の report.md はユーザ表を本文に持っていたので、details.md が無くても資料は
+    欠けていない。この形を後方互換の対象として固定する。
+    """
+    details = month_dir / "details.md"
+    users_section = details.read_text(encoding="utf-8").split("## 全ユーザ", 1)[1]
+    report = month_dir / "report.md"
+    md = report.read_text(encoding="utf-8")
+    report.write_text(
+        md.replace("## 注意事項", f"## 全ユーザ{users_section.rstrip()}\n\n## 注意事項", 1),
+        encoding="utf-8", newline="\n",
+    )
+    details.unlink()
+
+
+def test_legacy_report_without_details_still_works(two_orgs, tmp_path):
+    """details.md 分離前に生成した月は、資料2を省略して従来どおり動く。"""
     out = run_analyze(two_orgs, tmp_path)
-    (out / "org-a" / "2026-06" / "details.md").unlink()
+    _make_legacy_layout(out / "org-a" / "2026-06")
 
     prompt = _generate(two_orgs, out, _runner(BODY), dry_run=True).prompt
     assert "details.md" not in prompt
     assert "資料2: ユーザ別推奨一覧 recommendations.csv（2026-06）" in prompt
+    assert "## 全ユーザ" in prompt          # 表は report.md 本文の側にある
 
     outcome = _generate(two_orgs, out, _runner(BODY))
     assert outcome.status == "written"
+
+
+@pytest.mark.parametrize("break_details", [
+    pytest.param(lambda p: p.unlink(), id="欠落"),
+    pytest.param(lambda p: p.write_text("", encoding="utf-8"), id="空"),
+    # 書き込みが途中で切れた形（見出しの前まで）
+    pytest.param(lambda p: p.write_text("# 分析詳細資料 — org-a — 2026-06\n",
+                                        encoding="utf-8"), id="途中まで"),
+])
+def test_broken_details_is_fail_closed(two_orgs, tmp_path, break_details):
+    """再構成後のレポートで details.md が使えなければ、考察を書かずに止める。
+
+    表を欠いた資料でも考察は書けてしまう（モデルは残った資料で書く）。エラーも警告も
+    出ないと、考察の質だけが静かに落ちる。
+    """
+    out = run_analyze(two_orgs, tmp_path)
+    path = out / "org-a" / "2026-06" / "details.md"
+    break_details(path)
+
+    runner = _runner(BODY)
+    with pytest.raises(discussion.DiscussionError) as e:
+        _generate(two_orgs, out, runner)
+    message = str(e.value)
+    assert "details.md" in message and "## 全ユーザ" in message
+    assert "analyze --month 2026-06" in message      # 作り直しの案内
+    assert e.value.transient is False                # 再試行では直らない
+    assert not runner.calls                          # Claude を呼ばない
+    assert report.discussion_body(
+        (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")) is None
+
+
+def test_broken_details_stops_dry_run_too(two_orgs, tmp_path):
+    """--dry-run も同じ検査を通る（プロンプトの確認と本番で資料が食い違わない）。"""
+    out = run_analyze(two_orgs, tmp_path)
+    (out / "org-a" / "2026-06" / "details.md").unlink()
+    with pytest.raises(discussion.DiscussionError):
+        _generate(two_orgs, out, _runner(BODY), dry_run=True)
 
 
 def test_generate_dry_run_shows_prompt_even_when_already_written(two_orgs, tmp_path):

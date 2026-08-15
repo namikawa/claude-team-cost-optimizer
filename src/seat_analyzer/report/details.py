@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..analyze import AnalysisResult
+from .document import _atomic_write
 from .format import _scope_label, _sort_for_display
 from .markdown import (
     _code_diff_md,
@@ -69,4 +70,7 @@ def write_details(result: AnalysisResult, path: Path) -> None:
         block.strip("\n") for block in _sections(result) if block.strip()
     )
     md = f"# 分析詳細資料 — {_scope_label(result)}\n\n{_INTRO}\n\n{body}\n"
-    path.write_text(md, encoding="utf-8", newline="\n")
+    # 置換で書く。切り詰めてから書く write_text は、中断・書き込み失敗のときに
+    # 途中までの details.md を残す。考察執筆はこのファイルを資料に使うため、
+    # 表を欠いたまま残ると気づかれずに材料だけが減る
+    _atomic_write(path, md)
