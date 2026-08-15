@@ -26,10 +26,10 @@
     <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
     <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_usd / max_cost * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('#9aa3ad' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div>{% if cost_guide %}<div class="guide g-median" style="left: {{ '%.1f' % cost_guide.median_pct }}%" title="中央値 {{ cost_guide.median_fmt }}"></div><div class="guide g-mean" style="left: {{ '%.1f' % cost_guide.mean_pct }}%" title="平均 {{ cost_guide.mean_fmt }}"></div>{% endif %}</div>
     <div class="val">${{ '%.2f' % u.api_cost_usd }}{% if u.cap_suspected %}<span class="cap"> ⚠</span>{% endif %}</div>
-    <div class="rank">#{{ u.rank }}</div>
+    <div class="rank">{{ u.rank_fmt }}</div>
   </div>
 {% endfor %}
-  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い　#n = API換算需要の順位（同額は同順位）{% if cost_guide %}<br>縦線: <span class="guide-key g-median"></span> 中央値 {{ cost_guide.median_fmt }} / <span class="guide-key g-mean"></span> 平均 {{ cost_guide.mean_fmt }}（シート未割当を除く母集団）{% endif %}</div>
+  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い　#n = API換算需要の順位（同額は同順位。シート未割当は — で母集団に入れない）{% if cost_guide %}<br>縦線: <span class="guide-key g-median"></span> 中央値 {{ cost_guide.median_fmt }} / <span class="guide-key g-mean"></span> 平均 {{ cost_guide.mean_fmt }}（順位と同じ母集団）{% endif %}</div>
 </div>
 
 <h2>推奨一覧</h2>

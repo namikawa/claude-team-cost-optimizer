@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -38,7 +39,7 @@ from .format import (
     _scope_label,
     _sort_for_display,
 )
-from .stats import KEY_API_COST, KIND_USD, Distribution, distributions
+from .stats import KEY_API_COST, KIND_USD, Distribution, distributions, population
 from .text import (
     GROUP_AXES,
     PREVIEW_ORDER,
@@ -222,18 +223,26 @@ def _stats_view(dists: list[Distribution]) -> list[dict]:
     return view
 
 
-def _cost_guide(dists: list[Distribution], max_cost: float) -> dict | None:
+def _cost_guide(dists: list[Distribution], max_demand: float) -> dict | None:
     """ユーザ別 API 換算コストの棒に引く中央値・平均のガイド線（引けなければ None）。
 
-    位置は棒の長さと同じ基準（値 / max_cost）で出す。棒の並びは判定ステータス順で
+    位置は棒の長さと同じ基準（値 / 最大需要）で出す。棒の並びは判定ステータス順で
     金額順ではないため、ガイド線は行の位置ではなく金額軸の上の点を指す。
+
+    max_demand は棒の幅計算に使うスケール（0 除算を避けるため 1.0 に倒したもの）では
+    なく、観測された最大需要そのものを受け取る。倒した値で判定すると、全員の需要が
+    ゼロの組織（導入直後の月）で $0.00 のガイド線が2本重なって描かれる。線を引くのは
+    最大需要が正で、中央値・平均がその範囲（0 以上・最大以下）に収まるときだけにする。
     """
     demand = next((d for d in dists if d.key == KEY_API_COST), None)
-    if demand is None or max_cost <= 0:
+    if demand is None or not math.isfinite(max_demand) or max_demand <= 0:
+        return None
+    if not all(math.isfinite(v) and 0.0 <= v <= max_demand
+               for v in (demand.median, demand.mean)):
         return None
     return {
-        "median_pct": 100.0 * demand.median / max_cost,
-        "mean_pct": 100.0 * demand.mean / max_cost,
+        "median_pct": 100.0 * demand.median / max_demand,
+        "mean_pct": 100.0 * demand.mean / max_demand,
         "median_fmt": _fmt_compact(demand.median),
         "mean_fmt": _fmt_compact(demand.mean),
     }
@@ -242,10 +251,14 @@ def _cost_guide(dists: list[Distribution], max_cost: float) -> dict | None:
 def _cost_ranks(users: pd.DataFrame) -> dict[str, int]:
     """email → API 換算需要の降順順位（同額は同順位）。
 
-    棒の並びは判定ステータス順なので、行番号は順位にならない。値から計算する。
+    母集団は分布・ガイド線と同じ（`stats.population`＝シート未割当を除く分析対象
+    ユーザ）。同じ図の中に母集団を2つ作らないため、未割当のユーザはキーを持たない
+    （＝順位を付けない）。棒の並びは判定ステータス順なので行番号は順位にならず、
+    値から計算する。
     """
-    ranks = users["api_cost_usd"].fillna(0).rank(method="min", ascending=False)
-    return dict(zip(users["email"], ranks.astype(int), strict=True))
+    judged = population(users)
+    ranks = judged["api_cost_usd"].fillna(0).rank(method="min", ascending=False)
+    return dict(zip(judged["email"], ranks.astype(int), strict=True))
 
 
 def _credit_reach_view(cr: dict | None) -> dict | None:
@@ -307,28 +320,34 @@ _STATS_HTML = _asset("partials/stats.html.j2")
 
 _HTML_TEMPLATE_SRC = _asset("dashboard.html.j2")
 
-_HTML_TEMPLATE = _HTML_ENV.from_string(
-    _embed_shared_text(
-        _HTML_TEMPLATE_SRC.replace("<!--TREND_SECTION-->", _TREND_HTML)
-        .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
-        .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
-        .replace("<!--CREDIT_SECTION-->", _E_DIST_HTML + _GRANT_HTML)
-        .replace("<!--STATS_SECTION-->", _STATS_HTML)
-    )
+# テンプレートは2段階で組み立てる。断片を差し込んだ _ASSEMBLED と、共有文言
+# （<!--text:キー-->）まで解決した _SOURCE を定数として持つのは、未解決マーカーの検査
+# （tests/test_hardening.py）が組み立て済みのソースそのものを見られるようにするため。
+# 検査が断片を手で列挙しなくて済み、partial を足しても対象へ自動で入る。
+_HTML_ASSEMBLED = (
+    _HTML_TEMPLATE_SRC.replace("<!--TREND_SECTION-->", _TREND_HTML)
+    .replace("<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
+    .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
+    .replace("<!--CREDIT_SECTION-->", _E_DIST_HTML + _GRANT_HTML)
+    .replace("<!--STATS_SECTION-->", _STATS_HTML)
 )
+_HTML_SOURCE = _embed_shared_text(_HTML_ASSEMBLED)
+
+_HTML_TEMPLATE = _HTML_ENV.from_string(_HTML_SOURCE)
 
 
 _PREVIEW_HTML_TEMPLATE_SRC = _asset("preview-dashboard.html.j2")
 
-_PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(
-    _embed_shared_text(
-        _PREVIEW_HTML_TEMPLATE_SRC.replace(
-            "<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
-        .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
-        .replace("<!--CREDIT_REACH-->", _CREDIT_REACH_HTML)
-        .replace("<!--GRANT_SECTION-->", _GRANT_HTML)
-    )
+_PREVIEW_HTML_ASSEMBLED = (
+    _PREVIEW_HTML_TEMPLATE_SRC.replace(
+        "<!--SNAPSHOT_SECTION-->", _SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML)
+    .replace("<!--CREDIT_COMPOSITION-->", _CREDIT_COMPOSITION_HTML)
+    .replace("<!--CREDIT_REACH-->", _CREDIT_REACH_HTML)
+    .replace("<!--GRANT_SECTION-->", _GRANT_HTML)
 )
+_PREVIEW_HTML_SOURCE = _embed_shared_text(_PREVIEW_HTML_ASSEMBLED)
+
+_PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(_PREVIEW_HTML_SOURCE)
 
 
 def write_preview_html(result: PreviewResult, path: Path) -> None:
@@ -401,10 +420,15 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         u["prem_fmt"] = _fmt_compact(u["cost_if_premium_usd"])
         u["saving_fmt"] = _fmt_compact(u.get("monthly_saving_usd"))
         u["badge_class"] = _STATUS_BADGE_CLASS.get(u["status"], "b-keep")
-    max_cost = max((u["api_cost_usd"] for u in users_sorted), default=0) or 1.0
+    # 観測された最大需要と、棒の幅の除算に使うスケールを分ける。スケールは 0 除算を
+    # 避けるため 1.0 に倒すが、ガイド線の可否は倒す前の値で決める（_cost_guide 参照）
+    max_demand = max((u["api_cost_usd"] for u in users_sorted), default=0.0)
+    max_cost = max_demand or 1.0
+    # 順位は分布・ガイド線と同じ母集団。未割当のユーザには順位を付けない
     ranks = _cost_ranks(result.users)
     for u in users_sorted:
-        u["rank"] = ranks[u["email"]]
+        rank = ranks.get(u["email"])
+        u["rank_fmt"] = "—" if rank is None else f"#{rank}"
     dists = distributions(result.users, result.product_usage)
     # 部署別 → チーム別の順で、データがある軸のみサマリ表を出す
     group_summaries = []
@@ -450,7 +474,7 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         detail_rows=detail_rows,
         detail_has_loc=detail_has_loc,
         stats=_stats_view(dists),
-        cost_guide=_cost_guide(dists, max_cost),
+        cost_guide=_cost_guide(dists, max_demand),
         max_cost=max_cost,
         seat_short=SEAT_LABELS,
     )

@@ -11,6 +11,7 @@ from seat_analyzer.analyze import analyze
 from seat_analyzer.product_usage import ProductUsage
 from seat_analyzer.report import write_html, write_markdown
 from seat_analyzer.report.format import _fmt_stat_count
+from seat_analyzer.report.html import _cost_guide
 from seat_analyzer.report.stats import (
     KEY_API_COST,
     KEY_LOC,
@@ -232,6 +233,60 @@ def test_markdown_and_html_carry_the_section(cfg, make_input, tmp_path):
     assert "<h2>組織内の分布（参考値）</h2>" in html
     assert 'class="guide g-median"' in html and 'class="guide g-mean"' in html
     assert '<div class="rank">#1</div>' in html   # 需要の降順順位（行の順番ではない）
+
+
+def test_rank_uses_the_same_population_as_the_distribution(cfg, make_input, tmp_path):
+    """順位は未割当を除いた母集団で付ける（未割当は順位なしの「—」）。
+
+    未割当ユーザに利用実績がある組織では、順位の母集団が分布・ガイド線と違うと同じ図の
+    中に母集団が2つできる（未割当が上位を占め、他のユーザの順位が1つずつずれる）。
+    """
+    input_dir = make_input(
+        {"2026-06": [
+            spend_row("off@x.jp", 900.0, net=0.0),     # 未割当なのに最大の利用実績
+            spend_row("top@x.jp", 300.0, net=0.0),
+            spend_row("mid@x.jp", 100.0, net=0.0),
+        ]},
+        members=["off@x.jp,Unassigned", "top@x.jp,Premium", "mid@x.jp,Standard"],
+    )
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
+    write_html(result, tmp_path / "dashboard.html")
+    html = (tmp_path / "dashboard.html").read_text(encoding="utf-8")
+
+    # 未割当を数えていれば top は #2 になる。母集団が揃っていれば #1
+    assert '<div class="name" title="top@x.jp">top</div>' in html
+    assert '<div class="rank">#1</div>' in html
+    assert '<div class="rank">#2</div>' in html
+    assert '<div class="rank">#3</div>' not in html    # 母集団は2名
+    assert '<div class="rank">—</div>' in html         # 未割当は順位を付けない
+
+    # ガイド線の母集団も同じ（未割当の 900 は最大にも中央値にも入らない）
+    demand = _by_key(distributions(result.users, result.product_usage))[KEY_API_COST]
+    assert demand.n == 2 and demand.maximum == 300.0
+
+
+def test_no_guide_lines_when_every_user_is_idle(cfg, make_input, tmp_path):
+    """全員の需要がゼロの組織ではガイド線を引かない（$0 の線が2本重なるため）。
+
+    棒の幅の除算に使うスケールは 0 除算を避けて 1.0 に倒すので、その値でガイド線の
+    可否を判定すると条件が到達不能になる。分布の表自体は 0 の分布として残す。
+    """
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 0.0, net=0.0)]},
+        members=["a@x.jp,Premium", "b@x.jp,Standard"],
+    )
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
+    dists = distributions(result.users, result.product_usage)
+    assert _by_key(dists)[KEY_API_COST].maximum == 0.0
+    assert _cost_guide(dists, 0.0) is None
+    # 棒のスケール（0 回避で 1.0 に倒した値）を渡すと線が出る。だから生の最大を渡す
+    assert _cost_guide(dists, 1.0) is not None
+
+    write_html(result, tmp_path / "dashboard.html")
+    html = (tmp_path / "dashboard.html").read_text(encoding="utf-8")
+    assert 'class="guide g-median"' not in html
+    assert "縦線:" not in html
+    assert "<h2>組織内の分布（参考値）</h2>" in html   # 分布の表は出る
 
 
 def test_unassigned_only_org_renders_without_the_section(cfg, make_input, tmp_path):

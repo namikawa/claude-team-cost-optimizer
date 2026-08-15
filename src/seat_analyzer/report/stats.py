@@ -58,6 +58,15 @@ class Distribution:
     maximum: float
 
 
+def population(users: pd.DataFrame) -> pd.DataFrame:
+    """分布の母集団（シート未割当を除いた分析対象ユーザ）。
+
+    分布・ガイド線・棒グラフの順位はこの1つの定義を共有する。別々に絞ると同じ図の中に
+    母集団が2つでき、未割当ユーザに利用実績がある組織で順位と分布が食い違う。
+    """
+    return users[users["current_seat"] != _UNASSIGNED]
+
+
 def distributions(users: pd.DataFrame,
                   usage: ProductUsage | None = None) -> list[Distribution]:
     """分析対象ユーザの指標ごとの分布（母集団が空なら空リスト）。
@@ -65,17 +74,17 @@ def distributions(users: pd.DataFrame,
     users は `AnalysisResult.users`、usage は同 `product_usage`。usage は
     リクエスト数にだけ使う（速報は product_usage を持たないため省略できる）。
     """
-    population = users[users["current_seat"] != _UNASSIGNED]
-    if population.empty:
+    pop = population(users)
+    if pop.empty:
         return []
 
     metrics = (
-        (KEY_API_COST, "API換算需要", KIND_USD, _zero_filled(population, "api_cost_usd")),
-        (KEY_INPUT, "input", KIND_COUNT, _zero_filled(population, "prompt_tokens")),
-        (KEY_OUTPUT, "output", KIND_COUNT, _zero_filled(population, "completion_tokens")),
-        (KEY_LOC, "LoC", KIND_COUNT, _loc_values(population)),
-        (KEY_BILLED, "実課金", KIND_USD, _zero_filled(population, "billed_extra_usd")),
-        (KEY_REQUESTS, "リクエスト数", KIND_COUNT, _request_values(population, usage)),
+        (KEY_API_COST, "API換算需要", KIND_USD, _zero_filled(pop, "api_cost_usd")),
+        (KEY_INPUT, "input", KIND_COUNT, _zero_filled(pop, "prompt_tokens")),
+        (KEY_OUTPUT, "output", KIND_COUNT, _zero_filled(pop, "completion_tokens")),
+        (KEY_LOC, "LoC", KIND_COUNT, _loc_values(pop)),
+        (KEY_BILLED, "実課金", KIND_USD, _zero_filled(pop, "billed_extra_usd")),
+        (KEY_REQUESTS, "リクエスト数", KIND_COUNT, _request_values(pop, usage)),
     )
     return [
         _describe(key, label, kind, values)
@@ -84,30 +93,30 @@ def distributions(users: pd.DataFrame,
     ]
 
 
-def _zero_filled(population: pd.DataFrame, column: str) -> pd.Series | None:
+def _zero_filled(pop: pd.DataFrame, column: str) -> pd.Series | None:
     """欠損を 0 として扱う指標の値（列が無ければ None）。
 
     値が欠けているのは「その月に明細が無かった」＝利用ゼロなので、0 と読んでよい。
     """
-    if column not in population.columns:
+    if column not in pop.columns:
         return None
-    return population[column].fillna(0).astype(float)
+    return pop[column].fillna(0).astype(float)
 
 
-def _loc_values(population: pd.DataFrame) -> pd.Series | None:
+def _loc_values(pop: pd.DataFrame) -> pd.Series | None:
     """LoC の値（列が無ければ None）。0 のユーザは母集団から除く。
 
     analyze は code-analytics に行が無いユーザを 0 で埋めるため、users の段階では
     「行が無い」と「0 行」を区別できない。LoC の欠落は「コードを書いていない」を
     意味しないので、0 を母集団に入れず n を併記する。
     """
-    if "loc_with_cc" not in population.columns:
+    if "loc_with_cc" not in pop.columns:
         return None
-    values = population["loc_with_cc"].fillna(0).astype(float)
+    values = pop["loc_with_cc"].fillna(0).astype(float)
     return values[values > 0]
 
 
-def _request_values(population: pd.DataFrame,
+def _request_values(pop: pd.DataFrame,
                     usage: ProductUsage | None) -> pd.Series | None:
     """リクエスト数の値（求まらなければ None）。
 
@@ -123,8 +132,8 @@ def _request_values(population: pd.DataFrame,
     if usage is None or "total_requests" not in usage.features.columns:
         return None
     totals = usage.features["total_requests"]
-    listed = population["email"].isin(totals.index)
-    values = population["email"].map(totals).astype("Float64")
+    listed = pop["email"].isin(totals.index)
+    values = pop["email"].map(totals).astype("Float64")
     if not bool((listed & values.notna()).any()):
         return None
     return values.where(listed, 0.0).dropna().astype(float)

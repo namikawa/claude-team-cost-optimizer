@@ -12,16 +12,11 @@ from seat_analyzer.ingest import discover_months
 from seat_analyzer.pricing import unmatched_models
 from seat_analyzer.report import write_csv, write_html
 from seat_analyzer.report.html import (
-    _CODE_DIFF_HTML,
-    _CREDIT_REACH_HTML,
-    _E_DIST_HTML,
-    _GRANT_HTML,
-    _HTML_TEMPLATE_SRC,
-    _MEMBER_CHANGES_HTML,
-    _PREVIEW_HTML_TEMPLATE_SRC,
-    _SNAPSHOT_HTML,
+    _HTML_ASSEMBLED,
+    _HTML_SOURCE,
+    _PREVIEW_HTML_ASSEMBLED,
+    _PREVIEW_HTML_SOURCE,
 )
-from seat_analyzer.report.text import _embed_shared_text
 
 from .conftest import CONFIG, SPEND_HEADER, requires_posix_filenames, spend_row
 
@@ -42,13 +37,29 @@ def test_html_escapes_script_in_email(cfg, make_input, tmp_path):
 
 
 def test_no_unresolved_shared_text_markers_in_templates():
-    # md/HTML 共有文言の <!--text:キー--> は組み立て時に全て置換されること。
-    # キー名を打ち間違えるとマーカーがそのままダッシュボードに出るため、機械的に防ぐ
-    for src in (_embed_shared_text(_HTML_TEMPLATE_SRC),
-                _embed_shared_text(_PREVIEW_HTML_TEMPLATE_SRC),
-                _embed_shared_text(_SNAPSHOT_HTML + _CODE_DIFF_HTML + _MEMBER_CHANGES_HTML
-                                   + _E_DIST_HTML + _GRANT_HTML + _CREDIT_REACH_HTML)):
-        assert "<!--text:" not in src
+    """md/HTML 共有文言の <!--text:キー--> が組み立て後に1つも残っていない。
+
+    _embed_shared_text は未知のキーを置換せずそのまま残すため、キー名を打ち間違えると
+    その注記は HTML コメントになって出力から消える（画面上は何も起きない）。
+
+    見るのは断片ではなく、断片を差し込んだ後のテンプレート本体そのもの。断片を手で
+    列挙する形にすると、新しい partial がその列挙に入るかどうかで検査範囲が決まり、
+    足しただけでは対象に入らない。本体を見れば partial は自動で対象に入る。
+    """
+    for name, src in (("dashboard.html", _HTML_SOURCE),
+                      ("preview-dashboard.html", _PREVIEW_HTML_SOURCE)):
+        assert "<!--text:" not in src, f"{name}: 未解決の共有文言マーカーが残っています"
+
+
+def test_shared_text_markers_actually_exist_before_embedding():
+    """検査が空振りしていない（組み立て済みソースに置換対象が実在する）。
+
+    マーカーがゼロなら上のテストは何を壊しても通る。置換前の姿を別に見ることで、
+    差し込み経路そのものが外れた場合にも気づけるようにする。
+    """
+    for name, src in (("dashboard.html", _HTML_ASSEMBLED),
+                      ("preview-dashboard.html", _PREVIEW_HTML_ASSEMBLED)):
+        assert "<!--text:" in src, f"{name}: 共有文言マーカーが1つもありません"
 
 
 def test_csv_formula_cells_are_sanitized(tmp_path):
