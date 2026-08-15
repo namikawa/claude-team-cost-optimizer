@@ -92,6 +92,9 @@ def test_describe_single_value_has_zero_population_std():
 
 
 def test_fmt_stat_count_switches_units_by_magnitude():
+    assert _fmt_stat_count(7_420_580_000) == "7.42B"   # 十億単位は B（_fmt_tokens と同じ刻み）
+    assert _fmt_stat_count(1_000_000_000) == "1.00B"
+    assert _fmt_stat_count(999_999_999) == "1000.00M"
     assert _fmt_stat_count(1_234_567) == "1.23M"
     assert _fmt_stat_count(1_000_000) == "1.00M"
     assert _fmt_stat_count(999_999) == "1000.0K"
