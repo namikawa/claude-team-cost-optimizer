@@ -167,6 +167,10 @@ def collect_materials(
 ) -> tuple[list[tuple[str, str]], str]:
     """(プロンプトへ渡す資料, 混入チェックの照合元テキスト) を返す。
 
+    正式分析の資料は report.md 本文 → details.md → recommendations.csv の順。
+    report.md は考察中心の短い文書なので、ユーザ単位の表・月中の推移・分布は
+    details.md が資料として補う。
+
     照合元には機械生成された当月の資料だけを入れる。前月の考察は人・LLM の散文で、
     そこに混入があった場合に今月の混入を見逃す照合元になってしまうため含めない。
 
@@ -187,12 +191,22 @@ def collect_materials(
     materials = [(f"資料1: 分析レポート本文（{month}）", body)]
     source = [body]
 
+    def add(title: str, text: str) -> None:
+        """資料を末尾に足す（番号は並び順から付ける）。照合元にも同じ本文を入れる。"""
+        materials.append((f"資料{len(materials) + 1}: {title}", text))
+        source.append(text)
+
     if not preview:
+        # details.md は report.md から移した表の受け皿。このステップ以前に生成した
+        # 月には無いため、無ければ省略して従来どおり動かす（後方互換）
+        details_path = org_output / month / "details.md"
+        if details_path.exists():
+            add(f"分析詳細資料 details.md（{month}）",
+                details_path.read_text(encoding="utf-8"))
         csv_path = org_output / month / "recommendations.csv"
         if csv_path.exists():
-            csv_text = csv_path.read_text(encoding="utf-8")
-            materials.append((f"資料2: ユーザ別推奨一覧 recommendations.csv（{month}）", csv_text))
-            source.append(csv_text)
+            add(f"ユーザ別推奨一覧 recommendations.csv（{month}）",
+                csv_path.read_text(encoding="utf-8"))
 
     source_text = "\n".join(source)
     prev_dir = _prev_month_dir(org_output, month) if include_previous else None

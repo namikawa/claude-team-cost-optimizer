@@ -31,7 +31,7 @@ Anthropic API キーは不要で、Claude のサブスクリプション枠を�
 
 処理の流れと設計上の約束:
 
-- 資料（report.md 本文・recommendations.csv）はすべてプロンプトへ埋め込み、LLM にはツールを
+- 資料（report.md 本文・details.md・recommendations.csv）はすべてプロンプトへ埋め込み、LLM にはツールを
   一切与えない。出力は考察本文のテキストのみで、ファイルへの書き込みはツール側が行う。
   生成側がレポート以外を触ることはない
 - `--safe-mode` と空の作業ディレクトリで呼ぶため、ローカルの CLAUDE.md・メモリ・hooks・

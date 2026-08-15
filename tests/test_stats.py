@@ -9,7 +9,7 @@ import pytest
 
 from seat_analyzer.analyze import analyze
 from seat_analyzer.product_usage import ProductUsage
-from seat_analyzer.report import write_html, write_markdown
+from seat_analyzer.report import write_details, write_html, write_markdown
 from seat_analyzer.report.format import _fmt_stat_count
 from seat_analyzer.report.html import _cost_guide
 from seat_analyzer.report.stats import (
@@ -210,6 +210,7 @@ def test_report_sections_do_not_change_the_judgement(cfg, make_input, tmp_path):
     before = (result.users.copy(), dict(result.summary), list(result.warnings))
     distributions(result.users, result.product_usage)
     write_markdown(result, tmp_path / "report.md")
+    write_details(result, tmp_path / "details.md")
     write_html(result, tmp_path / "dashboard.html")
     pd.testing.assert_frame_equal(result.users, before[0])
     assert result.summary == before[1]
@@ -217,17 +218,17 @@ def test_report_sections_do_not_change_the_judgement(cfg, make_input, tmp_path):
 
 
 def test_markdown_and_html_carry_the_section(cfg, make_input, tmp_path):
-    """report.md は詳細利用状況と感度分析の間に、dashboard は表とガイド線を出す。"""
+    """details.md は詳細利用状況と感度分析の間に、dashboard は表とガイド線を出す。"""
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 300.0, net=50.0),
                      spend_row("b@x.jp", 20.0, net=0.0)]},
         members=["a@x.jp,Premium", "b@x.jp,Standard"],
     )
     result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    write_markdown(result, tmp_path / "report.md")
+    write_details(result, tmp_path / "details.md")
     write_html(result, tmp_path / "dashboard.html")
 
-    md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    md = (tmp_path / "details.md").read_text(encoding="utf-8")
     assert md.index("## 詳細利用状況") < md.index("## 組織内の分布（参考値）") < md.index("## 感度分析")
     assert "| API換算需要 | 2 名 |" in md
     assert "| リクエスト数 | 2 名 |" in md
@@ -310,9 +311,9 @@ def test_unassigned_only_org_renders_without_the_section(cfg, make_input, tmp_pa
     result = analyze(input_dir, "2026-06", cfg, org="org-a")
     assert distributions(result.users, result.product_usage) == []
 
-    write_markdown(result, tmp_path / "report.md")
+    write_details(result, tmp_path / "details.md")
     write_html(result, tmp_path / "dashboard.html")
-    md = (tmp_path / "report.md").read_text(encoding="utf-8")
+    md = (tmp_path / "details.md").read_text(encoding="utf-8")
     html = (tmp_path / "dashboard.html").read_text(encoding="utf-8")
     assert "組織内の分布（参考値）" not in md
     assert "組織内の分布（参考値）" not in html

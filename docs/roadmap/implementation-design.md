@@ -1379,9 +1379,9 @@ V2が安定するまで既定値は`v1`。
 v1.1.0で追加したStep。原設計には無い。個々のユーザの数値が組織の中でどの位置にあるかを
 読み手が判断できるようにする。
 
-Step 8D・8Eとの実行順は`8F → 8E → 8D`とする。番号はPRの記録と対応しているため振り直さず、
-順序だけをここで定める。デザイン（8D）は載せる中身が確定してから当てる。8Eを8Dの後に回すと
-product sectionだけが後付けになり、デザインから浮くため。
+Step 8D・8E・8Gとの実行順は`8F → 8G → 8E → 8D`とする。番号はPRの記録と対応しているため
+振り直さず、順序だけをここで定める。デザイン（8D）は載せる中身が確定してから当てる。
+8E・8Gを8Dの後に回すと、後から入ったsectionだけがデザインから浮くため。
 
 依存:
 
@@ -1509,6 +1509,104 @@ examplesの全部入りサンプル
 - 個人の位置をテーブルの列として出すこと。詳細利用状況はトークン降順に並んでいるので順位列
   は行番号と同じになり、推奨一覧は8列の上限にある。棒グラフのガイド線と順位で代える
 
+#### Step 8G: report.mdの再構成（考察メイン化とdetails.mdの分離）
+
+v1.1.0で追加したStep。原設計には無い。実データでの目視レビュー（2026-08-16）を受けた
+ユーザ判断: dashboardが数値を担い、report.mdはアクションと考察を中心にした短い文書にする。
+ユーザ単位の数値表はdashboardと重複しており、report.mdの読者には過剰なため。
+
+report.mdには読者向けでない役割がもう1つある。`discussion.collect_materials()`が
+report.md本体を資料1としてモデルへ渡しており、表を削るとそのぶん考察の材料が消える。
+このStepの中心は「読み手向けの文書」と「モデルへ渡す資料」の分離で、削った表の受け皿として
+機械生成の`details.md`を新設する。
+
+依存:
+
+- Step 8F
+
+対象:
+
+- `src/seat_analyzer/report/markdown.py`
+- `src/seat_analyzer/report/details.py`（新設）
+- `src/seat_analyzer/report/__init__.py`
+- `src/seat_analyzer/report/html.py`
+- `src/seat_analyzer/templates/dashboard.html.j2`
+- `src/seat_analyzer/templates/partials/e-dist.html.j2`（削除）
+- `src/seat_analyzer/discussion.py`
+- `src/seat_analyzer/cli.py`
+- `tests/golden/`
+
+実装:
+
+report.mdの再構成
+
+- 残すsection（この順）: サマリ / 前月からの変化 / 追加クレジット付与候補 /
+  シート変更推奨 / 注意事項 / データ検証・警告 / 考察
+- 「前月からの変化」を残すのはユーザ判断（月次の増減はレポート本文でも語らせたい）
+- シート変更推奨の表の凡例（列の読み方）は、表が空でない場合のみ表の直下に残す
+- `details.md`へ移すsection: 全ユーザ / 凡例と備考 / 部署別サマリ / チーム別サマリ /
+  詳細利用状況 / 組織内の分布（参考値） / 月中の利用推移 / 月中のClaude Code活動 /
+  月中のメンバー変動 / 込み枠の実測 / 感度分析
+- `_preserve_discussion()`の対象はreport.mdのまま（details.mdに考察sectionは無い）
+
+details.md（新設・正式分析で常に生成）
+
+- 表題は「分析詳細資料 — <組織> — <月>」。冒頭に「機械生成の詳細資料。dashboardと同じ
+  数値のMarkdown版で、考察執筆（discuss）の資料を兼ねる」旨の1行を置く
+- 中身は移したsectionをそのまま出す（数値・表の形式は変えない。移動のみ）。データが無い
+  sectionは従来どおり省略する
+- 対象組織のデータのみを含む（レポート成果物の組織分離ルールをそのまま適用）
+- 実装は`report/details.py`。sectionの組み立て関数は`markdown.py`の既存関数を再利用する
+  （同一パッケージ内のためモジュール層の変更なし）
+
+discussの資料構成
+
+- `collect_materials()`: 資料1 = report.md本体（slim） / 資料2 = details.md /
+  資料3 = recommendations.csv。混入チェックの照合元（source_text）にdetails.md本文を
+  加える（機械生成された当月の資料のみ、という前提は保たれる）
+- details.mdが無い月（このStep以前に生成した旧レポート）は資料2を省略して従来どおり
+  動く（後方互換。エラーにしない）
+- 速報（preview）の資料構成は変えない
+- `prompts/aspects-*.md`は変えない（「資料に〜があれば」の書き方なので、渡り先が
+  details.mdに変わっても観点はそのまま機能する）
+
+dashboardの変更（このStepで唯一のHTML変更）
+
+- 「込み枠の実測（E = API換算需要 − 実課金）」sectionをdashboardから削除する。
+  E行はユーザ単位では推奨一覧の2列の引き算にすぎず、集計値は運用者向けの
+  キャリブレーション材料（allowance推定の検証）であって、dashboardの読者は
+  行動につなげられないため。実測の記録はdetails.mdが引き継ぐ
+- `_DASHBOARD_SECTIONS`から`_E_DIST_HTML`を外し、partial `e-dist.html.j2`と
+  `_e_distribution_view()`を削除する。`_compute_e_distribution()`（analyze側）は
+  details.mdが使うため残す
+
+CLI・ドキュメント
+
+- `cli.py`の出力一覧にdetails.mdのパスを足す
+- `docs/usage.md`の成果物リストとsection説明を更新する。`README.md`・
+  `.claude/commands/seat-analysis.md`にreport.mdのsection構成へ言及している箇所が
+  あれば追従させる
+
+受け入れ条件:
+
+- 変わる出力は`report.md`と`dashboard.html`、新規の`details.md`だけ。
+  `recommendations.csv`・`usage-summary.csv`・`preview.md`・`preview-dashboard.html`・
+  `summary/<month>.md`はバイト一致で不変
+- dashboard.htmlの差分は「込み枠の実測sectionの削除」のみ
+- report.mdとdetails.mdを合わせると、移動対象sectionの内容が過不足なく存在する
+  （数値の変更・欠落が無い。移動のみであることの検査）
+- 判定・推奨・警告が変わらない
+- `discuss --dry-run`のプロンプトにdetails.mdの内容が資料として入る。details.mdが
+  無い月ディレクトリでも資料2を省略して動く
+- 考察の保全（`_preserve_discussion`）が引き続き機能する
+- golden（full系ケース）にdetails.mdを追加する
+
+今回は行わない:
+
+- preview.md / preview-dashboard.htmlの再構成（速報は現状のまま）
+- dashboardの再設計（Step 8D）・product軸（Step 8E）
+- 考察プロンプト（aspects）の観点変更
+
 #### Step 8D: dashboardの再設計
 
 v1.1.0で追加したStep。原設計には無い。§2.2は「既存のHTML全体を書き換えない」としているが、
@@ -1564,7 +1662,7 @@ v1.1.0で追加したStep。原設計には無い。Step 8Dより先に行う（
 
 依存:
 
-- Step 8F
+- Step 8G
 
 対象:
 
@@ -2450,12 +2548,13 @@ v1.1.0で追加したStep。原設計には無い。Step 8Dより先に行う（
 
 ### Milestone A: Core data
 
-Step 1〜8（8F・8E・8Dを含む。この3つはこの順で行う）
+Step 1〜8（8F・8G・8E・8Dを含む。この4つはこの順で行う）
 
 - stable IDの準備
 - Data Doctor
 - Code/全product分離
 - 統計参考値の掲載
+- report.mdの考察メイン化とdetails.mdの分離
 - dashboardの再設計とproduct軸の掲載
 
 ### Milestone B: Independent audit

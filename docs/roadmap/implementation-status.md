@@ -70,14 +70,14 @@
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
 | 1 | 入力と品質 | 5 | 0 | 0 | 0 | 0 |
-| 2 | Code中心の利用可視化 | 4 | 0 | 0 | 2 | 0 |
+| 2 | Code中心の利用可視化 | 5 | 0 | 0 | 2 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **12** | **0** | **0** | **36** | **0** |
+| **合計** |  | **13** | **0** | **0** | **36** | **0** |
 
 ## 5. Step一覧
 
@@ -107,10 +107,11 @@
 | 7 | Code/全product特徴量 | `完了` | 2026-08-15 |
 | 8 | usage-summary.csv | `完了` | 2026-08-15 |
 | 8F | 統計参考値の掲載 | `完了` | 2026-08-16 |
+| 8G | report.mdの再構成（考察メイン化とdetails.mdの分離） | `完了` | 2026-08-16 |
 | 8E | dashboardへのproduct軸の掲載 | `未着手` |  |
 | 8D | dashboardの再設計 | `未着手` |  |
 
-Step 8F・8E・8Dはこの順で行う（番号順ではない）。デザインは載せる中身が確定してから
+Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザインは載せる中身が確定してから
 当てるため。番号はPRの記録と対応しているので振り直さない。
 
 ### Track 3: シート変更履歴
@@ -178,6 +179,56 @@ Step 8F・8E・8Dはこの順で行う（番号順ではない）。デザイン
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-08-16 — Step 8G report.mdの再構成（考察メイン化とdetails.mdの分離）
+
+ステータス: `完了`
+
+実装したこと:
+
+- report.md を「サマリ / 前月からの変化 / 追加クレジット付与候補 / シート変更推奨 /
+  注意事項 / データ検証・警告 / 考察」に絞った。数値はdashboardが担い、report.mdは
+  アクションと考察を読むための文書にする（実データでの目視レビューを受けたユーザ判断）
+- report.md本体は`discussion.collect_materials()`が考察執筆モデルへ渡す資料1でもあるため、
+  表を削るとそのぶん考察の材料が消える。受け皿として`report/details.py`を新設し、
+  機械生成の`details.md`（全ユーザ・凡例・備考・部署別/チーム別サマリ・詳細利用状況・
+  組織内の分布・月中の推移3種・込み枠の実測・感度分析）を正式分析で常に生成する
+- details.mdのsectionは移動のみ。組み立て関数は`markdown.py`の既存のものをそのまま使い、
+  数値も表の書式も変えていない（golden の差分が全ファイル削除行だけであることで裏づけ）。
+  データが無いsectionは従来どおり省略する
+- 列の読み方（凡例）はシート変更推奨の表が空でないときだけreport.mdの表の直下に残す。
+  同じ列構成の表が2文書に出るため、凡例は`_user_legend_md()`を唯一の定義として共有する
+- 考察執筆の資料構成を「report.md本文 → details.md → recommendations.csv」にし、
+  混入チェックの照合元にもdetails.md本文を入れた。照合元が痩せると対象組織の資料に
+  現れる語まで他組織由来として検出されるため、資料の分割前と同じ集合を保つ必要がある。
+  details.mdが無い月（このStep以前のレポート）は資料2を省略して従来どおり動く
+- dashboardから「込み枠の実測（E分布）」を削除した。E行はユーザ単位では推奨一覧の2列の
+  引き算にすぎず、集計値はallowance推定のキャリブレーション材料で、dashboardの読者は
+  行動につなげられないため。実測の記録はdetails.mdが引き継ぐ。partial `e-dist.html.j2`と
+  `_e_distribution_view()`を削除し、`_DASHBOARD_SECTIONS`から外した。analyze側の
+  `_compute_e_distribution()`はdetails.mdが使うので残している
+- `report/details.py`は`report/`配下なので層30の単位内（`LAYERS`の変更なし）。
+  `write_all()`の戻り値にdetails.mdを足したので、CLIの出力一覧にも自動で載る
+- 速報（preview.md / preview-dashboard.html）と`prompts/aspects-*.md`は変更なし。
+  `_preserve_discussion()`の対象もreport.mdのまま（details.mdに考察sectionは無い）
+
+確認したこと:
+
+- 変わった出力はreport.mdとdashboard.html、新規のdetails.mdだけ。`recommendations.csv`・
+  `usage-summary.csv`・`preview.md`・`preview-dashboard.html`・`summary/<月>.md`は
+  バイト一致で不変（golden 5ケースで確認）
+- dashboard.htmlの差分は込み枠の実測sectionの削除のみ。golden の差分に追加行が1行も無い
+  （report.md・dashboard.htmlとも削除行だけ）ことで、移動と削除以外の変化が無いことを確認
+- report.mdとdetails.mdを合わせると移動対象sectionの内容が過不足なく存在すること、
+  同じsectionが両方に出ないことをテストで固定（条件つきsectionがすべて出る合成サンプルで、
+  組み立て関数の出力そのものと突き合わせる）
+- `discuss --dry-run`のプロンプトにdetails.mdが資料2として入ること、details.mdを消した
+  月ディレクトリでは資料2を省略して生成まで通ることをテストで固定
+- 考察の保全（`_preserve_discussion`）は既存テストで引き続き緑
+- `uv run ruff check .`
+- `uv run pytest`（648件成功。着手前は635件）
+- 追跡ファイルの差分と未追跡の新規ファイルをあわせて`check-text --diff`に通し、
+  業務情報の混入なしを確認
 
 ### 2026-08-16 — Step 8F 統計参考値の掲載
 

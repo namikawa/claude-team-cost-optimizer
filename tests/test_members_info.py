@@ -4,7 +4,7 @@ from pathlib import Path
 
 from seat_analyzer import analyze as analyze_mod
 from seat_analyzer.analyze import analyze, preview
-from seat_analyzer.report import write_markdown
+from seat_analyzer.report import write_details, write_markdown
 from seat_analyzer.report.format import _group_summary_rows
 
 from .conftest import spend_row
@@ -71,8 +71,8 @@ def test_team_only_without_department(make_input, cfg, tmp_path):
     by_email = result.users.set_index("email")
     assert by_email.loc["a@example.com", "team"] == "基盤チーム"
     assert (result.users["department"] == "").all()
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     text = out.read_text(encoding="utf-8")
     assert "## チーム別サマリ" in text
     assert "## 部署別サマリ" not in text
@@ -91,6 +91,7 @@ def test_no_file_no_error(make_input, cfg):
     assert (result.users["team"] == "").all()
     assert "members_info" not in result.sources
     write_markdown(result, input_dir / "report.md")
+    write_details(result, input_dir / "details.md")
 
 
 def test_unmapped_member_is_blank(make_input, cfg):
@@ -140,8 +141,8 @@ def test_legacy_department_only_still_works(make_input, cfg, tmp_path):
     by_email = result.users.set_index("email")
     assert by_email.loc["a@example.com", "department"] == "開発部"
     assert (result.users["team"] == "").all()
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     text = out.read_text(encoding="utf-8")
     assert "## 部署別サマリ" in text
     assert "## チーム別サマリ" not in text
@@ -318,8 +319,8 @@ def test_markdown_escapes_pipe_and_newline(make_input, cfg, tmp_path):
         'a@example.com,"基盤|チーム",,"1行目|注記\n2行目"\n',
     )
     result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     text = out.read_text(encoding="utf-8")
     # パイプはエスケープされ、生の | として表・箇条書きに残らない
     assert "基盤\\|チーム" in text
@@ -343,8 +344,8 @@ def test_dual_team_display_and_fraction_in_md(make_input, cfg, tmp_path):
         "email,チーム,職種,備考\na@example.com,基盤チーム; SREチーム,,\n",
     )
     result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     text = out.read_text(encoding="utf-8")
     assert "基盤チーム; SREチーム" in text  # ユーザ表の表示
     assert "0.5 名" in text  # 按分後の端数人数

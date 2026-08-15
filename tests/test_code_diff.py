@@ -6,7 +6,7 @@ spend の停止疑いとの突合（LoC 増分の傍証/食い違い）もここ
 """
 
 from seat_analyzer.analyze import analyze, preview
-from seat_analyzer.report import write_markdown
+from seat_analyzer.report import write_details
 
 from .conftest import spend_row
 
@@ -67,8 +67,8 @@ def test_single_snapshot_no_section(cfg, make_snapshots, write_code_snapshots, t
     write_code_snapshots(input_dir, {"2026-07-05": [("heavy@x.jp", 1000, 5)]})
     result = analyze(input_dir, "2026-07", cfg, org="org-a")
     assert result.code_diff is None
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     assert "月中の Claude Code 活動" not in out.read_text(encoding="utf-8")
 
 
@@ -107,8 +107,8 @@ def test_stall_corroborated_by_flat_loc(cfg, make_snapshots, write_code_snapshot
     sc = result.snapshot["stalled_capped"]
     assert sc and sc[0]["email"] == "s@x.jp"
     assert sc[0]["loc_note"] == "LoC 増分も 0（停止の傍証）"
-    out = tmp_path / "report.md"
-    write_markdown(result, out)
+    out = tmp_path / "details.md"
+    write_details(result, out)
     assert "停止の傍証" in out.read_text(encoding="utf-8")
 
 

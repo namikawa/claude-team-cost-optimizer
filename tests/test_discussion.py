@@ -187,6 +187,45 @@ def test_generate_dry_run_does_not_call_claude(two_orgs, tmp_path):
     assert report.discussion_body(outcome.path.read_text(encoding="utf-8")) is None
 
 
+def test_details_is_passed_as_material(two_orgs, tmp_path):
+    """資料は report.md 本文 → details.md → recommendations.csv の順で渡る。
+
+    report.md は考察中心の短い文書になったので、ユーザ単位の表は details.md が
+    資料として補う。照合元（混入チェック）にも同じ本文が入る。
+    """
+    out = run_analyze(two_orgs, tmp_path)
+    org_output = out / "org-a"
+    details = (org_output / "2026-06" / "details.md").read_text(encoding="utf-8")
+
+    prompt = _generate(two_orgs, out, _runner(BODY), dry_run=True).prompt
+    assert "資料2: 分析詳細資料 details.md（2026-06）" in prompt
+    assert "資料3: ユーザ別推奨一覧 recommendations.csv（2026-06）" in prompt
+    assert "## 全ユーザ" in prompt          # report.md 本体には無い表が資料に入る
+    assert details.strip() in prompt
+
+    materials, source = discussion.collect_materials(
+        org_output=org_output, month="2026-06", preview=False)
+    assert [t for t, _ in materials] == [
+        "資料1: 分析レポート本文（2026-06）",
+        "資料2: 分析詳細資料 details.md（2026-06）",
+        "資料3: ユーザ別推奨一覧 recommendations.csv（2026-06）",
+    ]
+    assert details in source
+
+
+def test_missing_details_falls_back_to_the_previous_material_set(two_orgs, tmp_path):
+    """details.md が無い月（このステップ以前のレポート）は資料2を省略して動く。"""
+    out = run_analyze(two_orgs, tmp_path)
+    (out / "org-a" / "2026-06" / "details.md").unlink()
+
+    prompt = _generate(two_orgs, out, _runner(BODY), dry_run=True).prompt
+    assert "details.md" not in prompt
+    assert "資料2: ユーザ別推奨一覧 recommendations.csv（2026-06）" in prompt
+
+    outcome = _generate(two_orgs, out, _runner(BODY))
+    assert outcome.status == "written"
+
+
 def test_generate_dry_run_shows_prompt_even_when_already_written(two_orgs, tmp_path):
     """--dry-run はプロンプト確認用なので、記入済みでもプロンプトを返す。"""
     out = run_analyze(two_orgs, tmp_path)
