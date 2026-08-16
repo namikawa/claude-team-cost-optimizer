@@ -392,7 +392,27 @@ def test_doctor_warns_members_month_fallback(make_input, capsys):
         members=["a@x.jp,Premium"], members_month="2026-05", org="org-a",
     )
     assert _doctor(input_dir, "--month", "2026-06") == 0
-    assert "[warning] MISSING_MEMBERS" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "[warning] MISSING_MEMBERS" in out
+    assert "2026-06 月末時点のメンバー一覧が無いため 2026-05 のファイルを使用しています" in out
+
+
+def test_doctor_members_message_when_target_month_file_exists(
+    make_input, write_member_snapshots, capsys
+):
+    """対象月のファイルが在っても末日から遠ければ別の月を採るので、そう書かない。"""
+    input_dir = make_input(
+        {"2026-05": [spend_row("a@x.jp", 10.0)], "2026-06": [spend_row("a@x.jp", 12.0)]},
+        org="org-a",
+    )
+    write_member_snapshots(input_dir, {
+        "2026-06-01": ["a@x.jp,Premium"],   # 対象月のファイルは在る（末日から29日前）
+        "2026-07-08": ["a@x.jp,Premium"],   # 採用されるが通常運用の幅の外
+    }, org="org-a")
+    assert _doctor(input_dir, "--month", "2026-06") == 0
+    out = capsys.readouterr().out
+    assert "2026-06 月末時点のメンバー一覧が無いため 2026-07 のファイルを使用しています" in out
+    assert "2026-06 のメンバー一覧が無いため" not in out
 
 
 @pytest.mark.parametrize(("date", "warns"), [

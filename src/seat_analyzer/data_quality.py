@@ -530,8 +530,10 @@ def inspect_input(
             ):
                 issues.append(_issue(
                     Severity.WARNING, IssueCode.MISSING_MEMBERS,
-                    f"{month} のメンバー一覧が無いため {used_month} のファイルを使用しています"
-                    "（対象月当時のシート構成と異なる可能性があります）",
+                    # 対象月のファイルが在っても末日から遠ければ別の月を採るため、
+                    # 「対象月のファイルが無い」ではなく「月末時点のものが無い」と書く
+                    f"{month} 月末時点のメンバー一覧が無いため {used_month} のファイルを"
+                    "使用しています（対象月当時のシート構成と異なる可能性があります）",
                     org, month,
                     used_month=used_month, file=members_result.source.name,
                 ))

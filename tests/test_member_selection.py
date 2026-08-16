@@ -16,14 +16,19 @@ from seat_analyzer.analyze import analyze
 from .conftest import SPEND_HEADER, spend_row
 
 
-def _write_members(input_dir: Path, dates: list[str]) -> Path:
-    """指定日付の単日スナップショットを members/ に置く（中身は共通の1名）。"""
+def _write_member_files(input_dir: Path, names: list[str]) -> Path:
+    """指定した名前のメンバー一覧を members/ に置く（中身は共通の1名）。"""
     directory = input_dir / "members"
     directory.mkdir(parents=True, exist_ok=True)
-    for date in dates:
-        (directory / f"members-snap-{date}.csv").write_text(
+    for name in names:
+        (directory / name).write_text(
             "Email,Seat Type\na@x.jp,Standard\n", encoding="utf-8")
     return input_dir
+
+
+def _write_members(input_dir: Path, dates: list[str]) -> Path:
+    """指定日付の単日スナップショットを members/ に置く。"""
+    return _write_member_files(input_dir, [f"members-snap-{d}.csv" for d in dates])
 
 
 def _members_warning(result: ingest.LoadResult) -> str:
@@ -126,6 +131,57 @@ def test_strong_note_boundary(cfg, tmp_path, date, strong):
 def test_is_near_month_end(name, expected):
     """警告の強さを揃えるための述語（doctor と load_members が共有する）。"""
     assert ingest.is_near_month_end(Path(name), "2026-07") is expected
+
+
+# --- 同一月の重複解決は採用した月にだけ掛ける ---
+
+def test_ambiguous_other_month_does_not_block_selection(cfg, tmp_path):
+    """採用候補と無関係な月に曖昧な重複があっても採用ファイルは決まる。"""
+    input_dir = _write_member_files(tmp_path / "input", [
+        "members-2026-08-04.csv",
+        "members-2026-05-01-to-2026-05-20.csv",   # 期間が包含関係にない2件＝
+        "members-2026-05-10-to-2026-05-31.csv",   # この月だけでは優先順を決められない
+    ])
+    assert ingest.load_members(input_dir, "2026-07", cfg).source.name == (
+        "members-2026-08-04.csv")
+
+
+def test_ambiguous_adopted_month_still_raises(cfg, tmp_path):
+    """採用した月が曖昧なら従来どおり止める（取り違え防止）。"""
+    input_dir = _write_member_files(tmp_path / "input", [
+        "members-2026-07-01-to-2026-07-20.csv",
+        "members-2026-07-10-to-2026-07-31.csv",
+    ])
+    with pytest.raises(ValueError, match="複数あり"):
+        ingest.load_members(input_dir, "2026-07", cfg)
+
+
+def test_analysis_runs_with_ambiguous_other_month(cfg, make_snapshots):
+    input_dir = make_snapshots(
+        "2026-07", {"2026-07-31": [spend_row("a@x.jp", 80.0, net=0.0)]},
+    )
+    _write_member_files(input_dir, [
+        "members-2026-08-03.csv",
+        "members-2026-05-01-to-2026-05-20.csv",
+        "members-2026-05-10-to-2026-05-31.csv",
+    ])
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
+    assert Path(result.sources["members"]).name == "members-2026-08-03.csv"
+
+
+def test_future_month_range_and_date_warn_once(cfg, tmp_path):
+    """未来月に期間ファイルと単日ファイルが並んでも、警告は新文言の1件だけ。"""
+    input_dir = _write_member_files(tmp_path / "input", [
+        "members-2026-08-01-to-2026-08-04.csv",
+        "members-2026-08-04.csv",
+    ])
+    result = ingest.load_members(input_dir, "2026-07", cfg)
+    assert result.source.name == "members-2026-08-01-to-2026-08-04.csv"
+    assert _members_warning(result) == (
+        "members: 2026-07 月末時点のスナップショットが無いため "
+        "members-2026-08-01-to-2026-08-04.csv（月末の 4 日後）を使用"
+        "（未使用: members-2026-08-04.csv）"
+    )
 
 
 # --- 月中のメンバー変動との独立性 ---

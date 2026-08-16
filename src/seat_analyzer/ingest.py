@@ -669,22 +669,21 @@ def load_members(input_dir: Path, month: str, cfg: dict, snapshot_active: bool =
     ファイルに入っている。そのため月単位で1つに畳んでから月を選ぶのではなく、ファイル単位で
     末日との距離が最小のものを採る。
 
+    同一月の重複解決は採用したファイルの月にだけ掛ける。全月に掛けると、採用候補と無関係な
+    月の曖昧な重複だけで分析全体が止まる。採用した月が曖昧なら従来どおり ValueError で
+    止める（取り違え防止）。
+
     snapshot_active=True は、対象月に単日スナップショットが複数ありメンバー変動の差分分析が
     発動する場合で、重複解決の警告文言を「メンバー変動の検出にも使う」向けにする。
     """
     directory = Path(input_dir) / "members"
-    files, file_warns = _files_by_month(
-        directory,
-        snapshot_month=month if snapshot_active else None,
-        snapshot_note="メンバー変動の検出",
-    )
+    entries = _csv_periods(directory)
     warnings: list[str] = []
-    if not files:
+    if not entries:
         raise FileNotFoundError(
             f"{input_dir}/members/ にメンバー一覧がありません"
             f"（例: members_{month}.csv。最低限 email,seat_type の2列で可）"
         )
-    entries = _csv_periods(directory)
     used, path, delta = _nearest_to_month_end(entries, month)
     used_month = used.month
     if used_month < month:
@@ -705,10 +704,18 @@ def load_members(input_dir: Path, month: str, cfg: dict, snapshot_active: bool =
             f"{path.name}（月末の {delta} 日後）を使用"
             + (f"（未使用: {others}）" if others else "") + note
         )
-    # 重複解決の警告は、その月の解決結果を実際に採った場合だけ転記する。対象月末より後の
-    # 月では「最新を使用」の解決結果と採用ファイルが食い違うため、転記すると嘘になる
-    if files.get(used_month) == path and used_month in file_warns:
-        warnings.append(file_warns[used_month])
+    in_used_month = [entry for entry in entries if entry[0].month == used_month]
+    if len(in_used_month) > 1:
+        resolved, dup_warn = _resolve_duplicates(
+            directory, used_month, in_used_month,
+            snapshot_note=(
+                "メンバー変動の検出" if snapshot_active and used_month == month else None
+            ),
+        )
+        # 対象月末より後の月は上の新しい文言に一本化する（重複解決は「最新を使用」と言うため
+        # 採用ファイルと食い違う）。解決結果と採用ファイルが一致する場合だけ転記する
+        if used_month <= month and resolved == path:
+            warnings.append(dup_warn)
     df, w = _read_members_df(path, cfg)
     warnings.extend(w)
     return LoadResult(df=df, source=path, warnings=warnings)
