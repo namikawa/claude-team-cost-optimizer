@@ -33,6 +33,7 @@ from .format import (
     _fmt_count,
     _fmt_delta,
     _fmt_delta_int,
+    _fmt_setting_usd,
     _fmt_stat_count,
     _fmt_tokens,
     _group_summary_rows,
@@ -350,7 +351,7 @@ def _product_view(usage: ProductUsage | None, threshold_usd: float) -> dict | No
     return {
         "summary_line": _product_summary_line(totals, codes),
         "rows": rows,
-        "threshold_fmt": _fmt_compact(threshold_usd),
+        "threshold_fmt": _fmt_setting_usd(threshold_usd),
     }
 
 
@@ -507,7 +508,7 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
         member_changes=_member_changes_view(result.member_changes),
         credit_reach=_credit_reach_view(result.credit_reach),
         grant_candidates=_grant_candidates_view(result.grant_candidates),
-        grant_cap_fmt=_fmt_compact(cap_usd),
+        grant_cap_fmt=_fmt_setting_usd(cap_usd),
         disabled_note=_disabled_cost_note(result.users),
         users_sorted=users_sorted,
         label_counts=label_counts,
@@ -581,7 +582,7 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         code_diff=_code_diff_view(result.code_diff),
         member_changes=_member_changes_view(result.member_changes),
         grant_candidates=_grant_candidates_view(result.grant_candidates),
-        grant_cap_fmt=_fmt_compact(cap_usd),
+        grant_cap_fmt=_fmt_setting_usd(cap_usd),
         cap_supplement=_cap_legend_supplement(result.summary.get("credit_shown", False)),
         disabled_note=_disabled_cost_note(result.users),
         users_sorted=users_sorted,

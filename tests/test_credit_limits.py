@@ -17,7 +17,12 @@ from seat_analyzer.analyze import (
 )
 from seat_analyzer.analyze.credits import _compute_e_distribution
 from seat_analyzer.ingest import parse_credit_limit
-from seat_analyzer.report import write_details, write_markdown, write_preview
+from seat_analyzer.report import (
+    write_details,
+    write_html,
+    write_markdown,
+    write_preview,
+)
 
 from .conftest import spend_row
 
@@ -250,6 +255,32 @@ def test_grant_candidate_formal(make_input, cfg, tmp_path):
     md = out.read_text(encoding="utf-8")
     assert "## 追加クレジット付与候補" in md
     assert "モデル超過見込み $210.00/月" in md
+
+
+def test_grant_cap_legend_keeps_decimals_in_html(make_input, cfg, tmp_path):
+    """凡例の推奨初期上限は $100 以上でも小数部を落とさない（正式・速報とも）。
+
+    上限は設定値で、その額との比較の意味を持つ。_fmt_compact の「$100 以上は整数」で
+    丸めると、$150.50 の設定が凡例で $150 になり実際の付与額と食い違う。
+    """
+    cfg["usage_credits"]["grant_suggested_cap_usd"] = 150.5
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 260.0, net=130.0)]},
+        members=["a@x.jp,Standard"],
+        members_month="2026-06",
+    )
+    _write_info(input_dir, "email,追加クレジット上限\na@x.jp,0\n")
+
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
+    out = tmp_path / "dashboard.html"
+    write_html(result, out)
+    assert "推奨初期上限 $150.50" in out.read_text(encoding="utf-8")
+
+    pv = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
+    pv_dir = tmp_path / "org"
+    write_preview(pv, pv_dir)
+    html = (pv_dir / "2026-06" / "preview-dashboard.html").read_text(encoding="utf-8")
+    assert "推奨初期上限 $150.50" in html
 
 
 def test_grant_candidate_disabled_zero_billed_high_demand(make_input, cfg):

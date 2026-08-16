@@ -167,3 +167,14 @@ def _fmt_compact(v) -> str:
     if v is None or pd.isna(v):
         return "—"
     return f"${v:,.0f}" if abs(v) >= 100 else f"${v:,.2f}"
+
+
+def _fmt_setting_usd(v: float) -> str:
+    """設定値の金額表示（整数なら整数・小数なら2桁）。
+
+    しきい値・上限のような設定値は、その額との比較の意味を持つ。_fmt_compact の
+    「$100 以上は整数」で丸めると、$100.49 のようなしきい値が凡例で $100 になり、
+    実際の判定と食い違う文章になるため、セント単位まで保つ（セント未満の桁は他の
+    金額表示と同じく表示せず、設定もその粒度を想定する）。
+    """
+    return f"${v:,.0f}" if v == int(v) else f"${v:,.2f}"

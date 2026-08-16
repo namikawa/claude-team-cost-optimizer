@@ -211,20 +211,24 @@ def test_section_is_omitted_without_product_features():
 # --- 設定から表示までの経路 ---
 
 def test_threshold_amount_comes_from_the_config(cfg, make_input, tmp_path):
-    """⚑ の凡例に出る金額は設定 → summary → テンプレートの順に運ぶ。"""
-    cfg["product_policy"]["supplementary_high_usd"] = 42.0
+    """⚑ の凡例に出る金額は設定 → summary → テンプレートの順に運ぶ。
+
+    しきい値は $100.49 にして、$100 以上でも小数部が凡例から落ちないことも固定する
+    （_fmt_compact の「$100 以上は整数」で丸めると、凡例が実際の判定と食い違う）。
+    """
+    cfg["product_policy"]["supplementary_high_usd"] = 100.49
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 300.0, net=0.0)]},
         members=["a@x.jp,Premium"],
     )
     result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    assert result.summary["supplementary_high_usd"] == 42.0
+    assert result.summary["supplementary_high_usd"] == 100.49
 
     out = tmp_path / "dashboard.html"
     write_html(result, out)
     html = out.read_text(encoding="utf-8")
     assert "<h2>Codeと他プロダクトの需要（API換算）</h2>" in html
-    assert "の需要が $42.00 以上" in html
+    assert "の需要が $100.49 以上" in html
 
 
 def test_dashboard_renders_without_a_product_column(cfg, tmp_path):
