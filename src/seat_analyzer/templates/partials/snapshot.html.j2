@@ -1,26 +1,26 @@
 
 {% if snapshot %}
-<h2><!--text:h_snapshot--></h2>
-<div class="card note">
-  <p>スナップショット: {{ snapshot.snap_list }}</p>
-  {% if not snapshot.judged %}<p>最新区間が {{ snapshot.latest_interval_days }} 日と短いため停止判定は行っていません。</p>{% endif %}
-</div>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th>{% for l in snapshot.labels %}<th class="num">{{ l }}</th>{% endfor %}<th class="num">最新区間の増分</th><th>判定</th></tr>
-{% for r in snapshot.rows %}
-<tr>
-  <td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td>
-  {% for c in r.cum_fmt %}<td class="num">{{ c }}</td>{% endfor %}
-  <td class="num">{{ r.delta_fmt }}</td>
-  <td>{% if r.stall %}<span class="cap">⚠️停止疑い</span>{% endif %}</td>
-</tr>
-{% endfor %}
-</table></div>
-{% if snapshot.stalled_capped or snapshot.billed_emerged %}
-<div class="card note"><ul>
-{% for x in snapshot.stalled_capped %}<li>{{ x.email }}: 上限停止の可能性。停止時点の累積 {{ x.cum_fmt }} は実効込み量の実測候補{% if x.loc_note %}。{{ x.loc_note }}{% endif %}。</li>{% endfor %}
-{% for x in snapshot.billed_emerged %}<li>{{ x.email }}: {{ x.interval_label }} で従量課金 {{ x.billed_fmt }} が発生（実効込み量は累積需要 {{ x.prev_fmt }}〜{{ x.curr_fmt }} の間）。</li>{% endfor %}
-</ul></div>
-{% endif %}
-<div class="note"><!--text:note_stall_caveat-->。</div>
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main">
+      <h2><!--text:h_snapshot--></h2>
+      <div class="hd-sub">スナップショット: {{ snapshot.snap_list }}{% if not snapshot.judged %}　最新区間が {{ snapshot.latest_interval_days }} 日と短いため停止判定は行っていません。{% endif %}</div>
+    </div>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>ユーザ</th>{% for l in snapshot.labels %}<th class="num">{{ l }}</th>{% endfor %}<th class="num">最新区間の増分</th><th>判定</th></tr></thead>
+      <tbody>
+{% for r in snapshot.rows %}      <tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td>{% for c in r.cum_fmt %}<td class="num{% if loop.last %} latest{% else %} sub{% endif %}">{{ c }}</td>{% endfor %}<td class="num {{ r.delta_cls }}">{{ r.delta_fmt }}</td><td class="flag">{% if r.stall %}⚠️停止疑い{% endif %}</td></tr>
+{% endfor %}      </tbody>
+    </table>
+  </div>
+{% if snapshot.stalled_capped or snapshot.billed_emerged %}  <div class="card-bd">
+    <ul class="notes">
+{% for x in snapshot.stalled_capped %}      <li>{{ x.email }}: 上限停止の可能性。停止時点の累積 {{ x.cum_fmt }} は実効込み量の実測候補{% if x.loc_note %}。{{ x.loc_note }}{% endif %}。</li>
+{% endfor %}{% for x in snapshot.billed_emerged %}      <li>{{ x.email }}: {{ x.interval_label }} で従量課金 {{ x.billed_fmt }} が発生（実効込み量は累積需要 {{ x.prev_fmt }}〜{{ x.curr_fmt }} の間）。</li>
+{% endfor %}    </ul>
+  </div>
+{% endif %}  <div class="card-ft"><!--text:note_stall_caveat-->。</div>
+</section>
 {% endif %}

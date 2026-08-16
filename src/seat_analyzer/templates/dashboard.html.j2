@@ -4,100 +4,148 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude Team シート最適化 — {{ scope }}</title>
-<style>{{ dashboard_css }}</style>
+<style>{{ dashboard_css|safe }}</style>
+<script>{{ dashboard_js|safe }}</script>
 </head>
-<body><div class="wrap">
-<h1>Claude Team シート最適化ダッシュボード <small>{{ scope }}</small></h1>
-
-<div class="cards">
-  <div class="card"><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}{% if s.n_unassigned %} / 未割当 {{ s.n_unassigned }}{% endif %}）</div></div>
-  <div class="card"><div class="v">${{ '%.0f' % s.seat_cost_now_usd }}</div><div class="l">現在のシート費用 /月</div></div>
-  <div class="card"><div class="v">${{ '%.0f' % s.total_api_cost_usd }}</div><div class="l">API換算利用額 /月</div></div>
-  <div class="card hl"><div class="v">${{ '%.0f' % s.est_monthly_saving_usd }}</div><div class="l">削減見込み /月（変更推奨 {{ s.n_change_recommended }} 名）</div></div>
-</div>
-<!--CREDIT_COMPOSITION-->
-<!--TREND_SECTION-->
-<!--SNAPSHOT_SECTION-->
-<!--CREDIT_SECTION-->
-<h2>ユーザ別 API 換算コスト</h2>
-<div class="card">
-{% for u in users_sorted %}
-  <div class="bar">
-    <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
-    <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_usd / max_cost * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('#9aa3ad' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div>{% if cost_guide %}<div class="guide g-median" style="left: {{ '%.1f' % cost_guide.median_pct }}%" title="中央値 {{ cost_guide.median_fmt }}"></div><div class="guide g-mean" style="left: {{ '%.1f' % cost_guide.mean_pct }}%" title="平均 {{ cost_guide.mean_fmt }}"></div>{% endif %}</div>
-    <div class="val">${{ '%.2f' % u.api_cost_usd }}{% if u.cap_suspected %}<span class="cap"> ⚠</span>{% endif %}</div>
-    <div class="rank">{{ u.rank_fmt }}</div>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="topbar-row">
+      <div class="topbar-left">
+        <div class="crumbs"><span class="org">{{ org }}</span><span>{{ month }}</span><span class="sep">/</span><span>Claude Team</span></div>
+        <h1 class="page-title">シート最適化ダッシュボード</h1>
+      </div>
+      <div class="topbar-right">
+        <div class="hero"><div class="hero-label">MONTHLY SAVING</div><div class="hero-value">{{ saving_fmt }}</div></div>
+        <div class="theme-switch"><button type="button" class="theme-btn" data-theme-set="light" title="ライト">Light</button><button type="button" class="theme-btn" data-theme-set="dark" title="ダーク">Dark</button><button type="button" class="theme-btn is-active" data-theme-set="auto" title="OS設定に追従">Auto</button></div>
+      </div>
+    </div>
+    <nav class="tabbar" role="tablist" aria-label="セクション">{% for t in tabs %}<button type="button" class="tab{% if loop.first %} is-active{% endif %}" role="tab" aria-selected="{{ 'true' if loop.first else 'false' }}" data-tab="{{ t.key }}">{{ t.label }}{% if t.count %}<span class="tab-count">{{ t.count }}</span>{% endif %}</button>{% endfor %}</nav>
   </div>
-{% endfor %}
-  <div class="note">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い　#n = API換算需要の順位（同額は同順位。シート未割当は — で母集団に入れない）{% if cost_guide %}<br>縦線: <span class="guide-key g-median"></span> 中央値 {{ cost_guide.median_fmt }} / <span class="guide-key g-mean"></span> 平均 {{ cost_guide.mean_fmt }}（順位と同じ母集団）{% endif %}</div>
+</header>
+<main class="main">
+
+<section class="tabpanel is-active" data-tab="overview" role="tabpanel">
+<h2 class="panel-title">概要</h2>
+<div class="stack">
+  <div class="kpis">
+    <div class="kpi"><div class="tag">MEMBERS</div><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}{% if s.n_unassigned %} / 未割当 {{ s.n_unassigned }}{% endif %}）</div></div>
+    <div class="kpi"><div class="tag">SEAT COST</div><div class="v">${{ '%.0f' % s.seat_cost_now_usd }}</div><div class="l">現在のシート費用 /月</div></div>
+    <div class="kpi"><div class="tag">API DEMAND</div><div class="v">${{ '%.0f' % s.total_api_cost_usd }}</div><div class="l">API換算利用額 /月</div></div>
+    <div class="kpi hl"><div class="tag">SAVING</div><div class="v">${{ '%.0f' % s.est_monthly_saving_usd }}</div><div class="l">削減見込み /月（変更推奨 {{ s.n_change_recommended }} 名）</div></div>
+  </div>
+  <div class="grid-2"><!--MONTHLY_SECTION--><!--TREND_SECTION--></div>
+  <div class="grid-2"><!--CREDIT_COMPOSITION--><!--MEMBER_CHANGES--></div>
+<!--DELTAS_SECTION--></div>
+</section>
+
+<section class="tabpanel" data-tab="actions" role="tabpanel">
+<h2 class="panel-title">推奨アクション</h2>
+<div class="stack">
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>推奨一覧</h2></div></div>
+    <div class="tablebox tall">
+      <table>
+        <thead><tr><th>ユーザ</th><th>シート（現 → 推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">Std時</th><th class="num">Prem時</th><th class="num">削減/月</th><th>判定</th></tr></thead>
+        <tbody>
+{% for u in users_sorted %}        <tr>
+          <td class="user" title="{{ u.email }}">{{ u.email.split('@')[0] }}</td>
+          <td class="seat"><span class="seat-{{ u.current_seat }}">{{ seat_short.get(u.current_seat, '?') }}</span>{%- if u.recommended_seat != u.current_seat %}<span class="arrow">→</span><span class="seat-{{ u.recommended_seat }} to">{{ seat_short.get(u.recommended_seat, '?') }}</span>{% endif %}</td>
+          <td class="num">{{ u.api_cost_fmt }}{% if u.cap_suspected %} <span class="cap">⚠</span>{% endif %}</td>
+          <td class="num"{% if u.billed_bg %} style="background:{{ u.billed_bg }}"{% endif %}>{{ u.billed_fmt }}</td>
+          <td class="num sub">{{ u.std_fmt }}</td>
+          <td class="num sub">{{ u.prem_fmt }}</td>
+          <td class="num save{% if u.saving_positive %} pos{% endif %}">{{ u.saving_fmt }}</td>
+          <td class="judge"><span class="badge {{ u.badge_class }}">{{ u.status }}</span>{% if u.confidence != '—' %}<span class="conf">確度{{ u.confidence }}</span>{% endif %}</td>
+        </tr>
+{% endfor %}        </tbody>
+      </table>
+    </div>
+  </section>
+  <div class="grid-2"><!--CREDIT_SECTION-->{% if judge_counts %}
+    <section class="card">
+      <div class="card-hd"><div class="hd-main"><h2>判定の内訳</h2></div></div>
+      <div class="card-bd">
+{% for j in judge_counts %}        <div class="jrow"><span class="label">{{ j.label }}</span><div class="track"><div class="fill {{ j.fill_class }}" style="width: {{ '%.1f' % j.pct }}%"></div></div><span class="n">{{ j.n }}</span></div>
+{% endfor %}      </div>
+    </section>
+{% endif %}  </div>
 </div>
+</section>
 
-<h2>推奨一覧</h2>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th><th>シート（現→推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">Std時</th><th class="num">Prem時</th><th class="num">削減/月</th><th>判定</th></tr>
-{% for u in users_sorted %}
-<tr>
-  <td class="user" title="{{ u.email }}">{{ u.email.split('@')[0] }}</td>
-  <td class="seat">
-    <span class="seat-{{ u.current_seat }}">{{ seat_short.get(u.current_seat, '?') }}</span>
-    {%- if u.recommended_seat != u.current_seat %} → <span class="seat-{{ u.recommended_seat }}"><b>{{ seat_short.get(u.recommended_seat, '?') }}</b></span>{% endif %}
-  </td>
-  <td class="num">{{ u.api_cost_fmt }}{% if u.cap_suspected %} <span class="cap">⚠</span>{% endif %}</td>
-  <td class="num"{% if u.billed_bg %} style="background:{{ u.billed_bg }}"{% endif %}>{{ u.billed_fmt }}</td>
-  <td class="num">{{ u.std_fmt }}</td>
-  <td class="num">{{ u.prem_fmt }}</td>
-  <td class="num">{{ u.saving_fmt }}</td>
-  <td class="judge"><span class="badge {{ u.badge_class }}">{{ u.status }}</span>{% if u.confidence != '—' %}<span class="conf">確度{{ u.confidence }}</span>{% endif %}</td>
-</tr>
-{% endfor %}
-</table></div>
+<section class="tabpanel" data-tab="members" role="tabpanel">
+<h2 class="panel-title">メンバー別</h2>
+<div class="stack">
+  <section class="card">
+    <div class="card-hd">
+      <div class="hd-main">
+        <h2>ユーザ別 API 換算コスト</h2>
+{% if cost_guide %}        <div class="hd-sub">中央値 {{ cost_guide.median_fmt }} / 平均 {{ cost_guide.mean_fmt }}</div>
+{% endif %}      </div>
+      <div class="legend"><span><i class="k-std"></i>Standard</span><span><i class="k-prem"></i>Premium</span>{% if cost_guide %}<span><i class="line k-median"></i>中央値</span><span><i class="line k-mean"></i>平均</span>{% endif %}</div>
+    </div>
+    <div class="card-bd bars-bd">
+      <div class="bars">
+{% if cost_guide %}        <div class="guides"><div class="guide g-median" style="left: {{ '%.1f' % cost_guide.median_pct }}%" title="中央値 {{ cost_guide.median_fmt }}"></div><div class="guide g-mean" style="left: {{ '%.1f' % cost_guide.mean_pct }}%" title="平均 {{ cost_guide.mean_fmt }}"></div></div>
+{% endif %}{% for u in users_sorted %}        <div class="bar">
+          <div class="rank">{{ u.rank_fmt }}</div>
+          <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
+          <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_usd / max_cost * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('var(--dim)' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div></div>
+          <div class="val">${{ '%.2f' % u.api_cost_usd }}{% if u.cap_suspected %}<span class="cap"> ⚠</span>{% endif %}</div>
+        </div>
+{% endfor %}      </div>
+    </div>
+    <div class="card-ft">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い　#n = API換算需要の順位（同額は同順位。シート未割当は — で母集団に入れない）{% if cost_guide %}<br>縦線: <span class="guide-key g-median"></span> 中央値 {{ cost_guide.median_fmt }} / <span class="guide-key g-mean"></span> 平均 {{ cost_guide.mean_fmt }}（順位と同じ母集団）{% endif %}</div>
+  </section>
 
-{% for grp in group_summaries %}
-<h2>{{ grp.heading }}</h2>
-<div class="tablebox"><table>
-<tr><th>{{ grp.col_label }}</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th>{% if grp.has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">変更推奨</th></tr>
-{% for t in grp.rows %}
-<tr>
-  <td>{{ t.group }}</td>
-  <td class="num">{{ t.n_fmt }}</td>
-  <td class="num">{{ t.seat_cost_fmt }}</td>
-  <td class="num">{{ t.api_fmt }}</td>
-  {% if grp.has_loc %}<td class="num">{{ t.loc_fmt }}</td>{% endif %}
-  <td class="num">{{ t.n_change_fmt }}</td>
-</tr>
-{% endfor %}
-</table></div>
-{% endfor %}
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>詳細利用状況</h2></div></div>
+    <div class="tablebox tall">
+      <table>
+        <thead><tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">API換算需要</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr></thead>
+        <tbody>
+{% for d in detail_rows %}        <tr><td class="user" title="{{ d.email }}">{{ d.email.split('@')[0] }}</td><td class="num sub">{{ d.in_fmt }}</td><td class="num sub">{{ d.out_fmt }}</td>{% if detail_has_loc %}<td class="num sub">{{ d.loc_fmt }}</td>{% endif %}<td class="num">{{ d.api_fmt }}</td><td class="wrap">{{ d.models }}</td><td class="wrap">{{ d.products }}</td></tr>
+{% endfor %}        </tbody>
+      </table>
+    </div>
+    <div class="card-ft">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
+  </section>
+<!--SNAPSHOT_SECTION--><!--PRODUCT_SECTION--></div>
+</section>
 
-<h2>詳細利用状況</h2>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">API換算需要</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr>
-{% for d in detail_rows %}
-<tr>
-  <td class="user" title="{{ d.email }}">{{ d.email.split('@')[0] }}</td>
-  <td class="num">{{ d.in_fmt }}</td>
-  <td class="num">{{ d.out_fmt }}</td>
-  {% if detail_has_loc %}<td class="num">{{ d.loc_fmt }}</td>{% endif %}
-  <td class="num">{{ d.api_fmt }}</td>
-  <td>{{ d.models }}</td>
-  <td>{{ d.products }}</td>
-</tr>
-{% endfor %}
-</table></div>
-<div class="note">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
-<!--PRODUCT_SECTION-->
-<!--STATS_SECTION-->
-<h2>前提と注意</h2>
-<div class="card note">
-  <ul>
-    <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
-    <li>「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。</li>
-    <li>込み利用量は非公開のため low/mid/high 3シナリオの感度分析付き（判定横の「確度」）。</li>
-    <li>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。{% if cap_supplement %}{{ cap_supplement }}。{% endif %}</li>
-    {% if disabled_note %}<li>{{ disabled_note }}。</li>{% endif %}
-    {% if has_team_summary %}<li><!--text:note_team_total-->。</li>{% endif %}
-    <li>判定に使用した月: {{ s.months_used | join(', ') }}（{{ s.hysteresis_months }}ヶ月ヒステリシス）。</li>
-  </ul>
+<section class="tabpanel" data-tab="org" role="tabpanel">
+<h2 class="panel-title">組織</h2>
+<div class="stack">
+  <div class="grid-2">
+{% for grp in group_summaries %}    <section class="card">
+      <div class="card-hd"><div class="hd-main"><h2>{{ grp.heading }}</h2></div>{% if not grp.include_unset %}<div class="hd-note">チーム未設定を除外</div>{% endif %}</div>
+      <div class="tablebox">
+        <table>
+          <thead><tr><th>{{ grp.col_label }}</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th>{% if grp.has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">変更推奨</th></tr></thead>
+          <tbody>
+{% for t in grp.rows %}          <tr><td>{{ t.group }}</td><td class="num sub">{{ t.n_fmt }}</td><td class="num">{{ t.seat_cost_fmt }}</td><td class="num">{{ t.api_fmt }}</td>{% if grp.has_loc %}<td class="num sub">{{ t.loc_fmt }}</td>{% endif %}<td class="num save{% if t.n_change > 0 %} pos{% endif %}">{{ t.n_change_fmt }}</td></tr>
+{% endfor %}          </tbody>
+        </table>
+      </div>
+    </section>
+{% endfor %}  </div>
+<!--STATS_SECTION-->  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>前提と注意</h2></div></div>
+    <div class="card-bd">
+      <ul class="notes assumptions">
+        <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
+        <li>「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。</li>
+        <li>込み利用量は非公開のため low/mid/high 3シナリオの感度分析付き（判定横の「確度」）。</li>
+        <li>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。{% if cap_supplement %}{{ cap_supplement }}。{% endif %}</li>
+{% if disabled_note %}        <li>{{ disabled_note }}。</li>
+{% endif %}{% if has_team_summary %}        <li><!--text:note_team_total-->。</li>
+{% endif %}        <li>判定に使用した月: {{ s.months_used | join(', ') }}（{{ s.hysteresis_months }}ヶ月ヒステリシス）。</li>
+      </ul>
+    </div>
+  </section>
 </div>
+</section>
 
-</div></body></html>
+</main>
+</body>
+</html>

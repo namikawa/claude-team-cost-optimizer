@@ -1,0 +1,20 @@
+
+{% if trend %}
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>月次推移</h2></div></div>
+  <div class="card-bd">
+    <div class="months">
+{% for m in trend.series %}      <div class="m-row">
+        <div class="m-month">{{ m.month }}</div>
+        <div class="m-tracks">
+          <div class="m-track"><div class="m-fill m-api" style="width: {{ '%.1f' % m.api_pct }}%"></div></div>
+          <div class="m-track"><div class="m-fill m-billed{% if m.billed_pos %} pos{% endif %}" style="width: {{ '%.1f' % m.billed_pct }}%"></div></div>
+        </div>
+        <div class="m-vals"><div class="api">{{ m.api_fmt }}</div><div class="billed">{{ m.billed_fmt }}</div></div>
+        <div class="m-active">{{ m.active }}名</div>
+      </div>
+{% endfor %}    </div>
+    <div class="legend"><span><i class="k-std"></i>API換算需要</span><span><i class="k-accent"></i>実課金</span><span>右端 = アクティブ人数</span></div>
+  </div>
+</section>
+{% endif %}

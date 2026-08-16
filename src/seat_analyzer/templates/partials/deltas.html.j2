@@ -1,0 +1,17 @@
+
+{% if trend and trend.changes %}
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main"><h2>主な増減</h2></div>
+    <div class="hd-note">前月比 / API換算需要</div>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>ユーザ</th><th class="num">前月</th><th class="num">当月</th><th class="num">増減</th></tr></thead>
+      <tbody>
+{% for c in trend.changes %}      <tr><td class="user" title="{{ c.email }}">{{ c.email.split('@')[0] }}</td><td class="num sub">{{ c.prev_fmt }}</td><td class="num">{{ c.curr_fmt }}</td><td class="num delta">{{ c.delta_fmt }}</td></tr>
+{% endfor %}      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}

@@ -1,15 +1,16 @@
 
 {% if code_diff %}
-<h2><!--text:h_code_diff--></h2>
-<div class="tablebox"><table>
-<tr><th>ユーザ</th>{% for l in code_diff.labels %}<th class="num">{{ l }}</th>{% endfor %}<th class="num">LoC 増分</th>{% if code_diff.has_prs %}<th class="num">PR 増分</th>{% endif %}</tr>
-{% for r in code_diff.rows %}
-<tr>
-  <td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td>
-  {% for c in r.loc_cum_fmt %}<td class="num">{{ c }}</td>{% endfor %}
-  <td class="num">{{ r.loc_delta_fmt }}</td>
-  {% if code_diff.has_prs %}<td class="num">{{ r.prs_delta_fmt }}</td>{% endif %}
-</tr>
-{% endfor %}
-</table></div>
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main"><h2><!--text:h_code_diff--></h2></div>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>ユーザ</th>{% for l in code_diff.labels %}<th class="num">{{ l }}</th>{% endfor %}<th class="num">LoC 増分</th>{% if code_diff.has_prs %}<th class="num">PR 増分</th>{% endif %}</tr></thead>
+      <tbody>
+{% for r in code_diff.rows %}      <tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td>{% for c in r.loc_cum_fmt %}<td class="num{% if loop.last %} latest{% else %} sub{% endif %}">{{ c }}</td>{% endfor %}<td class="num {{ r.loc_delta_cls }}">{{ r.loc_delta_fmt }}</td>{% if code_diff.has_prs %}<td class="num {{ r.prs_delta_cls }}">{{ r.prs_delta_fmt }}</td>{% endif %}</tr>
+{% endfor %}      </tbody>
+    </table>
+  </div>
+</section>
 {% endif %}

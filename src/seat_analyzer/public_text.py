@@ -41,7 +41,7 @@ PUBLIC_BASELINE_PATHS = (
 # 拡張子の網羅が実体からずれると baseline が縮み、公開済みの語を新たな開示として扱う
 _TEXT_SUFFIXES = (
     ".md", ".py", ".csv", ".yaml", ".yml", ".txt", ".html", ".toml", ".json",
-    ".css", ".j2",
+    ".css", ".js", ".j2",
 )
 
 
