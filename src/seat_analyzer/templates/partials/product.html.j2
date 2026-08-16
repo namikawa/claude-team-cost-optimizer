@@ -1,31 +1,35 @@
 
 {% if product %}
-<h2>Codeと他プロダクトの需要（API換算）</h2>
-{% if product.summary_line %}<div class="card note"><p>{{ product.summary_line }}</p></div>
-{% endif %}
-<div class="card">
-{% for r in product.rows %}
-  <div class="bar">
-    <div class="name" title="{{ r.email }}">{{ r.email.split('@')[0] }}</div>
-    <div class="track">{% if r.bar_kind == 'split' %}<div class="fill" style="width: {{ '%.1f' % r.bar_pct }}%; background: linear-gradient(to right, var(--ok) {{ '%.1f' % r.split_pct }}%, #9aa3ad {{ '%.1f' % r.split_pct }}%);"></div>{% elif r.bar_kind == 'unknown' %}<div class="fill" style="width: {{ '%.1f' % r.bar_pct }}%; background: repeating-linear-gradient(45deg, #b9c0c8 0, #b9c0c8 4px, #dfe3e8 4px, #dfe3e8 8px);"></div>{% endif %}</div>
-    <div class="val" style="width:150px">{{ r.val_fmt }}</div>
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main">
+      <h2>Codeと他プロダクトの需要（API換算）</h2>
+{% if product.summary_line %}      <div class="hd-sub">{{ product.summary_line }}</div>
+{% endif %}    </div>
+    <div class="legend"><span><i class="k-accent"></i>Code</span><span><i class="k-dim"></i>他プロダクト</span><span><i class="k-hatch"></i>内訳不明</span></div>
   </div>
-{% endfor %}
-  <div class="note">棒の色: <span style="color:var(--ok)">■ Code</span> / <span style="color:#9aa3ad">■ 他プロダクト</span>　斜線 = 内訳不明（Code の需要を確定できないユーザ）</div>
-</div>
+  <div class="card-bd bars-bd">
+    <div class="bars">
+{% for r in product.rows %}      <div class="bar">
+        <div class="name" title="{{ r.email }}">{{ r.email.split('@')[0] }}</div>
+        <div class="track">{% if r.bar_kind == 'split' %}<div class="fill" style="width: {{ '%.1f' % r.bar_pct }}%; background: linear-gradient(to right, var(--accent) {{ '%.1f' % r.split_pct }}%, var(--dim) {{ '%.1f' % r.split_pct }}%);"></div>{% elif r.bar_kind == 'unknown' %}<div class="fill fill-hatch" style="width: {{ '%.1f' % r.bar_pct }}%"></div>{% endif %}</div>
+        <div class="val wide">{{ r.val_fmt }}</div>
+      </div>
+{% endfor %}    </div>
+  </div>
+  <div class="card-ft">棒の色: <span class="ink-code">■ Code</span> / <span class="ink-dim">■ 他プロダクト</span>　斜線 = 内訳不明（Code の需要を確定できないユーザ）</div>
+</section>
 
-<div class="tablebox"><table>
-<tr><th>ユーザ</th><th class="num">需要（計）</th><th class="num">Code需要</th><th class="num">Code比率</th><th class="num">他product需要</th><th class="num">product数</th></tr>
-{% for r in product.rows %}
-<tr>
-  <td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td>
-  <td class="num">{{ r.total_fmt }}</td>
-  <td class="num">{{ r.code_fmt }}</td>
-  <td class="num">{{ r.share_fmt }}</td>
-  <td class="num">{{ r.other_fmt }}{% if r.flag %} <span class="cap">⚑</span>{% endif %}</td>
-  <td class="num">{{ r.breadth_fmt }}</td>
-</tr>
-{% endfor %}
-</table></div>
-<div class="note">対象は対象月のスペンドに明細のあるユーザです（利用ゼロのメンバーと組織サービス利用は含みません）。他product需要 = 需要（計） − Code需要。「—」は確定できなかった値で、0 ではありません。<br>⚑ = 補助プロダクト（設定で Code 以外に分類した product）の需要が {{ product.threshold_fmt }} 以上。Code が低く他が高いユーザは、自動での変更ではなくレビューの対象です（判定・推奨には未反映）。</div>
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>Code / 他product 需要の内訳</h2></div></div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>ユーザ</th><th class="num">需要（計）</th><th class="num">Code需要</th><th class="num">Code比率</th><th class="num">他product需要</th><th class="num">product数</th></tr></thead>
+      <tbody>
+{% for r in product.rows %}      <tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td><td class="num">{{ r.total_fmt }}</td><td class="num code">{{ r.code_fmt }}</td><td class="num sub">{{ r.share_fmt }}</td><td class="num sub">{{ r.other_fmt }}{% if r.flag %} <span class="cap">⚑</span>{% endif %}</td><td class="num sub">{{ r.breadth_fmt }}</td></tr>
+{% endfor %}      </tbody>
+    </table>
+  </div>
+  <div class="card-ft">対象は対象月のスペンドに明細のあるユーザです（利用ゼロのメンバーと組織サービス利用は含みません）。他product需要 = 需要（計） − Code需要。「—」は確定できなかった値で、0 ではありません。<br>⚑ = 補助プロダクト（設定で Code 以外に分類した product）の需要が {{ product.threshold_fmt }} 以上。Code が低く他が高いユーザは、自動での変更ではなくレビューの対象です（判定・推奨には未反映）。</div>
+</section>
 {% endif %}

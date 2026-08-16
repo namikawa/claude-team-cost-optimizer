@@ -1,26 +1,16 @@
 
 {% if trend %}
-<h2>前月からの変化</h2>
-<div class="card note">
-  <p>比較対象: {{ trend.compare_month }}{% if trend.gap_skipped %}（直前月が欠測のため直前の存在月と比較）{% endif %}</p>
-  <ul>
-    <li>利用開始 {{ trend.started|length }} 名{% if trend.started %}: {% for x in trend.started %}{{ x.email }}（{{ x.amount_fmt }}）{% if not loop.last %}, {% endif %}{% endfor %}{% else %}: なし{% endif %}</li>
-    <li>利用停止 {{ trend.stopped|length }} 名{% if trend.stopped %}: {% for x in trend.stopped %}{{ x.email }}（{{ x.amount_fmt }}）{% if not loop.last %}, {% endif %}{% endfor %}{% else %}: なし{% endif %}</li>
-    <li>実課金の新規発生 {{ trend.new_billed|length }} 名{% if trend.new_billed %}: {% for x in trend.new_billed %}{{ x.email }}（{{ x.amount_fmt }}）{% if not loop.last %}, {% endif %}{% endfor %}{% else %}: なし{% endif %}</li>
-  </ul>
-</div>
-{% if trend.changes %}
-<div class="tablebox"><table>
-<tr><th>主な増減</th><th class="num">前月</th><th class="num">当月</th><th class="num">増減</th></tr>
-{% for c in trend.changes %}
-<tr><td class="user" title="{{ c.email }}">{{ c.email.split('@')[0] }}</td><td class="num">{{ c.prev_fmt }}</td><td class="num">{{ c.curr_fmt }}</td><td class="num">{{ c.delta_fmt }}</td></tr>
-{% endfor %}
-</table></div>
-{% endif %}
-<div class="tablebox"><table>
-<tr><th>月</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">アクティブ</th></tr>
-{% for m in trend.series %}
-<tr><td>{{ m.month }}</td><td class="num">{{ m.api_fmt }}</td><td class="num">{{ m.billed_fmt }}</td><td class="num">{{ m.active }}</td></tr>
-{% endfor %}
-</table></div>
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main"><h2>前月からの変化</h2></div>
+    <div class="hd-note">比較対象: {{ trend.compare_month }}{% if trend.gap_skipped %}（直前月が欠測のため直前の存在月と比較）{% endif %}</div>
+  </div>
+  <div class="card-bd">
+{% for g in trend.groups %}    <div class="prev-group">
+      <div class="prev-hd"><span class="kind {{ g.cls }}">{{ g.kind }}</span><span class="prev-n">{{ g.people|length }} 名</span></div>
+{% if g.people %}      <div class="people">{% for p in g.people %}<div class="person"><span class="who" title="{{ p.email }}">{{ p.email.split('@')[0] }}</span><span class="amount">{{ p.amount_fmt }}</span></div>{% endfor %}</div>
+{% else %}      <div class="empty">なし</div>
+{% endif %}    </div>
+{% endfor %}  </div>
+</section>
 {% endif %}

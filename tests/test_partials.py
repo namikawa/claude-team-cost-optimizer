@@ -33,8 +33,10 @@ import pandas as pd
 from seat_analyzer.product_usage import ProductUsage
 from seat_analyzer.report.html import (
     _CODE_DIFF_HTML,
+    _DELTAS_HTML,
     _HTML_ENV,
     _MEMBER_CHANGES_HTML,
+    _MONTHLY_HTML,
     _PRODUCT_HTML,
     _SNAPSHOT_HTML,
     _STATS_HTML,
@@ -90,6 +92,39 @@ def _person(email: str, amount: float) -> dict:
 
 def _trend_html(**over) -> str:
     return _render(_TREND_HTML, trend=_trend_view(_trend(**over)))
+
+
+def _monthly_html(**over) -> str:
+    return _render(_MONTHLY_HTML, trend=_trend_view(_trend(**over)))
+
+
+def _deltas_html(**over) -> str:
+    return _render(_DELTAS_HTML, trend=_trend_view(_trend(**over)))
+
+
+def _prev_group(cls: str, kind: str, n: int, body: str) -> str:
+    """「前月からの変化」の1種別分のブロック（該当者の有無で body が入れ替わる）。"""
+    head = (
+        '    <div class="prev-group">\n'
+        f'      <div class="prev-hd"><span class="kind {cls}">{kind}</span>'
+        f'<span class="prev-n">{n} 名</span></div>\n'
+    )
+    return head + body + "    </div>\n"
+
+
+def _prev_none() -> str:
+    """該当者ゼロの本文。"""
+    return '      <div class="empty">なし</div>\n'
+
+
+def _prev_people(*people: tuple[str, str]) -> str:
+    """該当者ありの本文（ユーザ名は表示、メールは title に入る）。"""
+    rows = "".join(
+        f'<div class="person"><span class="who" title="{email}">'
+        f'{email.split("@")[0]}</span><span class="amount">{amount}</span></div>'
+        for email, amount in people
+    )
+    return f'      <div class="people">{rows}</div>\n'
 
 
 def _snapshot(**over) -> dict:
@@ -153,7 +188,7 @@ def test_trend_gap_skipped_note_only_when_month_missing():
     note = "（直前月が欠測のため直前の存在月と比較）"
     skipped = _trend_html(gap_skipped=True)
     normal = _trend_html(gap_skipped=False)
-    assert f"比較対象: 2026-06{note}</p>" in skipped
+    assert f"比較対象: 2026-06{note}</div>" in skipped
     assert _without(skipped, note) == normal        # 足すのはこの一文だけ
 
 
@@ -161,9 +196,10 @@ def test_trend_stopped_lists_people_when_present():
     """利用停止は該当者がいれば名前と金額を並べ、いなければ「なし」と書く。"""
     with_people = _trend_html(stopped=[_person("gone@x.jp", 120.0)])
     without = _trend_html()
-    # 一覧と「なし」は排他なので、対象の <li> を両側とも全文で固定する
-    assert "<li>利用停止 1 名: gone@x.jp（$120）</li>" in with_people
-    assert "<li>利用停止 0 名: なし</li>" in without
+    # 一覧と「なし」は排他なので、対象のブロックを両側とも全文で固定する
+    assert _prev_group("stopped", "利用停止", 1,
+                       _prev_people(("gone@x.jp", "$120"))) in with_people
+    assert _prev_group("stopped", "利用停止", 0, _prev_none()) in without
     assert "gone@x.jp" not in without
 
 
@@ -171,14 +207,15 @@ def test_trend_new_billed_says_none_when_empty():
     """実課金の新規発生は該当者ゼロでも項目を残し「なし」と書く。"""
     empty = _trend_html()
     present = _trend_html(new_billed=[_person("bill@x.jp", 40.0)])
-    assert "<li>実課金の新規発生 0 名: なし</li>" in empty
-    assert "<li>実課金の新規発生 1 名: bill@x.jp（$40.00）</li>" in present
+    assert _prev_group("billed", "実課金の新規発生", 0, _prev_none()) in empty
+    assert _prev_group("billed", "実課金の新規発生", 1,
+                       _prev_people(("bill@x.jp", "$40.00"))) in present
 
 
-def test_trend_multiple_people_are_comma_separated():
-    """同じ項目に複数名いるときだけ区切りを入れ、最後の1人の後ろには付けない。
+def test_trend_lists_every_person_of_each_kind():
+    """同じ項目に複数名いれば全員を並べる（種別ごとに独立した一覧になる）。
 
-    3項目それぞれに別のデータを渡し、<li> ごとに全文で照合する（同じデータを
+    3項目それぞれに別のデータを渡し、ブロックごとに全文で照合する（同じデータを
     使い回すと1項目だけが壊れても他の項目が assert を満たしてしまう）。
     """
     html = _trend_html(
@@ -187,19 +224,52 @@ def test_trend_multiple_people_are_comma_separated():
         new_billed=[_person("nb-1@x.jp", 40.50), _person("nb-2@x.jp", 30.25)],
     )
     # 3項目を「なし」の形へ1つずつ戻すと該当者ゼロのレンダリングと完全一致する
-    # （各項目が1回だけ描画され、余計な <li> が増えていないことまで固定する）
+    # （各項目が1回だけ描画され、余計なブロックが増えていないことまで固定する）
     restored = html
-    for li, none_li in (
-        ("<li>利用開始 2 名: st-1@x.jp（$120）, st-2@x.jp（$110）</li>",
-         "<li>利用開始 0 名: なし</li>"),
-        ("<li>利用停止 2 名: sp-1@x.jp（$220）, sp-2@x.jp（$210）</li>",
-         "<li>利用停止 0 名: なし</li>"),
-        ("<li>実課金の新規発生 2 名: nb-1@x.jp（$40.50）, nb-2@x.jp（$30.25）</li>",
-         "<li>実課金の新規発生 0 名: なし</li>"),
+    for cls, kind, people in (
+        ("started", "利用開始", (("st-1@x.jp", "$120"), ("st-2@x.jp", "$110"))),
+        ("stopped", "利用停止", (("sp-1@x.jp", "$220"), ("sp-2@x.jp", "$210"))),
+        ("billed", "実課金の新規発生", (("nb-1@x.jp", "$40.50"), ("nb-2@x.jp", "$30.25"))),
     ):
-        assert restored.count(li) == 1
-        restored = restored.replace(li, none_li, 1)
+        block = _prev_group(cls, kind, 2, _prev_people(*people))
+        assert restored.count(block) == 1
+        restored = restored.replace(block, _prev_group(cls, kind, 0, _prev_none()), 1)
     assert restored == _trend_html()
+
+
+# --- monthly.html.j2 / deltas.html.j2（trend と同じデータから作る別のカード） ---
+
+def test_monthly_section_absent_without_trend():
+    """比較できる前月が無い初月は月次推移のカードも出さない。"""
+    # 片側は trend が無い（描画すると Undefined で落ちる）ため差分の一致は取れない
+    assert _render(_MONTHLY_HTML, trend=_trend_view(None)).strip() == ""
+    assert "<h2>月次推移</h2>" in _monthly_html()
+
+
+def test_monthly_bars_share_one_scale():
+    """需要と実課金の棒は同じ物差し（需要の最大 = 100%）で引く。
+
+    別々に正規化すると、実課金の小さい月の棒が需要と同じ長さに見える。
+    """
+    html = _monthly_html(series=[
+        {"month": "2026-05", "api": 200.0, "billed": 50.0, "active": 2},
+        {"month": "2026-06", "api": 100.0, "billed": 0.0, "active": 1},
+    ])
+    assert '<div class="m-fill m-api" style="width: 100.0%"></div>' in html
+    assert '<div class="m-fill m-billed" style="width: 25.0%"></div>' in html
+    assert '<div class="m-fill m-api" style="width: 50.0%"></div>' in html
+    assert '<div class="m-fill m-billed" style="width: 0.0%"></div>' in html
+
+
+def test_deltas_table_only_when_there_are_changes():
+    """増減の大きいユーザがいない月は、主な増減のカードごと出さない。"""
+    # 片側は行が1つも無いため差分の一致は取れない（見出しも表も丸ごと出ない）
+    assert _deltas_html().strip() == ""
+    with_rows = _deltas_html(changes=[
+        {"email": "up@x.jp", "prev": 100.0, "curr": 260.0, "delta": 160.0}])
+    assert "<h2>主な増減</h2>" in with_rows
+    assert ('<tr><td class="user" title="up@x.jp">up</td><td class="num sub">$100</td>'
+            '<td class="num">$260</td><td class="num delta">+$160</td></tr>') in with_rows
 
 
 # --- snapshot.html.j2 ---
@@ -209,8 +279,8 @@ def test_snapshot_short_interval_note_only_when_unjudged():
     # latest_interval_days はこの注記の中でしか使われないため両側で揃えなくてよい
     unjudged = _snapshot_html(judged=False, latest_interval_days=3)
     judged = _snapshot_html(judged=True)
-    note = "<p>最新区間が 3 日と短いため停止判定は行っていません。</p>"
-    assert _without(unjudged, note) == judged       # 足すのはこの1要素だけ
+    note = "　最新区間が 3 日と短いため停止判定は行っていません。"
+    assert _without(unjudged, note) == judged       # 足すのはこの一文だけ
 
 
 def test_snapshot_supplement_block_only_when_findings():
@@ -223,17 +293,17 @@ def test_snapshot_supplement_block_only_when_findings():
         billed_emerged=[{"email": "bill@x.jp", "interval_label": "〜07-15→〜07-31",
                          "prev_cum": 180.0, "curr_cum": 260.0, "billed": 12.0}])
     stall_box = (
-        '<div class="card note"><ul>\n'
-        "<li>cap@x.jp: 上限停止の可能性。停止時点の累積 $210 は実効込み量の実測候補。</li>\n"
-        "\n</ul></div>\n\n"
+        '  <div class="card-bd">\n    <ul class="notes">\n'
+        "      <li>cap@x.jp: 上限停止の可能性。停止時点の累積 $210 は実効込み量の実測候補。</li>\n"
+        "    </ul>\n  </div>\n"
     )
     billed_box = (
-        '<div class="card note"><ul>\n\n'
-        "<li>bill@x.jp: 〜07-15→〜07-31 で従量課金 $12.00 が発生"
+        '  <div class="card-bd">\n    <ul class="notes">\n'
+        "      <li>bill@x.jp: 〜07-15→〜07-31 で従量課金 $12.00 が発生"
         "（実効込み量は累積需要 $180〜$260 の間）。</li>\n"
-        "</ul></div>\n\n"
+        "    </ul>\n  </div>\n"
     )
-    assert '<div class="card note"><ul>' not in none
+    assert '<ul class="notes">' not in none
     assert _without(with_stall, stall_box) == none
     assert _without(with_billed, billed_box) == none
 
@@ -259,13 +329,15 @@ def test_member_changes_empty_says_no_change():
     """スナップショットを取って変動が無かった月は「変動なし」と明示する。"""
     empty = _member_changes_html()                    # empty=True
     listed = _member_changes_html(empty=False)        # 一覧の枠のみ（各ループとも空）
-    head = ("\n\n<h2>月中のメンバー変動（スナップショット差分）</h2>\n"
-            '<div class="card note">\n'
-            "  <p>スナップショット時点: 07-05 / 07-16</p>\n")
-    # 「変動なし」と一覧は排他なので、両側とも全文で固定する。
-    # 一覧側の空行4本はシート変更・追加・削除・上限変更の各ループの跡。
-    assert empty == head + "  <p>変動なし</p>\n</div>\n"
-    assert listed == head + "  <ul>\n  \n  \n  \n  \n  </ul>\n</div>\n"
+    head = ('\n\n<section class="card">\n  <div class="card-hd">\n'
+            '    <div class="hd-main"><h2>月中のメンバー変動（スナップショット差分）</h2></div>\n'
+            '    <div class="hd-note">スナップショット時点: 07-05 / 07-16</div>\n'
+            "  </div>\n"
+            '  <div class="card-bd">\n')
+    tail = "  </div>\n</section>\n"
+    # 「変動なし」と一覧は排他なので、両側とも全文で固定する
+    assert empty == head + '    <div class="empty">当月の変動はありません。</div>\n' + tail
+    assert listed == head + '    <ul class="items">\n    </ul>\n' + tail
 
 
 def test_member_changes_lists_removed_members():
@@ -276,8 +348,8 @@ def test_member_changes_lists_removed_members():
         {"email": "gone@x.jp", "seat": "premium", "interval_label": interval}])
     added = _member_changes_html(empty=False, joined=[
         {"email": "new@x.jp", "seat": "premium", "interval_label": interval}])
-    li_removed = f"<li>gone@x.jp: {interval} で削除（Premium）</li>"
-    li_added = f"<li>new@x.jp: {interval} で追加（Premium）</li>"
+    li_removed = f"      <li>gone@x.jp: {interval} で削除（Premium）</li>\n"
+    li_added = f"      <li>new@x.jp: {interval} で追加（Premium）</li>\n"
     assert _without(removed, li_removed) == base      # 足すのはこの1行だけ
     assert _without(added, li_added) == base
 
@@ -288,10 +360,10 @@ def test_member_changes_credit_note_only_when_limit_changed():
     base = _member_changes_html(empty=False)          # 一覧の枠のみ（各ループとも空）
     changed = _member_changes_html(empty=False, credit_changes=[
         {"email": "c@x.jp", "interval_label": interval, "from": "無効", "to": "$150"}])
-    li = (f"<li>c@x.jp: {interval} で 追加クレジット上限 無効 → $150"
-          "（members-info 由来）</li>")
-    note = ("<p>追加クレジット上限を変更した月の課金は部分月のため、"
-            "上限に基づく判定は翌月から行ってください。</p>")
+    li = (f"      <li>c@x.jp: {interval} で 追加クレジット上限 無効 → $150"
+          "（members-info 由来）</li>\n")
+    note = ('    <p class="lead">追加クレジット上限を変更した月の課金は部分月のため、'
+            "上限に基づく判定は翌月から行ってください。</p>\n")
     assert note not in base
     assert _without(changed, li, note) == base        # 足すのはこの2要素だけ
 
@@ -301,7 +373,7 @@ def test_member_changes_credit_note_only_when_limit_changed():
 def test_code_diff_pr_column_only_when_prs_available():
     """PR 数を持つ code-analytics のときだけ PR 列を足す（見出しとセルの両方）。"""
     header = '<th class="num">PR 増分</th>'
-    cell = '<td class="num">+3</td>'
+    cell = '<td class="num gain">+3</td>'
     with_prs = _render(_CODE_DIFF_HTML, code_diff=_code_diff_view(_code_diff(True, 3)))
     without = _render(_CODE_DIFF_HTML, code_diff=_code_diff_view(_code_diff(False, None)))
     assert header not in without
@@ -339,9 +411,9 @@ def test_stats_row_is_added_per_metric():
                       median=1500.0, std=500.0, p25=1250.0, p75=1750.0, p90=1900.0,
                       maximum=2000.0),
     ]))
-    row = ('\n<tr><td>LoC</td><td class="num">2</td><td class="num">1,500</td>'
-           '<td class="num">1,500</td><td class="num">500</td><td class="num">1,250</td>'
-           '<td class="num">1,750</td><td class="num">1,900</td>'
+    row = ('      <tr><td>LoC</td><td class="num sub">2</td><td class="num">1,500</td>'
+           '<td class="num">1,500</td><td class="num sub">500</td><td class="num sub">1,250</td>'
+           '<td class="num sub">1,750</td><td class="num sub">1,900</td>'
            '<td class="num">2,000</td></tr>\n')
     assert _without(two, row) == one          # 足すのはこの1行だけ
 
@@ -412,9 +484,9 @@ def test_product_summary_line_only_when_amounts_are_confirmed():
     # 差分の一致ではなく両側を全文（と枠の不在）で固定する
     confirmed = _product_html()
     unconfirmed = _product_html(total_demand_usd=pd.NA, code_demand_share=pd.NA)
-    assert ('<div class="card note"><p>Code需要 $300 / 全需要 $400（75%）・対象 1名'
-            "</p></div>") in confirmed
-    assert '<div class="card note">' not in unconfirmed
+    assert ('<div class="hd-sub">Code需要 $300 / 全需要 $400（75%）・対象 1名'
+            "</div>") in confirmed
+    assert '<div class="hd-sub">' not in unconfirmed
 
 
 def test_product_bar_shape_follows_what_is_known():
@@ -424,11 +496,10 @@ def test_product_bar_shape_follows_what_is_known():
     hatched = _product_html(extra={}, code_demand_usd=pd.NA, code_demand_share=pd.NA)
     nothing = _product_html(extra={}, total_demand_usd=pd.NA, code_demand_share=pd.NA)
     assert ('<div class="track"><div class="fill" style="width: 100.0%; background: '
-            "linear-gradient(to right, var(--ok) 75.0%, #9aa3ad 75.0%);\"></div></div>"
+            "linear-gradient(to right, var(--accent) 75.0%, var(--dim) 75.0%);\"></div></div>"
             ) in split
-    assert ('<div class="track"><div class="fill" style="width: 100.0%; background: '
-            "repeating-linear-gradient(45deg, #b9c0c8 0, #b9c0c8 4px, #dfe3e8 4px, "
-            "#dfe3e8 8px);\"></div></div>") in hatched
+    assert ('<div class="track"><div class="fill fill-hatch" style="width: 100.0%">'
+            "</div></div>") in hatched
     assert '<div class="track"></div>' in nothing
 
 

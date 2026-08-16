@@ -66,6 +66,15 @@ _STATUS_BADGE_CLASS = {
     STATUS_EXCLUDED: "b-keep",
 }
 
+# .badge クラス → 「判定の内訳」の横棒の塗り。バッジの文字色と同じ色を棒に使うので、
+# 対応表を1つ挟んで両者がずれないようにする。
+_BADGE_FILL_CLASS = {
+    "b-change": "f-change",
+    "b-watch": "f-watch",
+    "b-unknown": "f-unknown",
+    "b-keep": "f-keep",
+}
+
 # 速報の一次判断ラベル → 既存 .badge クラス。PREVIEW_ORDER に無いラベルは b-keep に倒す。
 _PREVIEW_BADGE_CLASS = {
     LABEL_STD_CAND: "b-change", LABEL_PREM_CONSIDER: "b-change",   # アクション候補（緑）
@@ -96,6 +105,14 @@ def _apply_billed_bg(rows: list[dict], col: str) -> None:
         r["billed_bg"] = _billed_bg(float(r.get(col) or 0.0), max_billed)
 
 
+# 「前月からの変化」の種別（trend のキー, 見出し, バッジのクラス）。並びは表示順。
+_TREND_KINDS = (
+    ("started", "利用開始", "started"),
+    ("stopped", "利用停止", "stopped"),
+    ("new_billed", "実課金の新規発生", "billed"),
+)
+
+
 def _trend_view(trend: dict | None) -> dict | None:
     """dashboard.html 用に整形した「前月からの変化」データ（None なら None）。"""
     if not trend:
@@ -104,20 +121,33 @@ def _trend_view(trend: dict | None) -> dict | None:
     def _people(items: list[dict]) -> list[dict]:
         return [{"email": x["email"], "amount_fmt": _fmt_compact(x["amount"])} for x in items]
 
+    # 月次推移の棒は需要の最大を 100% とし、実課金も同じ物差しで並べる（別々に
+    # 正規化すると、実課金の小さい月の棒が需要と同じ長さに見える）
+    scale = max((float(s["api"]) for s in trend["series"]), default=0.0) or 1.0
     return {
         "compare_month": trend["compare_month"],
         "gap_skipped": trend["gap_skipped"],
-        "started": _people(trend["started"]),
-        "stopped": _people(trend["stopped"]),
-        "new_billed": _people(trend["new_billed"]),
+        "groups": [{"kind": label, "cls": cls, "people": _people(trend[key])}
+                   for key, label, cls in _TREND_KINDS],
         "changes": [{"email": c["email"], "prev_fmt": _fmt_compact(c["prev"]),
                      "curr_fmt": _fmt_compact(c["curr"]),
                      "delta_fmt": _fmt_delta(c["delta"], compact=True)}
                     for c in trend["changes"]],
         "series": [{"month": s["month"], "api_fmt": _fmt_compact(s["api"]),
-                    "billed_fmt": _fmt_compact(s["billed"]), "active": s["active"]}
+                    "billed_fmt": _fmt_compact(s["billed"]), "active": s["active"],
+                    "api_pct": _bar_pct(s["api"], scale),
+                    "billed_pct": _bar_pct(s["billed"], scale)}
                    for s in trend["series"]],
     }
+
+
+def _delta_class(delta: float, latest_cum: float) -> str:
+    """スナップショット増分の強調度（動いていない値は沈め、大きい増分だけ立てる）。"""
+    if delta <= 1.0:
+        return "dim"
+    if latest_cum > 0 and delta > latest_cum * 0.15:
+        return "up"
+    return "sub"
 
 
 def _snapshot_view(snapshot: dict | None) -> dict | None:
@@ -131,7 +161,9 @@ def _snapshot_view(snapshot: dict | None) -> dict | None:
         "latest_interval_days": snapshot["latest_interval_days"],
         "rows": [{"email": r["email"], "stall": r["stall"],
                   "cum_fmt": [_fmt_compact(c) for c in r["cum"]],
-                  "delta_fmt": _fmt_delta(r["latest_delta"], compact=True)}
+                  "delta_fmt": _fmt_delta(r["latest_delta"], compact=True),
+                  "delta_cls": _delta_class(
+                      float(r["latest_delta"]), float(r["cum"][-1]) if r["cum"] else 0.0)}
                  for r in snapshot["rows"]],
         "stalled_capped": [{"email": x["email"], "cum_fmt": _fmt_compact(x["cum_at_stall"]),
                             "loc_note": x.get("loc_note", "")}
@@ -142,6 +174,11 @@ def _snapshot_view(snapshot: dict | None) -> dict | None:
                             "billed_fmt": _fmt_compact(x["billed"])}
                            for x in snapshot["billed_emerged"]],
     }
+
+
+def _gain_class(delta) -> str:
+    """増分セルの強調度（増えた分だけ立て、0 と不明は沈める）。"""
+    return "gain" if delta is not None and delta > 0 else "gain zero"
 
 
 def _code_diff_view(code_diff: dict | None) -> dict | None:
@@ -155,8 +192,10 @@ def _code_diff_view(code_diff: dict | None) -> dict | None:
         "rows": [{"email": r["email"],
                   "loc_cum_fmt": [f"{c:,}" for c in r["loc_cum"]],
                   "loc_delta_fmt": _fmt_delta_int(r["loc_delta"]),
+                  "loc_delta_cls": _gain_class(r["loc_delta"]),
                   "prs_delta_fmt": (_fmt_delta_int(r["prs_delta"])
-                                    if has_prs and r["prs_delta"] is not None else "—")}
+                                    if has_prs and r["prs_delta"] is not None else "—"),
+                  "prs_delta_cls": _gain_class(r["prs_delta"] if has_prs else None)}
                  for r in code_diff["rows"]],
     }
 
@@ -189,6 +228,51 @@ def _grant_candidates_view(candidates: list) -> list[dict]:
     return [{"email": c["email"], "mode_label": _CREDIT_MODE_LABEL.get(c["mode"], c["mode"]),
              "added_fmt": _fmt_compact(c["added"])}
             for c in candidates]
+
+
+# 追加クレジットの状態の帯（サマリのキー, 見出し, 帯のクラス）。並びは表示順。
+_CREDIT_SEGMENTS = (
+    ("credit_enabled_n", "有効", "c-enabled"),
+    ("credit_disabled_n", "無効", "c-disabled"),
+    ("credit_unknown_n", "不明", "c-unknown"),
+)
+
+
+def _credit_bars(summary: dict) -> list[dict]:
+    """「追加クレジットの状態」の人数比の帯（該当なしなら空リスト）。
+
+    同じカードに出している人数をそのまま横幅の比にするだけで、集計は増やさない。
+    0 名の区画は帯に出さない（最小幅で細い線として残ると、いない区分がいるように見える）。
+    """
+    if not summary.get("credit_shown"):
+        return []
+    bars = []
+    for key, label, cls in _CREDIT_SEGMENTS:
+        n = int(summary.get(key, 0) or 0)
+        if n > 0:
+            bars.append({"cls": cls, "n": n, "label": f"{label} {n} 名"})
+    return bars
+
+
+def _judge_counts(users_sorted: list[dict]) -> list[dict]:
+    """「判定の内訳」の横棒（推奨一覧に現れた判定ごとの件数）。
+
+    数えるのは推奨一覧に並んでいる行そのもので、母集団も並び順も同じ表に閉じている。
+    行に1つも無い判定は棒を作らない（0 件の棒は読み手に何も渡さない）。
+    """
+    total = len(users_sorted)
+    if total == 0:
+        return []
+    # 表示順は推奨一覧と同じ。表に無い判定は末尾へ、行に現れた順で足す
+    seen = list(dict.fromkeys(u["status"] for u in users_sorted))
+    order = [s for s in STATUS_ORDER if s in seen] + [s for s in seen if s not in STATUS_ORDER]
+    rows = []
+    for status in order:
+        n = sum(1 for u in users_sorted if u["status"] == status)
+        badge = _STATUS_BADGE_CLASS.get(status, "b-keep")
+        rows.append({"label": status, "n": n, "pct": 100.0 * n / total,
+                     "fill_class": _BADGE_FILL_CLASS.get(badge, "f-keep")})
+    return rows
 
 
 def _stats_view(dists: list[Distribution]) -> list[dict]:
@@ -382,9 +466,17 @@ def _asset(name: str) -> str:
 # 速報専用の追加スタイル（バナー等）は速報テンプレート側で足す。
 _DASHBOARD_CSS = _asset("dashboard.css")
 
+# 同じく共有する JS（タブとテーマの切替だけ）。CSV 由来の値はここへ渡さない。
+_DASHBOARD_JS = _asset("dashboard.js")
+
 # 「前月からの変化」の HTML 断片（正式ダッシュボードのみ）。二重メンテを避けるため
 # テンプレート本体には placeholder を置き、from_string 前に差し込む。
 _TREND_HTML = _asset("partials/trend.html.j2")
+
+# 「月次推移」「主な増減」の HTML 断片（正式ダッシュボードのみ）。どちらも前月からの
+# 変化と同じ trend から作るが、概要タブの中では別のカードとして離れた場所に置く。
+_MONTHLY_HTML = _asset("partials/monthly.html.j2")
+_DELTAS_HTML = _asset("partials/deltas.html.j2")
 
 # 「月中の利用推移（スナップショット差分）」の HTML 断片（正式・速報の両ダッシュボードで共有）。
 _SNAPSHOT_HTML = _asset("partials/snapshot.html.j2")
@@ -421,8 +513,11 @@ _PREVIEW_HTML_TEMPLATE_SRC = _asset("preview-dashboard.html.j2")
 # 「検査への追加」が別々の作業になり、片方を忘れても静かに通る。
 _DASHBOARD_SECTIONS = {
     "<!--CREDIT_COMPOSITION-->": (_CREDIT_COMPOSITION_HTML,),
+    "<!--MONTHLY_SECTION-->": (_MONTHLY_HTML,),
     "<!--TREND_SECTION-->": (_TREND_HTML,),
-    "<!--SNAPSHOT_SECTION-->": (_SNAPSHOT_HTML, _CODE_DIFF_HTML, _MEMBER_CHANGES_HTML),
+    "<!--MEMBER_CHANGES-->": (_MEMBER_CHANGES_HTML,),
+    "<!--DELTAS_SECTION-->": (_DELTAS_HTML,),
+    "<!--SNAPSHOT_SECTION-->": (_SNAPSHOT_HTML, _CODE_DIFF_HTML),
     "<!--CREDIT_SECTION-->": (_GRANT_HTML,),
     "<!--PRODUCT_SECTION-->": (_PRODUCT_HTML,),
     "<!--STATS_SECTION-->": (_STATS_HTML,),
@@ -501,8 +596,12 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
     cap_usd = result.summary["grant_suggested_cap_usd"]
     html = _PREVIEW_HTML_TEMPLATE.render(
         dashboard_css=_DASHBOARD_CSS,
+        dashboard_js=_DASHBOARD_JS,
         scope=_scope_label(result),
+        org=result.org,
+        month=result.month,
         s=result.summary,
+        credit_bars=_credit_bars(result.summary),
         snapshot=_snapshot_view(result.snapshot),
         code_diff=_code_diff_view(result.code_diff),
         member_changes=_member_changes_view(result.member_changes),
@@ -538,6 +637,8 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         u["prem_fmt"] = _fmt_compact(u["cost_if_premium_usd"])
         u["saving_fmt"] = _fmt_compact(u.get("monthly_saving_usd"))
         u["badge_class"] = _STATUS_BADGE_CLASS.get(u["status"], "b-keep")
+        saving = u.get("monthly_saving_usd")
+        u["saving_positive"] = bool(pd.notna(saving) and float(saving or 0.0) > 0)
     # 観測された最大需要と、棒の幅の除算に使うスケールを分ける。スケールは 0 除算を
     # 避けるため 1.0 に倒すが、ガイド線の可否は倒す前の値で決める（_cost_guide 参照）
     max_demand = max((u["api_cost_usd"] for u in users_sorted), default=0.0)
@@ -565,6 +666,8 @@ def write_html(result: AnalysisResult, path: Path) -> None:
             "col_label": heading.replace("別サマリ", ""),
             "rows": rows,
             "has_loc": "loc_with_cc" in result.users.columns,
+            # （未設定）を落とした軸は縦合計が全体と一致しないので、その断りを表に添える
+            "include_unset": include_unset,
         })
     detail_rows, detail_has_loc = _detail_rows(result.users)
     for d in detail_rows:
@@ -573,10 +676,27 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         d["api_fmt"] = _fmt_compact(d["api"])
         d["loc_fmt"] = f"{d['loc']:,}" if d["loc"] is not None else ""
     cap_usd = result.summary["grant_suggested_cap_usd"]
+    # タブの件数バッジは、そのタブの中に並んでいる行の数をそのまま出す（集計はしない）
+    dept_rows = next((g["rows"] for g in group_summaries
+                      if g["heading"] == GROUP_AXES[0][1]), [])
+    tabs = [
+        {"key": "overview", "label": "概要", "count": result.summary["n_members"]},
+        {"key": "actions", "label": "推奨アクション", "count": len(users_sorted)},
+        {"key": "members", "label": "メンバー別", "count": len(detail_rows)},
+        {"key": "org", "label": "組織", "count": len(dept_rows)},
+    ]
     html = _HTML_TEMPLATE.render(
         dashboard_css=_DASHBOARD_CSS,
+        dashboard_js=_DASHBOARD_JS,
         scope=_scope_label(result),
+        org=result.org,
+        month=result.month,
+        tabs=tabs,
         s=result.summary,
+        # ヘッダーの削減見込みは SAVING の KPI カードと同じ値・同じ書式で出す
+        saving_fmt=f"${result.summary['est_monthly_saving_usd']:.0f}",
+        credit_bars=_credit_bars(result.summary),
+        judge_counts=_judge_counts(users_sorted),
         trend=_trend_view(result.trend),
         snapshot=_snapshot_view(result.snapshot),
         code_diff=_code_diff_view(result.code_diff),

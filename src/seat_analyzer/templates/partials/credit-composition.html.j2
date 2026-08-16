@@ -1,4 +1,10 @@
 
 {% if s.credit_shown %}
-<div class="card note">追加クレジット: 有効 {{ s.credit_enabled_n }} 名（上限計 ${{ '%.0f' % s.credit_cap_total_usd }}/月・無制限 {{ s.credit_unlimited_n }} 名） / 無効 {{ s.credit_disabled_n }} 名 / 不明 {{ s.credit_unknown_n }} 名</div>
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>追加クレジットの状態</h2></div></div>
+  <div class="card-bd">
+{% if credit_bars %}    <div class="creditbar">{% for c in credit_bars %}<span class="{{ c.cls }}" style="flex: {{ c.n }}" title="{{ c.label }}"></span>{% endfor %}</div>
+{% endif %}    <p class="lead">追加クレジット: 有効 {{ s.credit_enabled_n }} 名（上限計 ${{ '%.0f' % s.credit_cap_total_usd }}/月・無制限 {{ s.credit_unlimited_n }} 名） / 無効 {{ s.credit_disabled_n }} 名 / 不明 {{ s.credit_unknown_n }} 名</p>
+  </div>
+</section>
 {% endif %}
