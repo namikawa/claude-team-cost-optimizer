@@ -231,6 +231,16 @@ def _validate(cfg: dict) -> None:
     if not _finite(d.get("censoring_margin")) or d["censoring_margin"] <= 0:
         errors.append("decision.censoring_margin は正の数値が必要です")
 
+    # 追加クレジットの表示閾値。既定設定が必ず持ち、上書きはキーを消せないため常に検査する
+    # （NaN は上限到達の判定を黙って変え、非有限値は設定値の金額表示も壊す）
+    uc = cfg["usage_credits"]
+    if not isinstance(uc, dict):
+        errors.append("usage_credits セクションが辞書ではありません")
+    else:
+        for key in ("cap_tolerance_usd", "grant_suggested_cap_usd"):
+            if not _finite(uc.get(key)) or uc[key] < 0:
+                errors.append(f"usage_credits.{key} は 0 以上の有限な数値が必要です")
+
     # 需要指標の算出基準。綴り違いは auto と同じ扱いで黙って通るため列挙を検証する
     # （小文字化して照合するのは pricing.resolve_cost_basis に合わせるため）
     basis = cfg.get("cost_basis", "auto")

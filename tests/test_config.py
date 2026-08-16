@@ -281,6 +281,10 @@ def test_duplicate_merge_keys_are_rejected(tmp_path):
     ('model_prices:\n  patterns:\n    - { match: 123, input: 1.0, output: 2.0 }\n',
      "patterns[0]"),
     ("model_prices:\n  default:\n    input: .inf\n", "model_prices.default"),
+    # 非有限の閾値は上限到達の判定を黙って変え、設定値の金額表示も壊す
+    ("usage_credits:\n  cap_tolerance_usd: .nan\n", "cap_tolerance_usd"),
+    ("usage_credits:\n  grant_suggested_cap_usd: .inf\n", "grant_suggested_cap_usd"),
+    ("usage_credits:\n  grant_suggested_cap_usd: -1\n", "grant_suggested_cap_usd"),
 ])
 def test_values_that_break_later_stages_are_rejected(tmp_path, text, fragment):
     """種別は合っていても、後段の計算・照合が壊れる値は設定の時点で落とす。
