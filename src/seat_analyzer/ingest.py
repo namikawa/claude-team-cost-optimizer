@@ -280,6 +280,18 @@ def _resolve_duplicates(
     )
 
 
+def _csv_periods(directory: Path) -> list[tuple[FilePeriod, Path]]:
+    """ディレクトリ内の CSV のうち期間を解釈できたものを、ファイル名の昇順で返す。"""
+    if not directory.exists():
+        return []
+    entries: list[tuple[FilePeriod, Path]] = []
+    for p in sorted(directory.glob("*.csv")):
+        period = file_period(p)
+        if period:
+            entries.append((period, p))
+    return entries
+
+
 def _files_by_month(
     directory: Path, snapshot_month: str | None = None, snapshot_note: str | None = None
 ) -> tuple[dict[str, Path], dict[str, str]]:
@@ -289,12 +301,8 @@ def _files_by_month(
     「差分にも使う」向けに切り替える（月中推移の差分分析が発動する月のみ）。
     """
     by_month: dict[str, list[tuple[FilePeriod, Path]]] = {}
-    if not directory.exists():
-        return {}, {}
-    for p in sorted(directory.glob("*.csv")):
-        period = file_period(p)
-        if period:
-            by_month.setdefault(period.month, []).append((period, p))
+    for period, p in _csv_periods(directory):
+        by_month.setdefault(period.month, []).append((period, p))
     result: dict[str, Path] = {}
     warns: dict[str, str] = {}
     for month, entries in by_month.items():
@@ -606,14 +614,67 @@ def load_members_file(path: Path, cfg: dict) -> pd.DataFrame:
     return df
 
 
+# 対象月末より後のスナップショットを「通常運用の範囲」とみなす日数。月末までのデータは
+# 翌月の最初の営業日に取得するのが通常運用で、祝祭日でその日が数日ずれても同じ運用に
+# あたる。この幅を超えて離れたファイルだけ、対象月当時の構成と異なる旨の強い注意を付ける。
+_MONTH_END_NEAR_DAYS = 7
+
+
+def _month_end(month: str) -> dt.date:
+    """対象月（YYYY-MM）の末日。"""
+    year, mon = (int(x) for x in month.split("-"))
+    return dt.date(year, mon, calendar.monthrange(year, mon)[1])
+
+
+def is_near_month_end(source: Path | str, month: str) -> bool:
+    """ファイルが対象月末の直後（＝通常のエクスポート運用の範囲）かどうか。
+
+    対象月末より後のファイルを「当時の構成として扱ってよいか」の判断を1箇所に閉じる
+    ための述語。載せる警告の強さをここで揃えるので、日数の条件を呼び出し側へ書き写さない
+    こと。末日以前（対象月内・過去月）と、ファイル名から期間を解釈できない場合は False
+    （この述語が答えるのは「末日より後だが通常運用の範囲か」だけ）。
+    """
+    period = file_period(source)
+    if period is None:
+        return False
+    return 0 < (period.interval()[1] - _month_end(month)).days <= _MONTH_END_NEAR_DAYS
+
+
+def _nearest_to_month_end(
+    entries: list[tuple[FilePeriod, Path]], month: str
+) -> tuple[FilePeriod, Path, int]:
+    """対象月の末日に最も近いファイルと、その末日からの日数（負なら末日以前）を返す。
+
+    代表日はファイルの期間の終わり（単日スナップショットはその日、月のみはその月の
+    末日）を使い、3種の命名を1つの式で扱う。同距離のときは末日以前を優先し（対象月
+    より後の変更を含みえないため）、なお同じなら期間の広い方・ファイル名の昇順で決める
+    （選択がディレクトリの列挙順に依存しないようにする）。
+    """
+    month_end = _month_end(month)
+
+    def rank(entry: tuple[FilePeriod, Path]) -> tuple:
+        period, path = entry
+        start, end = period.interval()
+        delta = (end - month_end).days
+        return (abs(delta), delta > 0, -(end - start).days, path.name)
+
+    period, path = min(entries, key=rank)
+    return period, path, (period.interval()[1] - month_end).days
+
+
 def load_members(input_dir: Path, month: str, cfg: dict, snapshot_active: bool = False) -> LoadResult:
-    """対象月のメンバー一覧。無ければ直近の過去月にフォールバック（警告付き）。
+    """対象月のメンバー一覧。対象月の末日に最も近いスナップショットを採用する（警告付き）。
+
+    月末までのデータは翌月の最初の営業日に取得することが多く、対象月末時点の構成は翌月初の
+    ファイルに入っている。そのため月単位で1つに畳んでから月を選ぶのではなく、ファイル単位で
+    末日との距離が最小のものを採る。
 
     snapshot_active=True は、対象月に単日スナップショットが複数ありメンバー変動の差分分析が
     発動する場合で、重複解決の警告文言を「メンバー変動の検出にも使う」向けにする。
     """
+    directory = Path(input_dir) / "members"
     files, file_warns = _files_by_month(
-        Path(input_dir) / "members",
+        directory,
         snapshot_month=month if snapshot_active else None,
         snapshot_note="メンバー変動の検出",
     )
@@ -623,24 +684,30 @@ def load_members(input_dir: Path, month: str, cfg: dict, snapshot_active: bool =
             f"{input_dir}/members/ にメンバー一覧がありません"
             f"（例: members_{month}.csv。最低限 email,seat_type の2列で可）"
         )
-    if month in files:
-        path = files[month]
-    else:
-        earlier = [m for m in sorted(files) if m <= month]
-        if earlier:
-            path = files[earlier[-1]]
-            warnings.append(
-                f"members: {month} のファイルが無いため {path.name} を使用（シート構成が最新でない可能性）"
-            )
-        else:
-            # 過去分析（バックフィル）で当時の members が無いケース。未来月しか無い旨を明示する
-            path = files[sorted(files)[0]]
-            warnings.append(
-                f"members: {month} 以前のファイルが無いため未来月の {path.name} を使用。"
-                "対象月当時のシート構成と異なる可能性が高いため、判定は参考値として扱ってください"
-            )
-    used_month = month_of_file(path)
-    if used_month in file_warns:
+    entries = _csv_periods(directory)
+    used, path, delta = _nearest_to_month_end(entries, month)
+    used_month = used.month
+    if used_month < month:
+        warnings.append(
+            f"members: {month} のファイルが無いため {path.name} を使用（シート構成が最新でない可能性）"
+        )
+    elif used_month > month:
+        # 対象月末より後のファイル。同じ月の採らなかったファイルだけを未使用として挙げる
+        # （対象月内のスナップショットは月中のメンバー変動の検出に使うため未使用ではない）
+        others = ", ".join(
+            p.name for period, p in entries if p != path and period.month == used_month
+        )
+        note = "" if is_near_month_end(path, month) else (
+            "。対象月当時のシート構成と異なる可能性が高いため、判定は参考値として扱ってください"
+        )
+        warnings.append(
+            f"members: {month} 月末時点のスナップショットが無いため "
+            f"{path.name}（月末の {delta} 日後）を使用"
+            + (f"（未使用: {others}）" if others else "") + note
+        )
+    # 重複解決の警告は、その月の解決結果を実際に採った場合だけ転記する。対象月末より後の
+    # 月では「最新を使用」の解決結果と採用ファイルが食い違うため、転記すると嘘になる
+    if files.get(used_month) == path and used_month in file_warns:
         warnings.append(file_warns[used_month])
     df, w = _read_members_df(path, cfg)
     warnings.extend(w)
@@ -659,8 +726,7 @@ def _resolve_members_info_path(input_dir: Path, month: str | None) -> tuple[Path
     fixed = input_dir / "members-info.csv"
     warnings: list[str] = []
     if snapshots and month is not None:
-        year, mon = (int(x) for x in month.split("-"))
-        month_end = dt.date(year, mon, calendar.monthrange(year, mon)[1])
+        month_end = _month_end(month)
         on_or_before = [(p, path) for p, path in snapshots if p.start <= month_end]
         if on_or_before:
             path = on_or_before[-1][1]

@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 
+import pytest
+
 from seat_analyzer import analyze, ingest
 from seat_analyzer.cli import main
 from seat_analyzer.ingest import discover_orgs
@@ -391,6 +393,24 @@ def test_doctor_warns_members_month_fallback(make_input, capsys):
     )
     assert _doctor(input_dir, "--month", "2026-06") == 0
     assert "[warning] MISSING_MEMBERS" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("date", "warns"), [
+    ("2026-07-01", False),   # 月末までのデータを翌月の最初の営業日に取得する通常運用
+    ("2026-07-07", False),   # 通常運用の幅ちょうど（末日の7日後）
+    ("2026-07-08", True),    # 幅を超えると当時の構成と違いうるので従来どおり警告する
+])
+def test_doctor_members_snapshot_after_month_end(
+    make_input, write_member_snapshots, capsys, date, warns
+):
+    """対象月末より後の members を、通常運用の範囲かどうかで出し分ける。"""
+    input_dir = make_input(
+        {"2026-05": [spend_row("a@x.jp", 10.0)], "2026-06": [spend_row("a@x.jp", 12.0)]},
+        org="org-a",
+    )
+    write_member_snapshots(input_dir, {date: ["a@x.jp,Premium"]}, org="org-a")
+    assert _doctor(input_dir, "--month", "2026-06") == 0
+    assert ("[warning] MISSING_MEMBERS" in capsys.readouterr().out) is warns
 
 
 def test_doctor_json_output_is_pure_json(make_input, capsys):

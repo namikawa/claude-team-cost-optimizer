@@ -161,7 +161,11 @@ def test_future_members_fallback_warns_strongly(cfg, make_input):
         members=["a@x.jp,Premium"], members_month="2026-07",
     )
     result = analyze(input_dir, "2026-06", cfg, org="org-a")
-    assert any("未来月" in w for w in result.warnings)
+    # 対象月末から 31 日後＝通常運用（翌月初の取得）の幅を超えるので強い注意が付く
+    assert any(
+        "月末の 31 日後" in w and "参考値として扱ってください" in w
+        for w in result.warnings
+    )
 
 
 def test_manually_created_summary_org_rejected(make_input, tmp_path, capsys):

@@ -522,7 +522,12 @@ def inspect_input(
         else:
             members_df = members_result.df
             used_month = ingest.month_of_file(members_result.source)
-            if used_month != month:
+            # 対象月末の直後のファイルは通常の運用経路（月末までのデータを翌月の最初の
+            # 営業日に取得する）なので警告しない。ここで鳴ると毎月必ず出て、本当の異常が
+            # 埋もれる。過去月・末日から離れた未来月は当時の構成と違いうるので従来どおり
+            if used_month != month and not ingest.is_near_month_end(
+                members_result.source, month
+            ):
                 issues.append(_issue(
                     Severity.WARNING, IssueCode.MISSING_MEMBERS,
                     f"{month} のメンバー一覧が無いため {used_month} のファイルを使用しています"
