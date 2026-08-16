@@ -122,8 +122,9 @@ def _trend_view(trend: dict | None) -> dict | None:
         return [{"email": x["email"], "amount_fmt": _fmt_compact(x["amount"])} for x in items]
 
     # 月次推移の棒は需要の最大を 100% とし、実課金も同じ物差しで並べる（別々に
-    # 正規化すると、実課金の小さい月の棒が需要と同じ長さに見える）
-    scale = max((float(s["api"]) for s in trend["series"]), default=0.0) or 1.0
+    # 正規化すると、実課金の小さい月の棒が需要と同じ長さに見える）。需要が正の月が
+    # 1つも無いときは物差しが作れないので、そのまま渡して _bar_pct 側で棒を落とす
+    scale = max((float(s["api"]) for s in trend["series"]), default=0.0)
     return {
         "compare_month": trend["compare_month"],
         "gap_skipped": trend["gap_skipped"],
@@ -133,10 +134,13 @@ def _trend_view(trend: dict | None) -> dict | None:
                      "curr_fmt": _fmt_compact(c["curr"]),
                      "delta_fmt": _fmt_delta(c["delta"], compact=True)}
                     for c in trend["changes"]],
+        # billed_pos は「棒に最小幅を効かせてよいか」の印。幅 0% の要素に最小幅が
+        # 効くと、実課金が無い月にも棒が立っているように見える
         "series": [{"month": s["month"], "api_fmt": _fmt_compact(s["api"]),
                     "billed_fmt": _fmt_compact(s["billed"]), "active": s["active"],
                     "api_pct": _bar_pct(s["api"], scale),
-                    "billed_pct": _bar_pct(s["billed"], scale)}
+                    "billed_pct": _bar_pct(s["billed"], scale),
+                    "billed_pos": float(s["billed"]) > 0.0}
                    for s in trend["series"]],
     }
 
@@ -275,6 +279,17 @@ def _judge_counts(users_sorted: list[dict]) -> list[dict]:
     return rows
 
 
+def _org_tab_count(group_summaries: list[dict]) -> int:
+    """組織タブの件数バッジ（実際に描画されている軸の行数）。
+
+    軸は GROUP_AXES の2つ（部署・チーム）だが、片方しか値を持たない組織がある。
+    group_summaries には行のある軸だけが GROUP_AXES の順で入るので、その先頭
+    （部署があれば部署、無ければチーム）を数える。軸を持たない組織は 0 を返し、
+    テンプレート側でバッジそのものが出ない。
+    """
+    return len(group_summaries[0]["rows"]) if group_summaries else 0
+
+
 def _stats_view(dists: list[Distribution]) -> list[dict]:
     """dashboard.html 用に整形した分布表（対象がなければ空リスト）。"""
     view = []
@@ -345,7 +360,12 @@ def _bar_pct(value, scale: float) -> float:
     需要は cost_basis によっては負になりうる（返金等）。負の幅や 100% 超の幅を
     そのまま書くと CSS 側で宣言ごと捨てられ、棒の長さが他の行と比較できない値
     （幅の指定なし＝中身なりの長さ）になるため、描ける範囲へ丸める。
+
+    スケールが正でないときは棒を描かない（0%）。負のスケールで割ると符号が
+    打ち消され、値が小さいほど長い棒になる（全ての値が負の月は全部が最長になる）。
     """
+    if math.isnan(scale) or scale <= 0.0:
+        return 0.0
     return min(100.0, max(0.0, 100.0 * float(value) / scale))
 
 
@@ -676,14 +696,14 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         d["api_fmt"] = _fmt_compact(d["api"])
         d["loc_fmt"] = f"{d['loc']:,}" if d["loc"] is not None else ""
     cap_usd = result.summary["grant_suggested_cap_usd"]
-    # タブの件数バッジは、そのタブの中に並んでいる行の数をそのまま出す（集計はしない）
-    dept_rows = next((g["rows"] for g in group_summaries
-                      if g["heading"] == GROUP_AXES[0][1]), [])
+    # タブの件数バッジは、そのタブの中身の件数をそのまま出す（集計はしない）。概要は
+    # 先頭の KPI と同じメンバー数、推奨アクションとメンバー別はそれぞれの表の行数、
+    # 組織は描画された軸の行数。0 のときはテンプレート側でバッジを出さない
     tabs = [
         {"key": "overview", "label": "概要", "count": result.summary["n_members"]},
         {"key": "actions", "label": "推奨アクション", "count": len(users_sorted)},
         {"key": "members", "label": "メンバー別", "count": len(detail_rows)},
-        {"key": "org", "label": "組織", "count": len(dept_rows)},
+        {"key": "org", "label": "組織", "count": _org_tab_count(group_summaries)},
     ]
     html = _HTML_TEMPLATE.render(
         dashboard_css=_DASHBOARD_CSS,

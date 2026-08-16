@@ -256,9 +256,46 @@ def test_monthly_bars_share_one_scale():
         {"month": "2026-06", "api": 100.0, "billed": 0.0, "active": 1},
     ])
     assert '<div class="m-fill m-api" style="width: 100.0%"></div>' in html
-    assert '<div class="m-fill m-billed" style="width: 25.0%"></div>' in html
+    assert '<div class="m-fill m-billed pos" style="width: 25.0%"></div>' in html
     assert '<div class="m-fill m-api" style="width: 50.0%"></div>' in html
     assert '<div class="m-fill m-billed" style="width: 0.0%"></div>' in html
+
+
+def test_monthly_zero_billed_bar_has_no_minimum_width():
+    """実課金 0 の月の棒には最小幅の印を付けない。
+
+    幅 0% の要素に最小幅が効くと、実課金が発生していない月にも短い棒が立ち、
+    「少しだけ課金された月」と見分けが付かなくなる。
+    """
+    zero = _monthly_html(series=[{"month": "2026-06", "api": 100.0, "billed": 0.0,
+                                  "active": 1}])
+    positive = _monthly_html(series=[{"month": "2026-06", "api": 100.0, "billed": 0.01,
+                                      "active": 1}])
+    assert '<div class="m-fill m-billed" style="width: 0.0%"></div>' in zero
+    assert '<div class="m-fill m-billed pos" style="width: 0.0%"></div>' in positive
+
+
+def test_monthly_bars_disappear_without_a_positive_scale():
+    """需要が正の月が1つも無ければ棒を描かない（金額の表示は残す）。
+
+    需要は cost_basis によっては負になりうる。負の最大をそのまま物差しにすると
+    割り算で符号が打ち消され、最も小さい月が最長の棒になる。
+    """
+    html = _monthly_html(series=[
+        {"month": "2026-05", "api": -10.0, "billed": 0.0, "active": 1},
+        {"month": "2026-06", "api": -20.0, "billed": 0.0, "active": 1},
+    ])
+    assert html.count('style="width: 0.0%"') == 4      # 2ヶ月 × 需要/実課金
+    assert "width: 100.0%" not in html
+    assert "$-10.00" in html and "$-20.00" in html
+
+
+def test_monthly_billed_bar_stops_at_the_demand_scale():
+    """実課金が需要を上回る月でも、棒は物差しの端で止まる（幅の指定が消えない）。"""
+    html = _monthly_html(series=[{"month": "2026-06", "api": 10.0, "billed": 40.0,
+                                  "active": 1}])
+    assert '<div class="m-fill m-api" style="width: 100.0%"></div>' in html
+    assert '<div class="m-fill m-billed pos" style="width: 100.0%"></div>' in html
 
 
 def test_deltas_table_only_when_there_are_changes():

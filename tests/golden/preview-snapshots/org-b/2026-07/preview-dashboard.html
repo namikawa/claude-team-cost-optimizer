@@ -9,9 +9,19 @@
      Light を :root に置き、Dark は html[data-theme="dark"]（明示選択）と
      @media (prefers-color-scheme: dark)（Auto = 属性なし）の両方で効かせる。
      書体はシステムフォントのみを使う（自己完結 HTML なので外部参照を持たない）。
-     字送り・ウェイト・サイズスケールと tabular-nums はデザイン指定のまま。 */
+     字送り・ウェイト・サイズスケールと tabular-nums はデザイン指定のまま。
+
+     color-scheme はトークンと同じ場所で切り替える。スクロールバーやフォームの
+     既定色はこの宣言だけを見るため、両方を持たせたままにすると OS の設定が
+     選んだテーマと食い違ったときにネイティブ部品だけ逆の配色で残る。
+
+     文字に使う色は、実際に載る背景に対してコントラスト比 4.5:1 以上にする
+     （KPI の 32px のような大きい文字は 3:1）。比が最も低くなるのは、Light では
+     --muted が --surface-2 の上・--dim が行ホバーの --hover の上、Dark ではどちらも
+     --hover の上で、バッジの文字は両テーマとも各 *-soft の上。両テーマとも
+     tests/test_dashboard_shell.py が組み合わせごとに実測する。 */
   :root {
-    color-scheme: light dark;
+    color-scheme: light;
     --sans: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", sans-serif;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
             "Hiragino Sans", "Noto Sans JP", monospace;
@@ -22,20 +32,20 @@
     --line-2: #eef0ed;
     --ink: #14181a;
     --ink-2: #495256;
-    --muted: #7d878c;
+    --muted: #676f74;
     --hover: #f8f9f7;
-    --accent: #0f8a7e;
+    --accent: #0d796f;
     --accent-soft: #e2f2ef;
     --std: #2f6f9b;
     --std-soft: #e6eef5;
-    --prem: #b0651d;
+    --prem: #a8601c;
     --prem-soft: #f9eede;
-    --warn: #c14239;
+    --warn: #bd4038;
     --warn-soft: #fbeae8;
-    --amber: #a1761a;
+    --amber: #8d6717;
     --amber-soft: #faf1dd;
     --track: #e8ebe7;
-    --dim: #98a1a5;
+    --dim: #697478;
     --shadow: 0 1px 2px rgba(20,24,26,.05), 0 14px 32px -22px rgba(20,24,26,.22);
     /* ガイド線を載せる帯の左右余白。棒の行の「順位+名前」「金額」の列幅と揃える */
     --bar-head: 276px;
@@ -43,6 +53,7 @@
   }
   @media (prefers-color-scheme: dark) {
     html:not([data-theme="light"]) {
+      color-scheme: dark;
       --bg: #0c0f11;
       --surface: #15191b;
       --surface-2: #1b2022;
@@ -50,7 +61,7 @@
       --line-2: #202628;
       --ink: #e9edea;
       --ink-2: #b0b9ba;
-      --muted: #7d8789;
+      --muted: #848e90;
       --hover: #1b2123;
       --accent: #2fbfae;
       --accent-soft: #12302d;
@@ -63,11 +74,12 @@
       --amber: #d9a94a;
       --amber-soft: #2f2713;
       --track: #242a2c;
-      --dim: #798385;
+      --dim: #80898b;
       --shadow: 0 1px 2px rgba(0,0,0,.5), 0 16px 34px -24px rgba(0,0,0,.8);
     }
   }
   html[data-theme="dark"] {
+    color-scheme: dark;
     --bg: #0c0f11;
     --surface: #15191b;
     --surface-2: #1b2022;
@@ -75,7 +87,7 @@
     --line-2: #202628;
     --ink: #e9edea;
     --ink-2: #b0b9ba;
-    --muted: #7d8789;
+    --muted: #848e90;
     --hover: #1b2123;
     --accent: #2fbfae;
     --accent-soft: #12302d;
@@ -88,7 +100,7 @@
     --amber: #d9a94a;
     --amber-soft: #2f2713;
     --track: #242a2c;
-    --dim: #798385;
+    --dim: #80898b;
     --shadow: 0 1px 2px rgba(0,0,0,.5), 0 16px 34px -24px rgba(0,0,0,.8);
   }
 
@@ -177,8 +189,10 @@
   }
   html.js .panel-title { display: none; }
   .stack { display: flex; flex-direction: column; gap: 28px; }
+  /* 2列。列の下限は本文幅も上限にする（min() が無いと、本文が 400px を下回る
+     環境でページ全体に横スクロールが出る） */
   .grid-2 {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr));
     gap: 20px; align-items: start;
   }
   /* 条件つき section が両方とも出ない月に、空の行の分だけ間隔が空くのを避ける */
@@ -342,7 +356,9 @@
   .m-track { height: 11px; border-radius: 3px; background: var(--track); position: relative; overflow: hidden; }
   .m-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; height: 100%; }
   .m-api { background: var(--std); }
-  .m-billed { background: var(--accent); min-width: 2px; }
+  .m-billed { background: var(--accent); }
+  /* 最小幅は実課金が正の月にだけ効かせる（0 の月にも 2px の棒が立つのを避ける） */
+  .m-billed.pos { min-width: 2px; }
   .m-vals {
     width: 110px; display: flex; flex-direction: column; gap: 5px; text-align: right;
     font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums;
