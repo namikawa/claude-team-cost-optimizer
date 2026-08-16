@@ -546,6 +546,9 @@ def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
         "months_used": months_used,
         "hysteresis_months": n_hyst,
         "grant_suggested_cap_usd": _usage_credits_cfg(cfg)["grant_suggested_cap_usd"],
+        # 補助プロダクトの需要が多いことの閾値（表示用。判定には使わない）。
+        # レポート側がしきい値の金額を書けるように設定から運ぶ
+        "supplementary_high_usd": float(cfg["product_policy"]["supplementary_high_usd"]),
     })
     summary.update(_credit_summary(users))
     return summary

@@ -2,7 +2,7 @@
 
 - 最終更新: 2026-08-16
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 8E dashboardへのproduct軸の掲載
+- 次のタスク: Step 8D dashboardの再設計
 - 現在のリリーススコープ: v1.1.0 = Track 2（Step 6〜8。8F・8E・8Dを含む）。設計書のMilestone Aがここで完了する
 
 ## 1. この文書の目的
@@ -70,14 +70,14 @@
 |---|---|---:|---:|---:|---:|---:|
 | 0 | 実機Feasibility | 3 | 0 | 0 | 0 | 0 |
 | 1 | 入力と品質 | 5 | 0 | 0 | 0 | 0 |
-| 2 | Code中心の利用可視化 | 5 | 0 | 0 | 2 | 0 |
+| 2 | Code中心の利用可視化 | 6 | 0 | 0 | 1 | 0 |
 | 3 | シート変更履歴 | 0 | 0 | 0 | 4 | 0 |
 | 4 | V2判定 | 0 | 0 | 0 | 7 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **13** | **0** | **0** | **36** | **0** |
+| **合計** |  | **14** | **0** | **0** | **35** | **0** |
 
 ## 5. Step一覧
 
@@ -108,7 +108,7 @@
 | 8 | usage-summary.csv | `完了` | 2026-08-15 |
 | 8F | 統計参考値の掲載 | `完了` | 2026-08-16 |
 | 8G | report.mdの再構成（考察メイン化とdetails.mdの分離） | `完了` | 2026-08-16 |
-| 8E | dashboardへのproduct軸の掲載 | `未着手` |  |
+| 8E | dashboardへのproduct軸の掲載 | `完了` | 2026-08-16 |
 | 8D | dashboardの再設計 | `未着手` |  |
 
 Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザインは載せる中身が確定してから
@@ -179,6 +179,58 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-08-16 — Step 8E dashboardへのproduct軸の掲載
+
+ステータス: `完了`
+
+実装したこと:
+
+- dashboard.htmlの「詳細利用状況」直後にセクション「Codeと他プロダクトの需要（API換算）」を
+  追加した（提案書§5.3の掲載面。既存の詳細利用状況のproduct構成は利用回数基準で、
+  金額基準の分離はこのセクションが初）。組織サマリ1行・Code/他プロダクトの積み上げバー・
+  6列テーブル（需要計/Code需要/Code比率/他product需要/product数）・⚑印（supplementary_high）
+- データ源は`AnalysisResult.product_usage.features`のみで金額を再計算しない。確定できない
+  値は—表示で0と区別する（usage-summary.csvと同じ規則）。Codeの需要が1人も確定しない
+  組織ではセクションごと省略する
+- ⚑の凡例のしきい値金額は`summary["supplementary_high_usd"]`（configのproduct_policy由来）
+  から表示し、テンプレートへ直書きしない。凡例のproduct名の例示も同じ理由で置かない
+  （分類はpolicy駆動のため、設定を変えた組織で凡例が事実と食い違う）
+- スタイルは既存クラスの再利用とpartial内のinline styleで完結させた。dashboard.cssは
+  正式・速報の両HTMLに埋め込まれるため1バイトも変更していない。棒の2色塗り分けは
+  1つの`.fill`へのlinear-gradient（2要素のflexだと既存の角丸が接合部にも効くため）
+- 実装は`partials/product.html.j2`（新規）+`html.py`の`_product_view()`（表示専用）+
+  `_DASHBOARD_SECTIONS`への登録。設計書の仕様は着手時に具体化して書き起こした
+
+確認したこと:
+
+- 変わった出力はdashboard.htmlだけ。golden 4本の差分はすべて追加行のみで、report.md・
+  details.md・recommendations.csv・usage-summary.csv・preview.md・preview-dashboard.html・
+  summary/<月>.mdはバイト一致で不変
+- 欠損の—伝播・並び・サマリ行の分岐・棒の3形態（2色/斜線/なし）・負需要の幅クランプ・
+  0除算・表示条件をユニットテストで固定。product列の無い入力ではセクションが出ないだけで
+  他が崩れないことをend-to-endで固定
+- `uv run pytest`（680件成功。着手前は635件）・`uv run ruff check .`
+- コミットごとに差分を`check-text --diff`へ通し、業務情報の混入なしを確認
+
+外部レビュー（codex・3巡で収束）:
+
+- Round 1: 指摘1件（mid・採用）。⚑凡例のしきい値表示に`_fmt_compact`（$100以上は整数へ
+  丸める）を使っており、$100.49のような設定で凡例が実際の判定と食い違う。対応として
+  `_fmt_setting_usd`（整数なら整数・小数なら2桁）を新設し、同じ性質を持つ付与候補の
+  推奨初期上限（正式・速報のgrant_cap_fmt）にも適用した。既定値では出力不変
+- Round 2: 指摘3件（mid）。採用1 = `grant_suggested_cap_usd`が非有限値だと新書式の
+  `int(v)`で例外になる退行 → `usage_credits`をconfig検証の対象に追加（0以上の有限数値。
+  NaNのcap_tolerance_usdが上限到達判定を黙って変える既存の穴も同時に塞がる）。
+  formatter側のフォールバックは入れない（検証済みなら到達せず、黙って—に倒すのは
+  fail-closedに反する）。コメント修正のみ1 = セント未満の桁（$100.004等）は表示しない
+  挙動を維持し、docstringの過大な主張を「セント単位まで保つ」に正した（markdown側の
+  `_fmt_usd`と同じレポート全体の規則のため）。不採用1 = κ（追加クレジット上限）の表示も
+  $100以上で整数に丸まる件は、κが設定値ではなくユーザ単位の入力データであること、
+  修正するとpreview-dashboard.htmlと正式・速報共有のpartialに波及して本Stepの受け入れ
+  条件を超えることから見送り。**別PR候補として記録**（速報の残額表`kappa_fmt`と
+  `credits.py`の`_credit_display`。実データのκは3組織とも整数で当面の実害なし）
+- Round 3: 指摘なし（収束）
 
 ### 2026-08-16 — Step 8G report.mdの再構成（考察メイン化とdetails.mdの分離）
 
