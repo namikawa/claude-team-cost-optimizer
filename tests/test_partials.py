@@ -290,6 +290,21 @@ def test_monthly_bars_disappear_without_a_positive_scale():
     assert "$-10.00" in html and "$-20.00" in html
 
 
+def test_monthly_billed_bar_is_unmarked_without_a_positive_scale():
+    """棒を描かないと決めた月は、実課金が正でも最小幅の印を付けない。
+
+    印は幅 0% の棒を 2px に戻すため、印の条件（実課金の正負）と幅の条件
+    （スケールが描けるか）が別々だと、棒を落としたはずの月に短い棒が立つ。
+    """
+    html = _monthly_html(series=[
+        {"month": "2026-05", "api": -10.0, "billed": 5.0, "active": 1},
+        {"month": "2026-06", "api": -20.0, "billed": 0.0, "active": 1},
+    ])
+    assert "m-billed pos" not in html
+    assert html.count('<div class="m-fill m-billed" style="width: 0.0%"></div>') == 2
+    assert "$5.00" in html                    # 金額そのものは棒が無くても読める
+
+
 def test_monthly_billed_bar_stops_at_the_demand_scale():
     """実課金が需要を上回る月でも、棒は物差しの端で止まる（幅の指定が消えない）。"""
     html = _monthly_html(series=[{"month": "2026-06", "api": 10.0, "billed": 40.0,

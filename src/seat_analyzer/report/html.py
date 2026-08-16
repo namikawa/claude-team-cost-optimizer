@@ -125,6 +125,7 @@ def _trend_view(trend: dict | None) -> dict | None:
     # 正規化すると、実課金の小さい月の棒が需要と同じ長さに見える）。需要が正の月が
     # 1つも無いときは物差しが作れないので、そのまま渡して _bar_pct 側で棒を落とす
     scale = max((float(s["api"]) for s in trend["series"]), default=0.0)
+    drawable = _bar_scale_ok(scale)
     return {
         "compare_month": trend["compare_month"],
         "gap_skipped": trend["gap_skipped"],
@@ -135,12 +136,12 @@ def _trend_view(trend: dict | None) -> dict | None:
                      "delta_fmt": _fmt_delta(c["delta"], compact=True)}
                     for c in trend["changes"]],
         # billed_pos は「棒に最小幅を効かせてよいか」の印。幅 0% の要素に最小幅が
-        # 効くと、実課金が無い月にも棒が立っているように見える
+        # 効くと棒が立って見えるので、実課金が正で、かつ棒を描くと決めた月にだけ付ける
         "series": [{"month": s["month"], "api_fmt": _fmt_compact(s["api"]),
                     "billed_fmt": _fmt_compact(s["billed"]), "active": s["active"],
                     "api_pct": _bar_pct(s["api"], scale),
                     "billed_pct": _bar_pct(s["billed"], scale),
-                    "billed_pos": float(s["billed"]) > 0.0}
+                    "billed_pos": drawable and float(s["billed"]) > 0.0}
                    for s in trend["series"]],
     }
 
@@ -354,17 +355,28 @@ def _fmt_share_pct(value) -> str:
     return f"{round(100.0 * float(value))}%"
 
 
+def _bar_scale_ok(scale: float) -> bool:
+    """そのスケールで棒を描けるか（正の数か）。
+
+    需要は cost_basis によっては負になりうる（返金等）ため、最大が 0 以下の月が
+    ありうる。負のスケールで割ると符号が打ち消され、値が小さいほど長い棒になる
+    （全ての値が負の月は全部が最長になる）ので、そのときは棒そのものを描かない。
+
+    幅を出す側（_bar_pct）と、棒の見せ方を決める側（最小幅の印）で同じ条件を
+    見るための1箇所。別々に書くと片方だけが「描かない」と判断し、幅 0% の棒に
+    最小幅が効いて、描かないはずの棒が立つ。
+    """
+    return not math.isnan(scale) and scale > 0.0
+
+
 def _bar_pct(value, scale: float) -> float:
     """棒の幅（スケールに対する %）。スケールの外へ出る値は端へ寄せる。
 
-    需要は cost_basis によっては負になりうる（返金等）。負の幅や 100% 超の幅を
-    そのまま書くと CSS 側で宣言ごと捨てられ、棒の長さが他の行と比較できない値
-    （幅の指定なし＝中身なりの長さ）になるため、描ける範囲へ丸める。
-
-    スケールが正でないときは棒を描かない（0%）。負のスケールで割ると符号が
-    打ち消され、値が小さいほど長い棒になる（全ての値が負の月は全部が最長になる）。
+    負の幅や 100% 超の幅をそのまま書くと CSS 側で宣言ごと捨てられ、棒の長さが
+    他の行と比較できない値（幅の指定なし＝中身なりの長さ）になるため、描ける
+    範囲へ丸める。描けるスケールが無いときは 0%（_bar_scale_ok 参照）。
     """
-    if math.isnan(scale) or scale <= 0.0:
+    if not _bar_scale_ok(scale):
         return 0.0
     return min(100.0, max(0.0, 100.0 * float(value) / scale))
 
