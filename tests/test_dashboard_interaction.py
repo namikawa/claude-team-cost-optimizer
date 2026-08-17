@@ -62,6 +62,120 @@ def _card(body: str, heading: str) -> str:
     return found.group(0)
 
 
+def _js_function(name: str, source: str | None = None) -> str:
+    """JS の関数 name の本体（外側の波かっこの中身）。省略時は dashboard.js 全体から探す。
+
+    「その呼び出しがファイルのどこかにある」ことを見るだけの検査は、呼び出しを別の
+    関数へ移す変更を捕まえられない。本体を切り出してから見ることで、呼ぶ場所そのものを
+    固定する。位置の前後関係も同じ本体の中で比べる。
+
+    切り出しはかっこの対応だけで行う。文字列やコメントに波かっこを書くと切り出しに
+    失敗するが、そのときは黙って通るのではなくこの関数が落ちる。
+
+    既定値として _DASHBOARD_JS を束縛しない（既定引数は定義時に値を捕まえるため、
+    差し替えた JS で検査そのものを試せなくなる）。
+    """
+    source = _DASHBOARD_JS if source is None else source
+    head = source.find(f"function {name}(")
+    assert head >= 0, f"関数が見つかりません: {name}"
+    start = source.index("{", head)
+    depth = 0
+    for i in range(start, len(source)):
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start + 1:i]
+    raise AssertionError(f"関数の波かっこが閉じていません: {name}")
+
+
+def _css_rule(selector: str, source: str | None = None) -> str:
+    """CSS 規則 selector の宣言部（波かっこの中身）。
+
+    トークンの濃さは tests/test_dashboard_shell.py が実測するが、それだけだと
+    「そのトークンを実際に使っている」ことは誰も見ていない。使う側をここで固定する。
+    """
+    source = _DASHBOARD_CSS if source is None else source
+    found = re.search(rf"(?m)^[ \t]*{re.escape(selector)}\s*\{{(.*?)\}}", source, re.S)
+    assert found, f"CSS 規則が見つかりません: {selector}"
+    return found.group(1)
+
+
+def test_the_css_rule_extractor_matches_the_whole_selector():
+    """規則の切り出しそのものの検査（前方一致で別の規則を掴まないこと）。"""
+    src = "  .more { border: 1px; }\n  .more-n { color: red; }\n  .more:hover { color: blue; }\n"
+    assert _css_rule(".more", src).strip() == "border: 1px;"
+    assert _css_rule(".more-n", src).strip() == "color: red;"
+    assert _css_rule(".more:hover", src).strip() == "color: blue;"
+    with pytest.raises(AssertionError):
+        _css_rule(".nothing", src)
+
+
+def test_the_expand_button_has_an_edge_that_can_be_seen():
+    """展開ボタンの境界を担うのは塗りではなく枠線で、色は --dim。
+
+    面の色どうしが近いデザインなので、塗りの差ではカード面と見分けられない
+    （--surface-2 は --surface に対して 1.1:1 ほどしかない）。枠線が唯一の境界になる。
+    濃さそのものは tests/test_dashboard_shell.py が両テーマで実測する。
+    """
+    rule = _css_rule(".more")
+    assert "border: 1px solid var(--dim);" in rule
+    assert "background: var(--surface-2);" in rule
+    assert "color: var(--ink-2);" in rule
+
+    # hover は枠線だけでなく面と文字も accent 側へ寄せる（グラブバーの hover と同じ語彙）
+    hover = _css_rule(".more:hover")
+    for declaration in ("border-color: var(--accent)", "background: var(--accent-soft)",
+                        "color: var(--accent)"):
+        assert declaration in hover
+
+
+def test_the_search_and_filter_have_an_edge_that_can_be_seen():
+    """検索欄と判定フィルタも、触る前の状態で輪郭が見える（枠線は展開ボタンと同じ --dim）。
+
+    空の入力欄は輪郭が無いと見出しの一部と区別できず、絞り込めること自体に気づけない。
+    """
+    rule = _css_rule(".search, .filter")
+    assert "border: 1px solid var(--dim);" in rule
+    # フォーカス時は accent へ動かす（色相が変わるので、触っている間と区別が付く）
+    assert "border-color: var(--accent);" in _css_rule(".search:focus, .filter:focus")
+
+
+def test_the_selected_theme_segment_has_an_edge_that_can_be_seen():
+    """テーマ切替は、選択中の区画が面と影だけでなく枠線でも分かる。
+
+    面の差は切替の地に対して 1.1:1 ほどしかなく、影は Dark で効きが弱い。どちらも
+    無くなったわけではないので、枠線はその上に足す。切替の外枠は変えない。
+    """
+    # 枠線の場所は全区画で確保しておく（選択のたびに幅が変わって区画が動かないように）
+    assert "border: 1px solid transparent;" in _css_rule(".theme-btn")
+    active = _css_rule(".theme-btn.is-active")
+    assert "border-color: var(--dim);" in active
+    assert "background: var(--surface);" in active and "box-shadow: var(--shadow);" in active
+    # 外枠は据え置き（ヘッダーで常時見えるので、囲いまで濃くすると主張が強くなる）
+    assert "border: 1px solid var(--line);" in _css_rule(".theme-switch")
+
+
+def test_the_grab_bar_edge_is_left_alone_on_purpose():
+    """グラブバーの帯の上線は細いまま。掴めることはグリップ（--dim）が伝える。
+
+    上線を濃くすると表と脚注の間に強い横線が増え、情報より罫線が目立つ。据え置きが
+    意図であることを、グリップ側の色と併せてここで固定する。
+    """
+    assert "border-top: 1px solid var(--line);" in _css_rule("html.js .grab.is-on")
+    assert "background: var(--dim);" in _css_rule(".grab span")
+
+
+def test_the_function_extractor_reads_one_body_only():
+    """本体の切り出しそのものの検査（この道具が壊れると下の検査が空振りする）。"""
+    src = "function a() {\n  x();\n  if (y) { z(); }\n}\nfunction b() { w(); }\n"
+    assert _js_function("a", src).strip() == "x();\n  if (y) { z(); }"
+    assert _js_function("b", src).strip() == "w();"
+    with pytest.raises(AssertionError):
+        _js_function("missing", src)
+
+
 # --- JS が無い環境に操作できない UI を残さない ---
 
 # JS が作る/使う部品と、それを隠す土台の規則。どれも html.js の下でだけ表示する
@@ -218,20 +332,57 @@ def test_the_grab_bar_only_appears_where_dragging_changes_something():
     assert ".grab { display: none; }" in _DASHBOARD_CSS
     assert "html.js .grab.is-on {" in _DASHBOARD_CSS
     assert "html.js .grab {" not in _DASHBOARD_CSS
-    assert "list.box.scrollHeight > MIN_BOX_H" in _DASHBOARD_JS
+    # 付ける側と外す側の向きまで固定する（入れ替えると短い表にだけバーが出る）
+    body = _js_function("updateGrab")
+    taller = body.index("list.box.scrollHeight > MIN_BOX_H")
+    added = body.index('list.grab.classList.add("is-on")')
+    removed = body.index('list.grab.classList.remove("is-on")')
+    assert taller < added < removed
+    assert "else" in body[added:removed]
 
 
 def test_the_grab_bar_decision_is_refreshed_when_it_can_change():
-    """要否の判定を測り直す契機が2つとも残っている。
+    """要否の判定を測り直す契機が3つとも、それぞれの呼び元の中に残っている。
 
-    どちらが欠けても静かにずれる。行数の側が欠けると、絞り込んで短くなった表に
-    効かないバーが残る。タブの側が欠けると、隠れている間の測定値（0）のまま固定され、
-    初期表示以外のタブでバーが出ないままになる。
+    どれが欠けても静かにずれる。行数の側が欠けると、絞り込んで短くなった表に効かない
+    バーが残る。タブの側が欠けると、隠れている間の測定値（0）のまま固定され、初期表示
+    以外のタブでバーが出ないままになる。幅の側が欠けると、折り返しが変わって境界を
+    跨いだときに追従しない。
     """
     # 行数が変わる操作（検索・フィルタ・展開・並べ替え）はすべて apply を通る
-    assert "updateGrab(list);" in _DASHBOARD_JS
-    # タブは切り替えて初めて寸法が測れる
-    assert "each(lists, updateGrab);" in _DASHBOARD_JS
+    assert "updateGrab(list);" in _js_function("apply")
+
+    show = _js_function("showTab")
+    assert "refreshGrabs();" in show
+    # パネルの表示を切り替えた「あと」に測る。前に測ると隠れている側の 0 を掴む
+    assert show.index("refreshGrabs();") > show.index('panel.classList.add("is-active")')
+
+    # 幅の変化は箱そのものを見る。監視の登録は一覧を組み立てたあとでないと空振りする
+    init = _js_function("init")
+    assert init.index("watchSize();") > init.index("setUpTables();")
+
+
+def test_the_grab_bar_follows_a_change_of_window_size():
+    """幅が変わって内容の高さが最小高さの境界を跨いだときも追従する。
+
+    窓の寸法変化はどの環境でも拾えるので、これを条件なしで土台に置く。ResizeObserver の
+    側だけに寄せると、非対応の環境でそこだけ「動かせないバーが残る」状態に戻る。
+    """
+    watch = _js_function("watchSize")
+    assert 'window.addEventListener("resize", scheduleRefresh);' in watch
+    assert "new ResizeObserver(scheduleRefresh)" in watch
+    assert "observer.observe(list.box)" in watch
+    # 窓の監視は分岐の外（ResizeObserver の有無を見るより前）に置く
+    assert watch.index('addEventListener("resize"') < watch.index("window.ResizeObserver")
+    # 連続発火はまとめる。待ちにはタイマーを使う（描画が止まっている間もフレームと
+    # 違って必ず動くので、まとめ待ちの印が立ったまま戻らなくなることがない）
+    schedule = _js_function("scheduleRefresh")
+    assert "refreshTimer" in schedule and "setTimeout" in schedule
+    assert "requestAnimationFrame" not in schedule
+    assert "refreshGrabs();" in schedule
+    assert "refreshTimer = 0;" in schedule                  # 待ちの印は必ず戻す
+    # まとめた先が全部の一覧を測り直す（1つだけ測ると他が取り残される）
+    assert "each(lists, updateGrab);" in _js_function("refreshGrabs")
 
 
 def test_the_hidden_row_rule_comes_after_the_row_display_rules():

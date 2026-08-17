@@ -112,9 +112,9 @@
       tab.setAttribute("aria-selected", on ? "true" : "false");
     });
     /* 隠れている間は高さが測れない（display: none の中は 0 になる）ので、
-       表に出たところで測り直す。ここを外すと初期表示以外のタブでグラブバーが
-       出ないままになる */
-    each(lists, updateGrab);
+       パネルを切り替えた「あと」に測り直す。前に測ると隠れる直前・隠れたままの
+       寸法を掴み、初期表示以外のタブでグラブバーが出ないままになる */
+    refreshGrabs();
   }
 
   /* ---------- 表示文字列の数値化（ソートの比較キー） ---------- */
@@ -289,6 +289,48 @@
       list.grab.classList.add("is-on");
     } else {
       list.grab.classList.remove("is-on");
+    }
+  }
+
+  function refreshGrabs() {
+    each(lists, updateGrab);
+  }
+
+  /* 測るだけとはいえリサイズは連続で飛んでくるので、この間隔に1回へまとめる。
+
+     requestAnimationFrame ではなくタイマーで待つ。フレームは描画が止まっている間
+     （背景タブなど）配信されないことがあり、まとめ待ちの印を立てたまま次のフレームが
+     来ないと、以後の測り直しが全部落ちる。タイマーなら必ず動く。 */
+  var REFRESH_MS = 120;
+  var refreshTimer = 0;
+
+  function scheduleRefresh() {
+    if (refreshTimer) {
+      return;                            /* 待っている間に来た分は、この1回にまとまる */
+    }
+    refreshTimer = window.setTimeout(function () {
+      refreshTimer = 0;
+      refreshGrabs();
+    }, REFRESH_MS);
+  }
+
+  /* 幅が変わるとセルの折り返しが変わり、内容の高さが最小高さの境界を跨ぐことがある
+     （ウィンドウのリサイズ・ズーム・端末の回転はどれもこの経路を通る）。測り直さないと、
+     狭めたときに必要になったバーが出ず、広げたときに動かせないバーが残る。
+
+     窓の寸法変化はどの環境でも拾えるので、まずそれを土台に置く。そのうえで、箱そのものの
+     寸法を見られる環境では ResizeObserver も併せて使う（窓の大きさは変わらないまま
+     折り返しだけが変わる場合 ── 拡大縮小・書体の読み込み・別の要素の増減 ── を拾うため）。
+     ResizeObserver の側だけに寄せると、非対応の環境で監視が丸ごと落ちる。 */
+  function watchSize() {
+    window.addEventListener("resize", scheduleRefresh);
+    if (window.ResizeObserver) {
+      var observer = new ResizeObserver(scheduleRefresh);
+      each(lists, function (list) {
+        if (list.box) {
+          observer.observe(list.box);
+        }
+      });
     }
   }
 
@@ -524,6 +566,7 @@
     });
     setUpTables();
     setUpBars();
+    watchSize();          /* 監視の登録は一覧を組み立てたあと（箱が揃ってから） */
   }
 
   if (document.readyState === "loading") {
