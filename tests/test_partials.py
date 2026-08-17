@@ -28,12 +28,15 @@ tests/test_golden.py は生成物を丸ごと固定するが、examples/input �
 断片に新しい分岐を足したときは、ここにもケースを足すこと。
 """
 
+import re
+
 import pandas as pd
 
 from seat_analyzer.product_usage import ProductUsage
 from seat_analyzer.report.html import (
     _CODE_DIFF_HTML,
     _DELTAS_HTML,
+    _GRANT_HTML,
     _HTML_ENV,
     _MEMBER_CHANGES_HTML,
     _MONTHLY_HTML,
@@ -42,6 +45,7 @@ from seat_analyzer.report.html import (
     _STATS_HTML,
     _TREND_HTML,
     _code_diff_view,
+    _grant_candidates_view,
     _member_changes_view,
     _product_view,
     _snapshot_view,
@@ -88,6 +92,11 @@ def _trend(**over) -> dict:
 
 def _person(email: str, amount: float) -> dict:
     return {"email": email, "amount": amount}
+
+
+def _uname(email: str) -> str:
+    """箇条書き・注記の中のユーザ表記（表や棒と同じくローカル部 + title のフルアドレス）。"""
+    return f'<span class="uname" title="{email}">{email.split("@")[0]}</span>'
 
 
 def _trend_html(**over) -> str:
@@ -346,12 +355,13 @@ def test_snapshot_supplement_block_only_when_findings():
                          "prev_cum": 180.0, "curr_cum": 260.0, "billed": 12.0}])
     stall_box = (
         '  <div class="card-bd">\n    <ul class="notes">\n'
-        "      <li>cap@x.jp: 上限停止の可能性。停止時点の累積 $210 は実効込み量の実測候補。</li>\n"
+        f"      <li>{_uname('cap@x.jp')}: 上限停止の可能性。"
+        "停止時点の累積 $210 は実効込み量の実測候補。</li>\n"
         "    </ul>\n  </div>\n"
     )
     billed_box = (
         '  <div class="card-bd">\n    <ul class="notes">\n'
-        "      <li>bill@x.jp: 〜07-15→〜07-31 で従量課金 $12.00 が発生"
+        f"      <li>{_uname('bill@x.jp')}: 〜07-15→〜07-31 で従量課金 $12.00 が発生"
         "（実効込み量は累積需要 $180〜$260 の間）。</li>\n"
         "    </ul>\n  </div>\n"
     )
@@ -400,8 +410,8 @@ def test_member_changes_lists_removed_members():
         {"email": "gone@x.jp", "seat": "premium", "interval_label": interval}])
     added = _member_changes_html(empty=False, joined=[
         {"email": "new@x.jp", "seat": "premium", "interval_label": interval}])
-    li_removed = f"      <li>gone@x.jp: {interval} で削除（Premium）</li>\n"
-    li_added = f"      <li>new@x.jp: {interval} で追加（Premium）</li>\n"
+    li_removed = f"      <li>{_uname('gone@x.jp')}: {interval} で削除（Premium）</li>\n"
+    li_added = f"      <li>{_uname('new@x.jp')}: {interval} で追加（Premium）</li>\n"
     assert _without(removed, li_removed) == base      # 足すのはこの1行だけ
     assert _without(added, li_added) == base
 
@@ -412,12 +422,51 @@ def test_member_changes_credit_note_only_when_limit_changed():
     base = _member_changes_html(empty=False)          # 一覧の枠のみ（各ループとも空）
     changed = _member_changes_html(empty=False, credit_changes=[
         {"email": "c@x.jp", "interval_label": interval, "from": "無効", "to": "$150"}])
-    li = (f"      <li>c@x.jp: {interval} で 追加クレジット上限 無効 → $150"
+    li = (f"      <li>{_uname('c@x.jp')}: {interval} で 追加クレジット上限 無効 → $150"
           "（members-info 由来）</li>\n")
     note = ('    <p class="lead">追加クレジット上限を変更した月の課金は部分月のため、'
             "上限に基づく判定は翌月から行ってください。</p>\n")
     assert note not in base
     assert _without(changed, li, note) == base        # 足すのはこの2要素だけ
+
+
+# --- 箇条書き・注記のユーザ表記（member-changes / snapshot / grant） ---
+
+def test_bullet_lists_show_the_local_part_and_keep_the_address_in_title():
+    """箇条書き・注記のユーザ表記を、表や棒と同じローカル部 + title に揃える。
+
+    HTML で完全なメールアドレスが本文に出るのはこの3断片だけだった。突合は「その
+    アドレスの出現がすべて title の中である」ことで行う（表記を1箇所だけ戻しても落ちる）。
+    md 側（report.md / details.md / preview.md）は別経路で組み立てており、完全な
+    アドレスのままが正しいのでここでは触らない。
+    """
+    interval = "07-05→07-16"
+    # 断片ごとの (HTML, 箇条書き・注記の件数)。件数まで持つのは、1箇所だけ表記が
+    # 戻ったときに「全部 title の中」の検査だけでは通ってしまうため
+    cases = {
+        "member-changes": (4, _member_changes_html(empty=False, seat_changes=[
+            {"email": "seat@x.jp", "from": "standard", "to": "premium",
+             "interval_label": interval}], joined=[
+            {"email": "join@x.jp", "seat": "premium", "interval_label": interval}], left=[
+            {"email": "left@x.jp", "seat": "premium", "interval_label": interval}],
+            credit_changes=[{"email": "credit@x.jp", "interval_label": interval,
+                             "from": "無効", "to": "$150"}])),
+        "snapshot": (2, _snapshot_html(
+            stalled_capped=[{"email": "cap@x.jp", "cum_at_stall": 210.0, "loc_note": ""}],
+            billed_emerged=[{"email": "bill@x.jp", "interval_label": interval,
+                             "prev_cum": 180.0, "curr_cum": 260.0, "billed": 12.0}])),
+        "grant": (1, _render(_GRANT_HTML, grant_cap_fmt="$150",
+                             grant_candidates=_grant_candidates_view(
+                                 [{"email": "grant@x.jp", "mode": "disabled",
+                                   "added": 270.0}]))),
+    }
+    for name, (n_bullets, html) in cases.items():
+        found = re.findall(r"[\w.+-]+@[\w.-]+", html)
+        assert found, f"{name}: メールアドレスが1つも描画されていません"
+        for email in found:
+            assert html.count(email) == html.count(f'title="{email}"'), (
+                f"{name}: {email} が title の外に出ています")
+        assert html.count('<span class="uname" ') == n_bullets
 
 
 # --- code-diff.html.j2 ---

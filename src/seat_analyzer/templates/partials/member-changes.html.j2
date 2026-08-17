@@ -8,10 +8,10 @@
   <div class="card-bd">
 {% if member_changes.empty %}    <div class="empty">当月の変動はありません。</div>
 {% else %}    <ul class="items">
-{% for c in member_changes.seat_changes %}      <li>{{ c.email }}: {{ c.interval_label }} で {{ c.from_label }} → {{ c.to_label }}</li>
-{% endfor %}{% for j in member_changes.joined %}      <li>{{ j.email }}: {{ j.interval_label }} で追加（{{ j.seat_label }}）</li>
-{% endfor %}{% for x in member_changes.left %}      <li>{{ x.email }}: {{ x.interval_label }} で削除（{{ x.seat_label }}）</li>
-{% endfor %}{% for c in member_changes.credit_changes %}      <li>{{ c.email }}: {{ c.interval_label }} で 追加クレジット上限 {{ c.from }} → {{ c.to }}（members-info 由来）</li>
+{% for c in member_changes.seat_changes %}      <li><span class="uname" title="{{ c.email }}">{{ c.email.split('@')[0] }}</span>: {{ c.interval_label }} で {{ c.from_label }} → {{ c.to_label }}</li>
+{% endfor %}{% for j in member_changes.joined %}      <li><span class="uname" title="{{ j.email }}">{{ j.email.split('@')[0] }}</span>: {{ j.interval_label }} で追加（{{ j.seat_label }}）</li>
+{% endfor %}{% for x in member_changes.left %}      <li><span class="uname" title="{{ x.email }}">{{ x.email.split('@')[0] }}</span>: {{ x.interval_label }} で削除（{{ x.seat_label }}）</li>
+{% endfor %}{% for c in member_changes.credit_changes %}      <li><span class="uname" title="{{ c.email }}">{{ c.email.split('@')[0] }}</span>: {{ c.interval_label }} で 追加クレジット上限 {{ c.from }} → {{ c.to }}（members-info 由来）</li>
 {% endfor %}    </ul>
 {% if member_changes.credit_changes %}    <p class="lead"><!--text:note_credit_change-->。</p>
 {% endif %}{% endif %}  </div>

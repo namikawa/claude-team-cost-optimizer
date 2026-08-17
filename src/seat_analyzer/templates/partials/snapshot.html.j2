@@ -17,8 +17,8 @@
   </div>
 {% if snapshot.stalled_capped or snapshot.billed_emerged %}  <div class="card-bd">
     <ul class="notes">
-{% for x in snapshot.stalled_capped %}      <li>{{ x.email }}: 上限停止の可能性。停止時点の累積 {{ x.cum_fmt }} は実効込み量の実測候補{% if x.loc_note %}。{{ x.loc_note }}{% endif %}。</li>
-{% endfor %}{% for x in snapshot.billed_emerged %}      <li>{{ x.email }}: {{ x.interval_label }} で従量課金 {{ x.billed_fmt }} が発生（実効込み量は累積需要 {{ x.prev_fmt }}〜{{ x.curr_fmt }} の間）。</li>
+{% for x in snapshot.stalled_capped %}      <li><span class="uname" title="{{ x.email }}">{{ x.email.split('@')[0] }}</span>: 上限停止の可能性。停止時点の累積 {{ x.cum_fmt }} は実効込み量の実測候補{% if x.loc_note %}。{{ x.loc_note }}{% endif %}。</li>
+{% endfor %}{% for x in snapshot.billed_emerged %}      <li><span class="uname" title="{{ x.email }}">{{ x.email.split('@')[0] }}</span>: {{ x.interval_label }} で従量課金 {{ x.billed_fmt }} が発生（実効込み量は累積需要 {{ x.prev_fmt }}〜{{ x.curr_fmt }} の間）。</li>
 {% endfor %}    </ul>
   </div>
 {% endif %}  <div class="card-ft"><!--text:note_stall_caveat-->。</div>

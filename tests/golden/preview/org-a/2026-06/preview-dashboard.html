@@ -432,11 +432,74 @@
   .notes li::before { content: "—"; color: var(--dim); }
   .notes.assumptions li { font-size: 12.5px; line-height: 1.85; }
   ul.items, ul.notes { margin: 0; padding: 0; list-style: none; }
+  /* 箇条書き・注記の中のユーザ表記。表や棒と同じく、出すのはローカル部だけで
+     完全なメールアドレスは title に持たせる */
+  .uname { font-weight: 500; color: var(--ink); }
   .callout {
     padding: 12px 14px; background: var(--accent-soft); border-radius: 10px;
     font-size: 12.5px; line-height: 1.7;
   }
   .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* ---------- 対話（列ソート・検索・折りたたみ・高さ変更） ----------
+     この節の部品は押せて初めて意味を持つので、JS が付ける html.js の下でだけ出す。
+     JS が動かない環境ではツールバーもグラブバーも展開ボタンも現れず、行はサーバが
+     書き出したまま全件が並ぶ（折りたたみは JS 側だけで行い、サーバは行を削らない）。 */
+  .toolbar { display: none; }
+  html.js .toolbar {
+    display: flex; align-items: center; align-self: center; gap: 10px; flex-wrap: wrap;
+  }
+  .search, .filter {
+    padding: 7px 11px; background: var(--surface-2);
+    border: 1px solid var(--line); border-radius: 8px;
+    color: var(--ink); font-family: var(--sans); font-size: 12.5px;
+    -webkit-appearance: none; appearance: none;
+    transition: background .15s, border-color .15s;
+  }
+  .search { width: 200px; }
+  .search::placeholder { color: var(--muted); }
+  .filter { cursor: pointer; }
+  .search:focus, .filter:focus { outline: none; border-color: var(--accent); }
+  .list-count {
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+
+  /* ソート可能なヘッダ（クラスは JS が付ける） */
+  th.sortable { cursor: pointer; transition: color .15s; }
+  th.sortable:hover { color: var(--ink); }
+  .sort-ind { display: inline-block; min-width: 10px; margin-left: 6px; color: var(--accent); }
+
+  /* スクロール領域の高さを変えるグラブバー（ブラウザ標準の resize コーナーは
+     ダークテーマで視認できないため使わない） */
+  .grab { display: none; }
+  html.js .grab {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; height: 18px;
+    background: var(--surface-2); border-top: 1px solid var(--line);
+    cursor: ns-resize; touch-action: none; transition: background .15s;
+  }
+  html.js .grab:hover { background: var(--accent-soft); }
+  .grab span { width: 28px; height: 3px; border-radius: 2px; background: var(--dim); }
+  /* ドラッグ中に本文が選択されるのを止める（高さを変えているだけなので） */
+  body.resizing { user-select: none; -webkit-user-select: none; }
+
+  /* 残りを表示するボタン。隠れている行が無いときは JS が is-on を外して消す */
+  .listmore { display: none; }
+  html.js .listmore.is-on {
+    display: block; padding: 12px 20px; border-top: 1px solid var(--line);
+  }
+  .more {
+    border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2);
+    color: var(--ink-2); cursor: pointer; padding: 7px 13px; font-size: 12px;
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  .more:hover { border-color: var(--accent); color: var(--accent); }
+  .more-n { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* 折りたたみ・絞り込みで隠す行。棒（display: flex）にも効かせるため、
+     行そのものの表示規則より後ろに置く（同じ詳細度なので後勝ちになる） */
+  .is-out { display: none; }
 
   /* 速報専用: 一次判断であることを強調する注意バナー */
   .banner {
@@ -446,19 +509,42 @@
   }
 </style>
 <script>
-/* ダッシュボードの対話部分（タブ切替とテーマ切替のみ）。
+/* ダッシュボードの対話部分（タブ・テーマ・列ソート・検索・折りたたみ・高さ変更）。
 
    共有先の閲覧環境をこちらで選べないため、JS が無効でも内容が読めることを前提に置く。
-   タブの出し分けは、この直下で付ける html.js の下でしか効かないようにしてあり、
-   JS が動かなければ全 section が縦に積まれた状態で表示される。
+   タブの出し分けと対話用の UI は、この直下で付ける html.js の下でしか効かない。
+   行の折りたたみもここで行い、サーバ側は常に全行を書き出す（サーバ側で行を削ると
+   JS が動かない環境で内容そのものが欠ける）。操作できる部品のうち、データから
+   作る必要があるもの（判定フィルタの選択肢）だけをサーバ側が描き、それ以外の
+   ツールバー・グラブバー・展開ボタンはここで作る。
 
-   CSV 由来の値はここへ渡さない（データはサーバ側で描画済みで、ここは DOM 操作だけを行う）。 */
+   CSV 由来の値はここへ渡さない。データはサーバ側で描画済みで、ここは DOM の
+   テキストと属性を読んで並べ替え・出し入れをするだけ（数値は計算し直さない）。 */
 (function () {
   "use strict";
 
   var root = document.documentElement;
   var THEME_KEY = "seatdash-theme";
   var theme = "auto";
+
+  /* 初期表示の行数・本数と、スクロール領域の最小高さ（デザイン仕様の数値）。 */
+  var TABLE_ROWS = 15;
+  var BAR_ROWS = 20;
+  var MIN_BOX_H = 180;
+
+  function each(collection, fn) {
+    for (var i = 0; i < collection.length; i += 1) {
+      fn(collection[i], i);
+    }
+  }
+
+  function toArray(collection) {
+    var out = [];
+    each(collection, function (item) { out.push(item); });
+    return out;
+  }
+
+  /* ---------- テーマ ---------- */
 
   /* テーマは属性の付け外しで表す。Auto は属性を外して OS 設定（メディアクエリ）に委ねる */
   function applyTheme(mode) {
@@ -493,16 +579,15 @@
   applyTheme(theme);
 
   function markTheme() {
-    var buttons = document.querySelectorAll("[data-theme-set]");
-    for (var i = 0; i < buttons.length; i += 1) {
-      var on = buttons[i].getAttribute("data-theme-set") === theme;
+    each(document.querySelectorAll("[data-theme-set]"), function (button) {
+      var on = button.getAttribute("data-theme-set") === theme;
       if (on) {
-        buttons[i].classList.add("is-active");
+        button.classList.add("is-active");
       } else {
-        buttons[i].classList.remove("is-active");
+        button.classList.remove("is-active");
       }
-      buttons[i].setAttribute("aria-pressed", on ? "true" : "false");
-    }
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    });
   }
 
   function setTheme(mode) {
@@ -512,43 +597,412 @@
     saveTheme(mode);
   }
 
+  /* ---------- タブ ---------- */
+
   /* タブは単純な表示切替。スクロール位置には触れない（切替後もその位置を保つ） */
   function showTab(name) {
-    var panels = document.querySelectorAll(".tabpanel");
-    for (var i = 0; i < panels.length; i += 1) {
-      var onPanel = panels[i].getAttribute("data-tab") === name;
-      if (onPanel) {
-        panels[i].classList.add("is-active");
+    each(document.querySelectorAll(".tabpanel"), function (panel) {
+      var on = panel.getAttribute("data-tab") === name;
+      if (on) {
+        panel.classList.add("is-active");
       } else {
-        panels[i].classList.remove("is-active");
+        panel.classList.remove("is-active");
+      }
+    });
+    each(document.querySelectorAll(".tab"), function (tab) {
+      var on = tab.getAttribute("data-tab") === name;
+      if (on) {
+        tab.classList.add("is-active");
+      } else {
+        tab.classList.remove("is-active");
+      }
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+    });
+  }
+
+  /* ---------- 表示文字列の数値化（ソートの比較キー） ---------- */
+
+  var UNITS = { B: 1e9, M: 1e6, K: 1e3 };
+  var NUMBER_RE = /-?\d+(?:\.\d+)?[BMK]?/;
+
+  /* 画面に出ている文字列をそのまま解釈する（$1.2K → 1200）。書式を決めているのは
+     サーバ側で、ここは並べ替えのための比較キーを作るだけなので値を計算し直さない。
+     セルには金額のほかに ⚠ のような印が付くため、装飾を落としてから最初の数値を拾う。
+     解釈できない値（—・空）は最小に倒す。 */
+  function toNumber(text) {
+    var found = NUMBER_RE.exec(text.replace(/[\s,$+%]/g, ""));
+    if (!found) {
+      return -Infinity;
+    }
+    var token = found[0];
+    var unit = UNITS[token.charAt(token.length - 1)];
+    return unit ? parseFloat(token.slice(0, -1)) * unit : parseFloat(token);
+  }
+
+  function textOf(node) {
+    return node ? (node.textContent || "") : "";
+  }
+
+  function sortKey(row, index, numeric) {
+    var text = textOf(row.cells ? row.cells[index] : null);
+    return numeric ? toNumber(text) : text.replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  function compare(a, b) {
+    if (a === b) {
+      return 0;
+    }
+    return a < b ? -1 : 1;
+  }
+
+  /* ---------- 一覧（表の行 / 棒）の絞り込み・折りたたみ ---------- */
+
+  /* 検索の突合先は、表示名（ローカル部）と title のメールアドレスの両方。
+     どちらもサーバが描画済みの DOM から読む。 */
+  function searchText(row) {
+    var cell = row.querySelector(".user, .name");
+    if (!cell) {
+      return "";
+    }
+    return (textOf(cell) + " " + (cell.getAttribute("title") || "")).toLowerCase();
+  }
+
+  function statusText(row) {
+    return textOf(row.querySelector(".judge .badge")).trim();
+  }
+
+  function show(element, on) {
+    if (on) {
+      element.classList.remove("is-out");
+    } else {
+      element.classList.add("is-out");
+    }
+  }
+
+  /* 絞り込みの結果と折りたたみを一度に当てる。折りたたみは「絞り込みに残った行の
+     先頭から数えて上限まで」なので、検索・フィルタ・並べ替えのどれが動いても
+     ここを通す。 */
+  function apply(list) {
+    var matched = 0;
+    each(list.rows, function (row) {
+      var ok = true;
+      if (list.query && row._search.indexOf(list.query) < 0) {
+        ok = false;
+      }
+      if (ok && list.status && row._status !== list.status) {
+        ok = false;
+      }
+      if (ok) {
+        matched += 1;
+      }
+      show(row, ok && (list.expanded || matched <= list.limit));
+    });
+    var rest = list.expanded ? 0 : Math.max(0, matched - list.limit);
+    if (list.moreBox) {
+      list.moreCount.textContent = String(rest);
+      /* 隠れている行が無ければボタンごと消す（絞り込みで上限を下回る場合も含む） */
+      if (rest > 0) {
+        list.moreBox.classList.add("is-on");
+      } else {
+        list.moreBox.classList.remove("is-on");
       }
     }
-    var tabs = document.querySelectorAll(".tab");
-    for (var j = 0; j < tabs.length; j += 1) {
-      var onTab = tabs[j].getAttribute("data-tab") === name;
-      if (onTab) {
-        tabs[j].classList.add("is-active");
-      } else {
-        tabs[j].classList.remove("is-active");
-      }
-      tabs[j].setAttribute("aria-selected", onTab ? "true" : "false");
+    if (list.count) {
+      var filtering = Boolean(list.query || list.status);
+      list.count.textContent = filtering
+        ? matched + " / " + list.rows.length + " " + list.unit + "（絞り込み中）"
+        : list.rows.length + " " + list.unit;
     }
+  }
+
+  /* ---------- 列ソート ---------- */
+
+  function markSort(list) {
+    each(list.marks, function (mark, index) {
+      var on = index === list.sortCol;
+      mark.indicator.textContent = on ? (list.sortDir > 0 ? "↑" : "↓") : "";
+      mark.th.setAttribute(
+        "aria-sort", on ? (list.sortDir > 0 ? "ascending" : "descending") : "none");
+    });
+  }
+
+  function sortRows(list, index, dir) {
+    var numeric = list.numeric[index];
+    var keyed = [];
+    each(list.rows, function (row, at) {
+      keyed.push({ row: row, at: at, key: sortKey(row, index, numeric) });
+    });
+    /* 同値の行はもとの並びを保つ（安定ソート）。向きを掛けるのはキーの比較だけで、
+       同値のときの比較には掛けない */
+    keyed.sort(function (a, b) {
+      var order = compare(a.key, b.key);
+      return order === 0 ? a.at - b.at : dir * order;
+    });
+    var rows = [];
+    each(keyed, function (item) {
+      list.body.appendChild(item.row);
+      rows.push(item.row);
+    });
+    list.rows = rows;
+  }
+
+  function addSort(list) {
+    var head = list.table.tHead;
+    if (!head || head.rows.length === 0) {
+      return;
+    }
+    each(head.rows[head.rows.length - 1].cells, function (th, index) {
+      /* 数値列の印は表側がすでに持っている（金額・件数の右寄せに使う .num）。
+         初回の向きは数値列が降順・文字列列が昇順 */
+      list.numeric.push(th.classList.contains("num"));
+      var indicator = document.createElement("span");
+      indicator.className = "sort-ind";
+      th.appendChild(indicator);
+      th.classList.add("sortable");
+      th.setAttribute("aria-sort", "none");
+      list.marks.push({ th: th, indicator: indicator });
+      th.addEventListener("click", function () {
+        list.sortDir = (list.sortCol === index) ? -list.sortDir
+          : (list.numeric[index] ? -1 : 1);
+        list.sortCol = index;
+        sortRows(list, index, list.sortDir);
+        markSort(list);
+        apply(list);          /* 並びが変わると折りたたみで残る行の顔ぶれも変わる */
+      });
+    });
+  }
+
+  /* ---------- スクロール領域の高さ変更 ---------- */
+
+  /* ブラウザ標準の resize コーナーは使わず（ダークテーマで見えないため）、
+     スクロール領域の直下にグラブバーを置いて縦だけを変える。ポインタ操作を
+     扱えない環境ではバーそのものを作らない（押せない部品を出さないため）。 */
+  function addGrab(list) {
+    if (!window.PointerEvent) {
+      return null;
+    }
+    var box = list.box;
+    var grab = document.createElement("div");
+    grab.className = "grab";
+    grab.setAttribute("aria-hidden", "true");
+    grab.appendChild(document.createElement("span"));
+    grab.appendChild(document.createElement("span"));
+    box.parentNode.insertBefore(grab, box.nextSibling);
+
+    var dragging = false;
+    var startY = 0;
+    var startH = 0;
+    var contentH = 0;
+
+    grab.addEventListener("pointerdown", function (ev) {
+      dragging = true;
+      startY = ev.clientY;
+      startH = box.clientHeight;
+      contentH = box.scrollHeight;      /* 中身より高くしても余白が増えるだけなので上限に使う */
+      document.body.classList.add("resizing");
+      if (grab.setPointerCapture) {
+        grab.setPointerCapture(ev.pointerId);
+      }
+      ev.preventDefault();
+    });
+
+    grab.addEventListener("pointermove", function (ev) {
+      if (!dragging) {
+        return;
+      }
+      /* 見るのは縦だけ（横幅は列構成で決まっており、ここでは変えない） */
+      var wanted = startH + (ev.clientY - startY);
+      var upper = Math.max(MIN_BOX_H, contentH);
+      box.style.maxHeight = Math.max(MIN_BOX_H, Math.min(wanted, upper)) + "px";
+    });
+
+    function end(ev) {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      document.body.classList.remove("resizing");
+      if (grab.releasePointerCapture && grab.hasPointerCapture
+          && grab.hasPointerCapture(ev.pointerId)) {
+        grab.releasePointerCapture(ev.pointerId);
+      }
+    }
+
+    grab.addEventListener("pointerup", end);
+    grab.addEventListener("pointercancel", end);
+    return grab;
+  }
+
+  /* ---------- ツールバー（件数・検索・判定フィルタ） ---------- */
+
+  function closestCard(element) {
+    var node = element;
+    while (node && node.classList) {
+      if (node.classList.contains("card")) {
+        return node;
+      }
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  /* ツールバーはカードの見出し行に置く。判定フィルタを持つカードはサーバ側が
+     すでに空でないツールバーを描いているので、あればそれを使う */
+  function toolbarOf(card) {
+    if (!card) {
+      return null;
+    }
+    var head = card.querySelector(".card-hd");
+    if (!head) {
+      return null;
+    }
+    var bar = head.querySelector(".toolbar");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "toolbar";
+      head.appendChild(bar);
+    }
+    return bar;
+  }
+
+  function addSearch(list, bar) {
+    var input = document.createElement("input");
+    input.type = "search";
+    input.className = "search";
+    input.placeholder = "ユーザを検索";
+    input.setAttribute("aria-label", "ユーザ名・メールアドレスで絞り込む");
+    bar.insertBefore(input, bar.firstChild);
+    input.addEventListener("input", function () {
+      list.query = input.value.trim().toLowerCase();
+      apply(list);
+    });
+  }
+
+  function addCount(list, bar) {
+    var count = document.createElement("span");
+    count.className = "list-count";
+    bar.appendChild(count);
+    list.count = count;
+  }
+
+  function addFilter(list, bar) {
+    var select = bar.querySelector("select[data-filter]");
+    if (!select) {
+      return;
+    }
+    select.addEventListener("change", function () {
+      list.status = select.value;
+      apply(list);
+    });
+  }
+
+  /* ---------- 展開ボタン ---------- */
+
+  function addMore(list, anchor) {
+    var box = document.createElement("div");
+    box.className = "listmore";
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "more";
+    var count = document.createElement("span");
+    count.className = "more-n";
+    button.appendChild(document.createTextNode("残り "));
+    button.appendChild(count);
+    button.appendChild(document.createTextNode(" " + list.unit + "を表示"));
+    box.appendChild(button);
+    anchor.parentNode.insertBefore(box, anchor.nextSibling);
+    /* 展開したら畳み直さない（読み手が広げた状態を勝手に戻さない） */
+    button.addEventListener("click", function () {
+      list.expanded = true;
+      apply(list);
+    });
+    list.moreBox = box;
+    list.moreCount = count;
+  }
+
+  /* ---------- 一覧の組み立て ---------- */
+
+  function newList(rows, limit) {
+    return {
+      rows: rows, limit: limit, expanded: false, query: "", status: "",
+      numeric: [], marks: [], sortCol: -1, sortDir: 1,
+      count: null, moreBox: null, moreCount: null, unit: "件",
+    };
+  }
+
+  function setUp(list, anchor) {
+    /* 検索・フィルタの突合先は行ごとに一度だけ読む（並べ替えても行の中身は変わらない） */
+    var person = false;
+    each(list.rows, function (row) {
+      row._search = searchText(row);
+      row._status = statusText(row);
+      person = person || row._search !== "";
+    });
+    /* 検索の対象は人が並ぶ一覧だけ（部署・チーム単位の集計表は対象にしない）。
+       件数の単位もそれに合わせる */
+    list.unit = person ? "名" : "件";
+    if (person) {
+      var bar = toolbarOf(closestCard(anchor));
+      if (bar) {
+        addSearch(list, bar);
+        addFilter(list, bar);
+        addCount(list, bar);
+      }
+    }
+    if (list.rows.length > list.limit) {
+      addMore(list, anchor);
+    }
+    apply(list);
+  }
+
+  function setUpTables() {
+    each(document.querySelectorAll(".tablebox"), function (box) {
+      var table = box.querySelector("table");
+      var body = table ? table.tBodies[0] : null;
+      if (!body) {
+        return;
+      }
+      var list = newList(toArray(body.rows), TABLE_ROWS);
+      list.box = box;
+      list.table = table;
+      list.body = body;
+      addSort(list);
+      setUp(list, addGrab(list) || box);
+    });
+  }
+
+  function setUpBars() {
+    each(document.querySelectorAll(".bars"), function (bars) {
+      var rows = [];
+      each(bars.children, function (child) {
+        if (child.classList && child.classList.contains("bar")) {
+          rows.push(child);
+        }
+      });
+      if (rows.length === 0) {
+        return;
+      }
+      var holder = bars.parentNode;
+      var anchor = (holder.classList && holder.classList.contains("card-bd"))
+        ? holder : bars;
+      setUp(newList(rows, BAR_ROWS), anchor);
+    });
   }
 
   function init() {
     markTheme();
-    var buttons = document.querySelectorAll("[data-theme-set]");
-    for (var i = 0; i < buttons.length; i += 1) {
-      buttons[i].addEventListener("click", function (ev) {
+    each(document.querySelectorAll("[data-theme-set]"), function (button) {
+      button.addEventListener("click", function (ev) {
         setTheme(ev.currentTarget.getAttribute("data-theme-set"));
       });
-    }
-    var tabs = document.querySelectorAll(".tab");
-    for (var j = 0; j < tabs.length; j += 1) {
-      tabs[j].addEventListener("click", function (ev) {
+    });
+    each(document.querySelectorAll(".tab"), function (tab) {
+      tab.addEventListener("click", function (ev) {
         showTab(ev.currentTarget.getAttribute("data-tab"));
       });
-    }
+    });
+    setUpTables();
+    setUpBars();
   }
 
   if (document.readyState === "loading") {

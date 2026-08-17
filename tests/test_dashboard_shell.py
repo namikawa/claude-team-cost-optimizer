@@ -193,7 +193,10 @@ def test_color_scheme_follows_the_selected_theme():
 # 背景を含める（テーマによって surface-2 と hover のどちらが効くかが入れ替わるため
 # 両方を並べる）。バッジの文字は各 *-soft の上にしか出ない。
 _TEXT_ON = [
-    ("muted", "surface-2", "th / タブの件数 / 現状維持バッジ / テーマ切替"),
+    ("muted", "surface-2", "th / タブの件数 / 現状維持バッジ / テーマ切替 / 検索欄の placeholder"),
+    ("ink", "surface-2", "検索欄・判定フィルタの入力文字"),
+    ("ink-2", "surface-2", "残りを表示するボタンの文字"),
+    ("accent", "surface-2", "ソート中の列の矢印"),
     ("muted", "surface", "カードの副題・脚注・凡例・KPI のラベル"),
     ("dim", "hover", "行ホバー中の増分・矢印・確度"),
     ("dim", "surface", "順位・箇条書きの—・未割当シート"),
