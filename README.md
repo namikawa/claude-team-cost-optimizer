@@ -78,7 +78,7 @@ seat-analyzer --version
 
 - `report.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + 警告 + 考察
 - `details.md` — 全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + 感度分析（機械生成の詳細資料）
-- `dashboard.html` — 経営層共有用ダッシュボード（自己完結 HTML）
+- `dashboard.html` — 経営層共有用ダッシュボード（概要 / 推奨アクション / メンバー別 / 組織 の4タブ。ソート・検索・テーマ切替つきの自己完結 HTML）
 - `recommendations.csv` — スプレッドシート二次加工用
 - `usage-summary.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
 - `reports/summary/YYYY-MM.md` — 複数組織を一括分析した場合の組織横断サマリ
