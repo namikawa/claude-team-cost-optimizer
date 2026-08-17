@@ -814,7 +814,8 @@
      同じ「操作できない部品を出さない」規則。
 
      測れるのは表示中のタブだけ（display: none の中では 0 になる）なので、測り直す
-     契機を2つ持つ: 行数が変わったとき（apply）と、タブが表に出たとき（showTab）。 */
+     契機を3つ持つ: 行数が変わったとき（apply）、タブが表に出たとき（showTab）、
+     幅が変わって折り返しが変わったとき（watchSize の窓と ResizeObserver）。 */
   function updateGrab(list) {
     if (!list.grab) {
       return;
