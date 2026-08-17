@@ -207,6 +207,33 @@ def test_the_grab_bar_replaces_the_browser_resize_corner():
     assert "clientX" not in _DASHBOARD_JS                   # 横は見ない
 
 
+def test_the_grab_bar_only_appears_where_dragging_changes_something():
+    """動かせる余地のない表（内容が最小高さに収まる表・0行の表）には出さない。
+
+    掴んで動かせる範囲は最小高さから内容の高さまでで、max-height は内容を引き伸ばさない。
+    内容がその最小高さ以下なら、どこへ動かしても表示は変わらない。押しても何も起きない
+    部品を出さないという点で、ポインタ操作を扱えない環境でバーを作らないのと同じ規則。
+    """
+    # 表示は is-on の下だけ。素の .grab を出す規則を持たない（＝既定は出さない）
+    assert ".grab { display: none; }" in _DASHBOARD_CSS
+    assert "html.js .grab.is-on {" in _DASHBOARD_CSS
+    assert "html.js .grab {" not in _DASHBOARD_CSS
+    assert "list.box.scrollHeight > MIN_BOX_H" in _DASHBOARD_JS
+
+
+def test_the_grab_bar_decision_is_refreshed_when_it_can_change():
+    """要否の判定を測り直す契機が2つとも残っている。
+
+    どちらが欠けても静かにずれる。行数の側が欠けると、絞り込んで短くなった表に
+    効かないバーが残る。タブの側が欠けると、隠れている間の測定値（0）のまま固定され、
+    初期表示以外のタブでバーが出ないままになる。
+    """
+    # 行数が変わる操作（検索・フィルタ・展開・並べ替え）はすべて apply を通る
+    assert "updateGrab(list);" in _DASHBOARD_JS
+    # タブは切り替えて初めて寸法が測れる
+    assert "each(lists, updateGrab);" in _DASHBOARD_JS
+
+
 def test_the_hidden_row_rule_comes_after_the_row_display_rules():
     """行を隠す規則が、行そのものの表示規則より後ろにある。
 

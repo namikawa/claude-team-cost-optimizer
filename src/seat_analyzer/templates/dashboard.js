@@ -22,6 +22,9 @@
   var BAR_ROWS = 20;
   var MIN_BOX_H = 180;
 
+  /* 組み立てた一覧。タブを切り替えたあとにグラブバーの要否を測り直すために持つ */
+  var lists = [];
+
   function each(collection, fn) {
     for (var i = 0; i < collection.length; i += 1) {
       fn(collection[i], i);
@@ -108,6 +111,10 @@
       }
       tab.setAttribute("aria-selected", on ? "true" : "false");
     });
+    /* 隠れている間は高さが測れない（display: none の中は 0 になる）ので、
+       表に出たところで測り直す。ここを外すと初期表示以外のタブでグラブバーが
+       出ないままになる */
+    each(lists, updateGrab);
   }
 
   /* ---------- 表示文字列の数値化（ソートの比較キー） ---------- */
@@ -203,6 +210,9 @@
         ? matched + " / " + list.rows.length + " " + list.unit + "（絞り込み中）"
         : list.rows.length + " " + list.unit;
     }
+    /* 行の出し入れで内容の高さが変わる＝グラブバーで動かせるかどうかも変わる。
+       検索・フィルタ・展開はすべてここを通るので、判定の更新もここに1つ置く */
+    updateGrab(list);
   }
 
   /* ---------- 列ソート ---------- */
@@ -264,6 +274,24 @@
 
   /* ---------- スクロール領域の高さ変更 ---------- */
 
+  /* 掴んで動かせる範囲は [MIN_BOX_H, 内容の高さ] なので、内容が最小高さ以下の表は
+     どこへ動かしても表示が変わらない（max-height は内容を引き伸ばさない）。
+     そういう表ではバーを出さない ── ポインタ操作を扱えない環境でバーを作らないのと
+     同じ「操作できない部品を出さない」規則。
+
+     測れるのは表示中のタブだけ（display: none の中では 0 になる）なので、測り直す
+     契機を2つ持つ: 行数が変わったとき（apply）と、タブが表に出たとき（showTab）。 */
+  function updateGrab(list) {
+    if (!list.grab) {
+      return;
+    }
+    if (list.box.scrollHeight > MIN_BOX_H) {
+      list.grab.classList.add("is-on");
+    } else {
+      list.grab.classList.remove("is-on");
+    }
+  }
+
   /* ブラウザ標準の resize コーナーは使わず（ダークテーマで見えないため）、
      スクロール領域の直下にグラブバーを置いて縦だけを変える。ポインタ操作を
      扱えない環境ではバーそのものを作らない（押せない部品を出さないため）。 */
@@ -278,6 +306,7 @@
     grab.appendChild(document.createElement("span"));
     grab.appendChild(document.createElement("span"));
     box.parentNode.insertBefore(grab, box.nextSibling);
+    list.grab = grab;
 
     var dragging = false;
     var startY = 0;
@@ -413,11 +442,13 @@
   /* ---------- 一覧の組み立て ---------- */
 
   function newList(rows, limit) {
-    return {
+    var list = {
       rows: rows, limit: limit, expanded: false, query: "", status: "",
       numeric: [], marks: [], sortCol: -1, sortDir: 1,
-      count: null, moreBox: null, moreCount: null, unit: "件",
+      count: null, moreBox: null, moreCount: null, grab: null, unit: "件",
     };
+    lists.push(list);
+    return list;
   }
 
   function setUp(list, anchor) {

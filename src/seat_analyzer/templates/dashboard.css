@@ -465,15 +465,16 @@
   .sort-ind { display: inline-block; min-width: 10px; margin-left: 6px; color: var(--accent); }
 
   /* スクロール領域の高さを変えるグラブバー（ブラウザ標準の resize コーナーは
-     ダークテーマで視認できないため使わない） */
+     ダークテーマで視認できないため使わない）。内容が最小高さに収まっていて動かしても
+     表示が変わらない表では、JS が is-on を外してバーごと消す */
   .grab { display: none; }
-  html.js .grab {
+  html.js .grab.is-on {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 3px; height: 18px;
     background: var(--surface-2); border-top: 1px solid var(--line);
     cursor: ns-resize; touch-action: none; transition: background .15s;
   }
-  html.js .grab:hover { background: var(--accent-soft); }
+  html.js .grab.is-on:hover { background: var(--accent-soft); }
   .grab span { width: 28px; height: 3px; border-radius: 2px; background: var(--dim); }
   /* ドラッグ中に本文が選択されるのを止める（高さを変えているだけなので） */
   body.resizing { user-select: none; -webkit-user-select: none; }
