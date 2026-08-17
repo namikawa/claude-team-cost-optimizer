@@ -24,17 +24,18 @@ Python（3.11 以上）は uv が用意します。レポートの考察を自�
 
 ## インストール
 
-導入するバージョンは
-[Releases](https://github.com/namikawa/claude-team-cost-optimizer/releases) で最新のタグを
-確認してください。
+[Releases](https://github.com/namikawa/claude-team-cost-optimizer/releases) で最新リリースに
+添付された wheel（`seat_analyzer-X.Y.Z-py3-none-any.whl`）の URL を確認し、それを指定して
+インストールします。git の入っていないマシンでも導入できます。
 
 ```sh
-uv tool install git+https://github.com/namikawa/claude-team-cost-optimizer@v1.0.0
+uv tool install "seat-analyzer @ <wheel の URL>"
 seat-analyzer --version
 ```
 
-アップデートは新しいタグを指定して同じコマンドを実行し直すだけです。ゼロから環境を作る
-手順は [docs/setup.md](docs/setup.md) にあります（Claude Code に読ませて実行させる形式）。
+アップデートは新しいリリースの wheel の URL で同じコマンドを実行し直すだけです。ゼロから
+環境を作る手順は [docs/setup.md](docs/setup.md) にあります（Claude Code に読ませて実行させる
+形式）。
 
 ## 使い方
 
