@@ -43,7 +43,7 @@
 <h2 class="panel-title">推奨アクション</h2>
 <div class="stack">
   <section class="card">
-    <div class="card-hd"><div class="hd-main"><h2>推奨一覧</h2></div></div>
+    <div class="card-hd"><div class="hd-main"><h2>推奨一覧</h2></div>{% if judge_counts %}<div class="toolbar"><select class="filter" data-filter="judge" aria-label="判定で絞り込む"><option value="">判定: すべて</option>{% for j in judge_counts %}<option value="{{ j.label }}">{{ j.label }}</option>{% endfor %}</select></div>{% endif %}</div>
     <div class="tablebox tall">
       <table>
         <thead><tr><th>ユーザ</th><th>シート（現 → 推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">Std時</th><th class="num">Prem時</th><th class="num">削減/月</th><th>判定</th></tr></thead>

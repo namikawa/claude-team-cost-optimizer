@@ -193,7 +193,10 @@ def test_color_scheme_follows_the_selected_theme():
 # 背景を含める（テーマによって surface-2 と hover のどちらが効くかが入れ替わるため
 # 両方を並べる）。バッジの文字は各 *-soft の上にしか出ない。
 _TEXT_ON = [
-    ("muted", "surface-2", "th / タブの件数 / 現状維持バッジ / テーマ切替"),
+    ("muted", "surface-2", "th / タブの件数 / 現状維持バッジ / テーマ切替 / 検索欄の placeholder"),
+    ("ink", "surface-2", "検索欄・判定フィルタの入力文字"),
+    ("ink-2", "surface-2", "残りを表示するボタンの文字"),
+    ("accent", "surface-2", "ソート中の列の矢印"),
     ("muted", "surface", "カードの副題・脚注・凡例・KPI のラベル"),
     ("dim", "hover", "行ホバー中の増分・矢印・確度"),
     ("dim", "surface", "順位・箇条書きの—・未割当シート"),
@@ -211,6 +214,23 @@ _TEXT_ON = [
 # 小さい文字（本文サイズ）の下限。KPI の 32px のような大きい文字は 3:1 でよいが、
 # 上の組み合わせはすべて本文サイズで出るため一律この値で見る。
 _MIN_CONTRAST = 4.5
+
+# 境界に使う色 → その境界が載る面。文字ではなく「押せる部品の輪郭」なので下限が違う。
+# 面の色どうしが 1.1:1 ほどしか離れていないデザインなので、塗りの差では境界にならず、
+# 輪郭が薄いと押せるものがそこにあること自体に気づけない。触れる部品の輪郭は
+# 両テーマとも --dim に寄せてあり、同じ役割のトークンなので濃さも揃う。
+#
+# グラブバーの帯の上線（--line）はここに入れない。掴めることを伝えているのは
+# グリップの方で、上線は表と脚注を分ける罫線として意図的に細いままにしている。
+_EDGE_ON = [
+    ("dim", "surface", "残りを表示するボタン / 検索欄 / 判定フィルタ の枠線"),
+    ("dim", "surface-2", "グラブバーのグリップ / テーマ切替の選択中の枠線"),
+    ("accent", "surface", "ボタンの hover 枠線 / 検索欄・判定フィルタのフォーカス枠"),
+]
+
+# 部品の境界の下限。文字より低いが、しきい値ぎりぎりで止めないことは
+# test_the_button_edge_looks_the_same_in_both_themes が別に見る。
+_MIN_EDGE_CONTRAST = 3.0
 
 
 def _relative_luminance(hex_color: str) -> float:
@@ -310,6 +330,42 @@ def test_theme_text_meets_the_contrast_minimum(theme):
            if _contrast(tokens[fg], tokens[bg]) < _MIN_CONTRAST]
     assert not low, f"[{theme}] コントラストが不足しています: " + ", ".join(
         f"--{fg} on --{bg}（{use}）= {r:.2f}:1" for fg, bg, use, r in low)
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_control_edges_meet_the_boundary_minimum(theme):
+    """押せる部品の輪郭が、載っている面から見分けられる（両テーマ）。
+
+    文字と違って、輪郭が薄くても画面は成立してしまう（読めるが押せると分からない）。
+    面の色を1段動かすとここが真っ先に詰まるので、組み合わせごとに実測する。
+    """
+    tokens = _palettes()[theme]
+    low = [(fg, bg, use, _contrast(tokens[fg], tokens[bg]))
+           for fg, bg, use in _EDGE_ON
+           if _contrast(tokens[fg], tokens[bg]) < _MIN_EDGE_CONTRAST]
+    assert not low, f"[{theme}] 境界のコントラストが不足しています: " + ", ".join(
+        f"--{fg} on --{bg}（{use}）= {r:.2f}:1" for fg, bg, use, r in low)
+
+
+# 触れる部品の輪郭に使う組み合わせ（載る面はカード面か、切替の中の地）。
+_CONTROL_EDGES = [("dim", "surface"), ("dim", "surface-2")]
+
+
+@pytest.mark.parametrize(("fg", "bg"), _CONTROL_EDGES)
+def test_control_edges_look_the_same_in_both_themes(fg, bg):
+    """触れる部品の輪郭が、両テーマで同じくらいはっきり見える。
+
+    見えることの下限（3:1）を満たすだけでは「探さないと見つからない」は解けないので、
+    余裕のある濃さを別に要求する。加えて両テーマの比を近づける。片方だけ濃いと、
+    テーマを切り替えたときに部品の目立ち方が変わる。
+    """
+    ratios = {theme: _contrast(tokens[fg], tokens[bg])
+              for theme, tokens in _palettes().items()}
+    assert min(ratios.values()) >= 4.0, f"--{fg} on --{bg} の輪郭が薄すぎます: {ratios}"
+    # 主要な操作ではないので、周囲より前に出るほど濃くもしない
+    assert max(ratios.values()) <= 7.0, f"--{fg} on --{bg} の輪郭が濃すぎます: {ratios}"
+    assert abs(ratios["light"] - ratios["dark"]) <= 0.75, (
+        f"--{fg} on --{bg} はテーマによって目立ち方が変わります: {ratios}")
 
 
 # --- 既存の数値から導く表示（帯・内訳） ---

@@ -145,12 +145,21 @@
     background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px;
   }
   html.js .theme-switch { display: flex; }
+  /* 枠線の場所は全ボタンで確保しておき、色を付けるのは選択中だけ
+     （選択のたびに幅が変わって残りの区画が動くのを避ける） */
   .theme-btn {
-    border: none; background: transparent; color: var(--muted); cursor: pointer;
+    border: 1px solid transparent; background: transparent; color: var(--muted);
+    cursor: pointer;
     padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 500;
-    transition: background .15s, color .15s;
+    transition: background .15s, border-color .15s, color .15s;
   }
-  .theme-btn.is-active { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+  /* 選択中は面と影だけでなく枠線でも示す。面の差は切替の地に対して 1.1:1 ほどしかなく、
+     影は Dark で効きが弱いため、それだけではどれが選ばれているか読み取れない。
+     枠線の色は展開ボタン・グラブバーのグリップと同じ --dim で、切替の外枠は変えない */
+  .theme-btn.is-active {
+    background: var(--surface); border-color: var(--dim); color: var(--ink);
+    box-shadow: var(--shadow);
+  }
 
   /* タブ。JS が無いと切り替えられないので、その場合はタブ行を出さず全 section を積む */
   .tabbar { display: none; gap: 4px; margin-top: 22px; flex-wrap: wrap; }
@@ -426,8 +435,86 @@
   .notes li::before { content: "—"; color: var(--dim); }
   .notes.assumptions li { font-size: 12.5px; line-height: 1.85; }
   ul.items, ul.notes { margin: 0; padding: 0; list-style: none; }
+  /* 箇条書き・注記の中のユーザ表記。表や棒と同じく、出すのはローカル部だけで
+     完全なメールアドレスは title に持たせる */
+  .uname { font-weight: 500; color: var(--ink); }
   .callout {
     padding: 12px 14px; background: var(--accent-soft); border-radius: 10px;
     font-size: 12.5px; line-height: 1.7;
   }
   .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* ---------- 対話（列ソート・検索・折りたたみ・高さ変更） ----------
+     この節の部品は押せて初めて意味を持つので、JS が付ける html.js の下でだけ出す。
+     JS が動かない環境ではツールバーもグラブバーも展開ボタンも現れず、行はサーバが
+     書き出したまま全件が並ぶ（折りたたみは JS 側だけで行い、サーバは行を削らない）。 */
+  .toolbar { display: none; }
+  html.js .toolbar {
+    display: flex; align-items: center; align-self: center; gap: 10px; flex-wrap: wrap;
+  }
+  /* 枠線は展開ボタンと同じ --dim。触る前の状態で輪郭が見えないと、空の入力欄が
+     見出しの一部と区別できず、絞り込めることに気づけない。フォーカスすると --accent へ
+     動くのは従来どおりで、色相が変わるので触っている間との区別も付く */
+  .search, .filter {
+    padding: 7px 11px; background: var(--surface-2);
+    border: 1px solid var(--dim); border-radius: 8px;
+    color: var(--ink); font-family: var(--sans); font-size: 12.5px;
+    -webkit-appearance: none; appearance: none;
+    transition: background .15s, border-color .15s;
+  }
+  .search { width: 200px; }
+  .search::placeholder { color: var(--muted); }
+  .filter { cursor: pointer; }
+  .search:focus, .filter:focus { outline: none; border-color: var(--accent); }
+  .list-count {
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+
+  /* ソート可能なヘッダ（クラスは JS が付ける） */
+  th.sortable { cursor: pointer; transition: color .15s; }
+  th.sortable:hover { color: var(--ink); }
+  .sort-ind { display: inline-block; min-width: 10px; margin-left: 6px; color: var(--accent); }
+
+  /* スクロール領域の高さを変えるグラブバー（ブラウザ標準の resize コーナーは
+     ダークテーマで視認できないため使わない）。内容が最小高さに収まっていて動かしても
+     表示が変わらない表では、JS が is-on を外してバーごと消す。
+
+     掴めることを伝えているのはグリップ（--dim）で、帯そのものの上線は --line のまま。
+     ここを濃くすると表と脚注の間に強い横線が増え、情報より罫線が目立つため据え置く。 */
+  .grab { display: none; }
+  html.js .grab.is-on {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; height: 18px;
+    background: var(--surface-2); border-top: 1px solid var(--line);
+    cursor: ns-resize; touch-action: none; transition: background .15s;
+  }
+  html.js .grab.is-on:hover { background: var(--accent-soft); }
+  .grab span { width: 28px; height: 3px; border-radius: 2px; background: var(--dim); }
+  /* ドラッグ中に本文が選択されるのを止める（高さを変えているだけなので） */
+  body.resizing { user-select: none; -webkit-user-select: none; }
+
+  /* 残りを表示するボタン。隠れている行が無いときは JS が is-on を外して消す。
+
+     面の色どうしが近いデザインなので、押せることを伝える境界は塗りではなく枠線が担う
+     （--surface-2 の塗りはカード面と 1.1:1 ほどしかなく、輪郭にはならない）。枠線には
+     グラブバーのグリップと同じ --dim を使う。Light と Dark で同じ役割のトークンなので、
+     カード面に対する濃さも両テーマでほぼ同じになり、切り替えても目立ち方が変わらない。 */
+  .listmore { display: none; }
+  html.js .listmore.is-on {
+    display: block; padding: 12px 20px; border-top: 1px solid var(--line);
+  }
+  .more {
+    border: 1px solid var(--dim); border-radius: 8px; background: var(--surface-2);
+    color: var(--ink-2); cursor: pointer; padding: 7px 13px; font-size: 12px;
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  /* hover は枠線だけでなく面と文字も accent 側へ寄せる（グラブバーの hover と同じ語彙） */
+  .more:hover {
+    border-color: var(--accent); background: var(--accent-soft); color: var(--accent);
+  }
+  .more-n { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  /* 折りたたみ・絞り込みで隠す行。棒（display: flex）にも効かせるため、
+     行そのものの表示規則より後ろに置く（同じ詳細度なので後勝ちになる） */
+  .is-out { display: none; }
