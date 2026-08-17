@@ -4,8 +4,9 @@
 Claude Code を想定している。macOS / Windows / Linux の差異は、Claude が実際の環境を
 確認して判断する前提で書いてある。
 
-やることは 2 つ。プログラムを 1 コマンドで導入し、データを置くワークスペースを任意の
-場所に作る。プログラム本体とデータは分かれているため、リポジトリを clone する必要はない。
+やることは 2 つ。プログラムを GitHub Releases から導入し、データを置くワークスペースを
+任意の場所に作る。プログラム本体とデータは分かれているため、リポジトリを clone する
+必要はなく、git が入っていないマシンでも導入できる。
 
 ## 動作環境
 
@@ -120,21 +121,42 @@ uv --version
 
 ## ステップ 2: seat-analyzer を導入する
 
-タグを指定して GitHub から直接インストールする。導入するバージョンは
-[Releases](https://github.com/namikawa/claude-team-cost-optimizer/releases) で最新の
-タグを確認して決める（下の `v1.0.0` はその位置に入れるものの例）。
+最新リリースの wheel を GitHub Releases から直接インストールする。この手順に git は
+不要（入っていないマシンでも導入できる）。
+
+まず最新リリースの情報を GitHub API から取得する。
+
+- macOS / Linux（応答の JSON の `tag_name` が最新バージョン、`assets` の
+  `browser_download_url` が wheel の URL）
+
+  ```sh
+  curl -s https://api.github.com/repos/namikawa/claude-team-cost-optimizer/releases/latest
+  ```
+
+- Windows（PowerShell。wheel の URL を直接出力する）
+
+  ```powershell
+  (irm https://api.github.com/repos/namikawa/claude-team-cost-optimizer/releases/latest).assets.browser_download_url
+  ```
+
+得られた wheel の URL（`.../releases/download/vX.Y.Z/seat_analyzer-X.Y.Z-py3-none-any.whl`）
+を指定してインストールする。
 
 ```sh
-uv tool install git+https://github.com/namikawa/claude-team-cost-optimizer@v1.0.0
+uv tool install "seat-analyzer @ <wheel の URL>"
 ```
+
+最新バージョンと wheel の URL は
+[Releases](https://github.com/namikawa/claude-team-cost-optimizer/releases) のページでも
+確認できる（API が使えない場合の代替）。
 
 - 依存（pandas ほか）はツール専用の隔離環境に入る。システムの Python や既存の仮想環境は
   変更されない
 - 「実行ファイルの置き場所が PATH に無い」と警告が出たら、`uv tool update-shell` を実行
   するか（シェルの設定ファイルを書き換えるのでユーザに確認する）、警告が示した
   ディレクトリを PATH に足す。場所は `uv tool dir --bin` でも確認できる
-- Python のバージョンを理由に失敗する場合は `uv tool install --python 3.12 git+...` と
-  指定して再実行する
+- Python のバージョンを理由に失敗する場合は
+  `uv tool install --python 3.12 "seat-analyzer @ <wheel の URL>"` と指定して再実行する
 
 検証:
 
@@ -326,10 +348,11 @@ seat-analyzer discuss --org <組織名> --month YYYY-MM --dry-run
 
 ## アップデート
 
-新しいタグを指定して、導入と同じコマンドを実行し直す。
+導入と同じ手順で行う。最新リリースの wheel の URL をステップ 2 のコマンドで調べ、
+その URL を指定してインストールし直す。
 
 ```sh
-uv tool install git+https://github.com/namikawa/claude-team-cost-optimizer@<新しいタグ>
+uv tool install "seat-analyzer @ <最新リリースの wheel の URL>"
 ```
 
 ツールの環境が入れ替わるだけで、ワークスペースの `input/`・`reports/`・`config.yaml` には
@@ -362,7 +385,8 @@ uv tool install git+https://github.com/namikawa/claude-team-cost-optimizer@<新�
   導入されているかどうかは `uv tool list` で分かる。
 - インストールが Python のバージョンで失敗する / pandas のビルドで失敗する
   ホイールが提供されていない Python バージョンを引いている可能性が高い。
-  `uv tool install --python 3.12 git+...` でバージョンを指定して再実行する。
+  `uv tool install --python 3.12 "seat-analyzer @ <wheel の URL>"` とバージョンを
+  指定して再実行する。
 - 分析実行時に「入力データがありません」と言われる
   ワークスペースのルート以外で実行している。`input/` がある場所へ移動して実行し直す。
   別の場所のデータを使う場合は `--input-dir` / `--output-dir` を指定する。
