@@ -1,4 +1,4 @@
-"""ダッシュボードの対話機能（列ソート・検索・判定フィルタ・折りたたみ・高さ変更）のテスト。
+"""ダッシュボードの対話機能（列ソート・検索・判定フィルタ・高さ変更）のテスト。
 
 対話の挙動そのものはブラウザが要るのでここでは動かせない。代わりに、その挙動が
 成立するための前提を HTML と CSS の側で固定する。守りたいのは次の4点で、どれも
@@ -6,8 +6,8 @@
 
 - 対話用の UI は JS が付けたクラスの下でしか現れない。JS が無効な環境に、押しても
   何も起きない部品が残らない
-- 折りたたみはブラウザ側の仕事で、サーバは常に全行を書き出す。サーバ側で行を削ると
-  JS が無効な環境で内容そのものが欠ける
+- 一覧は常に全行が出る。サーバが行を削ると読み手には欠けたことが分からず、絞り込みが
+  効いているのか元から無いのかも区別できない
 - 判定フィルタの選択肢は、その表に実際に現れた判定だけ。固定リストにすると、出ない
   判定を選べて空の表になる
 - CSV 由来の値が JS のコンテキストへ入らない。script の中身は静的アセットと一致し、
@@ -29,14 +29,14 @@ from seat_analyzer.report.text import STATUS_ORDER
 
 from .conftest import spend_row
 
-# 表の初期表示（15行）と棒の初期表示（20本）をどちらも超える人数にする。
-# 超えていないと「サーバが全行を書き出す」ことの検査が空振りする。
+# 「サーバが全行を書き出す」ことの検査が空振りしない人数にする。数人だと行が欠けても
+# 数え間違いに見え、判定も1種類に潰れてフィルタの選択肢の検査が成立しない。
 _USERS = [f"user{i:02d}@x.jp" for i in range(1, 23)]
 
 
 @pytest.fixture
 def dashboard(cfg, make_input, tmp_path):
-    """折りたたみの上限を超える人数のダッシュボード HTML。"""
+    """人が並ぶ一覧が十分な行数を持つダッシュボード HTML。"""
     rows, members = [], []
     for i, email in enumerate(_USERS):
         # 需要の大小と実課金の有無を混ぜ、判定が1種類に潰れないようにする
@@ -104,37 +104,21 @@ def _css_rule(selector: str, source: str | None = None) -> str:
 
 def test_the_css_rule_extractor_matches_the_whole_selector():
     """規則の切り出しそのものの検査（前方一致で別の規則を掴まないこと）。"""
-    src = "  .more { border: 1px; }\n  .more-n { color: red; }\n  .more:hover { color: blue; }\n"
-    assert _css_rule(".more", src).strip() == "border: 1px;"
-    assert _css_rule(".more-n", src).strip() == "color: red;"
-    assert _css_rule(".more:hover", src).strip() == "color: blue;"
+    src = "  .chip { border: 1px; }\n  .chip-n { color: red; }\n  .chip:hover { color: blue; }\n"
+    assert _css_rule(".chip", src).strip() == "border: 1px;"
+    assert _css_rule(".chip-n", src).strip() == "color: red;"
+    assert _css_rule(".chip:hover", src).strip() == "color: blue;"
     with pytest.raises(AssertionError):
         _css_rule(".nothing", src)
 
 
-def test_the_expand_button_has_an_edge_that_can_be_seen():
-    """展開ボタンの境界を担うのは塗りではなく枠線で、色は --dim。
+def test_the_search_and_filter_have_an_edge_that_can_be_seen():
+    """検索欄と判定フィルタは、触る前の状態で輪郭が見える（枠線は --dim）。
 
     面の色どうしが近いデザインなので、塗りの差ではカード面と見分けられない
     （--surface-2 は --surface に対して 1.1:1 ほどしかない）。枠線が唯一の境界になる。
-    濃さそのものは tests/test_dashboard_shell.py が両テーマで実測する。
-    """
-    rule = _css_rule(".more")
-    assert "border: 1px solid var(--dim);" in rule
-    assert "background: var(--surface-2);" in rule
-    assert "color: var(--ink-2);" in rule
-
-    # hover は枠線だけでなく面と文字も accent 側へ寄せる（グラブバーの hover と同じ語彙）
-    hover = _css_rule(".more:hover")
-    for declaration in ("border-color: var(--accent)", "background: var(--accent-soft)",
-                        "color: var(--accent)"):
-        assert declaration in hover
-
-
-def test_the_search_and_filter_have_an_edge_that_can_be_seen():
-    """検索欄と判定フィルタも、触る前の状態で輪郭が見える（枠線は展開ボタンと同じ --dim）。
-
     空の入力欄は輪郭が無いと見出しの一部と区別できず、絞り込めること自体に気づけない。
+    濃さそのものは tests/test_dashboard_shell.py が両テーマで実測する。
     """
     rule = _css_rule(".search, .filter")
     assert "border: 1px solid var(--dim);" in rule
@@ -179,11 +163,11 @@ def test_the_function_extractor_reads_one_body_only():
 # --- JS が無い環境に操作できない UI を残さない ---
 
 # JS が作る/使う部品と、それを隠す土台の規則。どれも html.js の下でだけ表示する
-_GUARDED = ("toolbar", "grab", "listmore")
+_GUARDED = ("toolbar", "grab")
 
 
 def test_interactive_ui_only_appears_under_the_js_class():
-    """ツールバー・グラブバー・展開ボタンは JS が動く環境でだけ表示する。
+    """ツールバーとグラブバーは JS が動く環境でだけ表示する。
 
     素の状態で表示する規則を書くと、JS が無効な環境に押しても何も起きない部品が並ぶ。
     """
@@ -201,7 +185,7 @@ def test_the_html_ships_no_control_that_the_script_did_not_place(dashboard):
     """
     body = _body(dashboard)
     assert "<input" not in body                      # 検索欄は JS が作る
-    for cls in ("grab", "listmore", "list-count", "sort-ind", "sortable", "more"):
+    for cls in ("grab", "list-count", "sort-ind", "sortable"):
         assert f'class="{cls}"' not in body
     # ボタンはタブとテーマ切替だけ（どちらも 8D-1 から html.js の下にある）
     classes = re.findall(r'<button[^>]*class="([^"]+)"', body)
@@ -211,10 +195,13 @@ def test_the_html_ships_no_control_that_the_script_did_not_place(dashboard):
     assert body.count("<select") == sum(chunk.count("<select") for chunk in inside) == 1
 
 
-# --- 折りたたみはブラウザ側の仕事（サーバは全行を書き出す） ---
+# --- 一覧は常に全行が出る ---
 
-def test_every_row_is_written_out_even_beyond_the_collapse_limit(dashboard):
-    """初期表示の上限を超える分もサーバは書き出す（JS 無効でも全員読める）。"""
+def test_the_server_writes_out_every_row(dashboard):
+    """サーバ側は一覧に載るべき人を全員書き出す（表も棒も、行を間引かない）。
+
+    ここが見るのは HTML の中身だけで、ブラウザ側で隠されないことは下の2件が見る。
+    """
     body = _body(dashboard)
     table = _card(body, "推奨一覧")
     assert table.count('<td class="user"') == len(_USERS)
@@ -222,6 +209,32 @@ def test_every_row_is_written_out_even_beyond_the_collapse_limit(dashboard):
     assert bars.count('<div class="bar">') == len(_USERS)
     for email in _USERS:
         assert f'title="{email}"' in table and f'title="{email}"' in bars
+
+
+def test_the_script_hides_rows_only_by_the_filters():
+    """行の表示は絞り込みの結果だけで決まる（行数の上限では隠さない）。
+
+    上限で隠すと、読み手は一覧の一部しか見ていないことに気づけない。隠れた行を出す部品に
+    気づかなければ、そこで全体を確認したつもりになる。表はスクロール領域と高さ変更で
+    読む量を調整できるので、行数を絞る必要もない。
+    """
+    body = _js_function("apply")
+    assert "show(row, ok);" in body
+    # 上限・展開状態のどちらも持たない（片方でも残ると隠す条件を組み直せる）
+    for token in ("limit", "expanded"):
+        assert token not in body, f"apply が {token} を見ています"
+
+
+def test_no_row_limit_machinery_is_left_in_the_assets():
+    """行数を絞る部品が JS / CSS のどちらにも無い。
+
+    上限の定数や展開ボタンが戻ると、絞り込みとは無関係に行が消える状態に戻る。apply の
+    中身だけを見ていても、別の関数で隠す作りに変わったときに気づけないので、部品の側も見る。
+    """
+    for token in ("TABLE_ROWS", "BAR_ROWS", "addMore", "listmore"):
+        assert token not in _DASHBOARD_JS, f"JS に {token} が残っています"
+    for selector in (".listmore", ".more"):
+        assert selector not in _DASHBOARD_CSS, f"CSS に {selector} が残っています"
 
 
 def test_no_parallel_values_are_embedded_for_sorting(dashboard):
@@ -295,13 +308,11 @@ def test_hostile_values_do_not_reach_the_script(cfg, make_input, tmp_path):
 # --- デザイン仕様の数値 ---
 
 def test_the_design_numbers_are_pinned():
-    """初期表示の行数・寸法・最小高さをデザイン仕様の値で固定する。
+    """寸法・最小高さをデザイン仕様の値で固定する。
 
     どれも「少し違っても画面は成立する」種類の値なので、変わったことに気づけるよう
     ここに書き出しておく。
     """
-    assert "var TABLE_ROWS = 15;" in _DASHBOARD_JS          # 表の初期表示行数
-    assert "var BAR_ROWS = 20;" in _DASHBOARD_JS            # 棒の初期表示本数
     assert "var MIN_BOX_H = 180;" in _DASHBOARD_JS          # スクロール領域の最小高さ
     assert ".search { width: 200px; }" in _DASHBOARD_CSS
     assert "padding: 7px 11px; background: var(--surface-2);" in _DASHBOARD_CSS
@@ -349,7 +360,7 @@ def test_the_grab_bar_decision_is_refreshed_when_it_can_change():
     以外のタブでバーが出ないままになる。幅の側が欠けると、折り返しが変わって境界を
     跨いだときに追従しない。
     """
-    # 行数が変わる操作（検索・フィルタ・展開・並べ替え）はすべて apply を通る
+    # 行数が変わる操作（検索・判定フィルタ）はどちらも apply を通る
     assert "updateGrab(list);" in _js_function("apply")
 
     show = _js_function("showTab")

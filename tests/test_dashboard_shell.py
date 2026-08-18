@@ -192,10 +192,12 @@ def test_color_scheme_follows_the_selected_theme():
 # 文字色 → 実際に載る背景。同じ文字色が複数の背景に載る場合は、比が最も低くなる
 # 背景を含める（テーマによって surface-2 と hover のどちらが効くかが入れ替わるため
 # 両方を並べる）。バッジの文字は各 *-soft の上にしか出ない。
+#
+# 速報だけに出る組み合わせも対象。規則そのものが preview-dashboard.html.j2 の中にあっても、
+# 色トークンを定義しているのは dashboard.css なので比はここで実測できる。
 _TEXT_ON = [
     ("muted", "surface-2", "th / タブの件数 / 現状維持バッジ / テーマ切替 / 検索欄の placeholder"),
     ("ink", "surface-2", "検索欄・判定フィルタの入力文字"),
-    ("ink-2", "surface-2", "残りを表示するボタンの文字"),
     ("accent", "surface-2", "ソート中の列の矢印"),
     ("muted", "surface", "カードの副題・脚注・凡例・KPI のラベル"),
     ("dim", "hover", "行ホバー中の増分・矢印・確度"),
@@ -208,6 +210,7 @@ _TEXT_ON = [
     ("std", "hover", "行ホバー中の Standard 表記"),
     ("prem", "hover", "行ホバー中の Premium 表記"),
     ("ink-2", "hover", "行ホバー中の補助テキスト"),
+    ("ink-2", "amber-soft", "速報の注意バナー（規則は preview-dashboard.html.j2 側）"),
     ("ink", "accent-soft", "callout"),
 ]
 
@@ -223,13 +226,13 @@ _MIN_CONTRAST = 4.5
 # グラブバーの帯の上線（--line）はここに入れない。掴めることを伝えているのは
 # グリップの方で、上線は表と脚注を分ける罫線として意図的に細いままにしている。
 _EDGE_ON = [
-    ("dim", "surface", "残りを表示するボタン / 検索欄 / 判定フィルタ の枠線"),
+    ("dim", "surface", "検索欄 / 判定フィルタ の枠線"),
     ("dim", "surface-2", "グラブバーのグリップ / テーマ切替の選択中の枠線"),
-    ("accent", "surface", "ボタンの hover 枠線 / 検索欄・判定フィルタのフォーカス枠"),
+    ("accent", "surface", "検索欄・判定フィルタのフォーカス枠"),
 ]
 
 # 部品の境界の下限。文字より低いが、しきい値ぎりぎりで止めないことは
-# test_the_button_edge_looks_the_same_in_both_themes が別に見る。
+# test_control_edges_look_the_same_in_both_themes が別に見る。
 _MIN_EDGE_CONTRAST = 3.0
 
 
