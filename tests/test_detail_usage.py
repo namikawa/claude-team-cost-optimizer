@@ -1,9 +1,11 @@
 """詳細利用状況（input/output トークン・モデル割合・LoC）のテスト。"""
 
+import re
+
 import pandas as pd
 
-from seat_analyzer.analyze import _short_model, analyze
-from seat_analyzer.report import write_details, write_html
+from seat_analyzer.analyze import _short_model, analyze, preview
+from seat_analyzer.report import write_details, write_html, write_preview
 from seat_analyzer.report.format import _detail_rows, _fmt_tokens
 from seat_analyzer.report.markdown import _detail_table_md
 
@@ -108,6 +110,59 @@ def test_detail_table_md_with_loc():
     assert "1.2M" in md
     assert "API換算需要" in md and "$234.50" in md
     assert "キャッシュ読取分を含む" in md
+
+
+# --- 速報の詳細利用状況（観測値のまま出す） ---
+
+def _preview_detail_card(cfg, input_dir, tmp_path) -> str:
+    """速報ダッシュボードの「詳細利用状況（観測値）」カード1枚分の HTML。"""
+    result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
+    out = tmp_path / "pv"
+    write_preview(result, out)
+    html = (out / "2026-06" / "preview-dashboard.html").read_text(encoding="utf-8")
+    card = re.search(r"<h2>詳細利用状況（観測値）</h2>.*?</section>", html, re.S)
+    assert card, "速報ダッシュボードに詳細利用状況のカードがありません"
+    return card.group(0)
+
+
+def test_preview_detail_table_keeps_the_observed_values(cfg, make_input, tmp_path):
+    """速報の詳細利用状況は観測実績のまま（月末ペース換算 ×3.0 を掛けない）。
+
+    トークン数と product 構成比は日割り換算しても意味を持たない。需要だけを換算すると
+    同じ行の中で基準の違う数値が並ぶため、この表は全体を観測値で揃える。
+    """
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 30.0, net=0.0)]},
+        members=["a@x.jp,Premium"],
+    )
+    card = _preview_detail_card(cfg, input_dir, tmp_path)
+    assert "API換算需要（観測）" in card
+    assert "$30.00" in card and "$90.00" not in card     # ×3.0 の換算値は出さない
+    assert "Sonnet 4.6 100%" in card and "Claude Code 100%" in card
+    assert "10日分" in card                              # 脚注が観測日数を書く
+
+
+def test_preview_detail_table_has_no_loc_column_without_code_analytics(
+        cfg, make_input, tmp_path):
+    """code-analytics が無い組織では LoC 列を出さない（0 で埋めた列を作らない）。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 30.0, net=0.0)]},
+        members=["a@x.jp,Premium"],
+    )
+    assert "LoC" not in _preview_detail_card(cfg, input_dir, tmp_path)
+
+
+def test_preview_detail_table_shows_loc_when_available(
+        cfg, make_input, write_code_snapshots, tmp_path):
+    """code-analytics があれば LoC 列を足す（正式分析と同じ結合を通す）。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 30.0, net=0.0)]},
+        members=["a@x.jp,Premium"],
+    )
+    write_code_snapshots(input_dir, {"2026-06-10": [("a@x.jp", 4200, 7)]})
+    card = _preview_detail_card(cfg, input_dir, tmp_path)
+    assert '<th class="num">LoC</th>' in card
+    assert "4,200" in card
 
 
 def test_team_summary_excludes_unset(cfg, make_input, tmp_path):

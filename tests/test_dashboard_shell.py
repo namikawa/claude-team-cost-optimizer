@@ -111,7 +111,7 @@ def test_every_tab_has_a_panel_and_a_heading(dashboards):
     full, _ = dashboards
     tabs = re.findall(r'<button type="button" class="tab[^"]*"[^>]*data-tab="([^"]+)"', full)
     panels = re.findall(r'<section class="tabpanel[^"]*" data-tab="([^"]+)"', full)
-    assert tabs == ["overview", "actions", "members", "org"]
+    assert tabs == ["overview", "actions", "members", "org", "notes"]
     assert panels == tabs
     assert full.count('<h2 class="panel-title">') == len(panels)
     # 初期状態はどちらも先頭のタブ（JS が読み込まれる前でも表示が食い違わない）
@@ -124,12 +124,14 @@ def test_tab_counts_show_what_the_tab_contains(dashboards):
 
     この組織は部署もチームも持たないため、組織タブにはサマリ表そのものが無い。
     軸のある組織で数え間違えないことは test_org_tab_count_follows_the_drawn_axis が見る。
+    前提と注意は数えるものが無いタブで、常にバッジを持たない。
     """
     full, _ = dashboards
     labels = dict(re.findall(r'data-tab="([^"]+)">(.*?)</button>', full))
     counts = {key: re.findall(r'<span class="tab-count">(\d+)</span>', body)
               for key, body in labels.items()}
-    assert counts == {"overview": ["2"], "actions": ["2"], "members": ["2"], "org": []}
+    assert counts == {"overview": ["2"], "actions": ["2"], "members": ["2"],
+                      "org": [], "notes": []}
     assert "別サマリ" not in full
 
 
@@ -144,6 +146,71 @@ def test_org_tab_count_follows_the_drawn_axis():
     assert _org_tab_count([dept, team]) == 3      # 両方あれば先に出る部署を数える
     assert _org_tab_count([team]) == 2            # 部署が無い組織はチームを数える
     assert _org_tab_count([]) == 0                # どちらも無ければバッジを出さない
+
+
+# --- タブの中身の並び ---
+
+def _panels(html: str) -> dict[str, str]:
+    """data-tab → タブパネル1枚分の HTML。
+
+    切り出しはパネルの開始位置での分割で行う（終了タグで探すと、中に差し込まれた
+    断片の </section> を先に掴む）。末尾のパネルには </main> 以降も含まれるが、
+    見出しの前後関係を見るぶんには差し支えない。
+    """
+    panels = {}
+    for part in re.split(r'(?=<section class="tabpanel)', html):
+        found = re.match(r'<section class="tabpanel[^"]*" data-tab="([^"]+)"', part)
+        if found:
+            panels[found.group(1)] = part
+    return panels
+
+
+def test_actions_tab_leads_with_the_summary_cards(dashboards):
+    """推奨アクションは要約2枚（判定サマリ・付与候補）を先に置き、推奨一覧を下に出す。
+
+    表が先頭にあると、読み手は数十行をスクロールし切ってから要約に出会う。並びが
+    入れ替わっても画面は成立するので、順序をここで固定する。
+    """
+    full, _ = dashboards
+    actions = _panels(full)["actions"]
+    assert (actions.index("<h2>判定サマリ</h2>")
+            < actions.index("<h2>追加クレジット付与候補</h2>")
+            < actions.index("<h2>推奨一覧</h2>"))
+    assert "<h2>判定の内訳</h2>" not in full        # 旧名が残っていない
+
+
+def test_the_recommendation_table_repeats_the_column_legend(dashboards):
+    """推奨一覧の列の読み方は表の脚注にも置き、前提と注意と同じ文を使う。
+
+    同じ説明を2箇所に書き下すと片方だけ直る。文言の定義は report/text.py の _TEXT
+    ひとつで、脚注と前提と注意の両方がそこを参照していることを重なりで確かめる。
+    """
+    full, _ = dashboards
+    panels = _panels(full)
+    footer = re.search(r'<div class="card-ft">(.*?)</div>', panels["actions"], re.S)
+    assert footer, "推奨一覧に脚注がありません"
+    for shared in (
+        "「Std時 / Prem時」= そのシートの場合の想定月額",
+        "確度 = 込み利用量の low/mid/high 3シナリオ推定での判定一致度",
+        "⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ",
+    ):
+        assert shared in footer.group(1)
+        assert shared in panels["notes"]
+
+
+def test_the_assumptions_have_their_own_tab(dashboards):
+    """前提と注意は右端の専用タブに置き、組織タブには残さない。
+
+    組織タブは部署・チーム別サマリと分布の場所。読み方の断りが表の下に続いていると、
+    サマリを読みに来た人が延々とスクロールすることになる。
+    """
+    full, _ = dashboards
+    panels = _panels(full)
+    assert '<h2 class="panel-title">前提と注意</h2>' in panels["notes"]
+    assert "<h2>前提と注意</h2>" in panels["notes"]
+    assert "ヶ月ヒステリシス" in panels["notes"]      # カードの中身ごと移っている
+    assert "前提と注意" not in panels["org"]
+    assert "ヶ月ヒステリシス" not in panels["org"]
 
 
 def test_preview_has_the_same_shell_without_tabs(dashboards):

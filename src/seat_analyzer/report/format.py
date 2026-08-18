@@ -132,8 +132,13 @@ def _fmt_stat_count(v) -> str:
     return f"{n:,.0f}"
 
 
-def _detail_rows(users: pd.DataFrame) -> tuple[list[dict], bool]:
-    """詳細利用状況テーブルの行データ。input+output トークンの降順で返す。"""
+def _detail_rows(users: pd.DataFrame,
+                 cost_col: str = "api_cost_usd") -> tuple[list[dict], bool]:
+    """詳細利用状況テーブルの行データ。input+output トークンの降順で返す。
+
+    cost_col は需要の列名。正式分析は月額の api_cost_usd、速報は観測実績の
+    api_cost_observed_usd を渡す（速報は月末ペース換算せず観測値のまま並べる）。
+    """
     u = users.copy()
     u["_in"] = u["prompt_tokens"].fillna(0)
     u["_out"] = u["completion_tokens"].fillna(0)
@@ -144,7 +149,7 @@ def _detail_rows(users: pd.DataFrame) -> tuple[list[dict], bool]:
     has_loc = "loc_with_cc" in u.columns
     rows = []
     for _, r in u.iterrows():
-        api = r["api_cost_usd"]
+        api = r[cost_col]
         rows.append({
             "email": r["email"],
             "in": int(r["_in"]),

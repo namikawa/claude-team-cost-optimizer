@@ -430,6 +430,57 @@ def test_member_changes_credit_note_only_when_limit_changed():
     assert _without(changed, li, note) == base        # 足すのはこの2要素だけ
 
 
+# --- grant.html.j2 ---
+
+def _grant_html(candidates: list[dict], credit_shown: bool = True) -> str:
+    return _render(_GRANT_HTML, grant_cap_fmt="$150", credit_shown=credit_shown,
+                   grant_candidates=_grant_candidates_view(candidates))
+
+
+def test_grant_card_stays_visible_without_candidates():
+    """付与候補がゼロでもカードを出し、判定できたのかどうかまで書く。
+
+    カードごと消えると、読み手には「該当者がいない」のか「その section の生成が
+    壊れている」のかが区別できない（HTML は何も言わずに短くなるだけ）。さらに
+    「該当者なし」と「そもそも判定できていない」も別の状態なので、上限列が未記入の
+    組織では判定不能であることを書く（未記入は init-org の雛形の初期状態でもある）。
+    """
+    no_data = _grant_html([], credit_shown=False)
+    empty = _grant_html([])
+    listed = _grant_html([{"email": "grant@x.jp", "mode": "disabled", "added": 270.0}])
+    head = ('\n<section class="card">\n'
+            '  <div class="card-hd"><div class="hd-main">'
+            "<h2>追加クレジット付与候補</h2></div></div>\n"
+            '  <div class="card-bd">\n')
+    tail = "  </div>\n</section>"
+    # 3状態は排他なので、それぞれ全文で固定する
+    assert no_data == head + (
+        '    <div class="empty">判定不能。members-info.csv の「追加クレジット上限」列が'
+        "未記入のため、付与候補を判定できません。</div>\n"
+    ) + tail
+    assert empty == head + (
+        '    <div class="empty">該当者なし。追加クレジットが無効または未設定の '
+        "Standard ユーザのうち、需要のモデル試算が Premium 有利になった人を"
+        "ここに挙げます。</div>\n"
+    ) + tail
+    assert listed == head + (
+        '    <div class="callout"><span class="uname" title="grant@x.jp">grant</span>'
+        "（クレジット無効・モデル超過見込み $270/月）</div>\n"
+        '    <p class="lead">昇格の前に、まず上限つき追加クレジット'
+        "（推奨初期上限 $150）を付与し、1ヶ月の課金実測で判断することを推奨します。</p>\n"
+    ) + tail
+
+
+def test_grant_recommendation_is_only_written_for_actual_candidates():
+    """付与の勧めは候補がいるときだけ書く（誰もいない月に行動を促さない）。
+
+    判定できていない組織にも書かない。上限が未記入というだけで、その組織に
+    付与すべき人がいるかどうかは何も分かっていない。
+    """
+    assert "推奨初期上限" not in _grant_html([])
+    assert "推奨初期上限" not in _grant_html([], credit_shown=False)
+
+
 # --- 箇条書き・注記のユーザ表記（member-changes / snapshot / grant） ---
 
 def test_bullet_lists_show_the_local_part_and_keep_the_address_in_title():

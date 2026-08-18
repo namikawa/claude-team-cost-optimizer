@@ -208,6 +208,35 @@ def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict,
     ]
 
 
+def _merge_code_analytics(users: pd.DataFrame,
+                          code_result: ingest.LoadResult | None) -> None:
+    """活用度（Claude Code 貢献データ）の列を users に結合する（正式・速報で共通）。
+
+    ファイルが無い組織（code_result が None）や列を持たない CSV では列を足さない。
+    列の有無がそのままレポートの LoC 列の出し分けになるので、0 で埋めた列を作らない。
+    """
+    if code_result is None:
+        return
+    cc = code_result.df.set_index("email")
+    for col in ("prs_with_cc", "loc_with_cc"):
+        if col in cc.columns:
+            users[col] = users["email"].map(cc[col]).fillna(0).astype(int)
+
+
+def _detail_columns(row) -> dict:
+    """詳細利用状況の列（トークン数・モデル割合・product構成）。利用の無いユーザは 0 と空。"""
+    return {
+        "prompt_tokens": int(row["prompt_tokens"]) if row is not None else 0,
+        "completion_tokens": int(row["completion_tokens"]) if row is not None else 0,
+        "product_breakdown": (
+            str(row["product_breakdown"])
+            if row is not None and "product_breakdown" in row.index else ""
+        ),
+        # model は必須カラムのため row があれば model_breakdown は常に存在する
+        "model_breakdown": str(row["model_breakdown"]) if row is not None else "",
+    }
+
+
 def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisResult:
     """1組織分の分析。input_dir はその組織の入力ディレクトリ（spend/ 等を直下に持つ）。"""
     input_dir = Path(input_dir)
@@ -423,13 +452,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisR
             "rec_high": rec_high,
             "cap_suspected": censored,
             "billed_extra_usd": round(billed, 2),
-            "prompt_tokens": int(row["prompt_tokens"]) if row is not None else 0,
-            "completion_tokens": int(row["completion_tokens"]) if row is not None else 0,
-            "product_breakdown": (
-                str(row["product_breakdown"]) if row is not None and "product_breakdown" in row.index else ""
-            ),
-            # model は必須カラムのため row があれば model_breakdown は常に存在する
-            "model_breakdown": str(row["model_breakdown"]) if row is not None else "",
+            **_detail_columns(row),
         })
 
     users = pd.DataFrame(rows)
@@ -445,11 +468,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisR
     _attach_credits_mode(users, billed_ever)
 
     # 活用度（Claude Code 貢献データ）の結合
-    if code_result is not None:
-        cc = code_result.df.set_index("email")
-        for col in ("prs_with_cc", "loc_with_cc"):
-            if col in cc.columns:
-                users[col] = users["email"].map(cc[col]).fillna(0).astype(int)
+    _merge_code_analytics(users, code_result)
 
     users = users.sort_values(
         ["status", "monthly_saving_usd"], ascending=[True, False]
@@ -652,6 +671,13 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     sources["members"] = str(members_result.source)
     seat_by_email = members.set_index("email")["seat_type"].to_dict()
 
+    # 活用度（任意ファイル code-analytics）。速報では詳細利用状況の LoC 列にしか使わない
+    # 表示専用のデータで、一次判断には入らない。ロード時の指摘（採用ファイルの選択・
+    # 任意カラムの欠落）は同じ入力に対して正式分析が出すため、速報の警告には足さない
+    code_result = ingest.load_code_analytics(input_dir, month, cfg, snapshot_active=active.code)
+    if code_result is not None:
+        sources["code_analytics"] = str(code_result.source)
+
     # 月中差分（利用推移・Claude Code 活動・メンバー変動。1つ以下なら None）
     snapshot, code_diff, member_changes, diff_warns = _midmonth_diffs(
         input_dir, month, cfg, seat_by_email
@@ -677,11 +703,13 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
             "billed_observed_usd": round(billed_obs, 2),
             "label": label,
             "confidence": confidence,
+            **_detail_columns(row),
         })
     users = pd.DataFrame(rows)
 
     # 部署・職種・備考・追加クレジット上限（任意ファイル members-info）の結合
     warnings.extend(_merge_members_info(users, input_dir, cfg, sources, month))
+    _merge_code_analytics(users, code_result)
     # クレジットモード（速報は当月の観測実課金のみで billed_ever を判断）
     billed_ever = set(users.loc[users["billed_observed_usd"] > 0.0, "email"])
     _attach_credits_mode(users, billed_ever)
