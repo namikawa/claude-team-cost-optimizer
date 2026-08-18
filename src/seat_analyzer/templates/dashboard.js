@@ -1,12 +1,10 @@
 
-/* ダッシュボードの対話部分（タブ・テーマ・列ソート・検索・折りたたみ・高さ変更）。
+/* ダッシュボードの対話部分（タブ・テーマ・列ソート・検索・高さ変更）。
 
    共有先の閲覧環境をこちらで選べないため、JS が無効でも内容が読めることを前提に置く。
    タブの出し分けと対話用の UI は、この直下で付ける html.js の下でしか効かない。
-   行の折りたたみもここで行い、サーバ側は常に全行を書き出す（サーバ側で行を削ると
-   JS が動かない環境で内容そのものが欠ける）。操作できる部品のうち、データから
-   作る必要があるもの（判定フィルタの選択肢）だけをサーバ側が描き、それ以外の
-   ツールバー・グラブバー・展開ボタンはここで作る。
+   操作できる部品のうち、データから作る必要があるもの（判定フィルタの選択肢）だけを
+   サーバ側が描き、それ以外のツールバー・グラブバーはここで作る。
 
    CSV 由来の値はここへ渡さない。データはサーバ側で描画済みで、ここは DOM の
    テキストと属性を読んで並べ替え・出し入れをするだけ（数値は計算し直さない）。 */
@@ -17,9 +15,7 @@
   var THEME_KEY = "seatdash-theme";
   var theme = "auto";
 
-  /* 初期表示の行数・本数と、スクロール領域の最小高さ（デザイン仕様の数値）。 */
-  var TABLE_ROWS = 15;
-  var BAR_ROWS = 20;
+  /* スクロール領域の最小高さ（デザイン仕様の数値）。 */
   var MIN_BOX_H = 180;
 
   /* 組み立てた一覧。タブを切り替えたあとにグラブバーの要否を測り直すために持つ */
@@ -152,7 +148,7 @@
     return a < b ? -1 : 1;
   }
 
-  /* ---------- 一覧（表の行 / 棒）の絞り込み・折りたたみ ---------- */
+  /* ---------- 一覧（表の行 / 棒）の絞り込み ---------- */
 
   /* 検索の突合先は、表示名（ローカル部）と title のメールアドレスの両方。
      どちらもサーバが描画済みの DOM から読む。 */
@@ -176,9 +172,8 @@
     }
   }
 
-  /* 絞り込みの結果と折りたたみを一度に当てる。折りたたみは「絞り込みに残った行の
-     先頭から数えて上限まで」なので、検索・フィルタ・並べ替えのどれが動いても
-     ここを通す。 */
+  /* 絞り込みの結果を一覧へ当てる。一覧は常に全行が対象で、隠すのは条件に合わない行だけ。
+     検索・フィルタのどちらが動いてもここを通す。 */
   function apply(list) {
     var matched = 0;
     each(list.rows, function (row) {
@@ -192,18 +187,8 @@
       if (ok) {
         matched += 1;
       }
-      show(row, ok && (list.expanded || matched <= list.limit));
+      show(row, ok);
     });
-    var rest = list.expanded ? 0 : Math.max(0, matched - list.limit);
-    if (list.moreBox) {
-      list.moreCount.textContent = String(rest);
-      /* 隠れている行が無ければボタンごと消す（絞り込みで上限を下回る場合も含む） */
-      if (rest > 0) {
-        list.moreBox.classList.add("is-on");
-      } else {
-        list.moreBox.classList.remove("is-on");
-      }
-    }
     if (list.count) {
       var filtering = Boolean(list.query || list.status);
       list.count.textContent = filtering
@@ -211,7 +196,7 @@
         : list.rows.length + " " + list.unit;
     }
     /* 行の出し入れで内容の高さが変わる＝グラブバーで動かせるかどうかも変わる。
-       検索・フィルタ・展開はすべてここを通るので、判定の更新もここに1つ置く */
+       検索・フィルタはどちらもここを通るので、判定の更新もここに1つ置く */
     updateGrab(list);
   }
 
@@ -267,7 +252,6 @@
         list.sortCol = index;
         sortRows(list, index, list.sortDir);
         markSort(list);
-        apply(list);          /* 並びが変わると折りたたみで残る行の顔ぶれも変わる */
       });
     });
   }
@@ -458,42 +442,20 @@
     });
   }
 
-  /* ---------- 展開ボタン ---------- */
-
-  function addMore(list, anchor) {
-    var box = document.createElement("div");
-    box.className = "listmore";
-    var button = document.createElement("button");
-    button.type = "button";
-    button.className = "more";
-    var count = document.createElement("span");
-    count.className = "more-n";
-    button.appendChild(document.createTextNode("残り "));
-    button.appendChild(count);
-    button.appendChild(document.createTextNode(" " + list.unit + "を表示"));
-    box.appendChild(button);
-    anchor.parentNode.insertBefore(box, anchor.nextSibling);
-    /* 展開したら畳み直さない（読み手が広げた状態を勝手に戻さない） */
-    button.addEventListener("click", function () {
-      list.expanded = true;
-      apply(list);
-    });
-    list.moreBox = box;
-    list.moreCount = count;
-  }
-
   /* ---------- 一覧の組み立て ---------- */
 
-  function newList(rows, limit) {
+  function newList(rows) {
     var list = {
-      rows: rows, limit: limit, expanded: false, query: "", status: "",
+      rows: rows, query: "", status: "",
       numeric: [], marks: [], sortCol: -1, sortDir: 1,
-      count: null, moreBox: null, moreCount: null, grab: null, unit: "件",
+      count: null, grab: null, unit: "件",
     };
     lists.push(list);
     return list;
   }
 
+  /* anchor は一覧の中のどこかのノード。ツールバーを置くのはカードの見出し行なので、
+     そこからカードまで辿れれば足りる（一覧そのものでも、その入れ物でも同じカードに着く）。 */
   function setUp(list, anchor) {
     /* 検索・フィルタの突合先は行ごとに一度だけ読む（並べ替えても行の中身は変わらない） */
     var person = false;
@@ -513,9 +475,6 @@
         addCount(list, bar);
       }
     }
-    if (list.rows.length > list.limit) {
-      addMore(list, anchor);
-    }
     apply(list);
   }
 
@@ -526,12 +485,13 @@
       if (!body) {
         return;
       }
-      var list = newList(toArray(body.rows), TABLE_ROWS);
+      var list = newList(toArray(body.rows));
       list.box = box;
       list.table = table;
       list.body = body;
       addSort(list);
-      setUp(list, addGrab(list) || box);
+      addGrab(list);          /* スクロール領域を持つのは表だけなので、棒には付けない */
+      setUp(list, box);
     });
   }
 
@@ -546,10 +506,7 @@
       if (rows.length === 0) {
         return;
       }
-      var holder = bars.parentNode;
-      var anchor = (holder.classList && holder.classList.contains("card-bd"))
-        ? holder : bars;
-      setUp(newList(rows, BAR_ROWS), anchor);
+      setUp(newList(rows), bars);
     });
   }
 
