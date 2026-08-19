@@ -8,8 +8,9 @@ config.yaml は差分だけを書く上書きファイルとして扱う。モ�
 from __future__ import annotations
 
 import math
+import os
 import unicodedata
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import yaml
 
@@ -132,13 +133,27 @@ def _is_package_config(path: Path) -> bool:
     """path がパッケージ同梱の既定設定そのものか。
 
     比較は解決後のパスで行う（相対指定・symlink 経由でも同じ判定にする）。解決できない
-    場合は書かれたとおりに比べる（判定を誤っても上書きとして扱われるだけで、既定の
-    値そのものは変わらない）。
+    環境では、ファイルシステムに触れない字句の比較へ落とす。既定と判定できないと
+    _rebase_paths が paths をパッケージのディレクトリ基準へ書き換えてしまうため、
+    相対表記で既定を指した場合だけは resolve 抜きでも拾えるようにしておく
+    （symlink 経由の指定と resolve の失敗が重なった場合は判定できない。ここは許容する）。
     """
     try:
         return path.resolve() == PACKAGE_CONFIG_PATH.resolve()
     except OSError:
-        return path == PACKAGE_CONFIG_PATH
+        return _same_lexical_path(path, PACKAGE_CONFIG_PATH)
+
+
+def _same_lexical_path(a: Path, b: Path) -> bool:
+    """ファイルシステムに触れずに2つのパスを比べる。
+
+    絶対化して `.` や `..` を畳み、Windows では大文字小文字と区切りの違いも吸収する
+    （symlink は解決しないので、経路が違えば別のパスとして扱う）。
+    """
+    def key(path: Path) -> str:
+        return os.path.normcase(os.path.normpath(path.absolute()))
+
+    return key(a) == key(b)
 
 
 def _rebase_paths(override: dict, config_path: Path) -> dict:
@@ -167,11 +182,15 @@ def _rebase_paths(override: dict, config_path: Path) -> dict:
 
 
 def _resolve_path_value(value: str, base: Path, *, label: str) -> str:
-    """設定に書かれたディレクトリを、基準 base から解決したパスにする。
+    """設定に書かれたディレクトリを、基準 base から解決した絶対パスにする。
 
     `~` は自分で展開する。設定ファイルはシェルを介さないため、展開しないと `~` という
     名前のディレクトリを黙って指す（雛形の作成ではそれが実際に作られる）。
     絶対パスと展開後のホーム配下はそのまま使う（pathlib の連結は右側が絶対なら基準を捨てる）。
+
+    基準は絶対化してから連結する。カレントの config.yaml を暗黙に読んだ場合の親は `.` で、
+    そのまま連結すると相対パスのまま残り、「設定の置き場所が基準」ではなく実行時の
+    カレント基準になってしまう。
     """
     try:
         path = Path(value).expanduser()
@@ -179,7 +198,23 @@ def _resolve_path_value(value: str, base: Path, *, label: str) -> str:
         # ホームディレクトリを特定できない環境。書かれたとおりに `~` のディレクトリを
         # 指すより、意図と違う場所を使わずに止める
         raise ValueError(f"{label} の '~' を展開できません（ホームディレクトリが不明です）") from None
-    return str(base / path)
+    if _is_ambiguous_path(path):
+        raise ValueError(
+            f"{label} の値 '{value}' は起点が実行時に決まる曖昧なパスです"
+            "（ドライブ文字から始まる絶対パスか、設定ファイルからの相対パスで書いてください）"
+        )
+    return str(base.absolute() / path)
+
+
+def _is_ambiguous_path(path: PurePath) -> bool:
+    """ドライブかルートだけを持ち、起点が実行時に決まるパスか。
+
+    Windows の `D:data`（D ドライブのカレント基準）と `/foo`（カレントドライブのルート
+    基準）が該当する。どちらも連結では基準を捨てるうえ、指す場所がプロセスの状態で
+    変わるため、入出力先としては受け付けない。POSIX では `D:data` はただの相対名、
+    `/foo` は絶対パスなので該当しない（判定はネイティブの Path で行うこと）。
+    """
+    return bool(path.drive or path.root) and not path.is_absolute()
 
 
 def _kind(value) -> str:

@@ -11,13 +11,14 @@ import os
 import re
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 import yaml
 
+from seat_analyzer import config
 from seat_analyzer.cli import WORKSPACE_CONFIG_TEMPLATE, main
-from seat_analyzer.config import PACKAGE_CONFIG_PATH, load_config
+from seat_analyzer.config import PACKAGE_CONFIG_PATH, _is_ambiguous_path, load_config
 
 from .conftest import SPEND_HEADER, requires_symlink, spend_row
 
@@ -418,6 +419,21 @@ def test_paths_in_the_override_are_resolved_from_its_location(tmp_path):
         "input": str(ws / "data"), "output": str(ws / "out")}
 
 
+def test_paths_from_the_implicit_config_are_made_absolute(tmp_path, monkeypatch):
+    """カレントの config.yaml を暗黙に読んだ場合も絶対パスにする。
+
+    設定の親は `.` なので、絶対化しないと相対パスのまま残る。それでは「設定の置き場所が
+    基準」ではなく、値を使う側のカレント基準になってしまう。
+    """
+    monkeypatch.chdir(tmp_path)
+    _override(tmp_path, "paths:\n  input: data\n  output: out\n")
+    paths = load_config()["paths"]
+
+    assert Path(paths["input"]).is_absolute() and Path(paths["output"]).is_absolute()
+    assert Path(paths["input"]) == Path.cwd() / "data"
+    assert Path(paths["output"]) == Path.cwd() / "out"
+
+
 def test_absolute_paths_in_the_override_are_kept(tmp_path):
     """絶対パスはそのまま使う（設定の置き場所で書き換えない）。"""
     target = tmp_path / "elsewhere" / "data"
@@ -436,6 +452,73 @@ def test_home_relative_paths_in_the_override_are_expanded(tmp_path):
 
     assert load_config(path)["paths"]["input"] == str(
         Path.home() / "seat-analysis-data" / "input")
+
+
+@pytest.mark.parametrize("value,ambiguous", [
+    ("D:data", True),        # D ドライブの「カレントディレクトリ」基準
+    ("/foo", True),          # カレントドライブのルート基準
+    ("C:/ws/data", False),   # 絶対パス
+    ("C:\\ws\\data", False),
+    ("data", False),
+    ("../data", False),
+])
+def test_windows_paths_without_a_fixed_starting_point_are_ambiguous(value, ambiguous):
+    """Windows のドライブ相対・ルートのみの表記を「起点が決まらない」と判定する。
+
+    どちらもプロセスの状態（ドライブごとのカレント）で指す場所が変わる。判定そのものは
+    OS に依らず検査できるよう、パスの種別を明示して確かめる。
+    """
+    assert _is_ambiguous_path(PureWindowsPath(value)) is ambiguous
+
+
+@pytest.mark.parametrize("value", ["D:data", "/foo", "data", "../data"])
+def test_posix_paths_are_never_ambiguous(value):
+    """POSIX では `D:data` はただの相対名で `/foo` は絶対パス（誤検出させない）。"""
+    assert _is_ambiguous_path(PurePosixPath(value)) is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="ドライブ相対パスは Windows でしか作れない")
+def test_a_drive_relative_path_in_the_override_is_rejected(tmp_path):
+    """起点が決まらないパスは、黙って別の場所を指す前に止める。"""
+    path = _override(tmp_path, "paths:\n  input: D:data\n")
+    with pytest.raises(ValueError, match="曖昧なパス"):
+        load_config(path)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows ではドライブ相対として拒否される")
+def test_a_name_with_a_colon_stays_a_relative_name_on_posix(tmp_path):
+    """POSIX では `:` を含む名前も普通のディレクトリ名として通す。"""
+    path = _override(tmp_path, "paths:\n  input: D:data\n")
+    assert load_config(path)["paths"]["input"] == str(tmp_path / "D:data")
+
+
+def test_an_ambiguous_path_stops_the_load(tmp_path, monkeypatch):
+    """曖昧と判定した値はロードの時点で止める（判定と停止がつながっていること）。
+
+    実際に曖昧になる書き方は Windows でしか作れないため、判定だけを差し替えて確かめる。
+    """
+    monkeypatch.setattr(config, "_is_ambiguous_path", lambda path: True)
+    path = _override(tmp_path, "paths:\n  input: somewhere\n")
+
+    with pytest.raises(ValueError, match="曖昧なパス") as e:
+        load_config(path)
+    # どの設定のどのキーに何と書いたかが分かる
+    assert all(x in str(e.value) for x in (str(path), "paths.input", "somewhere"))
+
+
+def test_the_packaged_default_is_detected_without_resolve(monkeypatch):
+    """resolve できない環境でも、相対表記の組み込み既定を既定と判定する。
+
+    上書きと誤って扱うと、paths がプログラムのインストール先を基準に書き換えられる。
+    """
+    def boom(self, strict=False):
+        raise OSError("解決できない")
+
+    monkeypatch.setattr(Path, "resolve", boom)
+    monkeypatch.chdir(PACKAGE_CONFIG_PATH.parent.parent)
+    relative = Path(PACKAGE_CONFIG_PATH.parent.name) / PACKAGE_CONFIG_PATH.name
+
+    assert load_config(relative)["paths"] == {"input": "input", "output": "reports"}
 
 
 def test_the_packaged_default_keeps_current_directory_paths(tmp_path, monkeypatch):
