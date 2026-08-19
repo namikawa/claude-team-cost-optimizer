@@ -20,9 +20,35 @@ WORKSPACE_CONFIG_TEMPLATE = Path(__file__).parent / "templates" / "workspace-con
 # --config 省略時の説明。上書きファイルは任意なので「無くても動く」ことを明示する
 _CONFIG_HELP = f"設定の上書きファイル (default: ./{WORKSPACE_CONFIG_NAME} があれば適用)"
 
+# 入出力ディレクトリの説明。省略時の値は設定から決まる（_resolve_dir）
+_INPUT_DIR_HELP = f"入力ディレクトリ (default: {WORKSPACE_CONFIG_NAME} の paths.input。未設定なら input)"
+_OUTPUT_DIR_HELP = f"出力ディレクトリ (default: {WORKSPACE_CONFIG_NAME} の paths.output。未設定なら reports)"
+
 # ワークスペースを git 管理下に置いても、実データと組織固有の設定が入らないようにする。
 # 追記する行の目印にもなるので、文言は変えずに使う
 _GITIGNORE_NOTE = "# 実データと組織固有の設定をコミットしない（seat-analyzer init）"
+
+
+def _add_dir_options(parser: argparse.ArgumentParser, *, output: bool = True) -> None:
+    """入出力ディレクトリのオプションを足す。
+
+    既定値は argparse に持たせず None のままにする。省略したのか同じ値を明示したのかを
+    区別できないと、設定ファイルの paths とフラグの優先順位を決められないため
+    （解決は _resolve_dir が行う）。
+    """
+    parser.add_argument("--input-dir", default=None, help=_INPUT_DIR_HELP)
+    if output:
+        parser.add_argument("--output-dir", default=None, help=_OUTPUT_DIR_HELP)
+
+
+def _resolve_dir(flag: str | None, cfg: dict, key: str) -> Path:
+    """入出力先を決める: CLI フラグ > ワークスペースの config.yaml > 組み込み既定。
+
+    設定ファイルに書かれた相対パスは、その設定ファイルの置き場所を基準に load_config が
+    解決済みなので、ここでは受け取った値をそのまま Path にする（フラグと組み込み既定は
+    従来どおりカレントディレクトリ基準）。
+    """
+    return Path(cfg["paths"][key] if flag is None else flag)
 
 
 def _force_utf8_io() -> None:
@@ -91,8 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織を分析",
     )
     p.add_argument("--config", default=None, help=_CONFIG_HELP)
-    p.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
-    p.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    _add_dir_options(p)
     p.add_argument(
         "--preview", action="store_true",
         help="速報モード: 部分月データから一次判断のみ行う（変更推奨・ヒステリシスなし）",
@@ -127,8 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織",
     )
     pdis.add_argument("--config", default=None, help=_CONFIG_HELP)
-    pdis.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
-    pdis.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    _add_dir_options(pdis)
     pdis.add_argument(
         "--preview", action="store_true", help="report.md ではなく preview.md の考察を対象にする")
     pdis.add_argument(
@@ -158,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         help="対象組織（input/ 直下のディレクトリ名）。複数指定可。省略時は全組織を検査",
     )
     pdoc.add_argument("--config", default=None, help=_CONFIG_HELP)
-    pdoc.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
+    _add_dir_options(pdoc, output=False)   # 出力を書かないコマンド
     pdoc.add_argument(
         "--format", choices=("text", "json"), default="text",
         help="出力形式。json は構造化issueの配列を stdout へ出す (default: text)",
@@ -185,8 +209,7 @@ def main(argv: list[str] | None = None) -> int:
         help="内容を確認して無害と判断した語を許可する（複数指定可）",
     )
     pchk.add_argument("--config", default=None, help=_CONFIG_HELP)
-    pchk.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
-    pchk.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    _add_dir_options(pchk)
     pchk.add_argument(
         "--repo-root", metavar="パス",
         help="「すでに公開されている内容」を読むリポジトリのルート。"
@@ -195,14 +218,16 @@ def main(argv: list[str] | None = None) -> int:
     pchk.set_defaults(func=_run_check_text)
 
     pini = sub.add_parser("init", help="カレントディレクトリにワークスペースの雛形を作成")
-    pini.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
+    # 設定ファイルはこのコマンドが作るものなので --config は取らない（カレントの
+    # config.yaml が既にあれば、そこに書かれた paths に合わせる）
+    _add_dir_options(pini, output=False)
     pini.set_defaults(func=_run_init)
 
     pi = sub.add_parser("init-org", help="新しい組織の入力/出力ディレクトリの雛形を作成")
     pi.add_argument("orgs", nargs="+", metavar="組織名",
                     help="作成する組織名（input/ 直下のディレクトリ名になる）。複数指定可")
-    pi.add_argument("--input-dir", default="input", help="入力ディレクトリ (default: input)")
-    pi.add_argument("--output-dir", default="reports", help="出力ディレクトリ (default: reports)")
+    pi.add_argument("--config", default=None, help=_CONFIG_HELP)
+    _add_dir_options(pi)
     pi.set_defaults(func=_run_init_org)
 
     args = parser.parse_args(argv)
@@ -243,24 +268,26 @@ def _workspace_relative(path: Path) -> str | None:
     return rel.as_posix() if rel.parts else None
 
 
-def _gitignore_entries(input_dir: Path) -> tuple[list[str], str | None]:
+def _gitignore_entries(input_dir: Path, output_dir: Path) -> tuple[list[str], list[str]]:
     """ワークスペースで git に入れてはいけないものと、行にできなかった場合の通知。
 
     設定には組織固有の語が入り、入力には利用実績、出力には生成したレポートが入る。
     ワークスペースが git 管理下にあると `git add .` がまとめて拾う。
     """
     entries = [_gitignore_pattern(WORKSPACE_CONFIG_NAME, directory=False)]
-    note = None
-    rel = _workspace_relative(input_dir)
-    if rel is None:
-        note = (
-            f"入力ディレクトリ（{input_dir}）はワークスペース配下の相対パスにできないため"
-            " .gitignore の対象外です。git 管理下に置くなら自分で除外してください"
-        )
-    else:
-        entries.append(_gitignore_pattern(rel, directory=True))
-    entries.append(_gitignore_pattern("reports", directory=True))
-    return entries, note
+    notes: list[str] = []
+    for label, path in (("入力", input_dir), ("出力", output_dir)):
+        rel = _workspace_relative(path)
+        if rel is None:
+            notes.append(
+                f"{label}ディレクトリ（{path}）はワークスペース配下の相対パスにできないため"
+                " .gitignore の対象外です。git 管理下に置くなら自分で除外してください"
+            )
+            continue
+        pattern = _gitignore_pattern(rel, directory=True)
+        if pattern not in entries:   # 入力と出力が同じ場所なら行は1つでよい
+            entries.append(pattern)
+    return entries, notes
 
 
 def _gitignore_path() -> Path:
@@ -314,8 +341,16 @@ def _run_init(args: argparse.Namespace) -> int:
     プログラム本体（uv tool install で入るパッケージ）と利用者のデータを分けるための入口。
     設定はここに作る config.yaml へ差分だけを書き、書かなかった項目はパッケージ内の
     既定が使われる。
+
+    再実行するワークスペースに記入済みの config.yaml があれば、そこに書かれた入出力先に
+    合わせる（作るディレクトリと .gitignore の行が、以降の分析が読み書きする場所と
+    食い違わないようにする）。
     """
-    input_dir = Path(args.input_dir)
+    cfg = load_config()
+    input_dir = _resolve_dir(args.input_dir, cfg, "input")
+    # このコマンドは出力を書かないので --output-dir を持たない（.gitignore の行に使う
+    # 出力先は設定からだけ決まる）
+    output_dir = _resolve_dir(None, cfg, "output")
     config_path = Path(WORKSPACE_CONFIG_NAME)
     # 書き込み先の可否は、1つも書き始める前にまとめて確かめる
     validate_config_path(config_path)  # ディレクトリ等を「既存」として扱わない
@@ -334,9 +369,9 @@ def _run_init(args: argparse.Namespace) -> int:
         )
         print(f"設定ファイル:     {config_path}（全行コメントの雛形。差分だけ書く）")
 
-    entries, note = _gitignore_entries(input_dir)
+    entries, notes = _gitignore_entries(input_dir, output_dir)
     print(f"除外設定:         .gitignore（{_write_gitignore(gitignore_path, entries)}）")
-    if note:
+    for note in notes:
         print(f"  ! {note}")
 
     print("\n次の手順:")
@@ -347,8 +382,10 @@ def _run_init(args: argparse.Namespace) -> int:
 
 
 def _run_init_org(args: argparse.Namespace) -> int:
-    input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir)
+    # 設定を読むのは入出力先を決めるため（分析と同じ場所に雛形を作る）
+    cfg = load_config(args.config)
+    input_dir = _resolve_dir(args.input_dir, cfg, "input")
+    output_dir = _resolve_dir(args.output_dir, cfg, "output")
     # 1つでも不正・衝突があれば1つも作らない（途中まで作ると片付けが要る）
     ingest.validate_org_names(args.orgs)
 
@@ -493,7 +530,7 @@ def _notice(message: str, as_json: bool) -> None:
 
 def _run_doctor(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
-    input_dir = Path(args.input_dir)
+    input_dir = _resolve_dir(args.input_dir, cfg, "input")
     as_json = args.format == "json"
     all_issues: list[QualityIssue] = []
     month = args.month
@@ -546,8 +583,8 @@ def _run_analyze(args: argparse.Namespace) -> int:
         raise ValueError("--days は --preview 専用のオプションです")
 
     cfg = load_config(args.config)
-    input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir)
+    input_dir = _resolve_dir(args.input_dir, cfg, "input")
+    output_dir = _resolve_dir(args.output_dir, cfg, "output")
 
     targets = _resolve_targets(input_dir, output_dir, args.org)
     # 使い方の誤りは分析を走らせる前に落とす（3組織の分析を完走してから失敗させない）
@@ -659,6 +696,8 @@ def _check_text_sources(name: str) -> list[tuple[str, str]]:
 def _run_check_text(args: argparse.Namespace) -> int:
     """公開予定のテキストを検査する。業務情報を検出したら終了コード 1。"""
     cfg = load_config(args.config)
+    input_dir = _resolve_dir(args.input_dir, cfg, "input")
+    output_dir = _resolve_dir(args.output_dir, cfg, "output")
     # baseline（すでに公開されている内容）はリポジトリのルートから読む。
     # 省略時はカレントディレクトリ（リポジトリの中で実行する運用）。取り違えると
     # 別のリポジトリの内容を公開済みとして扱うため、省略時はルートの同一性を確かめる
@@ -687,7 +726,7 @@ def _run_check_text(args: argparse.Namespace) -> int:
             # 抽出量を必ず出す。追加行 0 なら、検査すべき内容が無かったことに気づける
             scope = f"追加行 {extract.n_added_lines} / 対象パス {extract.n_paths} / "
         result = public_text.check_public_text(
-            text, input_dir=Path(args.input_dir), output_dir=Path(args.output_dir),
+            text, input_dir=input_dir, output_dir=output_dir,
             cfg=cfg, root=root, allow=tuple(args.allow_term or ()), exclude=exclude,
         )
         if not result.hits:
@@ -728,8 +767,8 @@ def _check_allow_scope(allow: tuple[str, ...], n_targets: int) -> None:
 
 def _run_discuss(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
-    input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir)
+    input_dir = _resolve_dir(args.input_dir, cfg, "input")
+    output_dir = _resolve_dir(args.output_dir, cfg, "output")
     targets = _resolve_targets(input_dir, output_dir, args.org)
     month = _resolve_month(targets, args.month)
     return _run_discussions(

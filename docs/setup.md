@@ -196,6 +196,8 @@ seat-analyzer init
 
 以降 `analyze` / `doctor` / `discuss` はワークスペースのルートで実行する。入力・出力・
 設定をカレントディレクトリから解決するため、別の場所で実行すると入力が見つからない。
+入力・出力だけをワークスペースの外に置く場合は `config.yaml` の `paths.input` /
+`paths.output` に書く（相対パスは `config.yaml` の置き場所が基準）。
 
 検証:
 
@@ -389,7 +391,8 @@ uv tool install "seat-analyzer @ <最新リリースの wheel の URL>"
   指定して再実行する。
 - 分析実行時に「入力データがありません」と言われる
   ワークスペースのルート以外で実行している。`input/` がある場所へ移動して実行し直す。
-  別の場所のデータを使う場合は `--input-dir` / `--output-dir` を指定する。
+  別の場所のデータを使う場合は `--input-dir` / `--output-dir` を指定する（毎回付けずに
+  済ませるなら `config.yaml` の `paths.input` / `paths.output` に書く）。
 - `config.yaml` に書いた設定が効かない / 「既定に存在しないキーです」と言われる
   上書きファイルはカレントディレクトリの `config.yaml` を読む。ワークスペースのルートで
   実行しているかを確認する。キー名は既定設定と一致していなければエラーになる

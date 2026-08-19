@@ -3,7 +3,8 @@
 プログラムは `uv tool install` で配り、利用者のデータは任意の場所のワークスペースに置く。
 単価やカラムの対応表をプログラムの更新で配れるようにするため、既定はパッケージ内に持ち、
 ワークスペースの config.yaml には差分だけを書く。ここではその重ね方と、誤記を黙って
-無視しないことを見る。ワークスペースの雛形を作る `init` も対象にする。
+無視しないことを見る。入出力ディレクトリの解決（フラグ > 設定 > 組み込み既定）と、
+ワークスペースの雛形を作る `init` / `init-org` も対象にする。
 """
 
 import os
@@ -18,7 +19,7 @@ import yaml
 from seat_analyzer.cli import WORKSPACE_CONFIG_TEMPLATE, main
 from seat_analyzer.config import PACKAGE_CONFIG_PATH, load_config
 
-from .conftest import requires_symlink
+from .conftest import SPEND_HEADER, requires_symlink, spend_row
 
 
 def _write(path: Path, text: str) -> Path:
@@ -31,9 +32,27 @@ def _override(tmp_path: Path, text: str) -> Path:
     return _write(tmp_path / "config.yaml", text)
 
 
-def _touch(path: Path) -> Path:
+def _put(path: Path, text: str) -> Path:
+    """親ディレクトリごと作ってファイルを書く。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    return _write(path, "x\n")
+    return _write(path, text)
+
+
+def _touch(path: Path) -> Path:
+    return _put(path, "x\n")
+
+
+# 入出力先の解決を CLI で確かめるための対象月（入力の中身は判定を見ないので最小でよい）
+MONTH = "2026-06"
+
+
+def _org_input(base: Path, org: str = "org-a", email: str = "alice.morgan@x.jp") -> Path:
+    """分析が最後まで通る最小の入力を base/<組織名>/ に置く。戻り値は base。"""
+    _put(base / org / "spend" / f"spend_{MONTH}.csv",
+         SPEND_HEADER + "\n" + spend_row(email, 12.0) + "\n")
+    _put(base / org / "members" / f"members_{MONTH}.csv",
+         f"Email,Seat Type\n{email},Premium\n")
+    return base
 
 
 # .gitignore の行が実際に効くかは git に聞くしかない（除外の規則は git 側にある）
@@ -136,9 +155,21 @@ def test_comment_only_override_is_a_noop(tmp_path):
 
 
 def test_full_config_as_override_is_accepted(tmp_path):
-    """既定と同内容の完全版を上書きに指定しても通る（従来の使い方の後方互換）。"""
+    """既定と同内容の完全版を上書きに指定しても通る（従来の使い方の後方互換）。
+
+    入出力先だけは、上書きファイルに書かれた値としてその置き場所を基準に解決される
+    （相対パスの基準は下の「入出力ディレクトリ」の節を参照）。
+    """
     path = _write(tmp_path / "full.yaml", PACKAGE_CONFIG_PATH.read_text(encoding="utf-8"))
-    assert load_config(path) == load_config(PACKAGE_CONFIG_PATH)
+    cfg, default = load_config(path), load_config(PACKAGE_CONFIG_PATH)
+
+    assert _without_paths(cfg) == _without_paths(default)
+    assert cfg["paths"] == {
+        "input": str(tmp_path / "input"), "output": str(tmp_path / "reports")}
+
+
+def _without_paths(cfg: dict) -> dict:
+    return {key: value for key, value in cfg.items() if key != "paths"}
 
 
 # ------------------------------------------------------- 誤記を黙って無視しない
@@ -148,6 +179,7 @@ def test_full_config_as_override_is_accepted(tmp_path):
     ("decisions:\n  hysteresis_months: 3\n", "decisions"),
     ("decision:\n  hysteresis_month: 3\n", "decision.hysteresis_month"),
     ('columns:\n  spend:\n    emial: ["email"]\n', "columns.spend.emial"),
+    ("paths:\n  inputs: data\n", "paths.inputs"),
 ])
 def test_unknown_key_is_rejected_with_its_path(tmp_path, text, where):
     """既定に無いキーはフルパス付きでエラーにする。
@@ -165,6 +197,7 @@ def test_unknown_key_is_rejected_with_its_path(tmp_path, text, where):
     ("cost_basis:\n  value: computed\n", "cost_basis", "値"),      # 既定は値
     ("trend:\n  top_changes: []\n", "trend.top_changes", "値"),
     ("model_prices:\n  patterns: 3\n", "model_prices.patterns", "リスト"),
+    ("paths:\n  input: [data]\n", "paths.input", "値"),
 ])
 def test_value_kind_mismatch_is_rejected(tmp_path, text, where, want):
     """辞書・リスト・値の3種別で既定と食い違う上書きはエラーにする。
@@ -363,6 +396,142 @@ def test_cli_reads_the_workspace_config(tmp_path, monkeypatch, capsys):
     assert "既定に存在しないキー" in capsys.readouterr().err
 
 
+# ------------------------------------------------------- 入出力ディレクトリ（paths）
+
+
+def test_paths_default_to_the_builtin_directories(tmp_path, monkeypatch):
+    """設定を書かなければ、従来どおりカレントからの input / reports。"""
+    monkeypatch.chdir(tmp_path)
+    assert load_config()["paths"] == {"input": "input", "output": "reports"}
+
+
+def test_paths_in_the_override_are_resolved_from_its_location(tmp_path):
+    """上書きファイルに書いた相対パスは、そのファイルの置き場所が基準になる。
+
+    ワークスペースをどのディレクトリから使っても同じ場所を指すようにするため。
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    path = _write(ws / "config.yaml", "paths:\n  input: data\n  output: out\n")
+
+    assert load_config(path)["paths"] == {
+        "input": str(ws / "data"), "output": str(ws / "out")}
+
+
+def test_absolute_paths_in_the_override_are_kept(tmp_path):
+    """絶対パスはそのまま使う（設定の置き場所で書き換えない）。"""
+    target = tmp_path / "elsewhere" / "data"
+    path = _override(tmp_path, f'paths:\n  input: "{target.as_posix()}"\n')
+
+    assert load_config(path)["paths"]["input"] == str(target)
+
+
+def test_home_relative_paths_in_the_override_are_expanded(tmp_path):
+    """`~` はホームディレクトリに展開する。
+
+    設定ファイルはシェルを介さないため、展開しないと `~` という名前のディレクトリを
+    黙って指す（init-org ならそれを実際に作る）。
+    """
+    path = _override(tmp_path, "paths:\n  input: ~/seat-analysis-data/input\n")
+
+    assert load_config(path)["paths"]["input"] == str(
+        Path.home() / "seat-analysis-data" / "input")
+
+
+def test_the_packaged_default_keeps_current_directory_paths(tmp_path, monkeypatch):
+    """--config で組み込み既定そのものを指しても、入出力先はカレント基準のまま。
+
+    ここだけ「設定ファイルの隣」を基準にすると、プログラムのインストール先を入力元に
+    してしまう。既定を明示的に指す形はテスト全体が使っている（conftest の CONFIG）。
+    """
+    monkeypatch.chdir(tmp_path)
+    assert load_config(PACKAGE_CONFIG_PATH)["paths"] == {
+        "input": "input", "output": "reports"}
+
+    # 書き方（相対指定）で判定が変わらない
+    monkeypatch.chdir(PACKAGE_CONFIG_PATH.parent.parent)
+    relative = Path(PACKAGE_CONFIG_PATH.parent.name) / PACKAGE_CONFIG_PATH.name
+    assert load_config(relative)["paths"] == {"input": "input", "output": "reports"}
+
+
+@pytest.mark.parametrize("text,where", [
+    ('paths:\n  input: ""\n', "paths.input"),
+    ("paths:\n  output: 3\n", "paths.output"),
+])
+def test_paths_that_are_not_usable_directories_are_rejected(tmp_path, text, where):
+    """空文字や数値はディレクトリにならない（空文字はカレントとして解決されてしまう）。"""
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=f"{where} は空でない文字列が必要です"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("override", [None, "decision:\n  hysteresis_months: 3\n"])
+def test_cli_falls_back_to_the_current_directory(tmp_path, monkeypatch, override):
+    """paths を書かない限り、入出力はカレントの input/ と reports/ のまま。"""
+    ws = tmp_path / "ws"
+    _org_input(ws / "input")
+    if override is not None:
+        _override(ws, override)
+    monkeypatch.chdir(ws)
+
+    assert main(["analyze", "--month", MONTH]) == 0
+    assert (ws / "reports" / "org-a" / MONTH / "report.md").is_file()
+
+
+def test_cli_uses_the_paths_from_the_workspace_config(tmp_path, monkeypatch):
+    """フラグを省いたら config.yaml の paths を使う。"""
+    ws = tmp_path / "ws"
+    _org_input(ws / "data")
+    _override(ws, "paths:\n  input: data\n  output: out\n")
+    monkeypatch.chdir(ws)
+
+    assert main(["analyze", "--month", MONTH]) == 0
+    assert (ws / "out" / "org-a" / MONTH / "report.md").is_file()
+    assert not (ws / "reports").exists()
+
+
+def test_cli_dir_flags_win_over_the_workspace_config(tmp_path, monkeypatch):
+    """フラグを明示したらそちらが勝つ（設定より優先）。"""
+    ws = tmp_path / "ws"
+    _org_input(ws / "data", org="org-a")
+    _org_input(tmp_path / "given", org="org-b")
+    _override(ws, "paths:\n  input: data\n  output: out\n")
+    monkeypatch.chdir(ws)
+
+    assert main([
+        "analyze", "--month", MONTH,
+        "--input-dir", str(tmp_path / "given"), "--output-dir", str(tmp_path / "given-out"),
+    ]) == 0
+    assert (tmp_path / "given-out" / "org-b" / MONTH / "report.md").is_file()
+    assert not (ws / "out").exists()
+
+
+def test_doctor_uses_the_paths_from_the_workspace_config(tmp_path, monkeypatch, capsys):
+    """出力を書かないコマンドも同じ規則で入力先を決める。"""
+    ws = tmp_path / "ws"
+    _org_input(ws / "data")
+    _override(ws, "paths:\n  input: data\n")
+    monkeypatch.chdir(ws)
+    capsys.readouterr()
+
+    assert main(["doctor", "--month", MONTH]) == 0
+    assert "org-a" in capsys.readouterr().out
+
+
+def test_cli_resolves_config_paths_from_the_config_location(tmp_path, monkeypatch):
+    """--config で別の場所の設定を読んでも、相対パスはその設定の隣を指す。"""
+    ws = tmp_path / "ws"
+    _org_input(ws / "data")
+    config_path = _override(ws, "paths:\n  input: data\n  output: out\n")
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "data").mkdir(parents=True)   # カレント側の同名ディレクトリは見ない
+    monkeypatch.chdir(elsewhere)
+
+    assert main(["analyze", "--config", str(config_path), "--month", MONTH]) == 0
+    assert (ws / "out" / "org-a" / MONTH / "report.md").is_file()
+    assert not (elsewhere / "out").exists()
+
+
 # ------------------------------------------------------- ワークスペースの雛形（init）
 
 
@@ -431,6 +600,34 @@ def test_init_gitignore_follows_the_input_dir_name(tmp_path, monkeypatch):
     assert "/input/" not in lines
 
 
+def test_init_follows_the_paths_in_an_existing_config(tmp_path, monkeypatch):
+    """記入済みの config.yaml があれば、その paths のディレクトリを作って除外する。
+
+    雛形の作成先と、以降の分析が読み書きする場所を食い違わせない。
+    """
+    monkeypatch.chdir(tmp_path)
+    _override(tmp_path, "paths:\n  input: data\n  output: out\n")
+
+    assert main(["init"]) == 0
+    assert (tmp_path / "data").is_dir()
+    assert not (tmp_path / "input").exists()
+    lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert {"/config.yaml", "/data/", "/out/"} <= set(lines)
+    assert "/input/" not in lines and "/reports/" not in lines
+
+
+def test_init_input_dir_flag_wins_over_the_config(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _override(tmp_path, "paths:\n  input: data\n  output: out\n")
+
+    assert main(["init", "--input-dir", "given"]) == 0
+    assert (tmp_path / "given").is_dir()
+    assert not (tmp_path / "data").exists()
+    lines = (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert {"/given/", "/out/"} <= set(lines)
+    assert "/data/" not in lines
+
+
 def test_init_gitignore_relativizes_an_absolute_input_dir(tmp_path, monkeypatch):
     """ワークスペース配下を絶対パスで指しても、相対の行になる。
 
@@ -459,6 +656,23 @@ def test_init_reports_an_input_dir_outside_the_workspace(tmp_path, monkeypatch, 
     assert {"/config.yaml", "/reports/"} <= set(lines)
     assert not any("outside" in line for line in lines)
     assert ".gitignore の対象外" in capsys.readouterr().out
+
+
+def test_init_reports_an_output_dir_outside_the_workspace(tmp_path, monkeypatch, capsys):
+    """出力先も、ワークスペースの外を指していれば行にできないと伝える。"""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    outside = (tmp_path / "outside").as_posix()
+    _write(workspace / "config.yaml", f'paths:\n  output: "{outside}"\n')
+    monkeypatch.chdir(workspace)
+    capsys.readouterr()
+
+    assert main(["init"]) == 0
+    lines = (workspace / ".gitignore").read_text(encoding="utf-8").splitlines()
+    assert {"/config.yaml", "/input/"} <= set(lines)
+    assert not any("outside" in line for line in lines)
+    out = capsys.readouterr().out
+    assert "出力ディレクトリ" in out and ".gitignore の対象外" in out
 
 
 def test_init_gitignore_escapes_pattern_characters(tmp_path, monkeypatch):
@@ -583,6 +797,17 @@ def test_init_appends_to_a_gitignore_without_a_trailing_newline(tmp_path, monkey
     lines = path.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "/input/"          # 行が連結されない
     assert "/config.yaml" in lines
+
+
+def test_init_org_follows_the_paths_in_the_workspace_config(tmp_path, monkeypatch):
+    """組織の雛形も config.yaml の paths の下に作る（分析が読む場所と揃える）。"""
+    monkeypatch.chdir(tmp_path)
+    _override(tmp_path, "paths:\n  input: data\n  output: out\n")
+
+    assert main(["init-org", "org-x"]) == 0
+    assert (tmp_path / "data" / "org-x" / "spend").is_dir()
+    assert (tmp_path / "out" / "org-x").is_dir()
+    assert not (tmp_path / "input").exists()
 
 
 def test_workspace_template_has_no_effective_settings():
