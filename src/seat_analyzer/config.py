@@ -8,8 +8,9 @@ config.yaml は差分だけを書く上書きファイルとして扱う。モ�
 from __future__ import annotations
 
 import math
+import os
 import unicodedata
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import yaml
 
@@ -32,6 +33,7 @@ def load_config(path: str | Path | None = None) -> dict:
     if override_path.is_file():
         override = _read_mapping(override_path, allow_empty=True)
         if override:
+            override = _rebase_paths(override, override_path)
             cfg = _merge_override(cfg, override, label=str(override_path))
     elif path is not None:
         raise FileNotFoundError(f"設定ファイルが見つかりません: {override_path}")
@@ -41,7 +43,8 @@ def load_config(path: str | Path | None = None) -> dict:
         # 効かないまま分析が完走する
         validate_config_path(override_path)
 
-    for key in ("seats", "decision", "model_prices", "columns", "discussion", "product_policy"):
+    for key in ("paths", "seats", "decision", "model_prices", "columns", "discussion",
+                "product_policy"):
         if key not in cfg:
             raise ValueError(f"設定に '{key}' セクションがありません")
     _validate(cfg)
@@ -126,6 +129,94 @@ def _read_mapping(path: Path, *, allow_empty: bool) -> dict:
     return data
 
 
+def _is_package_config(path: Path) -> bool:
+    """path がパッケージ同梱の既定設定そのものか。
+
+    比較は解決後のパスで行う（相対指定・symlink 経由でも同じ判定にする）。解決できない
+    環境では、ファイルシステムに触れない字句の比較へ落とす。既定と判定できないと
+    _rebase_paths が paths をパッケージのディレクトリ基準へ書き換えてしまうため、
+    相対表記で既定を指した場合だけは resolve 抜きでも拾えるようにしておく
+    （symlink 経由の指定と resolve の失敗が重なった場合は判定できない。ここは許容する）。
+    """
+    try:
+        return path.resolve() == PACKAGE_CONFIG_PATH.resolve()
+    except OSError:
+        return _same_lexical_path(path, PACKAGE_CONFIG_PATH)
+
+
+def _same_lexical_path(a: Path, b: Path) -> bool:
+    """ファイルシステムに触れずに2つのパスを比べる。
+
+    絶対化して `.` や `..` を畳み、Windows では大文字小文字と区切りの違いも吸収する
+    （symlink は解決しないので、経路が違えば別のパスとして扱う）。
+    """
+    def key(path: Path) -> str:
+        return os.path.normcase(os.path.normpath(path.absolute()))
+
+    return key(a) == key(b)
+
+
+def _rebase_paths(override: dict, config_path: Path) -> dict:
+    """上書きファイルの paths を、その設定ファイルの置き場所を基準に解決した上書きを返す。
+
+    ワークスペースの config.yaml に書いた入出力先は、どのディレクトリから実行しても
+    同じ場所を指す（--config で別の場所の設定を読んだときは、その設定の隣を見る）。
+    基準を与えるのは上書きファイルに書かれた値だけで、パッケージ内の既定
+    （input / reports）と CLI のフラグはカレントディレクトリ基準のままにする。
+    重ねたあとの設定からは値の出所が分からなくなるため、マージの前に解決する。
+
+    --config でパッケージ内の既定そのものを指した場合も既定として扱う
+    （指した場所がパッケージの中なので、解決するとそこを入力先にしてしまう）。
+    同じファイルかどうかは書き方に依らせない（相対指定でも既定は既定）。
+    """
+    paths = override.get("paths")
+    if not isinstance(paths, dict) or _is_package_config(config_path):
+        return override    # 種別の誤りは _merge_override が既定と突き合わせて報告する
+    base = config_path.parent
+    resolved = dict(paths)
+    for key, value in paths.items():
+        # 文字列でない値と空文字は解決せずに通し、_merge_override と _validate に報告させる
+        if isinstance(value, str) and value.strip():
+            resolved[key] = _resolve_path_value(value, base, label=f"{config_path} の paths.{key}")
+    return {**override, "paths": resolved}
+
+
+def _resolve_path_value(value: str, base: Path, *, label: str) -> str:
+    """設定に書かれたディレクトリを、基準 base から解決した絶対パスにする。
+
+    `~` は自分で展開する。設定ファイルはシェルを介さないため、展開しないと `~` という
+    名前のディレクトリを黙って指す（雛形の作成ではそれが実際に作られる）。
+    絶対パスと展開後のホーム配下はそのまま使う（pathlib の連結は右側が絶対なら基準を捨てる）。
+
+    基準は絶対化してから連結する。カレントの config.yaml を暗黙に読んだ場合の親は `.` で、
+    そのまま連結すると相対パスのまま残り、「設定の置き場所が基準」ではなく実行時の
+    カレント基準になってしまう。
+    """
+    try:
+        path = Path(value).expanduser()
+    except RuntimeError:
+        # ホームディレクトリを特定できない環境。書かれたとおりに `~` のディレクトリを
+        # 指すより、意図と違う場所を使わずに止める
+        raise ValueError(f"{label} の '~' を展開できません（ホームディレクトリが不明です）") from None
+    if _is_ambiguous_path(path):
+        raise ValueError(
+            f"{label} の値 '{value}' は起点が実行時に決まる曖昧なパスです"
+            "（ドライブ文字から始まる絶対パスか、設定ファイルからの相対パスで書いてください）"
+        )
+    return str(base.absolute() / path)
+
+
+def _is_ambiguous_path(path: PurePath) -> bool:
+    """ドライブかルートだけを持ち、起点が実行時に決まるパスか。
+
+    Windows の `D:data`（D ドライブのカレント基準）と `/foo`（カレントドライブのルート
+    基準）が該当する。どちらも連結では基準を捨てるうえ、指す場所がプロセスの状態で
+    変わるため、入出力先としては受け付けない。POSIX では `D:data` はただの相対名、
+    `/foo` は絶対パスなので該当しない（判定はネイティブの Path で行うこと）。
+    """
+    return bool(path.drive or path.root) and not path.is_absolute()
+
+
 def _kind(value) -> str:
     """マージで区別する値の種別（表示用の名前）。
 
@@ -193,6 +284,16 @@ def _validate(cfg: dict) -> None:
 
     def _text(v) -> bool:
         return isinstance(v, str) and bool(v.strip())
+
+    # 入出力ディレクトリ。空文字はカレントディレクトリとして解決され、意図しない場所を
+    # 入力元・出力先にする（--input-dir の省略時にだけ効くので気づきにくい）
+    paths = cfg["paths"]
+    if not isinstance(paths, dict):
+        errors.append("paths セクションが辞書ではありません")
+    else:
+        for key in ("input", "output"):
+            if not _text(paths.get(key)):
+                errors.append(f"paths.{key} は空でない文字列が必要です")
 
     for seat in ("standard", "premium"):
         s = cfg["seats"].get(seat)

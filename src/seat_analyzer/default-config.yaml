@@ -6,6 +6,14 @@
 # 写す必要はない。実データが溜まったら allowance_usd をキャリブレーションすること
 # （docs/reference.md「allowanceのキャリブレーション」参照）。
 
+# 入出力ディレクトリの既定（CLI の --input-dir / --output-dir を省略したときに使う）。
+# ワークスペースの config.yaml にここを書くと、実行のたびにフラグを付けずに済む。
+# 相対パスの基準はそれを書いた設定ファイルの置き場所（下の input / reports は
+# パッケージ内の既定なので、例外としてカレントディレクトリ基準で解釈する）。
+paths:
+  input: input
+  output: reports
+
 seats:
   standard:
     price_usd: 25.0        # 月払い

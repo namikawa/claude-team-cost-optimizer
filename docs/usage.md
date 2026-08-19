@@ -4,7 +4,9 @@ claude.ai からエクスポートした CSV を配置し、毎月の分析を�
 セットアップが済んでいる前提で書いてある。
 
 コマンドはワークスペース（`input/` と `config.yaml` があるディレクトリ）のルートで実行する。
-リポジトリを clone した開発環境では `uv run seat-analyzer ...` の形で呼ぶ。
+リポジトリを clone した開発環境では `uv run seat-analyzer ...` の形で呼ぶ。CSV とレポートを
+ワークスペースの外に置いている場合は、その場所を `config.yaml` の `paths.input` /
+`paths.output`（または `--input-dir` / `--output-dir`）で指す。
 
 - 環境構築: [setup.md](./setup.md)
 - レポートの読み方と判定の仕様: [reference.md](./reference.md)

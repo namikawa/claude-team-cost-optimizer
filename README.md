@@ -48,7 +48,9 @@ seat-analyzer --version
 
    `input/`・設定の上書きファイル `config.yaml`・`.gitignore` が作られます。設定は
    パッケージ同梱の既定に対して差分だけを書く形式なので、`config.yaml` は空のままでも
-   動きます。以降のコマンドはこのディレクトリで実行します。
+   動きます。以降のコマンドはこのディレクトリで実行します。CSV とレポートを別の場所に
+   置く場合は `config.yaml` の `paths.input` / `paths.output` に書きます（コマンドごとに
+   `--input-dir` / `--output-dir` を付けても指定できます）。
 
 2. 組織（Team プランの workspace）ごとにディレクトリの雛形を作る
 
