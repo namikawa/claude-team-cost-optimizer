@@ -89,6 +89,19 @@
   </section>
 <!--CREDIT_REACH--><!--SNAPSHOT_SECTION--><!--GRANT_SECTION-->
   <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>詳細利用状況（観測値）</h2></div></div>
+    <div class="tablebox tall">
+      <table>
+        <thead><tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">API換算需要（観測）</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr></thead>
+        <tbody>
+{% for d in detail_rows %}        <tr><td class="user" title="{{ d.email }}">{{ d.email.split('@')[0] }}</td><td class="num sub">{{ d.in_fmt }}</td><td class="num sub">{{ d.out_fmt }}</td>{% if detail_has_loc %}<td class="num sub">{{ d.loc_fmt }}</td>{% endif %}<td class="num">{{ d.api_fmt }}</td><td class="wrap">{{ d.models }}</td><td class="wrap">{{ d.products }}</td></tr>
+{% endfor %}        </tbody>
+      </table>
+    </div>
+    <div class="card-ft">観測値（{{ days_observed }}日分）のままで、月末ペース換算はしていません。{% if detail_has_loc and code_asof %}<br>LoC は {{ code_asof }} 時点の code-analytics スナップショットの累積値です。{% endif %}<br><!--text:note_detail_tokens-->。</div>
+  </section>
+
+  <section class="card">
     <div class="card-hd"><div class="hd-main"><h2>注意事項</h2></div></div>
     <div class="card-bd">
       <ul class="notes assumptions">

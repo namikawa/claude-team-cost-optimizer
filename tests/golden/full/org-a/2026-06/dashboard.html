@@ -1054,7 +1054,7 @@
         <div class="theme-switch"><button type="button" class="theme-btn" data-theme-set="light" title="ライト">Light</button><button type="button" class="theme-btn" data-theme-set="dark" title="ダーク">Dark</button><button type="button" class="theme-btn is-active" data-theme-set="auto" title="OS設定に追従">Auto</button></div>
       </div>
     </div>
-    <nav class="tabbar" role="tablist" aria-label="セクション"><button type="button" class="tab is-active" role="tab" aria-selected="true" data-tab="overview">概要<span class="tab-count">12</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="actions">推奨アクション<span class="tab-count">12</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="members">メンバー別<span class="tab-count">12</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="org">組織<span class="tab-count">4</span></button></nav>
+    <nav class="tabbar" role="tablist" aria-label="セクション"><button type="button" class="tab is-active" role="tab" aria-selected="true" data-tab="overview">概要<span class="tab-count">12</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="actions">推奨アクション<span class="tab-count">12</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="members">メンバー別<span class="tab-count">12</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="org">組織<span class="tab-count">4</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="notes">前提と注意</button></nav>
   </div>
 </header>
 <main class="main">
@@ -1151,6 +1151,23 @@
 <section class="tabpanel" data-tab="actions" role="tabpanel">
 <h2 class="panel-title">推奨アクション</h2>
 <div class="stack">
+  <div class="grid-2">
+    <section class="card">
+      <div class="card-hd"><div class="hd-main"><h2>判定サマリ</h2></div></div>
+      <div class="card-bd">
+        <div class="jrow"><span class="label">変更推奨</span><div class="track"><div class="fill f-change" style="width: 58.3%"></div></div><span class="n">7</span></div>
+        <div class="jrow"><span class="label">シート不明</span><div class="track"><div class="fill f-unknown" style="width: 8.3%"></div></div><span class="n">1</span></div>
+        <div class="jrow"><span class="label">現状維持</span><div class="track"><div class="fill f-keep" style="width: 33.3%"></div></div><span class="n">4</span></div>
+      </div>
+    </section>
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>追加クレジット付与候補</h2></div></div>
+  <div class="card-bd">
+    <div class="empty">判定不能。members-info.csv の「追加クレジット上限」列が未記入のため、付与候補を判定できません。</div>
+  </div>
+</section>
+</div>
   <section class="card">
     <div class="card-hd"><div class="hd-main"><h2>推奨一覧</h2></div><div class="toolbar"><select class="filter" data-filter="judge" aria-label="判定で絞り込む"><option value="">判定: すべて</option><option value="変更推奨">変更推奨</option><option value="シート不明">シート不明</option><option value="現状維持">現状維持</option></select></div></div>
     <div class="tablebox tall">
@@ -1280,19 +1297,8 @@
         </tbody>
       </table>
     </div>
+    <div class="card-ft">「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。<br>確度 = 込み利用量の low/mid/high 3シナリオ推定での判定一致度。<br>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。</div>
   </section>
-  <div class="grid-2">
-
-
-    <section class="card">
-      <div class="card-hd"><div class="hd-main"><h2>判定の内訳</h2></div></div>
-      <div class="card-bd">
-        <div class="jrow"><span class="label">変更推奨</span><div class="track"><div class="fill f-change" style="width: 58.3%"></div></div><span class="n">7</span></div>
-        <div class="jrow"><span class="label">シート不明</span><div class="track"><div class="fill f-unknown" style="width: 8.3%"></div></div><span class="n">1</span></div>
-        <div class="jrow"><span class="label">現状維持</span><div class="track"><div class="fill f-keep" style="width: 33.3%"></div></div><span class="n">4</span></div>
-      </div>
-    </section>
-  </div>
 </div>
 </section>
 
@@ -1578,13 +1584,19 @@
   </div>
 </section>
 
+</div>
+</section>
+
+<section class="tabpanel" data-tab="notes" role="tabpanel">
+<h2 class="panel-title">前提と注意</h2>
+<div class="stack">
   <section class="card">
     <div class="card-hd"><div class="hd-main"><h2>前提と注意</h2></div></div>
     <div class="card-bd">
       <ul class="notes assumptions">
         <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
         <li>「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。</li>
-        <li>込み利用量は非公開のため low/mid/high 3シナリオの感度分析付き（判定横の「確度」）。</li>
+        <li>確度 = 込み利用量の low/mid/high 3シナリオ推定での判定一致度。込み利用量そのものは非公開のため、この3シナリオはいずれも推定値です。</li>
         <li>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。</li>
         <li>チーム別サマリはチーム未設定のユーザを除外しているため、縦合計は組織全体と一致しません。</li>
         <li>判定に使用した月: 2026-05, 2026-06（2ヶ月ヒステリシス）。</li>

@@ -42,6 +42,14 @@
 <section class="tabpanel" data-tab="actions" role="tabpanel">
 <h2 class="panel-title">推奨アクション</h2>
 <div class="stack">
+  <div class="grid-2">{% if judge_counts %}
+    <section class="card">
+      <div class="card-hd"><div class="hd-main"><h2>判定サマリ</h2></div></div>
+      <div class="card-bd">
+{% for j in judge_counts %}        <div class="jrow"><span class="label">{{ j.label }}</span><div class="track"><div class="fill {{ j.fill_class }}" style="width: {{ '%.1f' % j.pct }}%"></div></div><span class="n">{{ j.n }}</span></div>
+{% endfor %}      </div>
+    </section>
+{% endif %}<!--CREDIT_SECTION--></div>
   <section class="card">
     <div class="card-hd"><div class="hd-main"><h2>推奨一覧</h2></div>{% if judge_counts %}<div class="toolbar"><select class="filter" data-filter="judge" aria-label="判定で絞り込む"><option value="">判定: すべて</option>{% for j in judge_counts %}<option value="{{ j.label }}">{{ j.label }}</option>{% endfor %}</select></div>{% endif %}</div>
     <div class="tablebox tall">
@@ -61,15 +69,8 @@
 {% endfor %}        </tbody>
       </table>
     </div>
+    <div class="card-ft"><!--text:note_cost_columns-->。<br><!--text:note_confidence-->。<br><!--text:note_cap_flag-->。</div>
   </section>
-  <div class="grid-2"><!--CREDIT_SECTION-->{% if judge_counts %}
-    <section class="card">
-      <div class="card-hd"><div class="hd-main"><h2>判定の内訳</h2></div></div>
-      <div class="card-bd">
-{% for j in judge_counts %}        <div class="jrow"><span class="label">{{ j.label }}</span><div class="track"><div class="fill {{ j.fill_class }}" style="width: {{ '%.1f' % j.pct }}%"></div></div><span class="n">{{ j.n }}</span></div>
-{% endfor %}      </div>
-    </section>
-{% endif %}  </div>
 </div>
 </section>
 
@@ -108,7 +109,7 @@
 {% endfor %}        </tbody>
       </table>
     </div>
-    <div class="card-ft">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
+    <div class="card-ft"><!--text:note_detail_tokens-->。</div>
   </section>
 <!--SNAPSHOT_SECTION--><!--PRODUCT_SECTION--></div>
 </section>
@@ -129,14 +130,20 @@
       </div>
     </section>
 {% endfor %}  </div>
-<!--STATS_SECTION-->  <section class="card">
+<!--STATS_SECTION--></div>
+</section>
+
+<section class="tabpanel" data-tab="notes" role="tabpanel">
+<h2 class="panel-title">前提と注意</h2>
+<div class="stack">
+  <section class="card">
     <div class="card-hd"><div class="hd-main"><h2>前提と注意</h2></div></div>
     <div class="card-bd">
       <ul class="notes assumptions">
         <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
-        <li>「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。</li>
-        <li>込み利用量は非公開のため low/mid/high 3シナリオの感度分析付き（判定横の「確度」）。</li>
-        <li>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。{% if cap_supplement %}{{ cap_supplement }}。{% endif %}</li>
+        <li><!--text:note_cost_columns-->。</li>
+        <li><!--text:note_confidence-->。込み利用量そのものは非公開のため、この3シナリオはいずれも推定値です。</li>
+        <li><!--text:note_cap_flag-->。{% if cap_supplement %}{{ cap_supplement }}。{% endif %}</li>
 {% if disabled_note %}        <li>{{ disabled_note }}。</li>
 {% endif %}{% if has_team_summary %}        <li><!--text:note_team_total-->。</li>
 {% endif %}        <li>判定に使用した月: {{ s.months_used | join(', ') }}（{{ s.hysteresis_months }}ヶ月ヒステリシス）。</li>

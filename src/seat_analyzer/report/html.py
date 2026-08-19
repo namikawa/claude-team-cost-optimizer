@@ -625,6 +625,15 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
     ]
     factor = result.days_in_month / result.days_observed
 
+    # 詳細利用状況は観測実績のまま出す（トークン数と product 構成比は日割り換算しても
+    # 意味を持たないため、需要の列だけ観測値の列名を渡して他の表と揃える）
+    detail_rows, detail_has_loc = _detail_rows(result.users, "api_cost_observed_usd")
+    for d in detail_rows:
+        d["in_fmt"] = _fmt_tokens(d["in"])
+        d["out_fmt"] = _fmt_tokens(d["out"])
+        d["api_fmt"] = _fmt_compact(d["api"])
+        d["loc_fmt"] = f"{d['loc']:,}" if d["loc"] is not None else ""
+
     cap_usd = result.summary["grant_suggested_cap_usd"]
     html = _PREVIEW_HTML_TEMPLATE.render(
         dashboard_css=_DASHBOARD_CSS,
@@ -640,9 +649,17 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
         credit_reach=_credit_reach_view(result.credit_reach),
         grant_candidates=_grant_candidates_view(result.grant_candidates),
         grant_cap_fmt=_fmt_setting_usd(cap_usd),
+        # 付与候補の空状態は「該当者なし」と「判定できていない」を分けるので、
+        # 候補の一覧だけでなく上限が記入されているか（credit_shown）も渡す
+        credit_shown=bool(result.summary.get("credit_shown", False)),
         disabled_note=_disabled_cost_note(result.users),
         users_sorted=users_sorted,
         label_counts=label_counts,
+        detail_rows=detail_rows,
+        detail_has_loc=detail_has_loc,
+        # LoC の観測時点。spend の観測期間とずれることがあるので脚注に添える
+        # （採用されるのは対象月で最新のスナップショットで、月末とは限らない）
+        code_asof=result.code_asof,
         has_dept=has_dept,
         has_team=has_team,
         obs_label=f"観測需要({result.days_observed}日)",
@@ -710,12 +727,14 @@ def write_html(result: AnalysisResult, path: Path) -> None:
     cap_usd = result.summary["grant_suggested_cap_usd"]
     # タブの件数バッジは、そのタブの中身の件数をそのまま出す（集計はしない）。概要は
     # 先頭の KPI と同じメンバー数、推奨アクションとメンバー別はそれぞれの表の行数、
-    # 組織は描画された軸の行数。0 のときはテンプレート側でバッジを出さない
+    # 組織は描画された軸の行数。0 のときはテンプレート側でバッジを出さない。
+    # 前提と注意は数えるものが無いので件数を持たない
     tabs = [
         {"key": "overview", "label": "概要", "count": result.summary["n_members"]},
         {"key": "actions", "label": "推奨アクション", "count": len(users_sorted)},
         {"key": "members", "label": "メンバー別", "count": len(detail_rows)},
         {"key": "org", "label": "組織", "count": _org_tab_count(group_summaries)},
+        {"key": "notes", "label": "前提と注意", "count": 0},
     ]
     html = _HTML_TEMPLATE.render(
         dashboard_css=_DASHBOARD_CSS,
@@ -735,6 +754,9 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         member_changes=_member_changes_view(result.member_changes),
         grant_candidates=_grant_candidates_view(result.grant_candidates),
         grant_cap_fmt=_fmt_setting_usd(cap_usd),
+        # 付与候補の空状態は「該当者なし」と「判定できていない」を分けるので、
+        # 候補の一覧だけでなく上限が記入されているか（credit_shown）も渡す
+        credit_shown=bool(result.summary.get("credit_shown", False)),
         cap_supplement=_cap_legend_supplement(result.summary.get("credit_shown", False)),
         disabled_note=_disabled_cost_note(result.users),
         users_sorted=users_sorted,
