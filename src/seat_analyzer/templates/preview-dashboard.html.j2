@@ -98,7 +98,7 @@
 {% endfor %}        </tbody>
       </table>
     </div>
-    <div class="card-ft">観測値（{{ days_observed }}日分）のままで、月末ペース換算はしていません。<br><!--text:note_detail_tokens-->。</div>
+    <div class="card-ft">観測値（{{ days_observed }}日分）のままで、月末ペース換算はしていません。{% if detail_has_loc and code_asof %}<br>LoC は {{ code_asof }} 時点の code-analytics スナップショットの累積値です。{% endif %}<br><!--text:note_detail_tokens-->。</div>
   </section>
 
   <section class="card">

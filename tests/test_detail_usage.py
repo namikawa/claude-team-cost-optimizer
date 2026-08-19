@@ -149,12 +149,19 @@ def test_preview_detail_table_has_no_loc_column_without_code_analytics(
         {"2026-06": [spend_row("a@x.jp", 30.0, net=0.0)]},
         members=["a@x.jp,Premium"],
     )
-    assert "LoC" not in _preview_detail_card(cfg, input_dir, tmp_path)
+    card = _preview_detail_card(cfg, input_dir, tmp_path)
+    assert "LoC" not in card
+    assert "時点の code-analytics" not in card     # 列が無ければ時点の注記も出さない
 
 
-def test_preview_detail_table_shows_loc_when_available(
+def test_preview_detail_table_shows_loc_with_its_observation_date(
         cfg, make_input, write_code_snapshots, tmp_path):
-    """code-analytics があれば LoC 列を足す（正式分析と同じ結合を通す）。"""
+    """code-analytics があれば LoC 列を足し、その観測時点を脚注に書く。
+
+    LoC は対象月で最新のスナップショットの累積値で、spend の観測期間の末日とは
+    限らない（月内の別の日で止まっていることがある）。カードの脚注が観測日数だけを
+    名乗ると、LoC も同じ期間の値だと読めてしまう。
+    """
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 30.0, net=0.0)]},
         members=["a@x.jp,Premium"],
@@ -163,6 +170,27 @@ def test_preview_detail_table_shows_loc_when_available(
     card = _preview_detail_card(cfg, input_dir, tmp_path)
     assert '<th class="num">LoC</th>' in card
     assert "4,200" in card
+    assert "LoC は 2026-06-10 時点の code-analytics スナップショットの累積値です。" in card
+
+
+def test_preview_detail_table_omits_the_date_when_the_file_has_no_day(
+        cfg, make_input, tmp_path):
+    """月のみの命名（cc_YYYY-MM.csv）は時点が決まらないので注記を出さない。
+
+    月名だけのファイルから月末を推測して書くと、実際より新しい時点を断定することになる。
+    LoC 列そのものは出せるので、列は残して注記だけを落とす。
+    """
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 30.0, net=0.0)]},
+        members=["a@x.jp,Premium"],
+    )
+    code_dir = input_dir / "code-analytics"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "cc_2026-06.csv").write_text(
+        "Email,Lines with CC\na@x.jp,4200\n", encoding="utf-8", newline="\n")
+    card = _preview_detail_card(cfg, input_dir, tmp_path)
+    assert '<th class="num">LoC</th>' in card
+    assert "時点の code-analytics" not in card
 
 
 def test_team_summary_excludes_unset(cfg, make_input, tmp_path):

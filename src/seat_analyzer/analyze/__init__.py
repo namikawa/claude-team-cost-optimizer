@@ -223,6 +223,20 @@ def _merge_code_analytics(users: pd.DataFrame,
             users[col] = users["email"].map(cc[col]).fillna(0).astype(int)
 
 
+def _code_asof(path: Path) -> str | None:
+    """採用した code-analytics ファイルの観測時点 "YYYY-MM-DD"（読めなければ None）。
+
+    LoC は累積値で、その累積がいつまでの分かはファイル名の期間からしか分からない。
+    単日スナップショット（kind=date）はその日、期間（kind=range）は末日が時点になる。
+    月のみの命名（kind=month）は時点が決まらないので None を返す（推測して日付を
+    書くと、実際より新しい・古い時点を断定することになる）。
+    """
+    period = ingest.file_period(path)
+    if period is None or period.end is None:
+        return None
+    return f"{period.end:%Y-%m-%d}"
+
+
 def _detail_columns(row) -> dict:
     """詳細利用状況の列（トークン数・モデル割合・product構成）。利用の無いユーザは 0 と空。"""
     return {
@@ -608,6 +622,9 @@ class PreviewResult:
     credit_reach: dict | None = None
     # 追加クレジット付与候補（昇格前に上限つきクレジットで課金実測を薦めるユーザ）
     grant_candidates: list = field(default_factory=list)
+    # LoC（code-analytics）の観測時点 "YYYY-MM-DD"（表示専用）。spend の観測期間と
+    # ずれることがあるため、詳細利用状況の脚注に添える。時点が読めない場合は None
+    code_asof: str | None = None
 
 
 def _preview_label(seat: str, api_obs: float, api_proj: float, cfg: dict,
@@ -675,8 +692,10 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
     # 表示専用のデータで、一次判断には入らない。ロード時の指摘（採用ファイルの選択・
     # 任意カラムの欠落）は同じ入力に対して正式分析が出すため、速報の警告には足さない
     code_result = ingest.load_code_analytics(input_dir, month, cfg, snapshot_active=active.code)
+    code_asof = None
     if code_result is not None:
         sources["code_analytics"] = str(code_result.source)
+        code_asof = _code_asof(code_result.source)
 
     # 月中差分（利用推移・Claude Code 活動・メンバー変動。1つ以下なら None）
     snapshot, code_diff, member_changes, diff_warns = _midmonth_diffs(
@@ -740,4 +759,5 @@ def preview(input_dir: str | Path, month: str, cfg: dict, days_observed: int,
         org=org, warnings=warnings, sources=sources, snapshot=snapshot,
         code_diff=code_diff, member_changes=member_changes,
         credit_reach=credit_reach, grant_candidates=grant_candidates,
+        code_asof=code_asof,
     )

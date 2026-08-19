@@ -657,6 +657,9 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
         label_counts=label_counts,
         detail_rows=detail_rows,
         detail_has_loc=detail_has_loc,
+        # LoC の観測時点。spend の観測期間とずれることがあるので脚注に添える
+        # （採用されるのは対象月で最新のスナップショットで、月末とは限らない）
+        code_asof=result.code_asof,
         has_dept=has_dept,
         has_team=has_team,
         obs_label=f"観測需要({result.days_observed}日)",
