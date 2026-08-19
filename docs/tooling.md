@@ -89,8 +89,10 @@ report.md はその組織の担当者に共有される前提の文書で、組�
 （`--repo-root` を使えば別の場所からでも実行できる。下記）。対象語は分析用のデータから
 集めるため、`--input-dir` / `--output-dir` にはワークスペースの `input/` と `reports/` を
 指定する。省略時は他のコマンドと同じ順序（フラグ > `config.yaml` の `paths` > 組み込み既定の
-`input/`・`reports/`）で決まるので、別のワークスペースのデータで照合するなら
-`--config` でそのワークスペースの `config.yaml` を指してもよい。
+`input/`・`reports/`）で決まる。別のワークスペースのデータで照合する場合、`--config` で
+そのワークスペースの `config.yaml` を指すだけで済むのは、その設定に `paths` が書いてある
+ときだけ。書いていなければ組み込み既定＝実行したディレクトリの `input/`・`reports/` を
+集めるので、`--input-dir` / `--output-dir` でそのワークスペースの場所を指定する。
 
 ```sh
 uv run seat-analyzer check-text draft.md                 # ファイルを検査
