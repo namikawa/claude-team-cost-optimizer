@@ -5,7 +5,12 @@ import re
 import pandas as pd
 
 from seat_analyzer.analyze import _short_model, analyze, preview
-from seat_analyzer.report import write_details, write_html, write_preview
+from seat_analyzer.report import (
+    PREVIEW_DASHBOARD,
+    write_details,
+    write_html,
+    write_preview,
+)
 from seat_analyzer.report.format import _detail_rows, _fmt_tokens
 from seat_analyzer.report.markdown import _detail_table_md
 
@@ -119,7 +124,7 @@ def _preview_detail_card(cfg, input_dir, tmp_path) -> str:
     result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
     out = tmp_path / "pv"
     write_preview(result, out)
-    html = (out / "2026-06" / "preview-dashboard.html").read_text(encoding="utf-8")
+    html = PREVIEW_DASHBOARD.path(out, "2026-06", "org-a").read_text(encoding="utf-8")
     card = re.search(r"<h2>詳細利用状況（観測値）</h2>.*?</section>", html, re.S)
     assert card, "速報ダッシュボードに詳細利用状況のカードがありません"
     return card.group(0)

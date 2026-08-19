@@ -154,7 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     pdis.add_argument("--config", default=None, help=_CONFIG_HELP)
     _add_dir_options(pdis)
     pdis.add_argument(
-        "--preview", action="store_true", help="report.md ではなく preview.md の考察を対象にする")
+        "--preview", action="store_true",
+        help="正式レポートではなく速報レポート（preview-...）の考察を対象にする")
     pdis.add_argument(
         "--force", action="store_true",
         help="記入済みの考察を上書きする（既定では手書きの考察を守るため書き換えない）",
@@ -795,7 +796,7 @@ def _run_discussions(
     if len(items) > 1:
         targets = []
         for org, org_output in items:
-            if discussion.document_path(org_output, month, preview).exists():
+            if discussion.document_path(org_output, month, preview, org).exists():
                 targets.append((org, org_output))
             else:
                 skipped.append(org)

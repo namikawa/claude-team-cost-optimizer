@@ -4,8 +4,9 @@ import pytest
 from seat_analyzer import product_usage
 from seat_analyzer.analyze import analyze
 from seat_analyzer.domain import IssueCode, Severity
+from seat_analyzer.report import REPORT
 
-from .conftest import run_analyze, spend_row
+from .conftest import out_file, run_analyze, spend_row
 
 # 明細の列（apply_cost_basis 適用後のうち product_usage が見る列）
 COLUMNS = ["email", "cost_usd", "requests", "product"]
@@ -737,7 +738,7 @@ def test_analyze_attaches_product_usage(make_input, cfg):
 def test_product_usage_does_not_change_reports(two_orgs, tmp_path):
     # 特徴量の計算は保持までで、レポート成果物には出さない（Step 8 以降の担当）
     output_dir = run_analyze(two_orgs, tmp_path)
-    report = (output_dir / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")
+    report = out_file(output_dir, REPORT).read_text(encoding="utf-8")
 
     assert "product_breadth" not in report
     assert "code_demand" not in report

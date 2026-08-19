@@ -8,6 +8,7 @@ from seat_analyzer.analyze import analyze
 from seat_analyzer.cli import main
 from seat_analyzer.ingest import file_period, load_members, load_spend, month_of_file
 from seat_analyzer.pricing import price_for_model
+from seat_analyzer.report import PREVIEW
 
 from .conftest import CONFIG, SPEND_HEADER, spend_row
 
@@ -105,7 +106,8 @@ def test_preview_days_auto_detected_from_filename(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "観測日数 4 日" in out
-    md = (tmp_path / "reports" / "org-x" / "2026-07" / "preview.md").read_text(encoding="utf-8")
+    md = PREVIEW.path(tmp_path / "reports" / "org-x", "2026-07", "org-x").read_text(
+        encoding="utf-8")
     assert "4日間の観測データ" in md
 
 

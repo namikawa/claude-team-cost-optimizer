@@ -20,11 +20,17 @@ def _is_placeholder_discussion(tail: str) -> bool:
     return any(_DISCUSSION_PLACEHOLDER_RE.match(line.strip()) for line in tail.splitlines())
 
 
-def _preserve_discussion(md: str, path: Path) -> str:
-    """再生成時、既存 report.md の記入済み「## 考察」セクションを引き継ぐ。"""
-    if not path.exists():
+def _preserve_discussion(md: str, path: Path, *, fallback: Path | None = None) -> str:
+    """再生成時、既存レポートの記入済み「## 考察」セクションを引き継ぐ。
+
+    fallback は種別だけの旧名（report.md / preview.md）。新名のファイルがまだ無い月
+    では旧名から引き継ぐ。手書きの考察は他のどこにも無いため、名前が変わった最初の
+    再生成で読み落とすと失われる。
+    """
+    source = path if path.exists() else fallback
+    if source is None or not source.exists():
         return md
-    existing = path.read_text(encoding="utf-8")
+    existing = source.read_text(encoding="utf-8")
     if _DISCUSSION_MARKER not in existing:
         return md
     tail = existing.split(_DISCUSSION_MARKER, 1)[1]

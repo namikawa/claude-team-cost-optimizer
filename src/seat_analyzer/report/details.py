@@ -29,11 +29,16 @@ from .markdown import (
     _user_legend_md,
     _user_table_md,
 )
+from .naming import DASHBOARD
 from .stats import distributions
 from .text import GROUP_AXES, STATUS_ORDER, _TEXT
 
-_INTRO = ("機械生成の詳細資料です。dashboard.html と同じ数値の Markdown 版で、"
-          "考察執筆（`seat-analyzer discuss`）へ渡す資料を兼ねます。")
+
+def _intro(result: AnalysisResult) -> str:
+    """冒頭の一文。同じ数値のダッシュボードをファイル名で示す（共有先で探せるように）。"""
+    dashboard = DASHBOARD.name(result.month, result.org)
+    return (f"機械生成の詳細資料です。{dashboard} と同じ数値の Markdown 版で、"
+            "考察執筆（`seat-analyzer discuss`）へ渡す資料を兼ねます。")
 
 
 def _sections(result: AnalysisResult) -> list[str]:
@@ -69,7 +74,7 @@ def write_details(result: AnalysisResult, path: Path) -> None:
     body = "\n\n".join(
         block.strip("\n") for block in _sections(result) if block.strip()
     )
-    md = f"# 分析詳細資料 — {_scope_label(result)}\n\n{_INTRO}\n\n{body}\n"
+    md = f"# 分析詳細資料 — {_scope_label(result)}\n\n{_intro(result)}\n\n{body}\n"
     # 置換で書く。切り詰めてから書く write_text は、中断・書き込み失敗のときに
     # 途中までの details.md を残す。考察執筆はこのファイルを資料に使うため、
     # 表を欠いたまま残ると気づかれずに材料だけが減る

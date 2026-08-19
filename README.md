@@ -72,19 +72,24 @@ seat-analyzer --version
    seat-analyzer analyze --month YYYY-MM --with-discussion  # 考察の執筆まで
    ```
 
-   `analyze` 単体では report.md の「## 考察」は未記入のまま出力されます。執筆には
+   `analyze` 単体ではレポートの「## 考察」は未記入のまま出力されます。執筆には
    ローカルの Claude Code CLI を使います（[docs/tooling.md](docs/tooling.md)）。
 
 ## 生成されるもの
 
-組織ごとに `reports/<組織名>/YYYY-MM/` へ出力されます。
+組織ごとに `reports/<組織名>/YYYY-MM/` へ出力されます。ファイル名は
+`{種別}-{YYYYMM}-{組織名}.{拡張子}` で、共有でフォルダの外へ出しても
+どの組織のいつの分析かが分かるようになっています。
 
-- `report.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + 警告 + 考察
-- `details.md` — 全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + 感度分析（機械生成の詳細資料）
-- `dashboard.html` — 経営層共有用ダッシュボード（概要 / 推奨アクション / メンバー別 / 組織 の4タブ。ソート・検索・テーマ切替つきの自己完結 HTML）
-- `recommendations.csv` — スプレッドシート二次加工用
-- `usage-summary.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
-- `reports/summary/YYYY-MM.md` — 複数組織を一括分析した場合の組織横断サマリ
+- `report-YYYYMM-<組織名>.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + 警告 + 考察
+- `details-YYYYMM-<組織名>.md` — 全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + 感度分析（機械生成の詳細資料）
+- `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（概要 / 推奨アクション / メンバー別 / 組織 の4タブ。ソート・検索・テーマ切替つきの自己完結 HTML）
+- `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
+- `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
+- `reports/summary/YYYY-MM.md` — 複数組織を一括分析した場合の組織横断サマリ（この名前は変わりません）
+
+速報モード（`--preview`）は `preview-YYYYMM-<組織名>.md` と
+`preview-dashboard-YYYYMM-<組織名>.html` を出します。
 
 各セクションの読み方は [docs/reference.md](docs/reference.md) を参照。
 

@@ -145,20 +145,26 @@ def build_prompt(
     })
 
 
-def document_path(org_output: Path, month: str, preview: bool) -> Path:
-    """考察を書き込む対象ファイル。"""
-    return org_output / month / ("preview.md" if preview else "report.md")
+def document_path(org_output: Path, month: str, preview: bool, org: str) -> Path:
+    """考察を読み書きする対象ファイル。
+
+    ファイル名に月と組織名を含める前に生成したレポートも対象にできるよう、新しい名前が
+    無ければ種別だけの旧名へフォールバックする（`report.naming`）。考察はこの文書を
+    その場で書き換えるため、読み先と書き先は同じでなければならない。
+    """
+    artifact = report.PREVIEW if preview else report.REPORT
+    return artifact.existing_path(org_output, month, org)
 
 
-def _prev_month_dir(org_output: Path, month: str) -> Path | None:
-    """対象月より前で最も新しい出力月のディレクトリ。"""
+def _prev_output_month(org_output: Path, month: str) -> str | None:
+    """対象月より前で最も新しい出力月。"""
     if not org_output.is_dir():
         return None
     months = sorted(
         p.name for p in org_output.iterdir()
         if p.is_dir() and MONTH_DIR_RE.match(p.name) and p.name < month
     )
-    return org_output / months[-1] if months else None
+    return months[-1] if months else None
 
 
 # details.md が資料として使える形かを見分ける番兵。全ユーザ表は details.md に無条件で
@@ -170,7 +176,7 @@ _ALL_USERS_HEADING = "## 全ユーザ"
 _ALL_USERS_HEADING_RE = re.compile(rf"^{re.escape(_ALL_USERS_HEADING)}[ \t]*$", re.M)
 
 
-def _details_material(org_output: Path, month: str, report_body: str) -> str | None:
+def _details_material(path: Path, month: str, report_body: str) -> str | None:
     """資料に足す details.md の本文（足さない場合は None）。
 
     details.md が無い状態は2つに分かれ、続行してよいのは片方だけ。
@@ -182,7 +188,6 @@ def _details_material(org_output: Path, month: str, report_body: str) -> str | N
 
     再実行で解消しうるが、ヘッドレス実行のリトライで直る類ではないので transient にしない。
     """
-    path = org_output / month / "details.md"
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     if _ALL_USERS_HEADING_RE.search(text):
         return text
@@ -196,7 +201,7 @@ def _details_material(org_output: Path, month: str, report_body: str) -> str | N
 
 
 def collect_materials(
-    *, org_output: Path, month: str, preview: bool,
+    *, org: str, org_output: Path, month: str, preview: bool,
     terms: tuple[Term, ...] = (), include_previous: bool = False, notify=None,
 ) -> tuple[list[tuple[str, str]], str]:
     """(プロンプトへ渡す資料, 混入チェックの照合元テキスト) を返す。
@@ -215,7 +220,7 @@ def collect_materials(
     include_previous=True のときも渡す前に混入チェックを通し、落ちたら除外する。
     """
     notify = notify or (lambda _message: None)
-    doc_path = document_path(org_output, month, preview)
+    doc_path = document_path(org_output, month, preview, org)
     if not doc_path.exists():
         raise DiscussionError(
             f"{doc_path} がありません。先に "
@@ -233,18 +238,19 @@ def collect_materials(
     if not preview:
         # details.md は report.md から移した表の受け皿。再構成前に生成した月には
         # 無いので、その場合だけ省略して従来どおり動かす（_details_material 参照）
-        details_text = _details_material(org_output, month, body)
+        details_path = report.DETAILS.existing_path(org_output, month, org)
+        details_text = _details_material(details_path, month, body)
         if details_text is not None:
-            add(f"分析詳細資料 details.md（{month}）", details_text)
-        csv_path = org_output / month / "recommendations.csv"
+            add(f"分析詳細資料 {details_path.name}（{month}）", details_text)
+        csv_path = report.RECOMMENDATIONS.existing_path(org_output, month, org)
         if csv_path.exists():
-            add(f"ユーザ別推奨一覧 recommendations.csv（{month}）",
+            add(f"ユーザ別推奨一覧 {csv_path.name}（{month}）",
                 csv_path.read_text(encoding="utf-8"))
 
     source_text = "\n".join(source)
-    prev_dir = _prev_month_dir(org_output, month) if include_previous else None
-    if prev_dir is not None:
-        prev_report = prev_dir / "report.md"
+    prev_month = _prev_output_month(org_output, month) if include_previous else None
+    if prev_month is not None:
+        prev_report = report.REPORT.existing_path(org_output, prev_month, org)
         if prev_report.exists():
             prev = report.discussion_body(prev_report.read_text(encoding="utf-8"))
             if prev:
@@ -253,12 +259,12 @@ def collect_materials(
                 hits = find_leaks(prev, terms, source=source_text)
                 if hits:
                     notify(
-                        f"前月（{prev_dir.name}）の考察に他組織の語が含まれるため資料から除外します: "
+                        f"前月（{prev_month}）の考察に他組織の語が含まれるため資料から除外します: "
                         f"{', '.join(h.term for h in hits)}"
                     )
                 else:
                     materials.append((
-                        f"資料{len(materials) + 1}: 前回の正式レポートの考察（{prev_dir.name}）",
+                        f"資料{len(materials) + 1}: 前回の正式レポートの考察（{prev_month}）",
                         prev,
                     ))
     return materials, source_text
@@ -464,13 +470,13 @@ def generate(
     # config の allow_terms は「恒久的に無害と確認済みの語」。--allow-term は単一組織
     # 実行に限られるため、全組織実行でも効く許可の置き場としてこちらを使う
     allow = tuple(allow) + tuple(s.get("allow_terms") or ())
-    doc_path = document_path(org_output, month, preview)
+    doc_path = document_path(org_output, month, preview, org)
     scope = f"{org} {month}"
 
     terms = forbidden_terms(
         input_dir=input_dir, output_dir=output_dir, target_org=org, cfg=cfg)
     materials, source = collect_materials(
-        org_output=org_output, month=month, preview=preview, terms=terms,
+        org=org, org_output=org_output, month=month, preview=preview, terms=terms,
         include_previous=include_previous, notify=notify)
     prompt = build_prompt(org=org, scope=scope, materials=materials, preview=preview)
 

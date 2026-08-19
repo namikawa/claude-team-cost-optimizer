@@ -121,18 +121,22 @@ seat-analyzer init-org <組織名>
    リポジトリを clone している場合は、Claude Code から `/seat-analysis` を実行すると、
    分析に加えて警告の検証と考察の執筆までを対話的に行える。
 
-6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される
-   - `report.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + データ検証・警告 + 考察
-   - `details.md` — 機械生成の詳細資料（全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + 込み枠の実測 + 感度分析）
-   - `dashboard.html` — 経営層共有用ダッシュボード（自己完結 HTML）
-   - `recommendations.csv` — スプレッドシート二次加工用
-   - `usage-summary.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
+6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される。ファイル名は
+   `{種別}-{YYYYMM}-{組織名}.{拡張子}` で、共有でフォルダの外へ出しても
+   どの組織のいつの分析かが分かる（例: `report-202607-<組織名>.md`）
+   - `report-YYYYMM-<組織名>.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + データ検証・警告 + 考察
+   - `details-YYYYMM-<組織名>.md` — 機械生成の詳細資料（全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + 込み枠の実測 + 感度分析）
+   - `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（自己完結 HTML）
+   - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
+   - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
 
-   report.md はアクションと考察を読むための短い文書で、ユーザ単位の数値は details.md と
-   dashboard.html が持つ。details.md は dashboard.html と同じ数値の Markdown 版で、
+   以下では種別名（report / details / dashboard …）で呼ぶ。
+
+   report はアクションと考察を読むための短い文書で、ユーザ単位の数値は details と
+   dashboard が持つ。details は dashboard と同じ数値の Markdown 版で、
    考察の執筆（`discuss`）へ渡す資料も兼ねる
 
-   details.md / dashboard.html には「詳細利用状況」として、ユーザごとの input/output
+   details / dashboard には「詳細利用状況」として、ユーザごとの input/output
    トークン量、モデル利用割合（トークン量基準）、LoC（code-analytics がある場合）を
    出力する。input トークンはキャッシュ読取分を含むため実入力量より大きく見えることがある
 
@@ -142,7 +146,12 @@ seat-analyzer init-org <組織名>
    使わない。平均は少数の大口利用に引かれるため「平均以下＝低活用」とは読めない点に注意する
 
    複数組織を一括分析した場合は `reports/summary/YYYY-MM.md` に組織横断サマリ
-   （組織別のシート費用・削減見込みと合計）も生成される
+   （組織別のシート費用・削減見込みと合計）も生成される。この名前だけは月と組織名を
+   付けない（担当者へ共有しない内部の文書で、月は既に名前に入っているため）
+
+   ファイル名の規則を変える前に生成した成果物（`report.md` 等）は自動で改名も削除も
+   しない。再生成すると新旧が併存するので、旧名の整理は必要に応じて手で行う。
+   記入済みの「## 考察」は旧名のレポートからも引き継がれる
 
 ## 速報モード（部分月データでの一次判断）
 
@@ -157,8 +166,9 @@ seat-analyzer analyze --preview [--org <組織名>] [--days 10]
 観測日数はファイル名の期間（`...-2026-07-01-to-2026-07-10.csv` なら10日）から
 自動判別される。期間の無いファイル名の場合のみ `--days` で指定する。
 
-- 出力は `reports/<組織名>/<月>/` の preview.md と preview-dashboard.html（経営層共有向けの
-  速報ダッシュボード）。変更推奨・ヒステリシス判定・正式レポート（report.md 等）には影響しない
+- 出力は `reports/<組織名>/<月>/` の `preview-YYYYMM-<組織名>.md` と
+  `preview-dashboard-YYYYMM-<組織名>.html`（経営層共有向けの速報ダッシュボード）。
+  変更推奨・ヒステリシス判定・正式レポートには影響しない
 - 需要を月末ペースに日割り換算し、遊休候補 / Standard候補 / Premium妥当 /
   判断保留 などの一次判断ラベルを付ける。境界付近は判断保留に倒す
 - 日割り換算は利用の偏りを補正しない参考値。シート変更の確定判断は

@@ -13,8 +13,9 @@ from seat_analyzer import analyze, ingest
 from seat_analyzer.cli import main
 from seat_analyzer.ingest import discover_orgs
 from seat_analyzer.product_usage import FEATURE_COLUMNS
+from seat_analyzer.report import DASHBOARD, REPORT, USAGE_SUMMARY
 
-from .conftest import CONFIG, spend_row
+from .conftest import CONFIG, out_file, spend_row
 
 
 def _run(input_dir: Path, tmp_path: Path, *extra: str) -> tuple[int, Path]:
@@ -49,8 +50,8 @@ def test_all_orgs_analyzed_with_summary(make_input, tmp_path):
     input_dir = _make_two_orgs(make_input)
     rc, out = _run(input_dir, tmp_path, "--month", "2026-06")
     assert rc == 0
-    assert (out / "org-a" / "2026-06" / "report.md").exists()
-    assert (out / "org-b" / "2026-06" / "dashboard.html").exists()
+    assert out_file(out, REPORT).exists()
+    assert out_file(out, DASHBOARD, org="org-b").exists()
     summary = (out / "summary" / "2026-06.md").read_text(encoding="utf-8")
     assert "org-a" in summary and "org-b" in summary and "合計" in summary
 
@@ -59,7 +60,7 @@ def test_org_option_selects_single_org(make_input, tmp_path):
     input_dir = _make_two_orgs(make_input)
     rc, out = _run(input_dir, tmp_path, "--month", "2026-06", "--org", "org-b")
     assert rc == 0
-    assert (out / "org-b" / "2026-06" / "report.md").exists()
+    assert out_file(out, REPORT, org="org-b").exists()
     assert not (out / "org-a").exists()
     # 単一組織のみの分析では横断サマリは作らない
     assert not (out / "summary").exists()
@@ -69,7 +70,7 @@ def test_org_name_in_report_title(make_input, tmp_path):
     input_dir = _make_two_orgs(make_input)
     rc, out = _run(input_dir, tmp_path, "--month", "2026-06", "--org", "org-a")
     assert rc == 0
-    md = (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")
+    md = out_file(out, REPORT).read_text(encoding="utf-8")
     assert "org-a — 2026-06" in md.splitlines()[0]
 
 
@@ -83,7 +84,7 @@ def test_analyze_writes_usage_summary(make_input, tmp_path, cfg, capsys):
     input_dir = _make_two_orgs(make_input)
     rc, out = _run(input_dir, tmp_path, "--month", "2026-06", "--org", "org-a")
     assert rc == 0
-    path = out / "org-a" / "2026-06" / "usage-summary.csv"
+    path = out_file(out, USAGE_SUMMARY)
     assert f"usage: {path}" in capsys.readouterr().out
 
     rows = _usage_rows(path)
@@ -163,7 +164,7 @@ def test_prohibited_product_in_org_service_rows_is_warned(make_input, tmp_path, 
     assert USER_PROHIBITED not in out          # ユーザは誰も使っていない
 
     # ユーザ単位の特徴量は組織サービス利用行の影響を受けない
-    rows = _usage_rows(out_dir / "org-a" / "2026-06" / "usage-summary.csv")
+    rows = _usage_rows(out_file(out_dir, USAGE_SUMMARY))
     assert [r[0] for r in rows[1:]] == ["a@x.jp"]
     assert dict(zip(rows[0], rows[1]))["prohibited_observed"] == "False"
 
@@ -195,7 +196,7 @@ def test_month_missing_in_one_org_is_skipped(make_input, tmp_path, capsys):
     input_dir = _make_two_orgs(make_input)  # org-b は 2026-05 が無い
     rc, out = _run(input_dir, tmp_path, "--month", "2026-05")
     assert rc == 0
-    assert (out / "org-a" / "2026-05" / "report.md").exists()
+    assert out_file(out, REPORT, month="2026-05").exists()
     assert not (out / "org-b").exists()
     assert "スキップした組織: org-b" in capsys.readouterr().out
 
