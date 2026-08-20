@@ -88,10 +88,11 @@ class DiscussionOutcome:
     org: str
     month: str
     path: Path
-    # written / blocked / superseded / kept / dry-run。
-    # superseded は「生成はしたが、対象のレポートが生成中に新しい名前で作り直されたため
-    # 書き込まなかった」状態。kept（＝設計どおり触らない no-op）と違い、依頼された仕事が
-    # 終わっていないので blocked と同じく再実行が要る
+    # written / blocked / superseded / conflict / kept / dry-run。
+    # superseded と conflict はどちらも「生成はしたが書き込まなかった」状態で、前者は
+    # 対象のレポートが生成中に新しい名前で作り直された場合、後者は書き込み直前に内容が
+    # 変わっていた場合。kept（＝設計どおり触らない no-op）と違い、依頼された仕事が
+    # 終わっていないので blocked と同じく再実行が要る（理由が違うので表示は分ける）
     status: str
     attempts: int = 0
     leaks: tuple[LeakHit, ...] = ()
@@ -468,7 +469,8 @@ def generate(
 
     既に記入済みの考察は force が無ければ上書きしない（手書きの考察を守るため）。
     混入が検出された場合は書き直しを求め、max_attempts 回で解消しなければ書き込まない。
-    生成中に対象のレポートが新しい名前で作り直された場合も書き込まない（superseded）。
+    生成中に対象のレポートが新しい名前で作り直された場合（superseded）と、書き込み直前に
+    内容が変わっていた場合（conflict）も書き込まない。どちらも再実行が要る。
 
     送出する例外は2系統ある: 生成そのものの失敗は DiscussionError、禁止語の収集・照合が
     続行できない場合は leakcheck.LeakCheckError（共通の基底を持たないため両方を捕まえる）。
@@ -526,11 +528,18 @@ def generate(
                 org, month, doc_path, "superseded", attempts=attempt, chars=len(body))
         # その間に人が考察を書いた場合や、並行する analyze が本文を更新した場合に、
         # それを巻き戻さないよう書き込み側で判定と置換を畳み、置換直前にも内容が
-        # 変わっていないか確認する
-        if not report.write_discussion(doc_path, body, only_if_unwritten=not force):
-            notify("生成中にレポートが変更されたため書き込みません（上書きは --force）")
+        # 変わっていないか確認する。「書かなかった」理由は2つに分かれ、扱いが違う
+        result = report.write_discussion(doc_path, body, only_if_unwritten=not force)
+        if result is report.WriteResult.KEPT:
+            # 設計どおりの no-op（手書きの考察を守った）。次の手は要らない
+            notify("生成中に考察が記入されたため書き込みません（上書きは --force）")
             existing = _existing_discussion(doc_path) or ""
             return DiscussionOutcome(org, month, doc_path, "kept", chars=len(existing))
+        if result is report.WriteResult.CONFLICT:
+            # 何も書けていない。しかも古い資料から生成した考察なので、--force で
+            # 押し込むのではなく作り直す必要がある（superseded と同じく再実行が要る）
+            return DiscussionOutcome(
+                org, month, doc_path, "conflict", attempts=attempt, chars=len(body))
         return DiscussionOutcome(
             org, month, doc_path, "written", attempts=attempt, chars=len(body))
     return DiscussionOutcome(

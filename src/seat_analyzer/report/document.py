@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from enum import Enum
 from pathlib import Path
 
 # 考察セクションの開始位置。本文の分割・差し替えはすべてこの文字列を境界に行う。
@@ -17,6 +18,19 @@ _DISCUSSION_PLACEHOLDER_RE = re.compile(r"^（未記入 — .*）$")
 # 置換用の一時ファイルの接頭辞（`_atomic_write`）。最終ファイル名に依らない固定長にする。
 # 先頭のドットは一時物であることの目印で、`.tmp` の拡張子と合わせて掃除の目印にもなる。
 _TMP_PREFIX = ".seat-tmp-"
+
+
+class WriteResult(Enum):
+    """考察の書き込みの結末。
+
+    「書かなかった」を1つの偽値で表すと、設計どおりの no-op（記入済みなので触らない）と、
+    仕事が終わっていない状態（置換の直前に内容が変わっていて書けなかった）が区別できない。
+    後者は利用者の再実行が要るので、呼び出し側が別々に扱えるようにする。
+    """
+
+    WRITTEN = "written"    # 書き込んだ
+    KEPT = "kept"          # 記入済みの考察を見つけたので触らなかった
+    CONFLICT = "conflict"  # 置換の直前に内容が変わっていたので書かなかった
 
 
 def _is_placeholder_discussion(tail: str) -> bool:
@@ -58,24 +72,27 @@ def discussion_body(md: str) -> str | None:
     return tail.strip() or None
 
 
-def write_discussion(path: Path, body: str, *, only_if_unwritten: bool = False) -> bool:
+def write_discussion(
+    path: Path, body: str, *, only_if_unwritten: bool = False,
+) -> WriteResult:
     """考察セクションの中身を body に差し替えて書き戻す。本文側は一切変更しない。
 
-    only_if_unwritten=True なら、記入済みの考察を見つけた時点で何もせず False を返す。
+    only_if_unwritten=True なら、記入済みの考察を見つけた時点で何もせず KEPT を返す。
     判定と書き込みを1回の読み取りに畳み、さらに置換の直前に内容が変わっていないかを
     確認する（生成に時間がかかる間に人が考察を書いた場合や、並行する analyze が本文を
-    更新した場合に、それを巻き戻さないための保護）。競合を検出した場合も False を返す。
+    更新した場合に、それを巻き戻さないための保護）。この競合は CONFLICT で返す。
     """
     md = path.read_text(encoding="utf-8")
     if _DISCUSSION_MARKER not in md:
         raise ValueError(f"{path} に「## 考察」セクションがありません")
     if only_if_unwritten and discussion_body(md) is not None:
-        return False
+        return WriteResult.KEPT
     head = md.split(_DISCUSSION_MARKER, 1)[0]
-    return _atomic_write(
+    written = _atomic_write(
         path, head + _DISCUSSION_MARKER + "\n" + body.strip() + "\n",
         expect=md if only_if_unwritten else None,
     )
+    return WriteResult.WRITTEN if written else WriteResult.CONFLICT
 
 
 def _default_file_mode() -> int:

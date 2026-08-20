@@ -11,7 +11,15 @@ from pathlib import Path
 import pytest
 
 from seat_analyzer import cli, discussion, leakcheck, report
-from seat_analyzer.report import DASHBOARD, DETAILS, PREVIEW, PREVIEW_DASHBOARD, REPORT, document
+from seat_analyzer.report import (
+    DASHBOARD,
+    DETAILS,
+    PREVIEW,
+    PREVIEW_DASHBOARD,
+    REPORT,
+    WriteResult,
+    document,
+)
 from seat_analyzer.cli import main
 from seat_analyzer.config import load_config
 
@@ -24,6 +32,8 @@ from .conftest import (
 )
 
 BODY = "### 変更推奨の妥当性\n\n" + "対象組織の需要は妥当な範囲に収まっている。" * 12
+
+WRITTEN, KEPT, CONFLICT = WriteResult.WRITTEN, WriteResult.KEPT, WriteResult.CONFLICT
 
 
 # ---------------------------------------------------------------- report.py 側のヘルパ
@@ -947,37 +957,92 @@ def test_write_discussion_only_if_unwritten_guard(two_orgs, tmp_path):
     out = run_analyze(two_orgs, tmp_path)
     path = out_file(out, REPORT)
 
-    assert report.write_discussion(path, BODY, only_if_unwritten=True) is True
+    assert report.write_discussion(path, BODY, only_if_unwritten=True) is WRITTEN
     # 記入済みになったので2回目は何もしない
     other = "### 別の考察\n\n" + "上書きされるべきではない。" * 20
-    assert report.write_discussion(path, other, only_if_unwritten=True) is False
+    assert report.write_discussion(path, other, only_if_unwritten=True) is KEPT
     assert report.discussion_body(path.read_text(encoding="utf-8")) == BODY.strip()
     # only_if_unwritten=False なら上書きする
-    assert report.write_discussion(path, other) is True
+    assert report.write_discussion(path, other) is WRITTEN
     assert report.discussion_body(path.read_text(encoding="utf-8")) == other.strip()
 
 
 def test_write_discussion_aborts_when_file_changes_before_replace(two_orgs, tmp_path,
                                                                   monkeypatch):
-    """置換直前に内容が変わっていたら書き込まない（判定〜置換の窓を詰める）。"""
+    """置換直前に内容が変わっていたら書き込まない（判定〜置換の窓を詰める）。
+
+    「記入済みなので触らない」（KEPT）とは別の結末にする。こちらは何も書けておらず、
+    呼び出し側は再実行を案内する必要がある。
+    """
     out = run_analyze(two_orgs, tmp_path)
     path = out_file(out, REPORT)
     handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
 
+    _inject_write_before_replace(monkeypatch, path, _with_discussion(path, handwritten))
+    assert report.write_discussion(path, BODY, only_if_unwritten=True) is CONFLICT
+    assert report.discussion_body(path.read_text(encoding="utf-8")) == handwritten.strip()
+    assert not list(path.parent.glob(f"{document._TMP_PREFIX}*.tmp"))
+
+
+def _inject_write_before_replace(monkeypatch, path: Path, text: str) -> None:
+    """一時ファイルを作った後・置換直前の照合より前に、別プロセスの書き込みを模す。"""
     original_chmod = document.os.chmod
     injected: list[int] = []
 
     def chmod_with_concurrent_write(target, mode):
-        # 一時ファイルを作った後・置換直前の照合より前に、別プロセスの書き込みを模す
         if not injected:
             injected.append(1)
-            path.write_text(_with_discussion(path, handwritten), encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
         return original_chmod(target, mode)
 
     monkeypatch.setattr(document.os, "chmod", chmod_with_concurrent_write)
-    assert report.write_discussion(path, BODY, only_if_unwritten=True) is False
+
+
+def test_cli_reports_the_replace_conflict_and_exits_nonzero(
+    two_orgs, tmp_path, monkeypatch, capsys
+):
+    """置換直前の競合は kept ではなく再実行の案内にし、終了コード 1 を返す。
+
+    「記入済みの考察があるため変更しません（上書きは --force）」に寄せると、何も書けて
+    いないのに成功に見え、しかも --force という誤った次の手を示すことになる。
+    """
+    out = run_analyze(two_orgs, tmp_path)
+    path = out_file(out, REPORT)
+    handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
+    _inject_write_before_replace(monkeypatch, path, _with_discussion(path, handwritten))
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
+    capsys.readouterr()
+
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "記入済み" not in captured.out and "--force" not in captured.out
+    assert "書き込みませんでした" in captured.err
+    assert "更新されており" in captured.err        # 理由
+    assert "もう一度 discuss" in captured.err      # 次の手
+    assert "混入" not in captured.err              # blocked のまとめ行と混ぜない
+    # 割り込んだ手書きの考察はそのまま残る（巻き戻さない）
     assert report.discussion_body(path.read_text(encoding="utf-8")) == handwritten.strip()
-    assert not list(path.parent.glob(f"{document._TMP_PREFIX}*.tmp"))
+
+
+def test_cli_keeps_an_already_written_discussion_with_exit_zero(
+    two_orgs, tmp_path, monkeypatch, capsys
+):
+    """記入済みの考察を見つけただけなら従来どおり no-op（stdout に kept・終了コード 0）。"""
+    out = run_analyze(two_orgs, tmp_path)
+    path = out_file(out, REPORT)
+    report.write_discussion(path, BODY)
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: "書かれないはずの本文")
+    capsys.readouterr()
+
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "記入済みの考察があるため変更しません（上書きは --force）" in captured.out
+    assert "もう一度 discuss" not in captured.err
+    assert report.discussion_body(path.read_text(encoding="utf-8")) == BODY.strip()
 
 
 def _with_discussion(path: Path, body: str) -> str:

@@ -13,7 +13,7 @@ from ..analyze import (
 )
 from .csv_out import write_csv
 from .details import write_details
-from .document import discussion_body, document_body, write_discussion
+from .document import WriteResult, discussion_body, document_body, write_discussion
 from .html import write_html, write_preview_html
 from .markdown import write_markdown, write_org_summary, write_preview_markdown
 from .naming import (
@@ -40,6 +40,7 @@ __all__ = [
     "write_usage_csv",
     "write_org_summary",
     "write_discussion",
+    "WriteResult",
     "document_body",
     "discussion_body",
     "Artifact",
