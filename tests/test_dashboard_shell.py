@@ -11,7 +11,7 @@ import re
 import pytest
 
 from seat_analyzer.analyze import analyze, preview
-from seat_analyzer.report import write_html, write_preview
+from seat_analyzer.report import PREVIEW_DASHBOARD, write_html, write_preview
 from seat_analyzer.report.html import (
     _DASHBOARD_CSS,
     _DASHBOARD_JS,
@@ -45,7 +45,7 @@ def dashboards(cfg, make_input, tmp_path):
     pv_dir = tmp_path / "pv"
     write_preview(pv, pv_dir)
     return (full.read_text(encoding="utf-8"),
-            (pv_dir / "2026-06" / "preview-dashboard.html").read_text(encoding="utf-8"))
+            PREVIEW_DASHBOARD.path(pv_dir, "2026-06", "org-a").read_text(encoding="utf-8"))
 
 
 # --- 自己完結性 ---

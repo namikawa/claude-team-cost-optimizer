@@ -8,6 +8,14 @@ import pytest
 
 from seat_analyzer.analyze import preview
 from seat_analyzer.cli import main
+from seat_analyzer.report import (
+    DASHBOARD,
+    DETAILS,
+    PREVIEW,
+    PREVIEW_DASHBOARD,
+    RECOMMENDATIONS,
+    REPORT,
+)
 
 from .conftest import CONFIG, spend_row
 
@@ -83,14 +91,13 @@ def test_cli_preview_writes_preview_files_only(make_input, tmp_path):
     )
     rc, out = _run_cli(input_dir, tmp_path, "--preview", "--days", "10")
     assert rc == 0
-    report_dir = out / "org-new" / "2026-07"
-    assert (report_dir / "preview.md").exists()
-    assert (report_dir / "preview-dashboard.html").exists()
-    assert not (report_dir / "report.md").exists()        # 正式レポートには触れない
-    assert not (report_dir / "details.md").exists()
-    assert not (report_dir / "dashboard.html").exists()
-    assert not (report_dir / "recommendations.csv").exists()
-    md = (report_dir / "preview.md").read_text(encoding="utf-8")
+    org_out = out / "org-new"
+    assert PREVIEW.path(org_out, "2026-07", "org-new").exists()
+    assert PREVIEW_DASHBOARD.path(org_out, "2026-07", "org-new").exists()
+    # 正式レポートには触れない
+    for artifact in (REPORT, DETAILS, DASHBOARD, RECOMMENDATIONS):
+        assert not artifact.path(org_out, "2026-07", "org-new").exists()
+    md = PREVIEW.path(org_out, "2026-07", "org-new").read_text(encoding="utf-8")
     assert "org-new — 2026-07" in md.splitlines()[0]
     assert "×3.1" in md                                   # 31日/10日 の換算係数
 
@@ -101,7 +108,7 @@ def test_cli_preview_preserves_discussion(make_input, tmp_path):
         members=["a@x.jp,Premium"], members_month="2026-07", org="org-new",
     )
     rc, out = _run_cli(input_dir, tmp_path, "--preview", "--days", "10")
-    path = out / "org-new" / "2026-07" / "preview.md"
+    path = PREVIEW.path(out / "org-new", "2026-07", "org-new")
     md = path.read_text(encoding="utf-8")
     path.write_text(md.split("\n## 考察\n")[0] + "\n## 考察\n\n記入済みの考察テキスト\n", encoding="utf-8")
     rc, _ = _run_cli(input_dir, tmp_path, "--preview", "--days", "12")

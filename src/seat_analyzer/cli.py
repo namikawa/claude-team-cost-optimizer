@@ -154,7 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     pdis.add_argument("--config", default=None, help=_CONFIG_HELP)
     _add_dir_options(pdis)
     pdis.add_argument(
-        "--preview", action="store_true", help="report.md ではなく preview.md の考察を対象にする")
+        "--preview", action="store_true",
+        help="正式レポートではなく速報レポート（preview-...）の考察を対象にする")
     pdis.add_argument(
         "--force", action="store_true",
         help="記入済みの考察を上書きする（既定では手書きの考察を守るため書き換えない）",
@@ -795,7 +796,7 @@ def _run_discussions(
     if len(items) > 1:
         targets = []
         for org, org_output in items:
-            if discussion.document_path(org_output, month, preview).exists():
+            if discussion.document_path(org_output, month, preview, org).exists():
                 targets.append((org, org_output))
             else:
                 skipped.append(org)
@@ -805,6 +806,9 @@ def _run_discussions(
         print(f"\n=== 考察の執筆（{len(items)} 組織） ===")
     failed: list[str] = []
     blocked: list[str] = []
+    # 生成はしたが書き込まなかった組織（対象が別名に置き換わった / 直前に内容が変わった）。
+    # 理由は違うが利用者の次の手は同じ（再実行）なので、まとめ行は1つにする
+    rerun: list[str] = []
     for org, org_output in items:
         scope = f"{org} {month}"
         try:
@@ -821,6 +825,8 @@ def _run_discussions(
             continue
         if outcome.status == "blocked":
             blocked.append(scope)
+        elif outcome.status in ("superseded", "conflict"):
+            rerun.append(scope)
         _print_discussion(outcome, scope)
 
     if skipped:
@@ -833,9 +839,17 @@ def _run_discussions(
             f"\n! 他組織情報の混入が解消しなかったため書き込みを中止した組織: {', '.join(blocked)}",
             file=sys.stderr,
         )
+    if rerun:
+        # 混入とは理由が違うので blocked と混ぜない（対処も「再実行」で別）。
+        # 個別の理由は組織ごとの行が出しているので、ここは対処だけを揃えて示す
+        print(
+            f"\n! 生成中に対象のレポートが変わったため書き込みを中止した組織: "
+            f"{', '.join(rerun)}（もう一度 discuss を実行してください）",
+            file=sys.stderr,
+        )
     if failed:
         print(f"! 考察の生成に失敗した組織: {', '.join(failed)}", file=sys.stderr)
-    return 1 if (blocked or failed) else 0
+    return 1 if (blocked or rerun or failed) else 0
 
 
 def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None:
@@ -848,6 +862,18 @@ def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None
     elif outcome.status == "written":
         print(f"  {scope}: 考察を書き込みました "
               f"（{outcome.chars} 文字 / 試行 {outcome.attempts} 回）→ {outcome.path}")
+    # 以下2つは「生成したが書き込まなかった」状態。「記入済みだから触らない」（kept）と
+    # 取り違えると、--force を試すという誤った次の手に進む。捨てた事実・理由・再実行を出す
+    elif outcome.status == "superseded":
+        print(f"  {scope}: 生成した考察（{outcome.chars} 文字）を書き込みませんでした。"
+              f"生成中に対象のレポートが新しい名前で作り直されたためで、"
+              f"{outcome.path.name} に書いても以後は読まれません。"
+              f"もう一度 discuss を実行してください", file=sys.stderr)
+    elif outcome.status == "conflict":
+        print(f"  {scope}: 生成した考察（{outcome.chars} 文字）を書き込みませんでした。"
+              f"生成中に {outcome.path.name} が更新されており、書き込むと古い内容から"
+              f"書いた考察を載せることになるためです。"
+              f"もう一度 discuss を実行してください", file=sys.stderr)
     elif outcome.status == "blocked":
         print(f"  {scope}: 混入チェックで他組織の語を検出したため書き込みを中止しました "
               f"（試行 {outcome.attempts} 回）", file=sys.stderr)

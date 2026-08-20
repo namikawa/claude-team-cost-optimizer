@@ -161,7 +161,7 @@ CSV
   → pricing.py
   → analyze.py
   → report.py
-  → report.md / dashboard.html / recommendations.csv
+  → report / dashboard / recommendations（6.2の命名規則）
 ```
 
 ### 5.2 目標
@@ -254,25 +254,31 @@ input/<org>/
 
 ```text
 reports/<org>/<month>/
-  report.md
-  dashboard.html
-  recommendations.csv
-  preview.md              # 速報モードのみ
-  preview-dashboard.html  # 速報モードのみ
+  report-<YYYYMM>-<org>.md
+  details-<YYYYMM>-<org>.md
+  dashboard-<YYYYMM>-<org>.html
+  recommendations-<YYYYMM>-<org>.csv
+  usage-summary-<YYYYMM>-<org>.csv
+  preview-<YYYYMM>-<org>.md              # 速報モードのみ
+  preview-dashboard-<YYYYMM>-<org>.html  # 速報モードのみ
 reports/summary/
   <month>.md              # 複数組織を一括実行した場合のみ
 ```
 
-`preview.md`・`preview-dashboard.html`・`summary/<month>.md`はこの設計書の作成後に
-追加された既存出力で、いずれもgoldenテストのバイト一致比較の対象。不変条件を書くときは
-これらを落とさない。
+組織×月ディレクトリの成果物は`{種別}-{YYYYMM}-{組織名}.{拡張子}`で命名する（共有で
+フォルダの外へ出したときにファイル名だけで判別できるようにするため）。名前を組み立てる
+のは`report/naming.py`の1箇所。`summary/<month>.md`は対象外（担当者へ共有しない内部の
+文書で、月は既に名前にある）。以下で種別名だけを書いている箇所も同じ規則に従う。
+
+`details`・`usage-summary`・`preview`・`preview-dashboard`・`summary/<month>.md`はこの
+設計書の作成後に追加された既存出力で、いずれもgoldenテストのバイト一致比較の対象。
+不変条件を書くときはこれらを落とさない。
 
 追加:
 
 ```text
 reports/<org>/<month>/
   data-quality.json
-  usage-summary.csv
   seat-change-events.csv
   decision-evidence.csv
   decision-audit.csv

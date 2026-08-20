@@ -18,6 +18,8 @@ from seat_analyzer.analyze import (
 from seat_analyzer.analyze.credits import _compute_e_distribution
 from seat_analyzer.ingest import parse_credit_limit
 from seat_analyzer.report import (
+    PREVIEW,
+    PREVIEW_DASHBOARD,
     write_details,
     write_html,
     write_markdown,
@@ -279,7 +281,7 @@ def test_grant_cap_legend_keeps_decimals_in_html(make_input, cfg, tmp_path):
     pv = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
     pv_dir = tmp_path / "org"
     write_preview(pv, pv_dir)
-    html = (pv_dir / "2026-06" / "preview-dashboard.html").read_text(encoding="utf-8")
+    html = PREVIEW_DASHBOARD.path(pv_dir, "2026-06", "org-a").read_text(encoding="utf-8")
     assert "推奨初期上限 $150.50" in html
 
 
@@ -391,7 +393,7 @@ def test_preview_credit_reach_and_grant(make_input, cfg, tmp_path):
     assert "cand@x.jp" in [c["email"] for c in result.grant_candidates]
     out = tmp_path / "org"
     write_preview(result, out)
-    md = (out / "2026-07" / "preview.md").read_text(encoding="utf-8")
+    md = PREVIEW.path(out, "2026-07", "org-a").read_text(encoding="utf-8")
     assert "## 追加クレジット残額" in md
     assert "## 追加クレジット付与候補" in md
 

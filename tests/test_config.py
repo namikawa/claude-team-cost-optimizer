@@ -19,8 +19,9 @@ import yaml
 from seat_analyzer import config
 from seat_analyzer.cli import WORKSPACE_CONFIG_TEMPLATE, main
 from seat_analyzer.config import PACKAGE_CONFIG_PATH, _is_ambiguous_path, load_config
+from seat_analyzer.report import REPORT
 
-from .conftest import SPEND_HEADER, requires_symlink, spend_row
+from .conftest import SPEND_HEADER, out_file, requires_symlink, spend_row
 
 
 def _write(path: Path, text: str) -> Path:
@@ -558,7 +559,7 @@ def test_cli_falls_back_to_the_current_directory(tmp_path, monkeypatch, override
     monkeypatch.chdir(ws)
 
     assert main(["analyze", "--month", MONTH]) == 0
-    assert (ws / "reports" / "org-a" / MONTH / "report.md").is_file()
+    assert out_file(ws / "reports", REPORT, month=MONTH).is_file()
 
 
 def test_cli_uses_the_paths_from_the_workspace_config(tmp_path, monkeypatch):
@@ -569,7 +570,7 @@ def test_cli_uses_the_paths_from_the_workspace_config(tmp_path, monkeypatch):
     monkeypatch.chdir(ws)
 
     assert main(["analyze", "--month", MONTH]) == 0
-    assert (ws / "out" / "org-a" / MONTH / "report.md").is_file()
+    assert out_file(ws / "out", REPORT, month=MONTH).is_file()
     assert not (ws / "reports").exists()
 
 
@@ -585,7 +586,7 @@ def test_cli_dir_flags_win_over_the_workspace_config(tmp_path, monkeypatch):
         "analyze", "--month", MONTH,
         "--input-dir", str(tmp_path / "given"), "--output-dir", str(tmp_path / "given-out"),
     ]) == 0
-    assert (tmp_path / "given-out" / "org-b" / MONTH / "report.md").is_file()
+    assert out_file(tmp_path / "given-out", REPORT, org="org-b", month=MONTH).is_file()
     assert not (ws / "out").exists()
 
 
@@ -611,7 +612,7 @@ def test_cli_resolves_config_paths_from_the_config_location(tmp_path, monkeypatc
     monkeypatch.chdir(elsewhere)
 
     assert main(["analyze", "--config", str(config_path), "--month", MONTH]) == 0
-    assert (ws / "out" / "org-a" / MONTH / "report.md").is_file()
+    assert out_file(ws / "out", REPORT, month=MONTH).is_file()
     assert not (elsewhere / "out").exists()
 
 

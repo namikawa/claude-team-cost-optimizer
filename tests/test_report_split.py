@@ -14,7 +14,7 @@ import pytest
 
 from seat_analyzer.analyze import analyze
 from seat_analyzer.cli import main
-from seat_analyzer.report import write_all
+from seat_analyzer.report import DETAILS, REPORT, write_all
 from seat_analyzer.report.markdown import (
     _code_diff_md,
     _detail_table_md,
@@ -34,7 +34,7 @@ from seat_analyzer.report.format import _sort_for_display
 from seat_analyzer.report.stats import distributions
 from seat_analyzer.report.text import GROUP_AXES, STATUS_ORDER
 
-from .conftest import CONFIG, REPO_ROOT, spend_row
+from .conftest import CONFIG, REPO_ROOT, out_file, spend_row
 
 EXAMPLES_INPUT = REPO_ROOT / "examples" / "input"
 ORG, MONTH = "org-b", "2026-08"
@@ -79,9 +79,9 @@ def all_in(tmp_path, cfg):
         "--month", MONTH, "--org", ORG, "--output-dir", str(output_dir),
     ])
     assert rc == 0
-    out = output_dir / ORG / MONTH
+    org_out = output_dir / ORG
     result = analyze(EXAMPLES_INPUT / ORG, MONTH, cfg, org=ORG)
-    return result, out / "report.md", out / "details.md"
+    return (result, REPORT.path(org_out, MONTH, ORG), DETAILS.path(org_out, MONTH, ORG))
 
 
 def test_analyze_writes_details(all_in):
@@ -102,7 +102,7 @@ def test_details_path_is_listed_in_output(make_input, tmp_path, capsys):
     rc = main(["analyze", "--config", CONFIG, "--input-dir", str(input_dir),
                "--output-dir", str(output_dir), "--month", "2026-06"])
     assert rc == 0
-    path = output_dir / "org-a" / "2026-06" / "details.md"
+    path = out_file(output_dir, DETAILS)
     assert f"details: {path}" in capsys.readouterr().out
 
 
@@ -202,11 +202,11 @@ def test_legend_only_when_recommendation_table_has_rows(make_input, cfg, tmp_pat
     assert result.users["status"].eq("変更推奨").sum() == 0
     out = tmp_path / "reports"
     write_all(result, out)
-    report = (out / "2026-06" / "report.md").read_text(encoding="utf-8")
+    report = REPORT.path(out, "2026-06", "org-a").read_text(encoding="utf-8")
     assert "## シート変更推奨\n\n該当なし。\n" in report
     assert "**API換算需要**" not in report          # 表が無いので凡例も出さない
     # details.md 側の全ユーザ表には（表があるので）凡例が付く
-    details = (out / "2026-06" / "details.md").read_text(encoding="utf-8")
+    details = DETAILS.path(out, "2026-06", "org-a").read_text(encoding="utf-8")
     assert "**API換算需要**" in details
 
 
@@ -215,7 +215,7 @@ def test_details_is_written_for_every_analysis(make_input, cfg, tmp_path):
     result = _no_change_result(make_input, cfg)
     out = tmp_path / "reports"
     write_all(result, out)
-    details = (out / "2026-06" / "details.md").read_text(encoding="utf-8")
+    details = DETAILS.path(out, "2026-06", "org-a").read_text(encoding="utf-8")
     # データのある section だけが並ぶ（部署・月中の推移などは省略される）
     assert _headings(details) == ["全ユーザ", "詳細利用状況", "組織内の分布（参考値）", "感度分析"]
 

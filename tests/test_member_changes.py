@@ -5,7 +5,7 @@
 """
 
 from seat_analyzer.analyze import analyze, preview
-from seat_analyzer.report import write_details, write_preview
+from seat_analyzer.report import PREVIEW, write_details, write_preview
 
 from .conftest import spend_row
 
@@ -121,7 +121,7 @@ def test_preview_computes_member_changes(cfg, make_snapshots, write_member_snaps
     assert result.member_changes is not None
     out = tmp_path / "org"
     write_preview(result, out)
-    md = (out / "2026-07" / "preview.md").read_text(encoding="utf-8")
+    md = PREVIEW.path(out, "2026-07", "org-a").read_text(encoding="utf-8")
     assert "## 月中のメンバー変動（スナップショット差分）" in md
     # 一次判断テーブルより後・注意事項より前
     assert md.index("## 一次判断テーブル") < md.index("## 月中のメンバー変動（スナップショット差分）")

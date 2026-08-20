@@ -88,7 +88,12 @@ class DiscussionOutcome:
     org: str
     month: str
     path: Path
-    status: str  # written / blocked / kept / dry-run
+    # written / blocked / superseded / conflict / kept / dry-run。
+    # superseded と conflict はどちらも「生成はしたが書き込まなかった」状態で、前者は
+    # 対象のレポートが生成中に新しい名前で作り直された場合、後者は書き込み直前に内容が
+    # 変わっていた場合。kept（＝設計どおり触らない no-op）と違い、依頼された仕事が
+    # 終わっていないので blocked と同じく再実行が要る（理由が違うので表示は分ける）
+    status: str
     attempts: int = 0
     leaks: tuple[LeakHit, ...] = ()
     prompt: str = ""
@@ -145,20 +150,26 @@ def build_prompt(
     })
 
 
-def document_path(org_output: Path, month: str, preview: bool) -> Path:
-    """考察を書き込む対象ファイル。"""
-    return org_output / month / ("preview.md" if preview else "report.md")
+def document_path(org_output: Path, month: str, preview: bool, org: str) -> Path:
+    """考察を読み書きする対象ファイル。
+
+    ファイル名に月と組織名を含める前に生成したレポートも対象にできるよう、新しい名前が
+    無ければ種別だけの旧名へフォールバックする（`report.naming`）。考察はこの文書を
+    その場で書き換えるため、読み先と書き先は同じでなければならない。
+    """
+    artifact = report.PREVIEW if preview else report.REPORT
+    return artifact.existing_path(org_output, month, org)
 
 
-def _prev_month_dir(org_output: Path, month: str) -> Path | None:
-    """対象月より前で最も新しい出力月のディレクトリ。"""
+def _prev_output_month(org_output: Path, month: str) -> str | None:
+    """対象月より前で最も新しい出力月。"""
     if not org_output.is_dir():
         return None
     months = sorted(
         p.name for p in org_output.iterdir()
         if p.is_dir() and MONTH_DIR_RE.match(p.name) and p.name < month
     )
-    return org_output / months[-1] if months else None
+    return months[-1] if months else None
 
 
 # details.md が資料として使える形かを見分ける番兵。全ユーザ表は details.md に無条件で
@@ -170,7 +181,7 @@ _ALL_USERS_HEADING = "## 全ユーザ"
 _ALL_USERS_HEADING_RE = re.compile(rf"^{re.escape(_ALL_USERS_HEADING)}[ \t]*$", re.M)
 
 
-def _details_material(org_output: Path, month: str, report_body: str) -> str | None:
+def _details_material(path: Path, month: str, report_body: str) -> str | None:
     """資料に足す details.md の本文（足さない場合は None）。
 
     details.md が無い状態は2つに分かれ、続行してよいのは片方だけ。
@@ -182,7 +193,6 @@ def _details_material(org_output: Path, month: str, report_body: str) -> str | N
 
     再実行で解消しうるが、ヘッドレス実行のリトライで直る類ではないので transient にしない。
     """
-    path = org_output / month / "details.md"
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
     if _ALL_USERS_HEADING_RE.search(text):
         return text
@@ -196,10 +206,16 @@ def _details_material(org_output: Path, month: str, report_body: str) -> str | N
 
 
 def collect_materials(
-    *, org_output: Path, month: str, preview: bool,
+    *, org: str, org_output: Path, month: str, preview: bool, doc_path: Path,
     terms: tuple[Term, ...] = (), include_previous: bool = False, notify=None,
 ) -> tuple[list[tuple[str, str]], str]:
     """(プロンプトへ渡す資料, 混入チェックの照合元テキスト) を返す。
+
+    doc_path は資料1になるレポート本文で、呼び出し側が解決したものを受け取る（ここで
+    document_path() を呼び直さない）。二重に解決すると、旧名しか無い状態で始めた実行の
+    途中で並行する analyze が新名を作った場合に、資料は新名から読み・考察は旧名へ書く、
+    という食い違いが起きる。書き込みは成功するので、生成した考察が二度と読まれない
+    ファイルに残ることに気づけない。
 
     正式分析の資料は report.md 本文 → details.md → recommendations.csv の順。
     report.md は考察中心の短い文書なので、ユーザ単位の表・月中の推移・分布は
@@ -215,7 +231,6 @@ def collect_materials(
     include_previous=True のときも渡す前に混入チェックを通し、落ちたら除外する。
     """
     notify = notify or (lambda _message: None)
-    doc_path = document_path(org_output, month, preview)
     if not doc_path.exists():
         raise DiscussionError(
             f"{doc_path} がありません。先に "
@@ -233,18 +248,19 @@ def collect_materials(
     if not preview:
         # details.md は report.md から移した表の受け皿。再構成前に生成した月には
         # 無いので、その場合だけ省略して従来どおり動かす（_details_material 参照）
-        details_text = _details_material(org_output, month, body)
+        details_path = report.DETAILS.existing_path(org_output, month, org)
+        details_text = _details_material(details_path, month, body)
         if details_text is not None:
-            add(f"分析詳細資料 details.md（{month}）", details_text)
-        csv_path = org_output / month / "recommendations.csv"
+            add(f"分析詳細資料 {details_path.name}（{month}）", details_text)
+        csv_path = report.RECOMMENDATIONS.existing_path(org_output, month, org)
         if csv_path.exists():
-            add(f"ユーザ別推奨一覧 recommendations.csv（{month}）",
+            add(f"ユーザ別推奨一覧 {csv_path.name}（{month}）",
                 csv_path.read_text(encoding="utf-8"))
 
     source_text = "\n".join(source)
-    prev_dir = _prev_month_dir(org_output, month) if include_previous else None
-    if prev_dir is not None:
-        prev_report = prev_dir / "report.md"
+    prev_month = _prev_output_month(org_output, month) if include_previous else None
+    if prev_month is not None:
+        prev_report = report.REPORT.existing_path(org_output, prev_month, org)
         if prev_report.exists():
             prev = report.discussion_body(prev_report.read_text(encoding="utf-8"))
             if prev:
@@ -253,12 +269,12 @@ def collect_materials(
                 hits = find_leaks(prev, terms, source=source_text)
                 if hits:
                     notify(
-                        f"前月（{prev_dir.name}）の考察に他組織の語が含まれるため資料から除外します: "
+                        f"前月（{prev_month}）の考察に他組織の語が含まれるため資料から除外します: "
                         f"{', '.join(h.term for h in hits)}"
                     )
                 else:
                     materials.append((
-                        f"資料{len(materials) + 1}: 前回の正式レポートの考察（{prev_dir.name}）",
+                        f"資料{len(materials) + 1}: 前回の正式レポートの考察（{prev_month}）",
                         prev,
                     ))
     return materials, source_text
@@ -453,6 +469,8 @@ def generate(
 
     既に記入済みの考察は force が無ければ上書きしない（手書きの考察を守るため）。
     混入が検出された場合は書き直しを求め、max_attempts 回で解消しなければ書き込まない。
+    生成中に対象のレポートが新しい名前で作り直された場合（superseded）と、書き込み直前に
+    内容が変わっていた場合（conflict）も書き込まない。どちらも再実行が要る。
 
     送出する例外は2系統ある: 生成そのものの失敗は DiscussionError、禁止語の収集・照合が
     続行できない場合は leakcheck.LeakCheckError（共通の基底を持たないため両方を捕まえる）。
@@ -464,13 +482,14 @@ def generate(
     # config の allow_terms は「恒久的に無害と確認済みの語」。--allow-term は単一組織
     # 実行に限られるため、全組織実行でも効く許可の置き場としてこちらを使う
     allow = tuple(allow) + tuple(s.get("allow_terms") or ())
-    doc_path = document_path(org_output, month, preview)
+    doc_path = document_path(org_output, month, preview, org)
     scope = f"{org} {month}"
 
     terms = forbidden_terms(
         input_dir=input_dir, output_dir=output_dir, target_org=org, cfg=cfg)
     materials, source = collect_materials(
-        org_output=org_output, month=month, preview=preview, terms=terms,
+        org=org, org_output=org_output, month=month, preview=preview,
+        doc_path=doc_path, terms=terms,
         include_previous=include_previous, notify=notify)
     prompt = build_prompt(org=org, scope=scope, materials=materials, preview=preview)
 
@@ -500,13 +519,27 @@ def generate(
                 for hit in leaks:
                     notify(f"  検出語: {hit.term}（{hit.kind}） … {hit.context} …")
             continue
-        # 生成には最大で timeout_seconds かかる。その間に人が考察を書いた場合や
-        # 並行する analyze が本文を更新した場合に、それを巻き戻さないよう書き込み側で
-        # 判定と置換を畳み、置換直前にも内容が変わっていないか確認する
-        if not report.write_discussion(doc_path, body, only_if_unwritten=not force):
-            notify("生成中にレポートが変更されたため書き込みません（上書きは --force）")
+        # 生成には最大で timeout_seconds かかる。その間に対象のファイル自体が入れ替わって
+        # いないかを、内容の照合より先に見る（旧名しか無い状態で始めた実行の途中で
+        # 並行する analyze が新名を作ると、以後は新名が読まれるため、旧名へ書いた考察は
+        # 二度と読まれない）。書き込みは成功してしまうので、書く前に止める
+        if document_path(org_output, month, preview, org) != doc_path:
+            return DiscussionOutcome(
+                org, month, doc_path, "superseded", attempts=attempt, chars=len(body))
+        # その間に人が考察を書いた場合や、並行する analyze が本文を更新した場合に、
+        # それを巻き戻さないよう書き込み側で判定と置換を畳み、置換直前にも内容が
+        # 変わっていないか確認する。「書かなかった」理由は2つに分かれ、扱いが違う
+        result = report.write_discussion(doc_path, body, only_if_unwritten=not force)
+        if result is report.WriteResult.KEPT:
+            # 設計どおりの no-op（手書きの考察を守った）。次の手は要らない
+            notify("生成中に考察が記入されたため書き込みません（上書きは --force）")
             existing = _existing_discussion(doc_path) or ""
             return DiscussionOutcome(org, month, doc_path, "kept", chars=len(existing))
+        if result is report.WriteResult.CONFLICT:
+            # 何も書けていない。しかも古い資料から生成した考察なので、--force で
+            # 押し込むのではなく作り直す必要がある（superseded と同じく再実行が要る）
+            return DiscussionOutcome(
+                org, month, doc_path, "conflict", attempts=attempt, chars=len(body))
         return DiscussionOutcome(
             org, month, doc_path, "written", attempts=attempt, chars=len(body))
     return DiscussionOutcome(

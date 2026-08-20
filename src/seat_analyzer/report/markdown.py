@@ -26,6 +26,7 @@ from .format import (
     _scope_label,
     _sort_for_display,
 )
+from .naming import PREVIEW, REPORT
 from .stats import KIND_USD, Distribution
 from .text import (
     PREVIEW_ORDER,
@@ -503,7 +504,8 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 <!-- /seat-analysis または seat-analyzer discuss 実行時に Claude が記入するセクション -->
 （未記入 — `/seat-analysis` または `seat-analyzer discuss` を実行すると考察が追記されます）
 """
-    md = _preserve_discussion(md, path)
+    md = _preserve_discussion(
+        md, path, fallback=REPORT.legacy_sibling(path, result.month, result.org))
     # 引き継いだ手書きの考察は他のどこにも無い。切り詰めてから書く write_text では
     # 中断時に本文ごと失うため、考察の差し替えと同じく置換で書く
     _atomic_write(path, md)
@@ -606,7 +608,8 @@ def write_preview_markdown(result: PreviewResult, path: Path) -> None:
 <!-- /seat-analysis または seat-analyzer discuss --preview 実行時に Claude が記入するセクション -->
 （未記入 — `/seat-analysis preview <日数>` または `seat-analyzer discuss --preview` を実行すると考察が追記されます）
 """
-    md = _preserve_discussion(md, path)
+    md = _preserve_discussion(
+        md, path, fallback=PREVIEW.legacy_sibling(path, result.month, result.org))
     # 引き継いだ手書きの考察は他のどこにも無い。切り詰めてから書く write_text では
     # 中断時に本文ごと失うため、考察の差し替えと同じく置換で書く
     _atomic_write(path, md)
@@ -636,7 +639,7 @@ def write_org_summary(results: list[AnalysisResult], output_dir: str | Path) -> 
         for k in keys:
             totals[k] += float(s.get(k, 0) or 0)
         lines.append(
-            f"| [{r.org}](../{r.org}/{month}/report.md) | {s['n_members']} 名 "
+            f"| [{r.org}](../{r.org}/{month}/{REPORT.name(month, r.org)}) | {s['n_members']} 名 "
             f"| {_fmt_usd(s['seat_cost_now_usd'])} | {_fmt_usd(s['total_api_cost_usd'])} "
             f"| {_fmt_usd(s.get('total_billed_extra_usd', 0.0))} | {_fmt_usd(s.get('org_service_cost_usd', 0.0))} "
             f"| {s['n_change_recommended']} 名 | {_fmt_usd(s['est_monthly_saving_usd'])} |"
@@ -647,7 +650,7 @@ def write_org_summary(results: list[AnalysisResult], output_dir: str | Path) -> 
         f"| **{_fmt_usd(totals['total_billed_extra_usd'])}** | **{_fmt_usd(totals['org_service_cost_usd'])}** "
         f"| **{int(totals['n_change_recommended'])} 名** | **{_fmt_usd(totals['est_monthly_saving_usd'])}** |",
         "",
-        "各組織の詳細は `reports/<組織>/" + month + "/report.md` を参照。",
+        f"各組織の詳細は `reports/<組織>/{month}/{REPORT.name(month, '<組織>')}` を参照。",
         "",
     ]
     path.write_text("\n".join(lines), encoding="utf-8", newline="\n")

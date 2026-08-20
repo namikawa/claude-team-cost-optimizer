@@ -1,4 +1,7 @@
-"""レポート生成: report.md / details.md / dashboard.html / recommendations.csv / usage-summary.csv"""
+"""レポート生成: report / details / dashboard / recommendations / usage-summary
+
+ファイル名は `{種別}-{YYYYMM}-{組織名}.{拡張子}`（組み立ては naming.py が持つ）。
+"""
 
 from __future__ import annotations
 
@@ -10,9 +13,19 @@ from ..analyze import (
 )
 from .csv_out import write_csv
 from .details import write_details
-from .document import discussion_body, document_body, write_discussion
+from .document import WriteResult, discussion_body, document_body, write_discussion
 from .html import write_html, write_preview_html
 from .markdown import write_markdown, write_org_summary, write_preview_markdown
+from .naming import (
+    DASHBOARD,
+    DETAILS,
+    PREVIEW,
+    PREVIEW_DASHBOARD,
+    RECOMMENDATIONS,
+    REPORT,
+    USAGE_SUMMARY,
+    Artifact,
+)
 from .usage_csv import write_usage_csv
 
 # 公開 API。write_preview_markdown は write_preview の内部実装なので含めない。
@@ -27,20 +40,29 @@ __all__ = [
     "write_usage_csv",
     "write_org_summary",
     "write_discussion",
+    "WriteResult",
     "document_body",
     "discussion_body",
+    "Artifact",
+    "REPORT",
+    "DETAILS",
+    "DASHBOARD",
+    "RECOMMENDATIONS",
+    "USAGE_SUMMARY",
+    "PREVIEW",
+    "PREVIEW_DASHBOARD",
 ]
 
 
 def write_all(result: AnalysisResult, output_dir: str | Path) -> dict[str, Path]:
-    out = Path(output_dir) / result.month
-    out.mkdir(parents=True, exist_ok=True)
+    month, org = result.month, result.org
+    (Path(output_dir) / month).mkdir(parents=True, exist_ok=True)
     paths = {
-        "csv": out / "recommendations.csv",
-        "usage": out / "usage-summary.csv",
-        "markdown": out / "report.md",
-        "details": out / "details.md",
-        "html": out / "dashboard.html",
+        "csv": RECOMMENDATIONS.path(output_dir, month, org),
+        "usage": USAGE_SUMMARY.path(output_dir, month, org),
+        "markdown": REPORT.path(output_dir, month, org),
+        "details": DETAILS.path(output_dir, month, org),
+        "html": DASHBOARD.path(output_dir, month, org),
     }
     write_csv(result, paths["csv"])
     write_usage_csv(result, paths["usage"])
@@ -51,16 +73,16 @@ def write_all(result: AnalysisResult, output_dir: str | Path) -> dict[str, Path]
 
 
 def write_preview(result: PreviewResult, output_dir: str | Path) -> dict[str, Path]:
-    """速報モードの出力（reports/<組織>/<月>/preview.md と preview-dashboard.html）。
+    """速報モードの出力（reports/<組織>/<月>/ の preview と preview-dashboard）。
 
-    正式レポート（report.md / details.md / dashboard.html / recommendations.csv）には触れない。
+    正式レポート（report / details / dashboard / recommendations）には触れない。
     戻り値は正式側 write_all と同様の paths dict（keys: "markdown", "html"）。
     """
-    out = Path(output_dir) / result.month
-    out.mkdir(parents=True, exist_ok=True)
-    path = out / "preview.md"
+    month, org = result.month, result.org
+    (Path(output_dir) / month).mkdir(parents=True, exist_ok=True)
+    path = PREVIEW.path(output_dir, month, org)
     write_preview_markdown(result, path)
 
-    html_path = out / "preview-dashboard.html"
+    html_path = PREVIEW_DASHBOARD.path(output_dir, month, org)
     write_preview_html(result, html_path)
     return {"markdown": path, "html": html_path}

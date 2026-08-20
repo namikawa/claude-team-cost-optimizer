@@ -12,9 +12,9 @@ Claude Team プランのシート最適化分析を実行してください。
 
 ## 執筆の原則（厳守・すべての手順に適用）
 
-組織別の成果物（`reports/<組織名>/<月>/` 以下の report.md・details.md・preview.md・
-dashboard.html・preview-dashboard.html・recommendations.csv）は、**その組織の担当者に
-共有される前提**で書く。
+組織別の成果物（`reports/<組織名>/<月>/` 以下の report・details・dashboard・
+recommendations・usage-summary・preview・preview-dashboard の7種。ファイル名は
+いずれも `{種別}-{YYYYMM}-{組織名}.{拡張子}`）は、**その組織の担当者に共有される前提**で書く。
 
 - **他組織の情報を書かない**: 対象組織以外の組織名・ディレクトリ名・ユーザ名・メールアドレス・
   金額・行数・リクエスト数・部署名を、考察を含むあらゆる箇所に書かない
@@ -31,13 +31,13 @@ dashboard.html・preview-dashboard.html・recommendations.csv）は、**その�
   （`input/` 直下のディレクトリ名）として扱う。指定が無ければ **全組織 × 最新月**
 - **速報モードの場合**は以降の手順の代わりに:
   1. `uv run seat-analyzer analyze --preview --days <日数> [--org <組織名>] [--month YYYY-MM]` を実行
-  2. `reports/<組織名>/<月>/preview.md` の「## 考察」を執筆する。出力形式・観点は
+  2. `reports/<組織名>/<月>/preview-<YYYYMM>-<組織名>.md` の「## 考察」を執筆する。出力形式・観点は
      `src/seat_analyzer/prompts/discussion.md` と `src/seat_analyzer/prompts/aspects-preview.md`
      を読んで従う。**「執筆の原則」に従い、他組織の情報は書かない**
      （`uv run seat-analyzer discuss --preview [--org <組織名>]` でも同じことができる）
-  3. 手順5の混入チェックを preview.md に対して実施する
+  3. 手順5の混入チェックを速報レポートに対して実施する
   4. 一次判断の内訳と考察の要点をユーザに報告して終了。
-     `reports/<組織名>/<月>/preview-dashboard.html` を共有用として案内する
+     `reports/<組織名>/<月>/preview-dashboard-<YYYYMM>-<組織名>.html` を共有用として案内する
 
 ## 1. 入力ファイルの確認
 
@@ -69,14 +69,14 @@ uv run seat-analyzer analyze [--month YYYY-MM] [--org <組織名>]
   - **シート不明ユーザ** → members ファイルの更新漏れの可能性を指摘する
     （「対象外（シート未割当）」は意図的な未割当のため指摘不要）
   - **スキップされた組織** → 対象月のエクスポート漏れ。手順を案内する
-- `reports/<組織名>/<月>/recommendations.csv` と `details.md`（全ユーザ表・月中の推移・
+- `reports/<組織名>/<月>/` の recommendations と details（全ユーザ表・月中の推移・
   組織内の分布）を読み、外れ値（極端な API換算コスト、前月からの急変）がないか確認する
 
 ## 4. 考察の執筆（組織ごと）
 
-各組織の `reports/<組織名>/<月>/report.md` の「## 考察」セクションを書き換える。
-report.md はサマリ・シート変更推奨・考察の短い文書なので、ユーザ単位の数値は同じ
-ディレクトリの `details.md`（全ユーザ表・部署別/チーム別サマリ・詳細利用状況・
+各組織の `reports/<組織名>/<月>/report-<YYYYMM>-<組織名>.md` の「## 考察」セクションを
+書き換える。report はサマリ・シート変更推奨・考察の短い文書なので、ユーザ単位の数値は同じ
+ディレクトリの details（全ユーザ表・部署別/チーム別サマリ・詳細利用状況・
 組織内の分布・月中の推移・感度分析）から引用する。
 
 出力形式・執筆の原則・書くべき観点は以下のファイルに定義されている。**これを読んで従うこと**
@@ -86,10 +86,10 @@ report.md はサマリ・シート変更推奨・考察の短い文書なので�
 - `src/seat_analyzer/prompts/aspects-full.md` — 正式分析で書くべき観点
 - `src/seat_analyzer/prompts/aspects-preview.md` — 速報モードで書くべき観点
 
-考察は事実（数値）と解釈を分けて書き、数値はすべて対象組織の CSV / report.md /
-details.md から引用すること。
+考察は事実（数値）と解釈を分けて書き、数値はすべて対象組織の CSV / report /
+details から引用すること。
 他組織の数値・ユーザ名は引用元にしない（「執筆の原則」）。複数組織を分析した場合、
-組織間の比較は各組織の report.md ではなく手順6の横断サマリに書く。
+組織間の比較は各組織の report ではなく手順6の横断サマリに書く。
 
 手順4と手順5は `uv run seat-analyzer discuss [--org <組織名>] [--month YYYY-MM]` でも実行できる
 （ヘッドレス Claude CLI を呼び、混入チェックを機械的に行ってから書き込む）。対話的な検証を
@@ -102,10 +102,10 @@ details.md から引用すること。
 自分で考察を書いた場合は、対象組織の成果物に他組織の情報が混入していないか確認する:
 
 - `input/` 直下のディレクトリ名一覧を取得し、**対象組織以外の組織名**が
-  `reports/<組織名>/<月>/{report.md,preview.md}` に含まれていないか grep で確認する
-  （details.md は機械生成なので考察と違い混入の経路にならない）
+  `reports/<組織名>/<月>/` の report / preview に含まれていないか grep で確認する
+  （details は機械生成なので考察と違い混入の経路にならない）
 - 他組織のユーザ名・メールアドレスのローカル部が含まれていないか確認する
-  （対象組織の recommendations.csv に存在しない人名が考察に出てきたら混入）
+  （対象組織の recommendations に存在しない人名が考察に出てきたら混入）
 - 見つかった箇所は「執筆の原則」に従って一般論へ書き換える。
   混入があった場合は完了報告でその旨をユーザに伝える
 
@@ -113,5 +113,5 @@ details.md から引用すること。
 
 削減見込み額・変更推奨ユーザ・注意点を組織ごとに簡潔にまとめ、複数組織なら
 `reports/summary/<月>.md` の横断サマリ（全体合計・組織間の比較）も添えてユーザに報告する。
-`reports/<組織名>/<月>/dashboard.html` を経営層共有用として案内する。
+`reports/<組織名>/<月>/dashboard-<YYYYMM>-<組織名>.html` を経営層共有用として案内する。
 横断サマリはユーザ本人向けで、組織の担当者への共有には向かない旨を添える。

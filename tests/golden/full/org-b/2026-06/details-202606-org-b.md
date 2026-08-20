@@ -1,6 +1,6 @@
 # 分析詳細資料 — org-b — 2026-06
 
-機械生成の詳細資料です。dashboard.html と同じ数値の Markdown 版で、考察執筆（`seat-analyzer discuss`）へ渡す資料を兼ねます。
+機械生成の詳細資料です。dashboard-202606-org-b.html と同じ数値の Markdown 版で、考察執筆（`seat-analyzer discuss`）へ渡す資料を兼ねます。
 
 ## 全ユーザ
 

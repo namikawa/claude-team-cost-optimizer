@@ -5,6 +5,7 @@ import pytest
 
 from seat_analyzer.cli import main
 from seat_analyzer.config import PACKAGE_CONFIG_PATH, load_config
+from seat_analyzer.report import Artifact
 
 REPO_ROOT = Path(__file__).parent.parent
 # 設定は「パッケージ内の既定 + ワークスペースの config.yaml による差分上書き」の層構造。
@@ -103,6 +104,16 @@ def run_analyze(input_dir: Path, tmp_path: Path, *extra: str) -> Path:
                "--output-dir", str(output_dir), "--month", "2026-06", *extra])
     assert rc == 0
     return output_dir
+
+
+def out_file(output_dir: Path, artifact: Artifact,
+             org: str = "org-a", month: str = "2026-06") -> Path:
+    """生成物のパス（出力ルート → <組織>/<月>/<種別>-<YYYYMM>-<組織>.<拡張子>）。
+
+    名前の規則そのものは tests/test_output_filenames.py と golden が固定する。
+    ここを通すのは「規則が変わってもテストの意図が読める」ようにするため。
+    """
+    return artifact.path(output_dir / org, month, org)
 
 
 def hit_terms(hits) -> tuple[str, ...]:

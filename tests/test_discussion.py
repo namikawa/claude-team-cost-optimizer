@@ -11,13 +11,29 @@ from pathlib import Path
 import pytest
 
 from seat_analyzer import cli, discussion, leakcheck, report
-from seat_analyzer.report import document
+from seat_analyzer.report import (
+    DASHBOARD,
+    DETAILS,
+    PREVIEW,
+    PREVIEW_DASHBOARD,
+    REPORT,
+    WriteResult,
+    document,
+)
 from seat_analyzer.cli import main
 from seat_analyzer.config import load_config
 
-from .conftest import CONFIG, hit_terms, requires_posix_permissions, run_analyze
+from .conftest import (
+    CONFIG,
+    hit_terms,
+    out_file,
+    requires_posix_permissions,
+    run_analyze,
+)
 
 BODY = "### 変更推奨の妥当性\n\n" + "対象組織の需要は妥当な範囲に収まっている。" * 12
+
+WRITTEN, KEPT, CONFLICT = WriteResult.WRITTEN, WriteResult.KEPT, WriteResult.CONFLICT
 
 
 # ---------------------------------------------------------------- report.py 側のヘルパ
@@ -25,7 +41,7 @@ BODY = "### 変更推奨の妥当性\n\n" + "対象組織の需要は妥当な�
 
 def test_document_body_and_discussion_body(two_orgs, tmp_path):
     out = run_analyze(two_orgs, tmp_path)
-    path = out / "org-a" / "2026-06" / "report.md"
+    path = out_file(out, REPORT)
     md = path.read_text(encoding="utf-8")
 
     # 生成直後は未記入プレースホルダなので考察は無い扱い
@@ -43,7 +59,7 @@ def test_document_body_and_discussion_body(two_orgs, tmp_path):
 
 def test_written_discussion_survives_reanalysis(two_orgs, tmp_path):
     out = run_analyze(two_orgs, tmp_path)
-    path = out / "org-a" / "2026-06" / "report.md"
+    path = out_file(out, REPORT)
     report.write_discussion(path, BODY)
     run_analyze(two_orgs, tmp_path)  # 同じ output_dir へ再生成
     assert report.discussion_body(path.read_text(encoding="utf-8")) == BODY.strip()
@@ -94,7 +110,7 @@ def test_generate_writes_discussion(two_orgs, tmp_path):
 
 def test_generate_keeps_existing_unless_forced(two_orgs, tmp_path):
     out = run_analyze(two_orgs, tmp_path)
-    report.write_discussion(out / "org-a" / "2026-06" / "report.md", BODY)
+    report.write_discussion(out_file(out, REPORT), BODY)
 
     runner = _runner("### 別の考察\n\n" + "上書きされた本文。" * 20)
     kept = _generate(two_orgs, out, runner)
@@ -195,35 +211,37 @@ def test_details_is_passed_as_material(two_orgs, tmp_path):
     """
     out = run_analyze(two_orgs, tmp_path)
     org_output = out / "org-a"
-    details = (org_output / "2026-06" / "details.md").read_text(encoding="utf-8")
+    details_path = DETAILS.path(org_output, "2026-06", "org-a")
+    details = details_path.read_text(encoding="utf-8")
 
     prompt = _generate(two_orgs, out, _runner(BODY), dry_run=True).prompt
-    assert "資料2: 分析詳細資料 details.md（2026-06）" in prompt
-    assert "資料3: ユーザ別推奨一覧 recommendations.csv（2026-06）" in prompt
+    assert f"資料2: 分析詳細資料 {details_path.name}（2026-06）" in prompt
+    assert "資料3: ユーザ別推奨一覧 recommendations-202606-org-a.csv（2026-06）" in prompt
     assert "## 全ユーザ" in prompt          # report.md 本体には無い表が資料に入る
     assert details.strip() in prompt
 
     materials, source = discussion.collect_materials(
-        org_output=org_output, month="2026-06", preview=False)
+        org="org-a", org_output=org_output, month="2026-06", preview=False,
+        doc_path=REPORT.path(org_output, "2026-06", "org-a"))
     assert [t for t, _ in materials] == [
         "資料1: 分析レポート本文（2026-06）",
-        "資料2: 分析詳細資料 details.md（2026-06）",
-        "資料3: ユーザ別推奨一覧 recommendations.csv（2026-06）",
+        f"資料2: 分析詳細資料 {details_path.name}（2026-06）",
+        "資料3: ユーザ別推奨一覧 recommendations-202606-org-a.csv（2026-06）",
     ]
     assert details in source
 
 
-def _make_legacy_layout(month_dir: Path) -> None:
-    """details.md 分離前のレポート構成に戻す（表を report.md 本体へ差し戻して削除）。
+def _make_legacy_layout(out: Path) -> None:
+    """details.md 分離前のレポート構成に戻す（表をレポート本文へ差し戻して削除）。
 
-    当時の report.md はユーザ表を本文に持っていたので、details.md が無くても資料は
-    欠けていない。この形を後方互換の対象として固定する。
+    当時のレポート本文はユーザ表を持っていたので、詳細資料が無くても資料は欠けて
+    いない。この形を後方互換の対象として固定する。
     """
-    details = month_dir / "details.md"
+    details = out_file(out, DETAILS)
     users_section = details.read_text(encoding="utf-8").split("## 全ユーザ", 1)[1]
-    report = month_dir / "report.md"
-    md = report.read_text(encoding="utf-8")
-    report.write_text(
+    report_path = out_file(out, REPORT)
+    md = report_path.read_text(encoding="utf-8")
+    report_path.write_text(
         md.replace("## 注意事項", f"## 全ユーザ{users_section.rstrip()}\n\n## 注意事項", 1),
         encoding="utf-8", newline="\n",
     )
@@ -233,11 +251,11 @@ def _make_legacy_layout(month_dir: Path) -> None:
 def test_legacy_report_without_details_still_works(two_orgs, tmp_path):
     """details.md 分離前に生成した月は、資料2を省略して従来どおり動く。"""
     out = run_analyze(two_orgs, tmp_path)
-    _make_legacy_layout(out / "org-a" / "2026-06")
+    _make_legacy_layout(out)
 
     prompt = _generate(two_orgs, out, _runner(BODY), dry_run=True).prompt
-    assert "details.md" not in prompt
-    assert "資料2: ユーザ別推奨一覧 recommendations.csv（2026-06）" in prompt
+    assert "分析詳細資料" not in prompt
+    assert "資料2: ユーザ別推奨一覧 recommendations-202606-org-a.csv（2026-06）" in prompt
     assert "## 全ユーザ" in prompt          # 表は report.md 本文の側にある
 
     outcome = _generate(two_orgs, out, _runner(BODY))
@@ -258,25 +276,25 @@ def test_broken_details_is_fail_closed(two_orgs, tmp_path, break_details):
     出ないと、考察の質だけが静かに落ちる。
     """
     out = run_analyze(two_orgs, tmp_path)
-    path = out / "org-a" / "2026-06" / "details.md"
+    path = out_file(out, DETAILS)
     break_details(path)
 
     runner = _runner(BODY)
     with pytest.raises(discussion.DiscussionError) as e:
         _generate(two_orgs, out, runner)
     message = str(e.value)
-    assert "details.md" in message and "## 全ユーザ" in message
+    assert DETAILS.name("2026-06", "org-a") in message and "## 全ユーザ" in message
     assert "analyze --month 2026-06" in message      # 作り直しの案内
     assert e.value.transient is False                # 再試行では直らない
     assert not runner.calls                          # Claude を呼ばない
     assert report.discussion_body(
-        (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")) is None
+        (out_file(out, REPORT)).read_text(encoding="utf-8")) is None
 
 
 def test_broken_details_stops_dry_run_too(two_orgs, tmp_path):
     """--dry-run も同じ検査を通る（プロンプトの確認と本番で資料が食い違わない）。"""
     out = run_analyze(two_orgs, tmp_path)
-    (out / "org-a" / "2026-06" / "details.md").unlink()
+    (out_file(out, DETAILS)).unlink()
     with pytest.raises(discussion.DiscussionError):
         _generate(two_orgs, out, _runner(BODY), dry_run=True)
 
@@ -290,27 +308,28 @@ def test_sentinel_matches_heading_lines_only(tmp_path):
     """
     month_dir = tmp_path / "2026-06"
     month_dir.mkdir()
-    # タイトル行に番兵文字列を含むが、見出し行としては持たない report.md 本文
+    details = DETAILS.path(tmp_path, "2026-06", "acme")
+    # タイトル行に番兵文字列を含むが、見出し行としては持たないレポート本文
     body_with_titled_org = "# レポート — acme ## 全ユーザ — 2026-06\n\n## サマリ\n"
     with pytest.raises(discussion.DiscussionError):
-        discussion._details_material(tmp_path, "2026-06", body_with_titled_org)
+        discussion._details_material(details, "2026-06", body_with_titled_org)
 
-    # details.md 側も同様（タイトルだけ書けた途中切れファイルを正常扱いしない）
-    (month_dir / "details.md").write_text(
+    # 詳細資料の側も同様（タイトルだけ書けた途中切れファイルを正常扱いしない）
+    details.write_text(
         "# 分析詳細資料 — acme ## 全ユーザ — 2026-06\n", encoding="utf-8")
     with pytest.raises(discussion.DiscussionError):
-        discussion._details_material(tmp_path, "2026-06", body_with_titled_org)
+        discussion._details_material(details, "2026-06", body_with_titled_org)
 
     # 見出し行として持つ旧形式の本文は従来どおり続行（資料は足さない）
-    (month_dir / "details.md").unlink()
+    details.unlink()
     legacy_body = "# レポート — acme — 2026-06\n\n## 全ユーザ\n\n| ユーザ |\n"
-    assert discussion._details_material(tmp_path, "2026-06", legacy_body) is None
+    assert discussion._details_material(details, "2026-06", legacy_body) is None
 
 
 def test_generate_dry_run_shows_prompt_even_when_already_written(two_orgs, tmp_path):
     """--dry-run はプロンプト確認用なので、記入済みでもプロンプトを返す。"""
     out = run_analyze(two_orgs, tmp_path)
-    report.write_discussion(out / "org-a" / "2026-06" / "report.md", BODY)
+    report.write_discussion(out_file(out, REPORT), BODY)
     outcome = _generate(two_orgs, out, _runner(BODY), dry_run=True)
     assert outcome.status == "dry-run"
     assert "執筆の原則" in outcome.prompt
@@ -319,7 +338,7 @@ def test_generate_dry_run_shows_prompt_even_when_already_written(two_orgs, tmp_p
 def test_generate_does_not_overwrite_discussion_written_during_generation(two_orgs, tmp_path):
     """生成中に人が考察を書いた場合は上書きしない（判定と書き込みの間の競合）。"""
     out = run_analyze(two_orgs, tmp_path)
-    path = out / "org-a" / "2026-06" / "report.md"
+    path = out_file(out, REPORT)
     handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
 
     def writes_meanwhile(prompt: str, s: dict) -> str:
@@ -384,7 +403,7 @@ def test_preview_materials_use_preview_document(two_orgs, tmp_path):
     outcome = _generate(two_orgs, out, runner, preview=True)
 
     assert outcome.status == "written"
-    assert outcome.path.name == "preview.md"
+    assert outcome.path.name == PREVIEW.name("2026-06", "org-a")
     assert "速報" in runner.calls[0]
 
 
@@ -393,7 +412,7 @@ def test_previous_month_discussion_is_included(two_orgs, tmp_path):
     main(["analyze", "--config", CONFIG, "--input-dir", str(two_orgs),
           "--output-dir", str(out), "--month", "2026-05", "--org", "org-a"])
     prev = "### 前月の所見\n\n" + "前月は Premium 継続と判断した。" * 10
-    report.write_discussion(out / "org-a" / "2026-05" / "report.md", prev)
+    report.write_discussion(out_file(out, REPORT, "org-a", "2026-05"), prev)
 
     run_analyze(two_orgs, tmp_path)
 
@@ -415,7 +434,7 @@ def test_previous_month_discussion_with_leak_is_excluded(two_orgs, tmp_path):
     main(["analyze", "--config", CONFIG, "--input-dir", str(two_orgs),
           "--output-dir", str(out), "--month", "2026-05", "--org", "org-a"])
     report.write_discussion(
-        out / "org-a" / "2026-05" / "report.md",
+        out_file(out, REPORT, "org-a", "2026-05"),
         "### 前月の所見\n\n" + "org-b の bernard.holloway と比べると小さい。" * 6)
 
     run_analyze(two_orgs, tmp_path)
@@ -736,7 +755,7 @@ def test_cli_discuss_writes_all_orgs(two_orgs, tmp_path, monkeypatch):
                "--output-dir", str(out), "--month", "2026-06"])
     assert rc == 0
     for org in ("org-a", "org-b"):
-        md = (out / org / "2026-06" / "report.md").read_text(encoding="utf-8")
+        md = out_file(out, REPORT, org).read_text(encoding="utf-8")
         assert report.discussion_body(md) == BODY.strip()
 
 
@@ -747,14 +766,14 @@ def test_cli_discuss_dry_run_prints_prompt(two_orgs, tmp_path, capsys):
                "--output-dir", str(out), "--month", "2026-06", "--org", "org-a", "--dry-run"])
     assert rc == 0
     assert "執筆の原則" in capsys.readouterr().out
-    md = (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")
+    md = (out_file(out, REPORT)).read_text(encoding="utf-8")
     assert report.discussion_body(md) is None
 
 
 def test_cli_dry_run_keeps_stdout_to_prompt_only(two_orgs, tmp_path, capsys):
     """--dry-run の stdout はプロンプトだけに保つ（ファイルへ落として確認する使い方のため）。"""
     out = run_analyze(two_orgs, tmp_path)
-    (out / "org-a" / "2026-06" / "report.md").unlink()  # スキップ通知を発生させる
+    (out_file(out, REPORT)).unlink()  # スキップ通知を発生させる
     capsys.readouterr()
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "2026-06", "--dry-run"])
@@ -772,7 +791,7 @@ def test_cli_discuss_blocked_returns_nonzero(two_orgs, tmp_path, monkeypatch):
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"])
     assert rc == 1
-    md = (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")
+    md = (out_file(out, REPORT)).read_text(encoding="utf-8")
     assert report.discussion_body(md) is None
 
 
@@ -819,29 +838,29 @@ def test_cli_discuss_failure_does_not_stop_other_orgs(
                    "--output-dir", str(out), "--month", "2026-06"])
     assert rc == 1
     assert report.discussion_body(
-        (out / "org-a" / "2026-06" / "report.md").read_text(encoding="utf-8")) is None
-    md = (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8")
+        (out_file(out, REPORT)).read_text(encoding="utf-8")) is None
+    md = (out_file(out, REPORT, "org-b", "2026-06")).read_text(encoding="utf-8")
     assert report.discussion_body(md) == BODY.strip()
 
 
 def test_cli_discuss_skips_orgs_without_report(two_orgs, tmp_path, monkeypatch, capsys):
     """レポートが無い組織はスキップする（組織ごとに spend の月がずれるため）。"""
     out = run_analyze(two_orgs, tmp_path)
-    (out / "org-a" / "2026-06" / "report.md").unlink()
+    (out_file(out, REPORT)).unlink()
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
     capsys.readouterr()
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "2026-06"])
     assert rc == 0
     assert "スキップした組織: org-a" in capsys.readouterr().out
-    md = (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8")
+    md = (out_file(out, REPORT, "org-b", "2026-06")).read_text(encoding="utf-8")
     assert report.discussion_body(md) == BODY.strip()
 
 
 def test_cli_discuss_single_org_without_report_is_an_error(two_orgs, tmp_path, monkeypatch):
     """単一組織指定でレポートが無い場合は理由を示して失敗する（黙って何もしない、にしない）。"""
     out = run_analyze(two_orgs, tmp_path)
-    (out / "org-a" / "2026-06" / "report.md").unlink()
+    (out_file(out, REPORT)).unlink()
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"])
@@ -852,7 +871,7 @@ def test_cli_analyze_with_discussion(two_orgs, tmp_path, monkeypatch):
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
     out = run_analyze(two_orgs, tmp_path, "--with-discussion")
     for org in ("org-a", "org-b"):
-        md = (out / org / "2026-06" / "report.md").read_text(encoding="utf-8")
+        md = out_file(out, REPORT, org).read_text(encoding="utf-8")
         assert report.discussion_body(md) == BODY.strip()
 
 
@@ -885,7 +904,7 @@ def test_analyze_rejects_allow_term_before_running(two_orgs, tmp_path, capsys):
                "--with-discussion", "--allow-term", "holloway"])
     assert rc == 1
     # レポートを1つも作らずに落ちている
-    assert not (out / "org-a" / "2026-06" / "report.md").exists()
+    assert not (out_file(out, REPORT)).exists()
     assert "分析結果" not in capsys.readouterr().out
 
 
@@ -925,50 +944,105 @@ def test_month_format_is_validated(two_orgs, tmp_path, month):
 
 def test_traversal_month_does_not_touch_other_org(two_orgs, tmp_path, monkeypatch):
     out = run_analyze(two_orgs, tmp_path)
-    before = (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8")
+    before = (out_file(out, REPORT, "org-b", "2026-06")).read_text(encoding="utf-8")
     monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
     rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
                "--output-dir", str(out), "--month", "../org-b/2026-06", "--org", "org-a"])
     assert rc == 1
-    assert (out / "org-b" / "2026-06" / "report.md").read_text(encoding="utf-8") == before
+    assert (out_file(out, REPORT, "org-b", "2026-06")).read_text(encoding="utf-8") == before
 
 
 def test_write_discussion_only_if_unwritten_guard(two_orgs, tmp_path):
     """判定と置換を1回の読み取りに畳む（呼び出し側の事前確認より競合の窓が狭い）。"""
     out = run_analyze(two_orgs, tmp_path)
-    path = out / "org-a" / "2026-06" / "report.md"
+    path = out_file(out, REPORT)
 
-    assert report.write_discussion(path, BODY, only_if_unwritten=True) is True
+    assert report.write_discussion(path, BODY, only_if_unwritten=True) is WRITTEN
     # 記入済みになったので2回目は何もしない
     other = "### 別の考察\n\n" + "上書きされるべきではない。" * 20
-    assert report.write_discussion(path, other, only_if_unwritten=True) is False
+    assert report.write_discussion(path, other, only_if_unwritten=True) is KEPT
     assert report.discussion_body(path.read_text(encoding="utf-8")) == BODY.strip()
     # only_if_unwritten=False なら上書きする
-    assert report.write_discussion(path, other) is True
+    assert report.write_discussion(path, other) is WRITTEN
     assert report.discussion_body(path.read_text(encoding="utf-8")) == other.strip()
 
 
 def test_write_discussion_aborts_when_file_changes_before_replace(two_orgs, tmp_path,
                                                                   monkeypatch):
-    """置換直前に内容が変わっていたら書き込まない（判定〜置換の窓を詰める）。"""
+    """置換直前に内容が変わっていたら書き込まない（判定〜置換の窓を詰める）。
+
+    「記入済みなので触らない」（KEPT）とは別の結末にする。こちらは何も書けておらず、
+    呼び出し側は再実行を案内する必要がある。
+    """
     out = run_analyze(two_orgs, tmp_path)
-    path = out / "org-a" / "2026-06" / "report.md"
+    path = out_file(out, REPORT)
     handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
 
+    _inject_write_before_replace(monkeypatch, path, _with_discussion(path, handwritten))
+    assert report.write_discussion(path, BODY, only_if_unwritten=True) is CONFLICT
+    assert report.discussion_body(path.read_text(encoding="utf-8")) == handwritten.strip()
+    assert not list(path.parent.glob(f"{document._TMP_PREFIX}*.tmp"))
+
+
+def _inject_write_before_replace(monkeypatch, path: Path, text: str) -> None:
+    """一時ファイルを作った後・置換直前の照合より前に、別プロセスの書き込みを模す。"""
     original_chmod = document.os.chmod
     injected: list[int] = []
 
     def chmod_with_concurrent_write(target, mode):
-        # 一時ファイルを作った後・置換直前の照合より前に、別プロセスの書き込みを模す
         if not injected:
             injected.append(1)
-            path.write_text(_with_discussion(path, handwritten), encoding="utf-8")
+            path.write_text(text, encoding="utf-8")
         return original_chmod(target, mode)
 
     monkeypatch.setattr(document.os, "chmod", chmod_with_concurrent_write)
-    assert report.write_discussion(path, BODY, only_if_unwritten=True) is False
+
+
+def test_cli_reports_the_replace_conflict_and_exits_nonzero(
+    two_orgs, tmp_path, monkeypatch, capsys
+):
+    """置換直前の競合は kept ではなく再実行の案内にし、終了コード 1 を返す。
+
+    「記入済みの考察があるため変更しません（上書きは --force）」に寄せると、何も書けて
+    いないのに成功に見え、しかも --force という誤った次の手を示すことになる。
+    """
+    out = run_analyze(two_orgs, tmp_path)
+    path = out_file(out, REPORT)
+    handwritten = "### 手書きの考察\n\n" + "人が書いた内容。" * 20
+    _inject_write_before_replace(monkeypatch, path, _with_discussion(path, handwritten))
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: BODY)
+    capsys.readouterr()
+
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "記入済み" not in captured.out and "--force" not in captured.out
+    assert "書き込みませんでした" in captured.err
+    assert "更新されており" in captured.err        # 理由
+    assert "もう一度 discuss" in captured.err      # 次の手
+    assert "混入" not in captured.err              # blocked のまとめ行と混ぜない
+    # 割り込んだ手書きの考察はそのまま残る（巻き戻さない）
     assert report.discussion_body(path.read_text(encoding="utf-8")) == handwritten.strip()
-    assert not list(path.parent.glob("report.md.*.tmp"))
+
+
+def test_cli_keeps_an_already_written_discussion_with_exit_zero(
+    two_orgs, tmp_path, monkeypatch, capsys
+):
+    """記入済みの考察を見つけただけなら従来どおり no-op（stdout に kept・終了コード 0）。"""
+    out = run_analyze(two_orgs, tmp_path)
+    path = out_file(out, REPORT)
+    report.write_discussion(path, BODY)
+    monkeypatch.setattr(discussion, "run_claude", lambda prompt, s: "書かれないはずの本文")
+    capsys.readouterr()
+
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"])
+    assert rc == 0
+    captured = capsys.readouterr()
+    assert "記入済みの考察があるため変更しません（上書きは --force）" in captured.out
+    assert "もう一度 discuss" not in captured.err
+    assert report.discussion_body(path.read_text(encoding="utf-8")) == BODY.strip()
 
 
 def _with_discussion(path: Path, body: str) -> str:
@@ -981,7 +1055,7 @@ def _with_discussion(path: Path, body: str) -> str:
 def test_atomic_write_preserves_permissions(two_orgs, tmp_path):
     """一時ファイル経由の置換で元ファイルの権限を落とさない（共有用に緩めた権限を守る）。"""
     out = run_analyze(two_orgs, tmp_path)
-    path = out / "org-a" / "2026-06" / "report.md"
+    path = out_file(out, REPORT)
     path.chmod(0o644)
     report.write_discussion(path, BODY)
     assert path.stat().st_mode & 0o777 == 0o644
@@ -994,20 +1068,18 @@ def test_new_report_permissions_match_other_outputs(two_orgs, tmp_path):
     レポートだけ dashboard.html より狭い権限になる（共有できなくなる）。
     """
     out = run_analyze(two_orgs, tmp_path)
-    d = out / "org-a" / "2026-06"
-    reference = (d / "dashboard.html").stat().st_mode & 0o777
-    assert (d / "report.md").stat().st_mode & 0o777 == reference
+    reference = out_file(out, DASHBOARD).stat().st_mode & 0o777
+    assert out_file(out, REPORT).stat().st_mode & 0o777 == reference
 
     pv = run_analyze(two_orgs, tmp_path / "pv", "--preview", "--days", "10")
-    pvd = pv / "org-a" / "2026-06"
-    assert (pvd / "preview.md").stat().st_mode & 0o777 == (
-        pvd / "preview-dashboard.html").stat().st_mode & 0o777
+    assert out_file(pv, PREVIEW).stat().st_mode & 0o777 == (
+        out_file(pv, PREVIEW_DASHBOARD).stat().st_mode & 0o777)
 
 
 def test_atomic_write_leaves_original_on_failure(two_orgs, tmp_path, monkeypatch):
     """書き込みが途中で失敗しても、レポート本体は元の内容が残る。"""
     out = run_analyze(two_orgs, tmp_path)
-    path = out / "org-a" / "2026-06" / "report.md"
+    path = out_file(out, REPORT)
     before = path.read_text(encoding="utf-8")
 
     def boom(src, dst):
@@ -1018,7 +1090,7 @@ def test_atomic_write_leaves_original_on_failure(two_orgs, tmp_path, monkeypatch
         report.write_discussion(path, BODY)
     assert path.read_text(encoding="utf-8") == before
     # 一時ファイルを残さない
-    assert not list(path.parent.glob("report.md.*.tmp"))
+    assert not list(path.parent.glob(f"{document._TMP_PREFIX}*.tmp"))
 
 
 @pytest.mark.parametrize("bad", [

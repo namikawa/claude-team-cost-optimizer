@@ -258,8 +258,10 @@ Get-ChildItem reports\demo-org\2026-06
 ```
 
 期待される結果: 終了コード 0 で、メンバー 2 名・シート費用 $150.00/月 の分析結果が表示され、
-`reports/demo-org/2026-06/` に `report.md`・`details.md`・`dashboard.html`・
-`recommendations.csv`・`usage-summary.csv` の 5 ファイルが生成される。
+`reports/demo-org/2026-06/` に `report-202606-demo-org.md`・`details-202606-demo-org.md`・
+`dashboard-202606-demo-org.html`・`recommendations-202606-demo-org.csv`・
+`usage-summary-202606-demo-org.csv` の 5 ファイルが生成される
+（ファイル名は `{種別}-{YYYYMM}-{組織名}.{拡張子}`）。
 
 警告が 2 件出るのは正常。
 
