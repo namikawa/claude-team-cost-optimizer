@@ -12,9 +12,9 @@ Claude Team プランのシート最適化分析を実行してください。
 
 ## 執筆の原則（厳守・すべての手順に適用）
 
-組織別の成果物（`reports/<組織名>/<月>/` 以下の report・details・preview・
-dashboard・preview-dashboard・recommendations。ファイル名は
-`{種別}-{YYYYMM}-{組織名}.{拡張子}`）は、**その組織の担当者に共有される前提**で書く。
+組織別の成果物（`reports/<組織名>/<月>/` 以下の report・details・dashboard・
+recommendations・usage-summary・preview・preview-dashboard の7種。ファイル名は
+いずれも `{種別}-{YYYYMM}-{組織名}.{拡張子}`）は、**その組織の担当者に共有される前提**で書く。
 
 - **他組織の情報を書かない**: 対象組織以外の組織名・ディレクトリ名・ユーザ名・メールアドレス・
   金額・行数・リクエスト数・部署名を、考察を含むあらゆる箇所に書かない

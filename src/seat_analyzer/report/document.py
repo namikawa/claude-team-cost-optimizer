@@ -14,6 +14,10 @@ _DISCUSSION_MARKER = "\n## 考察\n"
 # 含まれても誤判定しないよう、行アンカーで「（未記入 — ...）」形式の行のみを対象にする。
 _DISCUSSION_PLACEHOLDER_RE = re.compile(r"^（未記入 — .*）$")
 
+# 置換用の一時ファイルの接頭辞（`_atomic_write`）。最終ファイル名に依らない固定長にする。
+# 先頭のドットは一時物であることの目印で、`.tmp` の拡張子と合わせて掃除の目印にもなる。
+_TMP_PREFIX = ".seat-tmp-"
+
 
 def _is_placeholder_discussion(tail: str) -> bool:
     """考察 tail が未記入プレースホルダか。プレースホルダ行が1行でもあれば True。"""
@@ -98,13 +102,18 @@ def _atomic_write(path: Path, text: str, *, expect: str | None = None) -> bool:
     置換せず False を返す。判定から置換までの窓を詰めるための照合で、厳密な排他ではない
     （照合と os.replace の間に書き込まれた場合は検出できない）。単一の実行者が使う前提で、
     ロックは導入していない。
+
+    一時ファイルの名前は最終ファイル名から独立させる（`_TMP_PREFIX` + ランダム）。
+    最終名を接頭辞にすると一時名だけが名前長の上限を超えることがあり、「最終名は収まるのに
+    書き込みだけ失敗する」という見えない余白ができる。クラッシュで残った場合の出所は、
+    置換先と同じディレクトリに `.seat-tmp-*.tmp` として残ることで分かる。
     """
     mode = (path.stat().st_mode & 0o7777) if path.exists() else _default_file_mode()
     tmp: Path | None = None
     try:
         f = tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", newline="\n", dir=path.parent,
-            prefix=path.name + ".", suffix=".tmp", delete=False,
+            prefix=_TMP_PREFIX, suffix=".tmp", delete=False,
         )
         tmp = Path(f.name)
         with f:

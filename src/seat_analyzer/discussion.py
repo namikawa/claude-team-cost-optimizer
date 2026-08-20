@@ -88,7 +88,11 @@ class DiscussionOutcome:
     org: str
     month: str
     path: Path
-    status: str  # written / blocked / kept / dry-run
+    # written / blocked / superseded / kept / dry-run。
+    # superseded は「生成はしたが、対象のレポートが生成中に新しい名前で作り直されたため
+    # 書き込まなかった」状態。kept（＝設計どおり触らない no-op）と違い、依頼された仕事が
+    # 終わっていないので blocked と同じく再実行が要る
+    status: str
     attempts: int = 0
     leaks: tuple[LeakHit, ...] = ()
     prompt: str = ""
@@ -201,10 +205,16 @@ def _details_material(path: Path, month: str, report_body: str) -> str | None:
 
 
 def collect_materials(
-    *, org: str, org_output: Path, month: str, preview: bool,
+    *, org: str, org_output: Path, month: str, preview: bool, doc_path: Path,
     terms: tuple[Term, ...] = (), include_previous: bool = False, notify=None,
 ) -> tuple[list[tuple[str, str]], str]:
     """(プロンプトへ渡す資料, 混入チェックの照合元テキスト) を返す。
+
+    doc_path は資料1になるレポート本文で、呼び出し側が解決したものを受け取る（ここで
+    document_path() を呼び直さない）。二重に解決すると、旧名しか無い状態で始めた実行の
+    途中で並行する analyze が新名を作った場合に、資料は新名から読み・考察は旧名へ書く、
+    という食い違いが起きる。書き込みは成功するので、生成した考察が二度と読まれない
+    ファイルに残ることに気づけない。
 
     正式分析の資料は report.md 本文 → details.md → recommendations.csv の順。
     report.md は考察中心の短い文書なので、ユーザ単位の表・月中の推移・分布は
@@ -220,7 +230,6 @@ def collect_materials(
     include_previous=True のときも渡す前に混入チェックを通し、落ちたら除外する。
     """
     notify = notify or (lambda _message: None)
-    doc_path = document_path(org_output, month, preview, org)
     if not doc_path.exists():
         raise DiscussionError(
             f"{doc_path} がありません。先に "
@@ -459,6 +468,7 @@ def generate(
 
     既に記入済みの考察は force が無ければ上書きしない（手書きの考察を守るため）。
     混入が検出された場合は書き直しを求め、max_attempts 回で解消しなければ書き込まない。
+    生成中に対象のレポートが新しい名前で作り直された場合も書き込まない（superseded）。
 
     送出する例外は2系統ある: 生成そのものの失敗は DiscussionError、禁止語の収集・照合が
     続行できない場合は leakcheck.LeakCheckError（共通の基底を持たないため両方を捕まえる）。
@@ -476,7 +486,8 @@ def generate(
     terms = forbidden_terms(
         input_dir=input_dir, output_dir=output_dir, target_org=org, cfg=cfg)
     materials, source = collect_materials(
-        org=org, org_output=org_output, month=month, preview=preview, terms=terms,
+        org=org, org_output=org_output, month=month, preview=preview,
+        doc_path=doc_path, terms=terms,
         include_previous=include_previous, notify=notify)
     prompt = build_prompt(org=org, scope=scope, materials=materials, preview=preview)
 
@@ -506,9 +517,16 @@ def generate(
                 for hit in leaks:
                     notify(f"  検出語: {hit.term}（{hit.kind}） … {hit.context} …")
             continue
-        # 生成には最大で timeout_seconds かかる。その間に人が考察を書いた場合や
-        # 並行する analyze が本文を更新した場合に、それを巻き戻さないよう書き込み側で
-        # 判定と置換を畳み、置換直前にも内容が変わっていないか確認する
+        # 生成には最大で timeout_seconds かかる。その間に対象のファイル自体が入れ替わって
+        # いないかを、内容の照合より先に見る（旧名しか無い状態で始めた実行の途中で
+        # 並行する analyze が新名を作ると、以後は新名が読まれるため、旧名へ書いた考察は
+        # 二度と読まれない）。書き込みは成功してしまうので、書く前に止める
+        if document_path(org_output, month, preview, org) != doc_path:
+            return DiscussionOutcome(
+                org, month, doc_path, "superseded", attempts=attempt, chars=len(body))
+        # その間に人が考察を書いた場合や、並行する analyze が本文を更新した場合に、
+        # それを巻き戻さないよう書き込み側で判定と置換を畳み、置換直前にも内容が
+        # 変わっていないか確認する
         if not report.write_discussion(doc_path, body, only_if_unwritten=not force):
             notify("生成中にレポートが変更されたため書き込みません（上書きは --force）")
             existing = _existing_discussion(doc_path) or ""

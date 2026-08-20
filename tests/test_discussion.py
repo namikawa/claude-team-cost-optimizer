@@ -211,7 +211,8 @@ def test_details_is_passed_as_material(two_orgs, tmp_path):
     assert details.strip() in prompt
 
     materials, source = discussion.collect_materials(
-        org="org-a", org_output=org_output, month="2026-06", preview=False)
+        org="org-a", org_output=org_output, month="2026-06", preview=False,
+        doc_path=REPORT.path(org_output, "2026-06", "org-a"))
     assert [t for t, _ in materials] == [
         "資料1: 分析レポート本文（2026-06）",
         f"資料2: 分析詳細資料 {details_path.name}（2026-06）",
@@ -976,7 +977,7 @@ def test_write_discussion_aborts_when_file_changes_before_replace(two_orgs, tmp_
     monkeypatch.setattr(document.os, "chmod", chmod_with_concurrent_write)
     assert report.write_discussion(path, BODY, only_if_unwritten=True) is False
     assert report.discussion_body(path.read_text(encoding="utf-8")) == handwritten.strip()
-    assert not list(path.parent.glob(f"{path.name}.*.tmp"))
+    assert not list(path.parent.glob(f"{document._TMP_PREFIX}*.tmp"))
 
 
 def _with_discussion(path: Path, body: str) -> str:
@@ -1024,7 +1025,7 @@ def test_atomic_write_leaves_original_on_failure(two_orgs, tmp_path, monkeypatch
         report.write_discussion(path, BODY)
     assert path.read_text(encoding="utf-8") == before
     # 一時ファイルを残さない
-    assert not list(path.parent.glob(f"{path.name}.*.tmp"))
+    assert not list(path.parent.glob(f"{document._TMP_PREFIX}*.tmp"))
 
 
 @pytest.mark.parametrize("bad", [

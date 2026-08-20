@@ -14,8 +14,11 @@ from pathlib import Path
 import pytest
 
 from seat_analyzer import discussion, report
+from seat_analyzer.analyze import analyze, preview
 from seat_analyzer.cli import main
 from seat_analyzer.config import load_config
+from seat_analyzer.report import document
+from seat_analyzer.report.markdown import write_markdown, write_preview_markdown
 
 from .conftest import CONFIG, run_analyze, spend_row
 
@@ -181,6 +184,87 @@ def test_discuss_writes_into_the_old_named_document(two_orgs, tmp_path, monkeypa
         assert not report.REPORT.path(out / org, "2026-06", org).exists()
 
 
+def _rename_during_generation(out: Path, org: str = "org-a", month: str = "2026-06"):
+    """生成中に並行する analyze が新名のレポートを作る runner を返す。"""
+    org_output = out / org
+    legacy = report.REPORT.legacy_path(org_output, month)
+    body = legacy.read_text(encoding="utf-8")
+
+    def runner(prompt: str, s: dict) -> str:
+        report.REPORT.path(org_output, month, org).write_text(
+            body, encoding="utf-8", newline="\n")
+        return BODY
+
+    return runner
+
+
+def test_discuss_aborts_when_the_new_name_appears_during_generation(two_orgs, tmp_path):
+    """生成の途中で新名が現れたら、旧名へ書かずに superseded として止める。
+
+    書けてしまうと、以後は新名が優先されるため、生成した考察が二度と読まれない
+    ファイルに残る（書き込みは成功扱いなので誰も気づけない）。
+    """
+    out = run_analyze(two_orgs, tmp_path)
+    _legacy_only(out)
+    org_output = out / "org-a"
+    legacy = report.REPORT.legacy_path(org_output, "2026-06")
+    legacy_before = legacy.read_text(encoding="utf-8")
+
+    outcome = discussion.generate(
+        org="org-a", month="2026-06", input_dir=two_orgs, output_dir=out,
+        org_output=org_output, cfg=load_config(CONFIG),
+        runner=_rename_during_generation(out),
+    )
+    # 「記入済みなので触らない」（kept）とは別の状態にする。仕事は終わっていない
+    assert outcome.status == "superseded"
+    assert outcome.chars == len(BODY)     # 生成はできていた（捨てたのは書き込みだけ）
+    # 旧名にも新名にも考察は書かれない
+    assert legacy.read_text(encoding="utf-8") == legacy_before
+    assert report.discussion_body(
+        report.REPORT.path(org_output, "2026-06", "org-a").read_text(encoding="utf-8")
+    ) is None
+
+
+def test_cli_reports_the_superseded_document_and_exits_nonzero(
+    two_orgs, tmp_path, monkeypatch, capsys
+):
+    """CLI は捨てた事実・理由・再実行を stderr に出し、終了コード 1 を返す。
+
+    kept の文言（「記入済みの考察があるため変更しません（上書きは --force）」）に寄せると
+    事実と食い違い、--force という誤った次の手を示すことになる。
+    """
+    out = run_analyze(two_orgs, tmp_path)
+    _legacy_only(out, org="org-a")
+    _legacy_only(out, org="org-b")
+    monkeypatch.setattr(discussion, "run_claude", _rename_during_generation(out))
+    capsys.readouterr()
+
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(two_orgs),
+               "--output-dir", str(out), "--month", "2026-06", "--org", "org-a"])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "記入済み" not in captured.out and "--force" not in captured.out
+    assert "書き込みませんでした" in captured.err
+    assert "作り直された" in captured.err          # 理由
+    assert "もう一度 discuss" in captured.err      # 次の手
+    # 混入（blocked）のまとめ行とは混ぜない
+    assert "混入" not in captured.err
+
+
+def test_materials_come_from_the_document_the_caller_resolved(two_orgs, tmp_path):
+    """資料1は呼び出し側が解決した文書から読む（collect_materials が解決し直さない）。"""
+    out = run_analyze(two_orgs, tmp_path)
+    org_output = out / "org-a"
+    _write_legacy(out, report.REPORT, "# 旧\n\n## 全ユーザ\n\n旧名の目印テキスト\n")
+
+    materials, _ = discussion.collect_materials(
+        org="org-a", org_output=org_output, month="2026-06", preview=False,
+        doc_path=report.REPORT.legacy_path(org_output, "2026-06"),
+    )
+    # 新名も存在するが、渡した旧名の中身が資料1になる
+    assert "旧名の目印テキスト" in materials[0][1]
+
+
 def test_previous_month_discussion_is_read_from_the_old_name(two_orgs, tmp_path):
     """前月の考察も旧名から読む（`--with-previous-discussion` の資料）。"""
     out = tmp_path / "reports"
@@ -231,6 +315,85 @@ def test_existing_path_falls_back_only_when_the_new_name_is_absent(tmp_path):
     assert report.REPORT.existing_path(org_output, "2026-07", "acme") == legacy
     new.write_text("新\n", encoding="utf-8", newline="\n")
     assert report.REPORT.existing_path(org_output, "2026-07", "acme") == new
+
+
+def test_legacy_sibling_only_for_the_canonical_name(tmp_path):
+    """旧名への読み替えは正規の出力先のときだけ効く。"""
+    month_dir = tmp_path / "acme" / "2026-07"
+    canonical = month_dir / report.REPORT.name("2026-07", "acme")
+    assert report.REPORT.legacy_sibling(canonical, "2026-07", "acme") == \
+        month_dir / report.REPORT.legacy_name
+    # 別名・別の月・別の組織はいずれも対象外
+    assert report.REPORT.legacy_sibling(month_dir / "draft.md", "2026-07", "acme") is None
+    assert report.REPORT.legacy_sibling(canonical, "2026-08", "acme") is None
+    assert report.REPORT.legacy_sibling(canonical, "2026-07", "other") is None
+
+
+def test_writing_to_an_arbitrary_path_does_not_pick_up_the_old_discussion(
+    make_input, cfg, tmp_path
+):
+    """任意のパスへ書き出すときは、同じディレクトリの旧名の考察を引き込まない。
+
+    write_markdown / write_preview_markdown は公開 API で任意のパスを渡せる。無条件に
+    旧名を読むと、別名の出力に無関係な考察が紛れ込む。
+    """
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 10.0)]}, members=["a@x.jp,Standard"])
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
+    month_dir = tmp_path / "2026-06"
+    month_dir.mkdir()
+    (month_dir / report.REPORT.legacy_name).write_text(
+        "# 旧\n\n## 考察\n\n### 旧名の考察\n\n古い本文。\n", encoding="utf-8", newline="\n")
+
+    write_markdown(result, month_dir / "draft.md")
+    assert "旧名の考察" not in (month_dir / "draft.md").read_text(encoding="utf-8")
+
+    # 正規の名前なら従来どおり引き継ぐ
+    canonical = report.REPORT.path(tmp_path, "2026-06", "org-a")
+    write_markdown(result, canonical)
+    assert "旧名の考察" in canonical.read_text(encoding="utf-8")
+
+
+def test_preview_writing_to_an_arbitrary_path_keeps_the_same_rule(make_input, cfg, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 10.0, net=0.0)]}, members=["a@x.jp,Standard"])
+    result = preview(input_dir, "2026-06", cfg, days_observed=10, org="org-a")
+    month_dir = tmp_path / "2026-06"
+    month_dir.mkdir()
+    (month_dir / report.PREVIEW.legacy_name).write_text(
+        "# 旧\n\n## 考察\n\n### 旧名の考察\n\n古い本文。\n", encoding="utf-8", newline="\n")
+
+    write_preview_markdown(result, month_dir / "draft.md")
+    assert "旧名の考察" not in (month_dir / "draft.md").read_text(encoding="utf-8")
+
+    canonical = report.PREVIEW.path(tmp_path, "2026-06", "org-a")
+    write_preview_markdown(result, canonical)
+    assert "旧名の考察" in canonical.read_text(encoding="utf-8")
+
+
+def test_temp_file_name_does_not_grow_with_the_final_name(two_orgs, tmp_path, monkeypatch):
+    """置換用の一時ファイル名は最終名から独立している。
+
+    最終名を接頭辞にすると一時名だけが名前長の上限を超えることがあり、「最終名は収まるのに
+    書き込みだけ失敗する」という見えない余白ができる。
+    """
+    out = run_analyze(two_orgs, tmp_path)
+    path = report.REPORT.path(out / "org-a", "2026-06", "org-a")
+    seen: list[str] = []
+    original = document.tempfile.NamedTemporaryFile
+
+    def record(*args, **kwargs):
+        f = original(*args, **kwargs)
+        seen.append(Path(f.name).name)
+        return f
+
+    monkeypatch.setattr(document.tempfile, "NamedTemporaryFile", record)
+    report.write_discussion(path, BODY)
+
+    assert seen, "一時ファイルを経由していません"
+    for name in seen:
+        assert name.startswith(document._TMP_PREFIX) and name.endswith(".tmp")
+        assert path.stem not in name          # 最終名を含めない（長さが連動しない）
 
 
 def test_org_name_goes_into_the_filename_verbatim(make_input, tmp_path):

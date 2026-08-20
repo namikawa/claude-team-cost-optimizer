@@ -806,6 +806,7 @@ def _run_discussions(
         print(f"\n=== 考察の執筆（{len(items)} 組織） ===")
     failed: list[str] = []
     blocked: list[str] = []
+    superseded: list[str] = []
     for org, org_output in items:
         scope = f"{org} {month}"
         try:
@@ -822,6 +823,8 @@ def _run_discussions(
             continue
         if outcome.status == "blocked":
             blocked.append(scope)
+        elif outcome.status == "superseded":
+            superseded.append(scope)
         _print_discussion(outcome, scope)
 
     if skipped:
@@ -834,9 +837,16 @@ def _run_discussions(
             f"\n! 他組織情報の混入が解消しなかったため書き込みを中止した組織: {', '.join(blocked)}",
             file=sys.stderr,
         )
+    if superseded:
+        # 混入とは理由が違うので blocked と混ぜない（対処も「再実行」で別）
+        print(
+            f"\n! 対象のレポートが生成中に作り直されたため書き込みを中止した組織: "
+            f"{', '.join(superseded)}（もう一度 discuss を実行してください）",
+            file=sys.stderr,
+        )
     if failed:
         print(f"! 考察の生成に失敗した組織: {', '.join(failed)}", file=sys.stderr)
-    return 1 if (blocked or failed) else 0
+    return 1 if (blocked or superseded or failed) else 0
 
 
 def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None:
@@ -849,6 +859,13 @@ def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None
     elif outcome.status == "written":
         print(f"  {scope}: 考察を書き込みました "
               f"（{outcome.chars} 文字 / 試行 {outcome.attempts} 回）→ {outcome.path}")
+    elif outcome.status == "superseded":
+        # 「記入済みだから触らない」（kept）と取り違えると、--force を試すという誤った
+        # 次の手に進む。ここでは捨てた事実と理由と再実行を出す
+        print(f"  {scope}: 生成した考察（{outcome.chars} 文字）を書き込みませんでした。"
+              f"生成中に対象のレポートが新しい名前で作り直されたためで、"
+              f"{outcome.path.name} に書いても以後は読まれません。"
+              f"もう一度 discuss を実行してください", file=sys.stderr)
     elif outcome.status == "blocked":
         print(f"  {scope}: 混入チェックで他組織の語を検出したため書き込みを中止しました "
               f"（試行 {outcome.attempts} 回）", file=sys.stderr)

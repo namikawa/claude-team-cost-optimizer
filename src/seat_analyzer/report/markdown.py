@@ -504,7 +504,8 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
 <!-- /seat-analysis または seat-analyzer discuss 実行時に Claude が記入するセクション -->
 （未記入 — `/seat-analysis` または `seat-analyzer discuss` を実行すると考察が追記されます）
 """
-    md = _preserve_discussion(md, path, fallback=path.parent / REPORT.legacy_name)
+    md = _preserve_discussion(
+        md, path, fallback=REPORT.legacy_sibling(path, result.month, result.org))
     # 引き継いだ手書きの考察は他のどこにも無い。切り詰めてから書く write_text では
     # 中断時に本文ごと失うため、考察の差し替えと同じく置換で書く
     _atomic_write(path, md)
@@ -607,7 +608,8 @@ def write_preview_markdown(result: PreviewResult, path: Path) -> None:
 <!-- /seat-analysis または seat-analyzer discuss --preview 実行時に Claude が記入するセクション -->
 （未記入 — `/seat-analysis preview <日数>` または `seat-analyzer discuss --preview` を実行すると考察が追記されます）
 """
-    md = _preserve_discussion(md, path, fallback=path.parent / PREVIEW.legacy_name)
+    md = _preserve_discussion(
+        md, path, fallback=PREVIEW.legacy_sibling(path, result.month, result.org))
     # 引き継いだ手書きの考察は他のどこにも無い。切り詰めてから書く write_text では
     # 中断時に本文ごと失うため、考察の差し替えと同じく置換で書く
     _atomic_write(path, md)

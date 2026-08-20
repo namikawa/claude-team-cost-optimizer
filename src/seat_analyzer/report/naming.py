@@ -52,6 +52,15 @@ class Artifact:
         legacy = self.legacy_path(org_output, month)
         return legacy if legacy.exists() else path
 
+    def legacy_sibling(self, path: Path, month: str, org: str) -> Path | None:
+        """path が正規の名前のときだけ、同じディレクトリの旧名を返す。
+
+        書き出しの関数（`write_markdown` 等）は任意のパスを受け取る公開 API なので、
+        旧名への読み替えを無条件にすると、別名で出力したときに同じディレクトリの
+        `report.md` の内容を引き込んでしまう。正規の出力先のときだけ後方互換を効かせる。
+        """
+        return path.parent / self.legacy_name if path.name == self.name(month, org) else None
+
 
 # 正式分析の成果物
 REPORT = Artifact("report", ".md")
