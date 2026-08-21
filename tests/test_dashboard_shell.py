@@ -451,7 +451,7 @@ def test_credit_bars_skip_the_empty_segments():
 
 
 def test_judge_counts_add_up_to_the_table():
-    """判定の内訳は推奨一覧の行を数えたもので、合計は表の行数と一致する。"""
+    """判定サマリは推奨一覧の行を数えたもので、合計は表の行数と一致する。"""
     users = ([{"status": "変更推奨"}] * 2 + [{"status": "現状維持"}] * 3
              + [{"status": "要観察"}])
     rows = _judge_counts(users)

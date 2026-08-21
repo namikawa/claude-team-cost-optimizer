@@ -406,7 +406,7 @@
   .creditbar .c-disabled { background: var(--track); }
   .creditbar .c-unknown { background: var(--warn); }
 
-  /* ---------- 判定の内訳 ---------- */
+  /* ---------- 判定サマリ ---------- */
   .jrow { display: flex; align-items: center; gap: 12px; }
   .jrow .label { width: 140px; font-size: 12.5px; color: var(--ink-2); }
   .jrow .track { flex: 1; height: 10px; border-radius: 3px; background: var(--track); overflow: hidden; }
