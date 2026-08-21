@@ -273,7 +273,7 @@ def test_the_judge_filter_offers_only_the_judgements_in_the_table(dashboard):
     judged = re.findall(r'<td class="judge"><span class="badge [^"]*">([^<]+)</span>', body)
     assert len(set(judged)) > 1, "判定が1種類しか出ておらず、選択肢の検査が空振りします"
     assert set(options[1:]) == set(judged)
-    # 並びは「判定の内訳」と同じ（どちらも同じ集計から作る）
+    # 並びは「判定サマリ」と同じ（どちらも同じ集計から作る）
     assert options[1:] == re.findall(r'<span class="label">([^<]+)</span>', body)
     assert set(options[1:]) <= set(STATUS_ORDER)
 

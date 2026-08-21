@@ -66,7 +66,7 @@ _STATUS_BADGE_CLASS = {
     STATUS_EXCLUDED: "b-keep",
 }
 
-# .badge クラス → 「判定の内訳」の横棒の塗り。バッジの文字色と同じ色を棒に使うので、
+# .badge クラス → 「判定サマリ」の横棒の塗り。バッジの文字色と同じ色を棒に使うので、
 # 対応表を1つ挟んで両者がずれないようにする。
 _BADGE_FILL_CLASS = {
     "b-change": "f-change",
@@ -260,7 +260,7 @@ def _credit_bars(summary: dict) -> list[dict]:
 
 
 def _judge_counts(users_sorted: list[dict]) -> list[dict]:
-    """「判定の内訳」の横棒（推奨一覧に現れた判定ごとの件数）。
+    """「判定サマリ」の横棒（推奨一覧に現れた判定ごとの件数）。
 
     数えるのは推奨一覧に並んでいる行そのもので、母集団も並び順も同じ表に閉じている。
     行に1つも無い判定は棒を作らない（0 件の棒は読み手に何も渡さない）。
