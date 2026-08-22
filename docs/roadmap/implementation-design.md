@@ -548,6 +548,24 @@ subject_id + from_seat + to_seat + changed_after + changed_before
 
 同じ入力で再実行してもeventを重複出力しない。
 
+### 10.4 分類できない観測と不完全なスナップショット
+
+- データ行が無いスナップショットは観測として扱わず、ペアの対象にしない
+  （既存のdoctorが同じ入力をerrorとするのと整合させる）
+- 不在と判断した側にIdentity値を1つも持たない行がある場合、その不在を根拠とする
+  event（member_added / member_removed）は作らない（不在を確定できないため）
+- unknown・identity conflict・同一時点でのシート食い違いは、変更の実体を分類
+  できないためeventにしない。ただし「変更なし」と区別できるよう、検出器はeventとは
+  別に未分類の観測（subject・区間・理由）を返す。V2判定はrecent窓と重なる未分類
+  区間を`OBSERVE`側へ倒す材料としてこれを使う（§12.7）
+- identityが確定しているsubjectについて、区間の両端が同じ値の組は、unknown
+  どうしであっても観測を残さない。unknownの連なりへの出入りは必ず端のペアで
+  未分類観測になるため、recent窓との重なりはそれで捕捉できる。窓が unknown の
+  連なりの内側に収まる場合は月末時点のシートがunknownなので、V2のhard blocker
+  （current seat unknown）が受け持つ
+- identity conflictはシート値によらず観測を残す（両端が同じシートでも、別人の
+  入れ替わり＝同一emailの再割当と区別できず、変更なしと確定できないため）
+
 ## 11. Usage interval
 
 2/4/8週評価のため、月初からの累積Spendスナップショットを区間利用へ変換する。
@@ -736,6 +754,15 @@ hard blocker:
 - 必要履歴不足
 
 recent memberとrecent seat changeは既定で`OBSERVE`へ落とす。
+
+recent seat changeの判定材料はSeatChangeEvent（§10）とする。eventの区間
+`changed_after..changed_before`が、分析月末から遡って`recent_seat_change_days`の
+窓と重なる場合をrecentとみなす。スナップショット間隔が広く変更時点を絞れない場合は
+区間が広がり、この重なり判定によって保留側（`OBSERVE`）へ倒れる。スナップショット
+ペアが無くeventを検出できない場合は`RECENT_SEAT_CHANGE`を発火させずに判定を進め、
+seat history coverageとして確度へ反映する（hard blockerにしない）。分類できない
+観測（§10.4）がrecent窓と重なるsubjectは、eventが無くても`OBSERVE`側へ倒す。
+したがってV2判定はTrack 3のStep 10〜12を前提にしないが、Step 9には依存する。
 
 ## 13. Decision audit
 
@@ -1992,6 +2019,7 @@ dashboardで読めるようにする。
 依存:
 
 - Step 7
+- Step 9
 - Step 13
 - Step 14
 
@@ -2020,6 +2048,7 @@ dashboardで読めるようにする。
 
 依存:
 
+- Step 9
 - Step 15
 
 対象:

@@ -531,22 +531,30 @@ def spend_snapshots(
     return entries, excluded
 
 
-def member_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod, Path]]:
-    """対象月の単日スナップショット members を日付昇順で返す（月中のメンバー変動の差分用）。
+def member_files(input_dir: Path) -> list[tuple[FilePeriod, Path]]:
+    """members の単日スナップショット全件を日付昇順で返す（全月）。
 
     kind=date のファイルのみ対象（時点が特定できる）。kind=month（members_2026-07.csv）は
     時点不明のため差分の起点にならず除外する。
+
+    同じ日付のファイルが複数ある場合はすべて残し、ファイル名の昇順で並べる（採用する1本を
+    選ぶのは load_members の役割で、差分は時点の列そのものを必要とするため）。
     """
     directory = Path(input_dir) / "members"
     entries: list[tuple[FilePeriod, Path]] = []
     if directory.exists():
         for p in sorted(directory.glob("*.csv")):
             period = file_period(p)
-            if period is None or period.month != month or period.kind != "date":
+            if period is None or period.kind != "date":
                 continue
             entries.append((period, p))
     entries.sort(key=lambda e: e[0].start)
     return entries
+
+
+def member_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod, Path]]:
+    """対象月の単日スナップショット members を日付昇順で返す（月中のメンバー変動の差分用）。"""
+    return [(p, path) for p, path in member_files(input_dir) if p.month == month]
 
 
 def member_info_files(input_dir: Path) -> list[tuple[FilePeriod, Path]]:
@@ -584,8 +592,27 @@ def _normalize_seat(value: str) -> str:
     return "unknown"
 
 
-def _read_members_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
-    """1つの members CSV を読み、カラム正規化・email/seat 正規化・重複解決を施す。"""
+def _normalize_emails(values: pd.Series, *, keep_missing: bool) -> pd.Series:
+    """email 列を突き合わせ用に揃える（前後空白の除去 → 小文字化）。
+
+    keep_missing=True は欠損セル・空白だけのセルを欠損のまま残す。既定は文字列へ落とし、
+    email をキーに1行1ユーザへ畳む経路がそのまま使える形にする。
+    """
+    if keep_missing:
+        normalized = values.astype("string").str.strip().str.lower()
+        return normalized.mask(normalized == "")
+    return values.astype(str).str.strip().str.lower()
+
+
+def _read_members_df(
+    path: Path, cfg: dict, *, keep_rows: bool = False
+) -> tuple[pd.DataFrame, list[str]]:
+    """1つの members CSV を読み、カラム正規化・email/seat 正規化・重複解決を施す。
+
+    keep_rows=True は行をそのまま保つ。email での畳み込みをせず、email を持たない行も
+    落とさない（欠損は文字列にせず欠損のまま）。同一 email の複数行や email の無い行が
+    あることそのものが判断材料になる、Identity 解決へ渡す形。
+    """
     # 数値形式IDの先頭ゼロを保持するため、Membersはまず文字列で読む。
     df = _read_csv(path, dtype=str)
     df, warnings = map_columns(
@@ -595,7 +622,7 @@ def _read_members_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
         source=path,
         fill_na_columns=MEMBERS_OPTIONAL_COLUMNS,
     )
-    df["email"] = df["email"].astype(str).str.strip().str.lower()
+    df["email"] = _normalize_emails(df["email"], keep_missing=keep_rows)
     _clean_string_columns(df, MEMBERS_OPTIONAL_COLUMNS)
     df["seat_type"] = df["seat_type"].map(_normalize_seat)
     unknown = df[df["seat_type"] == "unknown"]
@@ -604,13 +631,26 @@ def _read_members_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
             f"members: シート種別を判別できないユーザ {len(unknown)} 名"
             f"（値に premium/standard を含まない）: {unknown['email'].head(5).tolist()}"
         )
-    df = df.drop_duplicates(subset="email", keep="last")
+    if not keep_rows:
+        df = df.drop_duplicates(subset="email", keep="last")
     return df, warnings
 
 
 def load_members_file(path: Path, cfg: dict) -> pd.DataFrame:
     """指定パスの members CSV を1つだけ読む（メンバー変動の差分用・重複解決や警告なし）。"""
     df, _ = _read_members_df(Path(path), cfg)
+    return df
+
+
+def load_member_rows(path: Path, cfg: dict) -> pd.DataFrame:
+    """指定パスの members CSV を、行を畳まずに1つだけ読む（シート変更 event の検出用）。
+
+    正規化の規則は load_members_file と同じで、同一 email の行を1つに畳まない点と、
+    email を持たない行を欠損のまま残す点だけが違う。同一時点に矛盾する行があること・
+    email の無い行があること自体を Identity 解決の側で扱えるようにするため、ここで
+    行を失わせない。
+    """
+    df, _ = _read_members_df(Path(path), cfg, keep_rows=True)
     return df
 
 
