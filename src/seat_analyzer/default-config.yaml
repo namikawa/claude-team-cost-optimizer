@@ -47,6 +47,9 @@ decision_v2:
   # 降格側を重くする。
   upgrade:
     min_complete_months: 1
+    # 昇格候補の需要が Code 主体と言えるための最小の Code 需要（USD/月）。シート差額と
+    # 同額。これを下回る候補は自動で昇格させず、アサインの見直しとして人へ回す。
+    min_code_demand_usd: 100.0
   downgrade:
     min_complete_months: 2
   # 「直近のシート変更」とみなす日数。シート変更 event の区間がこの窓（分析月末から
@@ -169,10 +172,12 @@ columns:
     credit_limit_usd: ["credit limit", "credit limit usd", "extra usage limit",
                        "spending limit", "追加クレジット上限", "従量上限"]
 
-# 追加クレジット（usage credits）関連の表示閾値。判定・ヒステリシスには影響しない。
+# 追加クレジット（usage credits）関連の閾値。
 usage_credits:
-  cap_tolerance_usd: 5.0        # 上限到達とみなす残額
-  grant_suggested_cap_usd: 150  # 付与候補に提示する推奨初期上限
+  # 上限到達とみなす残額。V1 の損益分岐判定・ヒステリシスには影響せず、上限到達の表示に
+  # 使う。V2 昇格判定では、上限へ到達したかどうかの判断にこの値を使う。
+  cap_tolerance_usd: 5.0
+  grant_suggested_cap_usd: 150  # 付与候補に提示する推奨初期上限（表示のみ）
 
 # キャッシュトークンの実効単価係数（入力単価に対する倍率）。
 # 実データで net_spend = uncached×1.0 + cache_read×0.1 + write_5m×1.25 + write_1h×2.0

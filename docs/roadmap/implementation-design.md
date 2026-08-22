@@ -685,6 +685,7 @@ low/mid/highは引き続きscenario stabilityとして出力する。
 decision_v2:
   upgrade:
     min_complete_months: 1
+    min_code_demand_usd: 100.0
 ```
 
 候補条件:
@@ -698,7 +699,19 @@ decision_v2:
    - 純モデル判定でPremiumが複数scenarioにおいて有利
 5. partial month、identity conflictではない
 
-Code需要が低く全product需要だけ高い場合は`REVIEW_ASSIGNMENT`とする。
+条件3の閾値は`min_code_demand_usd`（既定はシート差額と同額）。Code需要を確定できない
+場合は、Code主体であることを証明できないまま自動で推奨しないため`OBSERVE`とする。
+
+条件4は費用の軸で、シートの込み枠がproduct共通であることから全product合算の需要と
+実課金で評価する。実課金を含む経路と純モデル経路はいずれも`min_assignment_saving_usd`
+以上の月あたり削減見込みを要求する。削減見込みは正であることも要求する
+（`min_assignment_saving_usd: 0`の設定でも、StandardとPremiumが同額の状態は「Standardの
+費用がPremiumより高い」を満たさない）。usage credit上限への到達だけは金額差ではなく上限
+そのものを根拠にし、到達には実課金の発生を伴う（実課金ゼロを到達とみなさない）。
+
+条件3は費用の軸を満たした候補を振り分けるゲートとして働く。Code需要が低く全product
+需要だけ高い場合は`REVIEW_ASSIGNMENT`とし、statusは`RECOMMENDED`とする。シートを変える
+のではなくアサインを人が見直す作業として出すためで、保留（`OBSERVE`）ではない。
 
 ### 12.5 Downgrade
 
@@ -2837,6 +2850,7 @@ decision_v2:
   enabled: false
   upgrade:
     min_complete_months: 1
+    min_code_demand_usd: 100.0
   downgrade:
     min_complete_months: 2
   recent_seat_change_days: 28
