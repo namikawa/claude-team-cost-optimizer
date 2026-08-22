@@ -332,6 +332,27 @@ def _validate(cfg: dict) -> None:
     if not _finite(d.get("censoring_margin")) or d["censoring_margin"] <= 0:
         errors.append("decision.censoring_margin は正の数値が必要です")
 
+    # V2判定の設定。enabled が偽のあいだも値を検査する（有効化した時点で壊れている
+    # 設定に気づくのでは遅い。編集ミスは編集した実行で検出する）
+    dv2 = cfg["decision_v2"]
+    if not isinstance(dv2, dict):
+        errors.append("decision_v2 セクションが辞書ではありません")
+    else:
+        if not isinstance(dv2.get("enabled"), bool):
+            errors.append("decision_v2.enabled は真偽値が必要です")
+        for direction in ("upgrade", "downgrade"):
+            section = dv2.get(direction)
+            months = section.get("min_complete_months") if isinstance(section, dict) else None
+            if not _int(months) or months < 1:
+                errors.append(
+                    f"decision_v2.{direction}.min_complete_months は 1 以上の整数が必要です")
+        days = dv2.get("recent_seat_change_days")
+        if not _int(days) or days < 1:
+            errors.append("decision_v2.recent_seat_change_days は 1 以上の整数が必要です")
+        saving = dv2.get("min_assignment_saving_usd")
+        if not _finite(saving) or saving < 0:
+            errors.append("decision_v2.min_assignment_saving_usd は 0 以上の有限な数値が必要です")
+
     # 追加クレジットの表示閾値。既定設定が必ず持ち、上書きはキーを消せないため常に検査する
     # （NaN は上限到達の判定を黙って変え、非有限値は設定値の金額表示も壊す）
     uc = cfg["usage_credits"]

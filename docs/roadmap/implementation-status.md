@@ -135,7 +135,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | Step | タスク | ステータス | 完了日 |
 |---|---|---|---|
 | 13 | V2 domain | `完了` | 2026-08-22 |
-| 14 | asymmetric history config | `未着手` |  |
+| 14 | asymmetric history config | `進行中` |  |
 | 15 | Upgrade rule | `未着手` |  |
 | 16 | Downgrade rule | `未着手` |  |
 | 17 | Admin credit loader | `未着手` |  |

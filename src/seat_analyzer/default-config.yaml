@@ -39,6 +39,23 @@ decision:
   # 「上限到達の可能性（需要が観測上限で切られている恐れ）」フラグを付ける。
   censoring_margin: 0.85
 
+# V2 判定の設定（段階導入中）。enabled が false のあいだ、分析・レポートには影響しない。
+decision_v2:
+  enabled: false
+  # 判定に必要な完全月数。昇格（Standard→Premium）と降格（Premium→Standard）で
+  # 非対称にする。昇格の遅れは戻しやすい機会損失、誤った降格は業務を止めるため、
+  # 降格側を重くする。
+  upgrade:
+    min_complete_months: 1
+  downgrade:
+    min_complete_months: 2
+  # 「直近のシート変更」とみなす日数。シート変更 event の区間がこの窓（分析月末から
+  # 遡る）に重なるユーザは自動判定せず観察に倒す。
+  recent_seat_change_days: 28
+  # シート変更を推奨する最小の月あたり削減見込み（USD）。これ未満の差は変更の
+  # 手間に見合わないとみなす。
+  min_assignment_saving_usd: 20.0
+
 # モデル単価（USD per 1M tokens）。model 名の部分一致（小文字）で判定、上から順に評価
 # するため、特例（sonnet-5, opus-4-1 等）は汎用パターンより上に置くこと。
 # 公式: https://platform.claude.com/docs/en/about-claude/models/overview（2026-07-05 照合）

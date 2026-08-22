@@ -212,6 +212,46 @@ def test_config_validation_catches_edit_mistakes(cfg):
         assert fragment in msg
 
 
+def test_decision_v2_defaults_exist(tmp_path):
+    """パッケージ既定だけで decision_v2 が揃い、既定では無効であること（設計書 §21）。
+
+    V1 の decision 節とは独立で、この節の追加が既定のヒステリシスを変えないことも
+    あわせて固定する。
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text("", encoding="utf-8", newline="\n")
+    loaded = load_config(path)
+    assert loaded["decision_v2"] == {
+        "enabled": False,
+        "upgrade": {"min_complete_months": 1},
+        "downgrade": {"min_complete_months": 2},
+        "recent_seat_change_days": 28,
+        "min_assignment_saving_usd": 20.0,
+    }
+    assert loaded["decision"]["hysteresis_months"] == 2
+
+
+def test_decision_v2_validation_catches_edit_mistakes(cfg):
+    """decision_v2 の編集ミスは enabled が偽のままでも実行前に検出される。"""
+    broken = copy.deepcopy(cfg)
+    broken["decision_v2"]["enabled"] = "yes"
+    broken["decision_v2"]["upgrade"]["min_complete_months"] = 0
+    broken["decision_v2"]["downgrade"]["min_complete_months"] = 1.5
+    broken["decision_v2"]["recent_seat_change_days"] = True
+    broken["decision_v2"]["min_assignment_saving_usd"] = -1
+    with pytest.raises(ValueError) as e:
+        _validate(broken)
+    msg = str(e.value)
+    for fragment in (
+        "decision_v2.enabled",
+        "decision_v2.upgrade.min_complete_months",
+        "decision_v2.downgrade.min_complete_months",
+        "decision_v2.recent_seat_change_days",
+        "decision_v2.min_assignment_saving_usd",
+    ):
+        assert fragment in msg
+
+
 def test_config_validation_price_ordering(cfg):
     broken = copy.deepcopy(cfg)
     broken["seats"]["premium"]["price_usd"] = 10.0
