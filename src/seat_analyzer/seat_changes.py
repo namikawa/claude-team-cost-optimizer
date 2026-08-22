@@ -85,9 +85,10 @@ _Key = tuple[str, str, str, dt.date, dt.date]
 _SortKey = tuple[dt.date, dt.date, str, str, str]
 
 # 未分類観測の一意キー。conflict では subject_id が無いため、その組が持つ Identity 値
-# （email・account_uuid・user_id のすべて）を鍵に含めて組どうしを取り違えないようにする
+# （email・account_uuid・user_id のすべて）を鍵に含めて組どうしを取り違えないようにする。
+# 末尾はペアそのものについての観測（Identity 値を1つも持たない）だけが使う由来の組
 _Identifiers = tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]
-_ObservationKey = tuple[dt.date, dt.date, str, _Identifiers, str]
+_ObservationKey = tuple[dt.date, dt.date, str, _Identifiers, str, tuple[str, str]]
 
 # 誰のものとも決められない観測に使う、Identity 値を1つも持たない解決結果
 _NO_SUBJECT = ResolvedIdentity(
@@ -219,17 +220,23 @@ class UnclassifiedObservation:
 
     @property
     def key(self) -> _ObservationKey:
-        """一意キー。並び順にもこれを使う（区間 → subject → Identity 値 → 理由）。
+        """一意キー。並び順にもこれを使う（区間 → subject → Identity 値 → 理由 → 由来）。
 
         subject_id を確定できない組が同じ区間に複数あっても、持っている Identity 値が
-        違えば別の観測として残る。
+        違えば別の観測として残る。ペアそのものについての観測（subject も Identity 値も
+        無い）は「どの2ファイルを比べたか」が同一性なので由来を鍵に含め、同日の別ペアが
+        1件に畳まれないようにする。subject に紐づく観測は由来を含めず、同日のチェーン
+        から出る同じ観測を1件にまとめる。
         """
+        identifiers = (self.emails, self.account_uuids, self.user_ids)
+        pair_scoped = self.subject_id is None and not any(identifiers)
         return (
             self.changed_after,
             self.changed_before,
             self.subject_id or "",
-            (self.emails, self.account_uuids, self.user_ids),
+            identifiers,
             self.reason,
+            (self.previous_source, self.current_source) if pair_scoped else ("", ""),
         )
 
 

@@ -413,6 +413,27 @@ def test_pair_without_any_identifiable_row_is_unclassified(cfg, tmp_path):
     assert item.current_source == "members-snap-2026-07-16.csv"
 
 
+def test_pair_level_observations_are_kept_per_pair(cfg, tmp_path):
+    """ペアそのものについての観測は、同日の別ペアどうしで1件に畳まれない。"""
+    input_dir = tmp_path / "input"
+    for name, seat in (
+        ("members-a-2026-07-05.csv", "Standard"),
+        ("members-b-2026-07-05.csv", "Premium"),
+        ("members-c-2026-07-05.csv", "Standard"),
+    ):
+        _snapshot(input_dir, name, [f",{seat},"])
+    changes = detect_from_input(input_dir, cfg)
+    assert changes.events == []
+    assert [
+        (item.reason, item.previous_source, item.current_source)
+        for item in changes.unclassified
+    ] == [
+        (UNCONFIRMED_ABSENCE, "members-a-2026-07-05.csv", "members-b-2026-07-05.csv"),
+        (UNCONFIRMED_ABSENCE, "members-b-2026-07-05.csv", "members-c-2026-07-05.csv"),
+    ]
+    _assert_unique(changes)
+
+
 def test_identifiable_subject_suppresses_the_pair_level_observation(cfg, tmp_path):
     """識別できる subject がいるペアでは、区間そのものの観測を重ねない。"""
     input_dir = _by_date(tmp_path / "input", {
