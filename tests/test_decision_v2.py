@@ -105,3 +105,16 @@ def test_vocabularies_do_not_share_members_by_identity():
     assert shared <= {member.name for member in IssueCode}
     assert ReasonCode.RECENT_SEAT_CHANGE is not IssueCode.RECENT_SEAT_CHANGE
     assert ReasonCode.RECENT_SEAT_CHANGE == IssueCode.RECENT_SEAT_CHANGE.value
+
+
+def test_cross_vocabulary_equality_exists_and_is_not_a_type_guard():
+    """StrEnum は文字列として等値になるため、語彙をまたいだ == が成立する。
+
+    この衝突は StrEnum の仕様で、型では混同を防げない（set・dict では同じキーに
+    畳まれる）。存在する事実をここで固定し、混同の防止は V2 の値オブジェクト・
+    関数境界の isinstance 検証（QualityIssue と同じ流儀）が担う（設計書 §12.1）。
+    """
+    assert DecisionStatus.KEEP == SeatAction.KEEP == CreditAction.KEEP
+    assert len({DecisionStatus.KEEP, SeatAction.KEEP, CreditAction.KEEP}) == 1
+    assert ReasonCode.RECENT_SEAT_CHANGE == IssueCode.RECENT_SEAT_CHANGE
+    assert not isinstance(IssueCode.RECENT_SEAT_CHANGE, ReasonCode)

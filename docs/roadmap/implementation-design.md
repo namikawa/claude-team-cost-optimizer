@@ -634,6 +634,11 @@ class CreditAction(StrEnum):
     NONE = "none"
 ```
 
+StrEnumは文字列と等値になるため、語彙をまたいだ等値比較が成立する（3つの`KEEP`
+どうし、IssueCodeと同名のReasonCode等）。混同は型では防がれないので、V2の
+値オブジェクト・関数境界は受け取る語彙を`isinstance`で検証し（`QualityIssue`と
+同じ流儀）、異なる語彙を同じset・dictのキー空間に混ぜない。
+
 ### 12.2 reason code
 
 - `ONE_MONTH_STRONG_CODE_DEMAND`
