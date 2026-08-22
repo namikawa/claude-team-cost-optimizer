@@ -737,6 +737,14 @@ hard blocker:
 
 recent memberとrecent seat changeは既定で`OBSERVE`へ落とす。
 
+recent seat changeの判定材料はSeatChangeEvent（§10）とする。eventの区間
+`changed_after..changed_before`が、分析月末から遡って`recent_seat_change_days`の
+窓と重なる場合をrecentとみなす。スナップショット間隔が広く変更時点を絞れない場合は
+区間が広がり、この重なり判定によって保留側（`OBSERVE`）へ倒れる。スナップショット
+ペアが無くeventを検出できない場合は`RECENT_SEAT_CHANGE`を発火させずに判定を進め、
+seat history coverageとして確度へ反映する（hard blockerにしない）。
+したがってV2判定はTrack 3のStep 10〜12を前提にしないが、Step 9には依存する。
+
 ## 13. Decision audit
 
 ### 13.1 推奨snapshot
@@ -1992,6 +2000,7 @@ dashboardで読めるようにする。
 依存:
 
 - Step 7
+- Step 9
 - Step 13
 - Step 14
 
@@ -2020,6 +2029,7 @@ dashboardで読めるようにする。
 
 依存:
 
+- Step 9
 - Step 15
 
 対象:

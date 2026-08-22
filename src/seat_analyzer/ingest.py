@@ -531,22 +531,30 @@ def spend_snapshots(
     return entries, excluded
 
 
-def member_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod, Path]]:
-    """対象月の単日スナップショット members を日付昇順で返す（月中のメンバー変動の差分用）。
+def member_files(input_dir: Path) -> list[tuple[FilePeriod, Path]]:
+    """members の単日スナップショット全件を日付昇順で返す（全月）。
 
     kind=date のファイルのみ対象（時点が特定できる）。kind=month（members_2026-07.csv）は
     時点不明のため差分の起点にならず除外する。
+
+    同じ日付のファイルが複数ある場合はすべて残し、ファイル名の昇順で並べる（採用する1本を
+    選ぶのは load_members の役割で、差分は時点の列そのものを必要とするため）。
     """
     directory = Path(input_dir) / "members"
     entries: list[tuple[FilePeriod, Path]] = []
     if directory.exists():
         for p in sorted(directory.glob("*.csv")):
             period = file_period(p)
-            if period is None or period.month != month or period.kind != "date":
+            if period is None or period.kind != "date":
                 continue
             entries.append((period, p))
     entries.sort(key=lambda e: e[0].start)
     return entries
+
+
+def member_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod, Path]]:
+    """対象月の単日スナップショット members を日付昇順で返す（月中のメンバー変動の差分用）。"""
+    return [(p, path) for p, path in member_files(input_dir) if p.month == month]
 
 
 def member_info_files(input_dir: Path) -> list[tuple[FilePeriod, Path]]:

@@ -38,6 +38,7 @@ LAYERS = {
     "ingest": 10,
     "pricing": 10,
     "product_usage": 15,
+    "seat_changes": 15,
     "config": 20,
     "analyze": 20,
     "data_quality": 20,
