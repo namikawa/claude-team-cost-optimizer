@@ -248,6 +248,8 @@ def test_unclassified_carries_the_interval_and_sources(cfg, tmp_path):
     assert item.reason == IDENTITY_CONFLICT
     assert item.subject_id is None
     assert item.emails == ("a@x.jp",)
+    assert item.account_uuids == ("acct-1", "acct-2")
+    assert item.user_ids == ()
     assert item.changed_after == dt.date(2026, 7, 28)
     assert item.changed_before == dt.date(2026, 8, 4)
     assert item.detected_at == dt.date(2026, 8, 4)
@@ -299,6 +301,32 @@ def test_same_email_with_two_stable_ids_in_one_snapshot(cfg, tmp_path):
     changes = detect_from_input(input_dir, cfg)
     assert changes.events == []
     assert _reasons(changes.unclassified) == [(IDENTITY_CONFLICT, None)]
+
+
+def test_independent_conflicts_without_email_are_kept(cfg, tmp_path):
+    """email を持たない conflict が同じ区間に複数あっても、組ごとに残る。"""
+    input_dir = _by_date(
+        tmp_path / "input",
+        {
+            "2026-07-05": [",Standard,acct-1,user-1", ",Standard,acct-3,user-2"],
+            "2026-07-16": [",Premium,acct-2,user-1", ",Premium,acct-4,user-2"],
+        },
+        header="Email,Seat Type,Account UUID,User ID",
+    )
+    changes = detect_from_input(input_dir, cfg)
+    assert changes.events == []
+    assert _reasons(changes.unclassified) == [
+        (IDENTITY_CONFLICT, None),
+        (IDENTITY_CONFLICT, None),
+    ]
+    assert [
+        (item.emails, item.account_uuids, item.user_ids)
+        for item in changes.unclassified
+    ] == [
+        ((), ("acct-1", "acct-2"), ("user-1",)),
+        ((), ("acct-3", "acct-4"), ("user-2",)),
+    ]
+    _assert_unique(changes)
 
 
 def test_rows_without_email_are_independent_subjects(cfg, tmp_path):
@@ -366,6 +394,34 @@ def test_unidentifiable_row_suppresses_removed_only(cfg, tmp_path):
         ("c@x.jp", "member_added"),
     ]
     assert _reasons(changes.unclassified) == [(UNCONFIRMED_ABSENCE, "account:acct-d")]
+
+
+def test_pair_without_any_identifiable_row_is_unclassified(cfg, tmp_path):
+    """どちらの側も識別できない行だけなら、区間そのものを未分類として残す。"""
+    input_dir = _by_date(tmp_path / "input", {
+        "2026-07-05": [",Standard,"],
+        "2026-07-16": [",Premium,"],
+    })
+    changes = detect_from_input(input_dir, cfg)
+    assert changes.events == []
+    assert _reasons(changes.unclassified) == [(UNCONFIRMED_ABSENCE, None)]
+    item = changes.unclassified[0]
+    assert (item.emails, item.account_uuids, item.user_ids) == ((), (), ())
+    assert item.changed_after == dt.date(2026, 7, 5)
+    assert item.changed_before == dt.date(2026, 7, 16)
+    assert item.previous_source == "members-snap-2026-07-05.csv"
+    assert item.current_source == "members-snap-2026-07-16.csv"
+
+
+def test_identifiable_subject_suppresses_the_pair_level_observation(cfg, tmp_path):
+    """識別できる subject がいるペアでは、区間そのものの観測を重ねない。"""
+    input_dir = _by_date(tmp_path / "input", {
+        "2026-07-05": [",Standard,", "a@x.jp,Standard,acct-a"],
+        "2026-07-16": [",Premium,", "a@x.jp,Premium,acct-a"],
+    })
+    changes = detect_from_input(input_dir, cfg)
+    assert _summary(changes.events) == [("a@x.jp", "standard_to_premium")]
+    assert changes.unclassified == []
 
 
 # ------------------------------------------------------- スナップショットの選び方
@@ -594,6 +650,8 @@ def _observation(**overrides) -> UnclassifiedObservation:
         "reason": IDENTITY_CONFLICT,
         "subject_id": None,
         "emails": ("a@x.jp",),
+        "account_uuids": ("acct-1", "acct-2"),
+        "user_ids": (),
         "changed_after": dt.date(2026, 7, 5),
         "changed_before": dt.date(2026, 7, 16),
         "detected_at": dt.date(2026, 7, 16),

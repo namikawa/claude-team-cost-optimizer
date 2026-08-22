@@ -21,7 +21,7 @@ event が無いことを「変更が無かった」と読み替えられると�
 - unknown_seat: シート種別を判別できない値が区間の端にある
 - identity_conflict: identity が subject を確定できない（同種の stable ID が複数）
 - inconsistent_seat: 同一時点で同じ subject の行のシートが食い違う
-- unconfirmed_absence: 不在の側に Identity 値を持たない行があり、不在を確定できない
+- unconfirmed_absence: Identity 値を持たない行があり、不在（加入・離脱）を確定できない
 
 データ行が無いスナップショット（失敗したエクスポート等）は観測として扱わず、ペアの
 対象にしない。除いた上で残りの隣接ペアを組むので、区間が広がるだけで変更は拾える。
@@ -84,8 +84,20 @@ _NODE_KINDS = ("email", "account", "user")
 _Key = tuple[str, str, str, dt.date, dt.date]
 _SortKey = tuple[dt.date, dt.date, str, str, str]
 
-# 未分類観測の一意キー。conflict では subject_id が無いため email 群も鍵に含める
-_ObservationKey = tuple[dt.date, dt.date, str, tuple[str, ...], str]
+# 未分類観測の一意キー。conflict では subject_id が無いため、その組が持つ Identity 値
+# （email・account_uuid・user_id のすべて）を鍵に含めて組どうしを取り違えないようにする
+_Identifiers = tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]
+_ObservationKey = tuple[dt.date, dt.date, str, _Identifiers, str]
+
+# 誰のものとも決められない観測に使う、Identity 値を1つも持たない解決結果
+_NO_SUBJECT = ResolvedIdentity(
+    subject_id=None,
+    quality="unresolved",
+    conflict=False,
+    emails=(),
+    account_uuids=(),
+    user_ids=(),
+)
 
 
 @dataclass(frozen=True)
@@ -180,12 +192,17 @@ class UnclassifiedObservation:
     扱えるようにするため。
 
     subject_id は identity が subject を確定できた場合だけ入る（conflict では None）。
-    emails は突き合わせた両時点に現れた email（辞書順）で、人が該当行を探すための値。
+    emails・account_uuids・user_ids は突き合わせた両時点でその組に現れた Identity 値
+    （辞書順）で、人が該当行を探すための値であり、subject_id が無いときに組どうしを
+    区別する唯一の手掛かりでもある。どの値も持たない観測は、その区間に誰のものとも
+    決められない行があったことを表す。
     """
 
     reason: str
     subject_id: str | None
     emails: tuple[str, ...]
+    account_uuids: tuple[str, ...]
+    user_ids: tuple[str, ...]
     changed_after: dt.date
     changed_before: dt.date
     detected_at: dt.date
@@ -202,12 +219,16 @@ class UnclassifiedObservation:
 
     @property
     def key(self) -> _ObservationKey:
-        """一意キー。並び順にもこれを使う（区間 → subject → email 群 → 理由）。"""
+        """一意キー。並び順にもこれを使う（区間 → subject → Identity 値 → 理由）。
+
+        subject_id を確定できない組が同じ区間に複数あっても、持っている Identity 値が
+        違えば別の観測として残る。
+        """
         return (
             self.changed_after,
             self.changed_before,
             self.subject_id or "",
-            self.emails,
+            (self.emails, self.account_uuids, self.user_ids),
             self.reason,
         )
 
@@ -326,7 +347,12 @@ def _sort_key(event: SeatChangeEvent) -> _SortKey:
 
 
 def _pair_changes(previous: MemberSnapshot, current: MemberSnapshot) -> SeatChanges:
-    """隣接する2時点の差分。両側の全行を一括で解決してから subject 単位で比べる。"""
+    """隣接する2時点の差分。両側の全行を一括で解決してから subject 単位で比べる。
+
+    どちらの側にも識別できる行が1つも無いペアは、subject が立たないので per-subject の
+    観測を作れない。その区間の状態を何も言えないことが消えないよう、ペア単位の観測を
+    1件だけ残す（識別できる subject が1人でもいれば、そちらの観測で足りるので作らない）。
+    """
     previous_rows = _rows(previous.members)
     current_rows = _rows(current.members)
     resolved = identity.resolve_identities(
@@ -345,18 +371,7 @@ def _pair_changes(previous: MemberSnapshot, current: MemberSnapshot) -> SeatChan
         after = _seat_of(after_side.by_subject.get(index, ()))
         reason = _unclassified_reason(subject, before, after, before_side, after_side)
         if reason is not None:
-            unclassified.append(
-                UnclassifiedObservation(
-                    reason=reason,
-                    subject_id=subject.subject_id,
-                    emails=subject.emails,
-                    changed_after=previous.taken_on,
-                    changed_before=current.taken_on,
-                    detected_at=current.taken_on,
-                    previous_source=previous.source,
-                    current_source=current.source,
-                )
-            )
+            unclassified.append(_observation(reason, subject, previous, current))
             continue
         if before == after:
             continue
@@ -376,7 +391,35 @@ def _pair_changes(previous: MemberSnapshot, current: MemberSnapshot) -> SeatChan
                 current_source=current.source,
             )
         )
+    nothing_identifiable = (
+        before_side.has_unidentifiable or after_side.has_unidentifiable
+    )
+    if not subjects and nothing_identifiable:
+        unclassified.append(
+            _observation(UNCONFIRMED_ABSENCE, _NO_SUBJECT, previous, current)
+        )
     return SeatChanges(events=events, unclassified=unclassified)
+
+
+def _observation(
+    reason: str,
+    subject: ResolvedIdentity,
+    previous: MemberSnapshot,
+    current: MemberSnapshot,
+) -> UnclassifiedObservation:
+    """未分類観測1件。区間と由来は event と同じ規則で埋める。"""
+    return UnclassifiedObservation(
+        reason=reason,
+        subject_id=subject.subject_id,
+        emails=subject.emails,
+        account_uuids=subject.account_uuids,
+        user_ids=subject.user_ids,
+        changed_after=previous.taken_on,
+        changed_before=current.taken_on,
+        detected_at=current.taken_on,
+        previous_source=previous.source,
+        current_source=current.source,
+    )
 
 
 def _unclassified_reason(
@@ -392,8 +435,11 @@ def _unclassified_reason(
     シートの比較そのものが成り立たず、時点内で食い違っていればどちらが現在のシートかを
     決められない。
 
-    両端の値が同じなら理由を残さない。unknown どうしであっても「その区間で変わって
+    両端の値が同じときに理由を残さないのは、identity が subject を確定できた場合に
+    限る。その場合は unknown どうしであっても「その subject のシートはその区間で変わって
     いない」ことは分かる（値の意味が分からないだけで、変更の見落としにはならない）。
+    conflict はシートが同じに見えても、同一 email の再割当による別人への入れ替わりと
+    区別できないため、シート値によらず残す。
 
     不在は「行が無い」ことでしか判断できないため、その時点に誰のものとも決められない行が
     あれば確定できない。抑えるのは不在を根拠とする側だけで、両側に行がある subject の

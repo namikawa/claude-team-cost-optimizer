@@ -558,10 +558,13 @@ subject_id + from_seat + to_seat + changed_after + changed_before
   できないためeventにしない。ただし「変更なし」と区別できるよう、検出器はeventとは
   別に未分類の観測（subject・区間・理由）を返す。V2判定はrecent窓と重なる未分類
   区間を`OBSERVE`側へ倒す材料としてこれを使う（§12.7）
-- 区間の両端が同じ値の組は、unknownどうしであっても観測を残さない。unknownの
-  連なりへの出入りは必ず端のペアで未分類観測になるため、recent窓との重なりは
-  それで捕捉できる。窓が unknown の連なりの内側に収まる場合は月末時点のシートが
-  unknownなので、V2のhard blocker（current seat unknown）が受け持つ
+- identityが確定しているsubjectについて、区間の両端が同じ値の組は、unknown
+  どうしであっても観測を残さない。unknownの連なりへの出入りは必ず端のペアで
+  未分類観測になるため、recent窓との重なりはそれで捕捉できる。窓が unknown の
+  連なりの内側に収まる場合は月末時点のシートがunknownなので、V2のhard blocker
+  （current seat unknown）が受け持つ
+- identity conflictはシート値によらず観測を残す（両端が同じシートでも、別人の
+  入れ替わり＝同一emailの再割当と区別できず、変更なしと確定できないため）
 
 ## 11. Usage interval
 
