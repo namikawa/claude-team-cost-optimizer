@@ -212,6 +212,78 @@ def test_config_validation_catches_edit_mistakes(cfg):
         assert fragment in msg
 
 
+def test_decision_v2_defaults_exist(tmp_path):
+    """パッケージ既定だけで decision_v2 が揃い、既定では無効であること（設計書 §21）。
+
+    V1 の decision 節とは独立で、この節の追加が既定のヒステリシスを変えないことも
+    あわせて固定する。
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text("", encoding="utf-8", newline="\n")
+    loaded = load_config(path)
+    assert loaded["decision_v2"] == {
+        "enabled": False,
+        "upgrade": {"min_complete_months": 1},
+        "downgrade": {"min_complete_months": 2},
+        "recent_seat_change_days": 28,
+        "min_assignment_saving_usd": 20.0,
+    }
+    assert loaded["decision"]["hysteresis_months"] == 2
+
+
+def test_decision_v2_validation_catches_edit_mistakes(cfg):
+    """decision_v2 の編集ミスは enabled が偽のままでも実行前に検出される。
+
+    enabled は既定の False のままにする（有効なときだけ値を検査する実装への退行を、
+    このテスト自身が見逃さないようにするため）。
+    """
+    broken = copy.deepcopy(cfg)
+    assert broken["decision_v2"]["enabled"] is False
+    broken["decision_v2"]["upgrade"]["min_complete_months"] = 0
+    broken["decision_v2"]["downgrade"]["min_complete_months"] = 1.5
+    broken["decision_v2"]["recent_seat_change_days"] = True
+    broken["decision_v2"]["min_assignment_saving_usd"] = -1
+    with pytest.raises(ValueError) as e:
+        _validate(broken)
+    msg = str(e.value)
+    for fragment in (
+        "decision_v2.upgrade.min_complete_months",
+        "decision_v2.downgrade.min_complete_months",
+        "decision_v2.recent_seat_change_days",
+        "decision_v2.min_assignment_saving_usd",
+    ):
+        assert fragment in msg
+
+
+@pytest.mark.parametrize("value", ["yes", 1, 0, None, "false"])
+def test_decision_v2_enabled_must_be_boolean(cfg, value):
+    """enabled は真偽値に限る（yes や 1 を有効として黙って受理しない）。"""
+    broken = copy.deepcopy(cfg)
+    broken["decision_v2"]["enabled"] = value
+    with pytest.raises(ValueError, match="decision_v2.enabled"):
+        _validate(broken)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), True, "20", None, -0.01],
+)
+def test_decision_v2_saving_threshold_rejects_invalid(cfg, value):
+    """削減閾値は 0 以上の有限な数値に限る（非有限値・真偽値・文字列を拒否する）。"""
+    broken = copy.deepcopy(cfg)
+    broken["decision_v2"]["min_assignment_saving_usd"] = value
+    with pytest.raises(ValueError, match="decision_v2.min_assignment_saving_usd"):
+        _validate(broken)
+
+
+@pytest.mark.parametrize("value", [0, 0.0, 20, 1234.5])
+def test_decision_v2_saving_threshold_accepts_zero_and_positive(cfg, value):
+    """0 は「差額を問わない」の指定として正当なので拒否しない。"""
+    ok = copy.deepcopy(cfg)
+    ok["decision_v2"]["min_assignment_saving_usd"] = value
+    _validate(ok)
+
+
 def test_config_validation_price_ordering(cfg):
     broken = copy.deepcopy(cfg)
     broken["seats"]["premium"]["price_usd"] = 10.0
