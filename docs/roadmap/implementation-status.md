@@ -1,8 +1,8 @@
 # 実装ステータス
 
-- 最終更新: 2026-08-22
+- 最終更新: 2026-08-23
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 4（V2判定）の続き。PR順は Step 15 → 16 → 17 → 18 → 19
+- 次のタスク: Track 4（V2判定）の続き。PR順は Step 16 → 17 → 18 → 19
   （Step 9 はV2のrecent seat change判定材料として先行実装済み。Track 3の残りStepは
   据え置き。根拠は設計書§12.7）
 - 予定タスク: sonnet-5 の単価改定（導入価格 $2/$10 は 2026-08-31 まで。以降は $3/$15 へ
@@ -81,12 +81,12 @@
 | 1 | 入力と品質 | 5 | 0 | 0 | 0 | 0 |
 | 2 | Code中心の利用可視化 | 7 | 0 | 0 | 0 | 0 |
 | 3 | シート変更履歴 | 1 | 0 | 0 | 3 | 0 |
-| 4 | V2判定 | 2 | 0 | 0 | 5 | 0 |
+| 4 | V2判定 | 3 | 0 | 0 | 4 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 0 | 0 | 0 | 8 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **18** | **0** | **0** | **31** | **0** |
+| **合計** |  | **19** | **0** | **0** | **30** | **0** |
 
 ## 5. Step一覧
 
@@ -139,7 +139,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 |---|---|---|---|
 | 13 | V2 domain | `完了` | 2026-08-22 |
 | 14 | asymmetric history config | `完了` | 2026-08-22 |
-| 15 | Upgrade rule | `未着手` |  |
+| 15 | Upgrade rule | `完了` | 2026-08-23 |
 | 16 | Downgrade rule | `未着手` |  |
 | 17 | Admin credit loader | `未着手` |  |
 | 18 | Credit comparator | `未着手` |  |
@@ -189,6 +189,46 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-08-23 — Step 15: Upgrade rule
+
+- `decision_v2.py`（層20）を新設。Standard→Premiumの昇格だけを判定する純粋関数
+  `decide_upgrade(subject, cfg)`と、その入出力の値オブジェクト（`MonthObservation` /
+  `SubjectHistory` / `DecisionV2`）。設定は読み込まず、検証済みconfigと呼び出し側が
+  組み立てた観測だけを受ける（`product_usage`がpolicyを引数で受けるのと同じ流儀）。
+  分析パイプライン・出力へは未結線（結線はStep 19）
+- 昇格の判断を2軸に分けた。経済軸（§12.4条件4）は全product合算の需要・実課金で
+  「金額として見合うか」を見る（シートの込み枠がproduct共通のため）。分類軸（条件3）は
+  「その需要の中身がCodeか」を見て、経済軸を満たした候補を昇格推奨と
+  `REVIEW_ASSIGNMENT`へ振り分けるゲートとして働く
+- Code需要が低い候補のstatusは`RECOMMENDED`とする。シートを変えるのではなくアサインを
+  人が見直す作業として出すため、保留（`OBSERVE`）にはしない。Code需要を確定できない
+  （NA）場合だけ`OBSERVE`にする（Code主体であることを証明できないまま自動推奨しない）
+- 分類軸の閾値`min_code_demand_usd: 100.0`を`decision_v2.upgrade`へ追加し、`_validate`が
+  0以上の有限な数値を要求する（既存の`min_assignment_saving_usd`と同じ形）
+- recent窓の重なりは`changed_before >= 月末 − days`かつ`changed_after < 月末`で判定する。
+  分類できない観測（§10.4）はeventが無くても保留側へ倒し、eventが1件も無いこと自体は
+  発火させない（§12.7）
+- 理由コードは主理由→補助→情報の固定順で返す（decision-evidence.csvの突き合わせ対象に
+  なるため、同じ入力からは常に同じ並び）
+- `seats.*.allowance_usd`は変更していない（キャリブレーションは別タスク）
+- 1002 passed・ruff緑・golden不変（V1の判定・出力に触れていない）
+- 外部レビュー（codex / 2巡で収束）: Round 1 は5件中4件（mid2・low2）を採用・1件（low）を
+  不採用 — 不採用は「層テストが decision_v2 の import 先を domain・seat_changes に限定して
+  いない」で、リポジトリの不変条件は層の下向き規則であり、モジュール単位の許可リストは
+  守りたい純粋性（設定・ファイル・時刻に依存しない）の保証にならないため特例検査を
+  追加しない。採用4件 — ①StandardとPremiumが同額でも
+  `min_assignment_saving_usd: 0`の設定では候補になっていた（削減見込みが正であることも
+  要求し、§12.4へ明記）②負の`credit_limit_usd`・−Infinityを構築時に受理し、黙って
+  「無効」「未到達」として扱っていた（yamlの契約に無い値なのでValueErrorで拒否）
+  ③`REVIEW_ASSIGNMENT`とCode不明の`OBSERVE`で、候補化の根拠（`CREDIT_LIMIT_REACHED`・
+  `SUSTAINED_OVERAGE`）が理由コードから落ちていた（分類軸の振り分けによらず残す）
+  ④`usage_credits`のコメントが「判定・ヒステリシスには影響しない」のままだった
+  （`cap_tolerance_usd`をV2昇格の上限到達判定に使うため実態へ更新。ロード結果は不変）
+- Round 2 は挙動への指摘ゼロ・テスト補強2件（low）を採用 — Code不明の`OBSERVE`でも
+  `SUSTAINED_OVERAGE`を保持することと、有限な負の金額（返金）を`MonthObservation`が
+  受理すること（負値拒否は`credit_limit_usd`だけの契約）を固定
+- 修正後: 1018 passed・ruff緑・golden不変
 
 ### 2026-08-22 — Step 14: asymmetric history config
 

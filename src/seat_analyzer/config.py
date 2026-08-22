@@ -346,6 +346,12 @@ def _validate(cfg: dict) -> None:
             if not _int(months) or months < 1:
                 errors.append(
                     f"decision_v2.{direction}.min_complete_months は 1 以上の整数が必要です")
+        upgrade = dv2.get("upgrade")
+        code_demand = (
+            upgrade.get("min_code_demand_usd") if isinstance(upgrade, dict) else None)
+        if not _finite(code_demand) or code_demand < 0:
+            errors.append(
+                "decision_v2.upgrade.min_code_demand_usd は 0 以上の有限な数値が必要です")
         days = dv2.get("recent_seat_change_days")
         if not _int(days) or days < 1:
             errors.append("decision_v2.recent_seat_change_days は 1 以上の整数が必要です")

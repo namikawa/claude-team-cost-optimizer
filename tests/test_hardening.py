@@ -223,7 +223,7 @@ def test_decision_v2_defaults_exist(tmp_path):
     loaded = load_config(path)
     assert loaded["decision_v2"] == {
         "enabled": False,
-        "upgrade": {"min_complete_months": 1},
+        "upgrade": {"min_complete_months": 1, "min_code_demand_usd": 100.0},
         "downgrade": {"min_complete_months": 2},
         "recent_seat_change_days": 28,
         "min_assignment_saving_usd": 20.0,
@@ -282,6 +282,37 @@ def test_decision_v2_saving_threshold_accepts_zero_and_positive(cfg, value):
     ok = copy.deepcopy(cfg)
     ok["decision_v2"]["min_assignment_saving_usd"] = value
     _validate(ok)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), True, "100", None, -0.01],
+)
+def test_decision_v2_code_demand_threshold_rejects_invalid(cfg, value):
+    """Code 需要の閾値は 0 以上の有限な数値に限る。
+
+    NaN は「閾値以上か」の比較を常に偽にし、Code 主体の候補を黙って見直し側へ回す。
+    """
+    broken = copy.deepcopy(cfg)
+    broken["decision_v2"]["upgrade"]["min_code_demand_usd"] = value
+    with pytest.raises(ValueError, match="decision_v2.upgrade.min_code_demand_usd"):
+        _validate(broken)
+
+
+@pytest.mark.parametrize("value", [0, 0.0, 100, 250.5])
+def test_decision_v2_code_demand_threshold_accepts_zero_and_positive(cfg, value):
+    """0 は「Code 需要の多寡を問わない」の指定として正当なので拒否しない。"""
+    ok = copy.deepcopy(cfg)
+    ok["decision_v2"]["upgrade"]["min_code_demand_usd"] = value
+    _validate(ok)
+
+
+def test_decision_v2_code_demand_threshold_requires_upgrade_section(cfg):
+    """upgrade 節そのものが壊れていても、閾値の欠落として報告する。"""
+    broken = copy.deepcopy(cfg)
+    broken["decision_v2"]["upgrade"] = None
+    with pytest.raises(ValueError, match="decision_v2.upgrade.min_code_demand_usd"):
+        _validate(broken)
 
 
 def test_config_validation_price_ordering(cfg):
