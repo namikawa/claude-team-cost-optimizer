@@ -1,6 +1,6 @@
-"""品質issueの語彙（severity・code）と値オブジェクトを定義する純粋なドメイン。
+"""品質issueとV2判定の語彙、および値オブジェクトを定義する純粋なドメイン。
 
-ここではissueの表現だけを扱い、検出・整形・出力は担当しない。
+ここでは表現だけを扱い、検出・判定・整形・出力は担当しない。
 
 QualityIssue.messageは決定的な文字列に限る。タイムスタンプ・乱数・実行環境依存値
 （絶対パス・ホスト名等）を含めない。同じ入力からは常に同じ文字列になることを、
@@ -70,6 +70,74 @@ class IssueCode(enum.StrEnum):
     # Policy
     PROHIBITED_PRODUCT_OBSERVED = "PROHIBITED_PRODUCT_OBSERVED"
     CAPACITY_SIGNAL_UNAVAILABLE = "CAPACITY_SIGNAL_UNAVAILABLE"
+
+
+# --------------------------------------------------------------- V2判定の語彙
+#
+# V2判定（decision_v2）が返す結論・アクション・理由の確定語彙。値は
+# decision-evidence.csvにそのまま書かれ、月をまたいだ比較・実変更との照合の
+# 突き合わせキーになるため、一度公開した値は変更しない。
+
+
+@enum.unique
+class DecisionStatus(enum.StrEnum):
+    """1ユーザに対するV2判定の結論。"""
+
+    RECOMMENDED = "recommended"
+    OBSERVE = "observe"
+    NO_DECISION = "no_decision"
+    KEEP = "keep"
+    EXCLUDED = "excluded"
+
+
+@enum.unique
+class SeatAction(enum.StrEnum):
+    """シートに対する推奨アクション。"""
+
+    KEEP = "keep"
+    UPGRADE_TO_PREMIUM = "upgrade_to_premium"
+    DOWNGRADE_TO_STANDARD = "downgrade_to_standard"
+    REVIEW_ASSIGNMENT = "review_assignment"
+    NONE = "none"
+
+
+@enum.unique
+class CreditAction(enum.StrEnum):
+    """追加クレジット（usage credits）に対する推奨アクション。"""
+
+    KEEP = "keep"
+    ENABLE_WITH_CAP = "enable_with_cap"
+    REVIEW = "review"
+    NONE = "none"
+
+
+@enum.unique
+class ReasonCode(enum.StrEnum):
+    """判定の根拠・保留理由の確定語彙。値は名前と同一で、機械可読なキーとして扱う。
+
+    IssueCodeと同名のメンバー（RECENT_SEAT_CHANGE等）は別の語彙として意図的に
+    重ねている。IssueCodeは入力データの品質を、ReasonCodeは判定の根拠を表す。
+    """
+
+    ONE_MONTH_STRONG_CODE_DEMAND = "ONE_MONTH_STRONG_CODE_DEMAND"
+    SUSTAINED_LOW_CODE_DEMAND = "SUSTAINED_LOW_CODE_DEMAND"
+    SUSTAINED_LOW_TOTAL_DEMAND = "SUSTAINED_LOW_TOTAL_DEMAND"
+    SUSTAINED_OVERAGE = "SUSTAINED_OVERAGE"
+    CREDIT_LIMIT_REACHED = "CREDIT_LIMIT_REACHED"
+    CREDIT_SETTING_UNKNOWN = "CREDIT_SETTING_UNKNOWN"
+    PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT = (
+        "PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT"
+    )
+    STANDARD_WITH_CREDIT_CHEAPER = "STANDARD_WITH_CREDIT_CHEAPER"
+    HIGH_SUPPLEMENTARY_USAGE = "HIGH_SUPPLEMENTARY_USAGE"
+    REVIEW_NON_CODE_USAGE = "REVIEW_NON_CODE_USAGE"
+    RECENT_MEMBER = "RECENT_MEMBER"
+    RECENT_SEAT_CHANGE = "RECENT_SEAT_CHANGE"
+    PARTIAL_MONTH = "PARTIAL_MONTH"
+    INSUFFICIENT_HISTORY = "INSUFFICIENT_HISTORY"
+    IDENTITY_CONFLICT = "IDENTITY_CONFLICT"
+    CAPACITY_SIGNAL_UNAVAILABLE = "CAPACITY_SIGNAL_UNAVAILABLE"
+    DATA_CONFIDENCE_LOW = "DATA_CONFIDENCE_LOW"
 
 
 # scopeに置ける値。スカラーと、スカラーのみからなる列挙に限る
