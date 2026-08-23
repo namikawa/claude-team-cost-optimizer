@@ -15,8 +15,8 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.3.2
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
       - run: uv sync --all-groups
       - run: uv run ruff check .
       - run: uv run pytest
@@ -27,8 +27,8 @@ jobs:
     # OS に依らない内容なので ubuntu だけで見る
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.3.2
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
       - run: uv build --out-dir dist
       - name: パッケージの全ファイルが wheel に入っているか
         # 手書きの一覧は実体からずれる。git が知っている src/seat_analyzer/ 配下の

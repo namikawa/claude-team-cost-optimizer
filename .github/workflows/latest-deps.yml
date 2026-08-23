@@ -16,8 +16,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v8.3.2
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
       # --upgrade でロックを無視して最新解決にする。書き換わった uv.lock は
       # このジョブの中だけのもので、コミットはしない
       - run: uv sync --all-groups --upgrade
