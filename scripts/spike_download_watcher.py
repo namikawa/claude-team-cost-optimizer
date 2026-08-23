@@ -1,5 +1,7 @@
-#!/usr/bin/env python3
-"""通常ブラウザから取得したSpend CSVを検出する一時スクリプト。"""
+"""通常ブラウザから取得したSpend CSVを検出する一時スクリプト。
+
+実行は `uv run python scripts/spike_download_watcher.py`（直接実行はしない）。
+"""
 
 from __future__ import annotations
 

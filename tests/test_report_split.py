@@ -15,6 +15,7 @@ import pytest
 from seat_analyzer.analyze import analyze
 from seat_analyzer.cli import main
 from seat_analyzer.report import DETAILS, REPORT, write_all
+from seat_analyzer.report.format import _sort_for_display
 from seat_analyzer.report.markdown import (
     _code_diff_md,
     _detail_table_md,
@@ -30,7 +31,6 @@ from seat_analyzer.report.markdown import (
     _user_legend_md,
     _user_table_md,
 )
-from seat_analyzer.report.format import _sort_for_display
 from seat_analyzer.report.stats import distributions
 from seat_analyzer.report.text import GROUP_AXES, STATUS_ORDER
 

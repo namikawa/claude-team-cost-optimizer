@@ -76,7 +76,7 @@ def _git_repo(root: Path) -> dict:
 def _git_ignores(root: Path, env: dict, rel: str) -> bool:
     """git がそのパスを除外するか。"""
     return subprocess.run(
-        ["git", "check-ignore", "-q", rel], cwd=root, env=env, capture_output=True,
+        ["git", "check-ignore", "-q", rel], cwd=root, env=env, capture_output=True, check=False,
     ).returncode == 0
 
 

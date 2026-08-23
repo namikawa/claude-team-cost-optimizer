@@ -22,7 +22,8 @@ def unmatched_models(models, cfg: dict) -> list[str]:
     呼び出し側で警告に載せる。
     """
     patterns = [str(p["match"]).lower() for p in cfg["model_prices"]["patterns"]]
-    names = {str(m) for m in models if m == m and m is not None}
+    # m == m は NaN 判定のイディオム（NaN は自分自身と等しくない）。自己比較は意図的
+    names = {str(m) for m in models if m == m and m is not None}  # noqa: PLR0124
     return sorted(n for n in names if not any(p in n.lower() for p in patterns))
 
 
@@ -76,9 +77,9 @@ def resolve_cost_basis(df: pd.DataFrame, cfg: dict) -> tuple[str, list[str]]:
     comp_total = float(df["computed_cost_usd"].sum())
     if comp_total > 0 and net_total < 0.5 * comp_total:
         return "computed", [
-            f"cost_basis=auto: net_spend 合計 (${net_total:,.0f}) が API等価計算 "
-            f"(${comp_total:,.0f}) の50%未満のため、spend列を実課金額と判定し "
-            "computed（tokens×単価）を需要指標に採用しました。"
+            (f"cost_basis=auto: net_spend 合計 (${net_total:,.0f}) が API等価計算 "
+             f"(${comp_total:,.0f}) の50%未満のため、spend列を実課金額と判定し "
+             "computed（tokens×単価）を需要指標に採用しました。")
         ]
     return "net_spend", []
 

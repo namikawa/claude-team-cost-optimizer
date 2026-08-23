@@ -33,7 +33,7 @@ from .credits import (
 from .midmonth import _compute_trend, _diff_active, _midmonth_diffs
 
 # モデル名を表示用に短縮する（claude-opus-4-8 → Opus 4.8, claude-fable-5 → Fable 5）
-_MODEL_SHORT_RE = re.compile(r"(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?", re.I)
+_MODEL_SHORT_RE = re.compile(r"(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?", re.IGNORECASE)
 
 
 def _short_model(name: str) -> str:
@@ -203,8 +203,8 @@ def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict,
         return info_result.warnings
     return [
         *info_result.warnings,
-        f"members-info.csv に未登録のユーザ {len(unregistered)} 名: {unregistered}"
-        "（部署・チーム・職種が空欄で集計されるため追記を推奨）",
+        (f"members-info.csv に未登録のユーザ {len(unregistered)} 名: {unregistered}"
+         "（部署・チーム・職種が空欄で集計されるため追記を推奨）"),
     ]
 
 
@@ -528,7 +528,7 @@ def _seat_summary(users: pd.DataFrame, cfg: dict) -> dict:
     n_standard = int(seats.get("standard", 0))
     n_premium = int(seats.get("premium", 0))
     return {
-        "n_members": int(len(users)),
+        "n_members": len(users),
         "n_standard": n_standard,
         "n_premium": n_premium,
         "n_unassigned": int(seats.get("unassigned", 0)),
@@ -543,8 +543,8 @@ def _warn_unknown_models(models, cfg: dict) -> list[str]:
     if not unknown_models:
         return []
     return [
-        f"model_prices: 単価表に一致しないモデルに default 単価を適用: {unknown_models}。"
-        "config.yaml > model_prices にパターンを追記してください"
+        (f"model_prices: 単価表に一致しないモデルに default 単価を適用: {unknown_models}。"
+         "config.yaml > model_prices にパターンを追記してください")
     ]
 
 
@@ -569,8 +569,8 @@ def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
         "seat_price_standard_usd": float(cfg["seats"]["standard"]["price_usd"]),
         "seat_price_premium_usd": float(cfg["seats"]["premium"]["price_usd"]),
         "total_api_cost_usd": round(float(month_agg["api_cost"].sum()), 2),
-        "n_change_recommended": int(len(to_change)),
-        "n_watching": int(len(watching)),
+        "n_change_recommended": len(to_change),
+        "n_watching": len(watching),
         "n_cap_suspected": int(users["cap_suspected"].sum()),
         "total_billed_extra_usd": round(
             float(users["billed_extra_usd"].fillna(0).sum())
@@ -595,8 +595,8 @@ def _warn_active_unassigned(users: pd.DataFrame, cost_col: str) -> list[str]:
     if not active:
         return []
     return [
-        f"シート未割当なのに利用実績があるユーザ {len(active)} 名: {active[:5]}"
-        "（members の更新漏れ、または月中のシート解除の可能性）"
+        (f"シート未割当なのに利用実績があるユーザ {len(active)} 名: {active[:5]}"
+         "（members の更新漏れ、または月中のシート解除の可能性）")
     ]
 
 

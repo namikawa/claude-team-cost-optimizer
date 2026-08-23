@@ -304,7 +304,7 @@ def test_single_and_empty_affiliation_unchanged(make_input, cfg):
     assert rows["基盤チーム"]["n"] == 1.0
     assert rows["（未設定）"]["n"] == 1.0
     # （未設定）は常に最後
-    assert list(r["group"] for r in _group_summary_rows(result.users, result.summary, "team"))[-1] == "（未設定）"
+    assert [r["group"] for r in _group_summary_rows(result.users, result.summary, "team")][-1] == "（未設定）"
 
 
 def test_markdown_escapes_pipe_and_newline(make_input, cfg, tmp_path):

@@ -128,7 +128,7 @@ def _compute_e_distribution(users: pd.DataFrame, cfg: dict) -> dict | None:
         allowance_mid = float(seat_cfg["allowance_usd"]["mid"]) if seat_cfg else None
         ratio = round(median / allowance_mid, 1) if allowance_mid else None
         groups.append({
-            "seat": seat, "rows": rows, "count": int(len(g)),
+            "seat": seat, "rows": rows, "count": len(g),
             "median": median,
             "min": round(float(es.min()), 2),
             "max": round(float(es.max()), 2),
@@ -244,12 +244,12 @@ def _credit_reach_preview(users: pd.DataFrame, days_observed: int, days_in_month
                 if rate > 0:
                     d_star = days_observed + remaining / rate
                     if d_star <= days_in_month:
-                        eta_day = int(math.ceil(d_star))
+                        eta_day = math.ceil(d_star)
             elif days_observed > 0:
                 # 月初からの平均ペースへフォールバック（billed > 0 は上で保証済み）
                 d_star = kappa * days_observed / billed
                 if d_star <= days_in_month:
-                    eta_day = int(math.ceil(d_star))
+                    eta_day = math.ceil(d_star)
         rows.append({
             "email": r["email"], "billed": round(billed, 2), "kappa": round(float(kappa), 2),
             "remaining": round(remaining, 2), "reached": reached, "eta_day": eta_day,

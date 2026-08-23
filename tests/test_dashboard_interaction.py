@@ -50,14 +50,14 @@ def dashboard(cfg, make_input, tmp_path):
 
 def _body(html: str) -> str:
     """本文だけを取り出す（CSS と JS の実体には同じクラス名が並ぶため）。"""
-    head, _, body = html.partition("</head>")
+    _, _, body = html.partition("</head>")
     assert body, "head と body を切り分けられません"
     return body
 
 
 def _card(body: str, heading: str) -> str:
     """見出しで指したカード1枚分の HTML（カードは入れ子にならない）。"""
-    found = re.search(rf"<h2>{re.escape(heading)}</h2>.*?</section>", body, re.S)
+    found = re.search(rf"<h2>{re.escape(heading)}</h2>.*?</section>", body, re.DOTALL)
     assert found, f"カードが見つかりません: {heading}"
     return found.group(0)
 
@@ -97,7 +97,7 @@ def _css_rule(selector: str, source: str | None = None) -> str:
     「そのトークンを実際に使っている」ことは誰も見ていない。使う側をここで固定する。
     """
     source = _DASHBOARD_CSS if source is None else source
-    found = re.search(rf"(?m)^[ \t]*{re.escape(selector)}\s*\{{(.*?)\}}", source, re.S)
+    found = re.search(rf"(?m)^[ \t]*{re.escape(selector)}\s*\{{(.*?)\}}", source, re.DOTALL)
     assert found, f"CSS 規則が見つかりません: {selector}"
     return found.group(1)
 
@@ -191,7 +191,7 @@ def test_the_html_ships_no_control_that_the_script_did_not_place(dashboard):
     classes = re.findall(r'<button[^>]*class="([^"]+)"', body)
     assert classes and all(c.startswith(("tab", "theme-btn")) for c in classes)
     # select はツールバーの中にしか無い（ツールバーごと html.js の下で出す）
-    inside = re.findall(r'<div class="toolbar">(.*?)</div>', body, re.S)
+    inside = re.findall(r'<div class="toolbar">(.*?)</div>', body, re.DOTALL)
     assert body.count("<select") == sum(chunk.count("<select") for chunk in inside) == 1
 
 
@@ -256,7 +256,7 @@ def test_numeric_columns_are_marked_for_the_sorter(dashboard):
     「クリックしたのに大きい順にならない」形で静かに変わる。
     """
     head = re.search(r"<h2>推奨一覧</h2>.*?<thead><tr>(.*?)</tr>",
-                     _body(dashboard), re.S).group(1)
+                     _body(dashboard), re.DOTALL).group(1)
     cells = re.findall(r"<th([^>]*)>([^<]+)</th>", head)
     numeric = {label for attrs, label in cells if 'class="num"' in attrs}
     assert numeric == {"API換算需要", "実課金", "Std時", "Prem時", "削減/月"}
@@ -290,7 +290,7 @@ def test_the_script_block_is_exactly_the_static_asset(dashboard):
 
     等しいことが、この HTML の JS にデータが1文字も混ざっていないことの検査になる。
     """
-    assert re.findall(r"<script>(.*?)</script>", dashboard, re.S) == [_DASHBOARD_JS]
+    assert re.findall(r"<script>(.*?)</script>", dashboard, re.DOTALL) == [_DASHBOARD_JS]
 
 
 def test_hostile_values_do_not_reach_the_script(cfg, make_input, tmp_path):
@@ -301,7 +301,7 @@ def test_hostile_values_do_not_reach_the_script(cfg, make_input, tmp_path):
     out = tmp_path / "dashboard.html"
     write_html(analyze(input_dir, "2026-06", cfg, org="org-a"), out)
     html = out.read_text(encoding="utf-8")
-    assert re.findall(r"<script>(.*?)</script>", html, re.S) == [_DASHBOARD_JS]
+    assert re.findall(r"<script>(.*?)</script>", html, re.DOTALL) == [_DASHBOARD_JS]
     assert "</script>\"x@x.jp" not in html            # 本文側もエスケープされている
 
 

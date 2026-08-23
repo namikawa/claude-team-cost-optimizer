@@ -11,6 +11,8 @@ from pathlib import Path
 import pytest
 
 from seat_analyzer import cli, discussion, leakcheck, report
+from seat_analyzer.cli import main
+from seat_analyzer.config import load_config
 from seat_analyzer.report import (
     DASHBOARD,
     DETAILS,
@@ -20,8 +22,6 @@ from seat_analyzer.report import (
     WriteResult,
     document,
 )
-from seat_analyzer.cli import main
-from seat_analyzer.config import load_config
 
 from .conftest import (
     CONFIG,

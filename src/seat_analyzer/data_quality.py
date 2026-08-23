@@ -326,7 +326,7 @@ def _seat_type_issues(
         f"シート種別を判別できないメンバーが {len(unknown)} 名います"
         f"（値に premium/standard/unassigned を含まない。例: {', '.join(emails)}）。"
         "シート不明として集計され、シート判定ができません",
-        org, month, members=int(len(unknown)), emails=emails,
+        org, month, members=len(unknown), emails=emails,
     )]
 
 

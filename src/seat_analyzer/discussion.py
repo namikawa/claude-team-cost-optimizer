@@ -178,7 +178,7 @@ def _prev_output_month(org_output: Path, month: str) -> str | None:
 # 見出し行そのもの（行頭〜行末）で照合する。部分文字列だと、組織名は # を許すため
 # タイトル行（「… — <組織名> — <月>」）や表のセルに同じ文字列が入ると誤一致する。
 _ALL_USERS_HEADING = "## 全ユーザ"
-_ALL_USERS_HEADING_RE = re.compile(rf"^{re.escape(_ALL_USERS_HEADING)}[ \t]*$", re.M)
+_ALL_USERS_HEADING_RE = re.compile(rf"^{re.escape(_ALL_USERS_HEADING)}[ \t]*$", re.MULTILINE)
 
 
 def _details_material(path: Path, month: str, report_body: str) -> str | None:

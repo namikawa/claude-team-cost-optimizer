@@ -29,10 +29,10 @@ from .format import (
 from .naming import PREVIEW, REPORT
 from .stats import KIND_USD, Distribution
 from .text import (
-    PREVIEW_ORDER,
-    STATUS_ORDER,
     _CREDIT_MODE_LABEL,
     _TEXT,
+    PREVIEW_ORDER,
+    STATUS_ORDER,
     _cap_legend_supplement,
     _disabled_cost_note,
 )
@@ -298,8 +298,8 @@ def _code_diff_md(code_diff: dict | None) -> str:
             prs = r["prs_delta"]
             cells += f" {_fmt_delta_int(prs) if prs is not None else '—'} |"
         lines.append(cells)
-    lines += ["", "- LoC 増分が止まったユーザは利用の谷や案件の切れ目の可能性もあるため、"
-              "スペンドの停止疑いと合わせて解釈してください"]
+    lines += ["", ("- LoC 増分が止まったユーザは利用の谷や案件の切れ目の可能性もあるため、"
+                   "スペンドの停止疑いと合わせて解釈してください")]
     return "\n".join(lines)
 
 
@@ -378,10 +378,10 @@ def _e_distribution_md(edist: dict | None) -> str:
             )
         lines.append("")
     lines += [
-        "- E は各ユーザが込み枠から実際に引き出せた量の実測。引き出せる量は利用の形"
-        "（毎日安定かバーストか）に依存するため個人差が大きい",
-        "- config.yaml > seats.*.allowance_usd のシナリオ見直しの材料になる"
-        "（バースト型ユーザでは過小評価になる点に注意）",
+        ("- E は各ユーザが込み枠から実際に引き出せた量の実測。引き出せる量は利用の形"
+         "（毎日安定かバーストか）に依存するため個人差が大きい"),
+        ("- config.yaml > seats.*.allowance_usd のシナリオ見直しの材料になる"
+         "（バースト型ユーザでは過小評価になる点に注意）"),
     ]
     return "\n".join(lines)
 
@@ -398,8 +398,8 @@ def _grant_candidates_md(candidates: list, cap_usd) -> str:
         )
     lines += [
         "",
-        f"- 昇格の前に、まず上限つき追加クレジット（推奨初期上限 {_fmt_usd(cap_usd)}）を付与し、"
-        "1ヶ月の課金実測で判断することを推奨します",
+        (f"- 昇格の前に、まず上限つき追加クレジット（推奨初期上限 {_fmt_usd(cap_usd)}）を付与し、"
+         "1ヶ月の課金実測で判断することを推奨します"),
     ]
     return "\n".join(lines)
 
@@ -645,10 +645,10 @@ def write_org_summary(results: list[AnalysisResult], output_dir: str | Path) -> 
             f"| {s['n_change_recommended']} 名 | {_fmt_usd(s['est_monthly_saving_usd'])} |"
         )
     lines += [
-        f"| **合計** | **{int(totals['n_members'])} 名** "
-        f"| **{_fmt_usd(totals['seat_cost_now_usd'])}** | **{_fmt_usd(totals['total_api_cost_usd'])}** "
-        f"| **{_fmt_usd(totals['total_billed_extra_usd'])}** | **{_fmt_usd(totals['org_service_cost_usd'])}** "
-        f"| **{int(totals['n_change_recommended'])} 名** | **{_fmt_usd(totals['est_monthly_saving_usd'])}** |",
+        (f"| **合計** | **{int(totals['n_members'])} 名** "
+         f"| **{_fmt_usd(totals['seat_cost_now_usd'])}** | **{_fmt_usd(totals['total_api_cost_usd'])}** "
+         f"| **{_fmt_usd(totals['total_billed_extra_usd'])}** | **{_fmt_usd(totals['org_service_cost_usd'])}** "
+         f"| **{int(totals['n_change_recommended'])} 名** | **{_fmt_usd(totals['est_monthly_saving_usd'])}** |"),
         "",
         f"各組織の詳細は `reports/<組織>/{month}/{REPORT.name(month, '<組織>')}` を参照。",
         "",

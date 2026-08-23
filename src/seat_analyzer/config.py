@@ -125,7 +125,8 @@ def _read_mapping(path: Path, *, allow_empty: bool) -> dict:
     if data is None and allow_empty:
         return {}
     if not isinstance(data, dict):
-        raise ValueError(f"{path} の内容が設定のマッピングではありません")
+        # 設定の不正は ValueError に統一する（種類を変えると CLI のメッセージと終了コードが変わる）
+        raise ValueError(f"{path} の内容が設定のマッピングではありません")  # noqa: TRY004
     return data
 
 
