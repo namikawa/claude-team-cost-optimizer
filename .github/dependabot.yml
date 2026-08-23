@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # GitHub Actions のバージョン更新。PR の本数は上流のリリース回数で決まり、
+  # チェック間隔では変わらない（間隔が決めるのは知るまでの遅延だけ）。CVE 由来の
+  # 更新は alerts が別経路で動かすため、ここが受け持つのは急がない更新に限られる。
+  # まとめて 1 PR にして週 1 本に収める
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
