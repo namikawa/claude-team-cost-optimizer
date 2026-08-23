@@ -1,0 +1,30 @@
+name: latest-deps
+
+# 利用者は `uv tool install` でタグから導入するため、uv.lock ではなく PyPI の
+# 最新解決で依存が入る。ロックを固定したまま緑でも、利用者の環境では新しい依存で
+# 動いていることになる。その差を先に踏むためのジョブ。
+#
+# ci.yml の package ジョブも wheel を素の解決で入れて動かすが、確かめるのは
+# サンプルの一連の実行までで、レポートのバイト一致は見ていない。ここでは
+# テスト全体を最新解決で回す。時間駆動なので、PR が無い期間の上流の変化も拾う。
+on:
+  schedule:
+    - cron: "0 22 * * 0" # 毎週月曜 07:00 JST
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.3.2
+      # --upgrade でロックを無視して最新解決にする。書き換わった uv.lock は
+      # このジョブの中だけのもので、コミットはしない
+      - run: uv sync --all-groups --upgrade
+      - name: 解決されたバージョン
+        run: uv pip list
+      # lint はここでは走らせない。ruff は新しい版で既定の規則が増えるため、
+      # 固定を外すと利用者に関係のない指摘でこのジョブが赤くなり、本来見たい
+      # 「上流の変化で動かなくなった」の合図が埋もれる。lint は ci.yml が
+      # ロックした版で担保する
+      - run: uv run pytest
