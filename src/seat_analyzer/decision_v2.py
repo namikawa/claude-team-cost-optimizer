@@ -1,21 +1,22 @@
-"""V2判定の昇格ルール（Standard→Premium）を決める純粋なモジュール。
+"""V2判定のシート変更ルール（昇格・降格）を決める純粋なモジュール。
 
-昇格の判断は2つの軸でできている:
+判断は2つの軸でできている:
 
-- 経済軸: Premium へ変えたら金額として見合うか。シートの込み枠は product をまたいで
+- 経済軸: シートを変えたら金額として見合うか。シートの込み枠は product をまたいで
   共通なので、全 product 合算の需要と実課金で評価する
-- 分類軸: その需要の中身が Code か。経済軸を満たした候補を「自動で昇格を推奨する」ものと
-  「アサインそのものを人が見直す（REVIEW_ASSIGNMENT）」ものへ振り分けるゲートにする
+- 分類軸: その需要の中身が Code か。昇格では経済軸を満たした候補を「自動で昇格を推奨する」
+  ものと「アサインそのものを人が見直す（REVIEW_ASSIGNMENT）」ものへ振り分けるゲートに
+  なり、降格では Code 実務者の席を自動では落とさないための歯止めになる
 
 設定は読み込まない。検証済みの config と、呼び出し側が組み立てた観測（SubjectHistory）
 だけを受けて結論を返す（product_usage が policy を引数で受けるのと同じ流儀）。ファイルを
 読まず、書かず、現在時刻も参照しないため、同じ入力からは常に同じ結論と同じ理由の並びを
 返す。
 
-扱うのは Standard の昇格だけで、降格・追加クレジットの提案は持たない（credit_action は
-常に CreditAction.NONE）。current seat が Standard 以外のときどう扱うか（unknown を
-判定しない等）は呼び出し側の責務なので、ここでは ValueError にする。分析パイプライン・
-出力へは未結線。
+扱うのはシートの昇格（Standard→Premium）と降格（Premium→Standard）で、追加クレジットの
+提案は持たない（credit_action は常に CreditAction.NONE）。判定できる現シート以外を
+どう扱うか（unknown を判定しない等）は呼び出し側の責務なので、ここでは ValueError に
+する。分析パイプライン・出力へは未結線。
 
 StrEnum は文字列として等値になり、語彙をまたいだ == が成立する（設計書 §12.1）。型では
 混同を防げないので、境界の値オブジェクト DecisionV2 が受け取る語彙を isinstance で
@@ -37,6 +38,7 @@ from .seat_changes import SeatChangeEvent, UnclassifiedObservation
 
 # 判定の対象になる現シート。これ以外は呼び出し側の責務（この関数には持ち込まない）
 _STANDARD = "standard"
+_PREMIUM = "premium"
 
 # 加入を表す event 種別（seat_changes.EVENT_TYPES の1つ）。加入直後は「直近のシート変更」
 # とは別の理由コードで表す
@@ -63,6 +65,8 @@ _REASON_ORDER = (
     ReasonCode.RECENT_MEMBER,
     ReasonCode.RECENT_SEAT_CHANGE,
     ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
+    ReasonCode.SUSTAINED_LOW_CODE_DEMAND,
+    ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,
     ReasonCode.REVIEW_NON_CODE_USAGE,
     # 補助: 主理由を補強する観測
     ReasonCode.CREDIT_LIMIT_REACHED,
@@ -265,14 +269,20 @@ class DecisionV2:
 
 
 class _Settings(NamedTuple):
-    """昇格判定が使う設定値だけを取り出したもの。"""
+    """判定が使う設定値だけを取り出したもの。
+
+    必要履歴と Code 需要の閾値は昇格・降格で別の値なので、どちらの向きの設定か
+    名前で分かるようにする（min/max は比較の向きも表す）。
+    """
 
     standard_price_usd: float
     premium_price_usd: float
     standard_allowance_usd: dict[str, float]
     premium_allowance_usd: dict[str, float]
-    min_complete_months: int
+    upgrade_min_complete_months: int
     min_code_demand_usd: float
+    downgrade_min_complete_months: int
+    max_code_demand_usd: float
     min_saving_usd: float
     recent_seat_change_days: int
     cap_tolerance_usd: float
@@ -286,6 +296,7 @@ def _settings(cfg: Mapping) -> _Settings:
     """
     seats = cfg["seats"]
     upgrade = cfg["decision_v2"]["upgrade"]
+    downgrade = cfg["decision_v2"]["downgrade"]
     return _Settings(
         standard_price_usd=float(seats["standard"]["price_usd"]),
         premium_price_usd=float(seats["premium"]["price_usd"]),
@@ -297,8 +308,10 @@ def _settings(cfg: Mapping) -> _Settings:
             scenario: float(seats["premium"]["allowance_usd"][scenario])
             for scenario in _SCENARIOS
         },
-        min_complete_months=int(upgrade["min_complete_months"]),
+        upgrade_min_complete_months=int(upgrade["min_complete_months"]),
         min_code_demand_usd=float(upgrade["min_code_demand_usd"]),
+        downgrade_min_complete_months=int(downgrade["min_complete_months"]),
+        max_code_demand_usd=float(downgrade["max_code_demand_usd"]),
         min_saving_usd=float(cfg["decision_v2"]["min_assignment_saving_usd"]),
         recent_seat_change_days=int(cfg["decision_v2"]["recent_seat_change_days"]),
         cap_tolerance_usd=float(cfg["usage_credits"]["cap_tolerance_usd"]),
@@ -336,7 +349,7 @@ def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
             DecisionStatus.NO_DECISION, SeatAction.NONE, [ReasonCode.PARTIAL_MONTH]
         )
     complete_months = sum(1 for month in subject.months if month.complete)
-    if complete_months < settings.min_complete_months:
+    if complete_months < settings.upgrade_min_complete_months:
         return _decision(
             DecisionStatus.NO_DECISION,
             SeatAction.NONE,
@@ -386,6 +399,100 @@ def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
         reasons.append(ReasonCode.HIGH_SUPPLEMENTARY_USAGE)
     return _decision(
         DecisionStatus.RECOMMENDED, SeatAction.UPGRADE_TO_PREMIUM, reasons
+    )
+
+
+def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
+    """Premium ユーザ1人ぶんの降格判定（設計書 §12.5・§12.7）。
+
+    上から順に見て、最初に該当したところで確定する:
+
+    1. identity conflict・部分月・履歴不足は判定しない（hard blocker）
+    2. 直近のシート変更・加入・分類できない観測に重なるユーザは観察へ倒す
+    3. 評価窓に実課金のある月があれば現状維持（Premium の込み枠を超えた観測がある）
+    4. Code 需要が確定しない月があれば観察、Code 需要が高い月があれば現状維持
+    5. Code 需要が低く supplementary が高いならアサインの見直し
+    6. 経済軸が評価窓の全月で成立すれば降格推奨、そうでなければ現状維持
+
+    誤った降格は業務を止めるため、判断は対象月だけでなく評価窓（直近の完全月
+    `downgrade.min_complete_months` ヶ月）の全月で成立することを要求する。
+
+    current seat が Premium 以外のときは ValueError。unknown・unassigned・standard の
+    振り分けは呼び出し側が決める（decide_upgrade と同じ流儀。ここで既定の結論を持つと、
+    呼び出し側が分岐を書き忘れたことに気づけない）。
+    """
+    if subject.current_seat != _PREMIUM:
+        raise ValueError(
+            f"降格判定の対象は current_seat が {_PREMIUM!r} のユーザだけです: "
+            f"{subject.current_seat!r}"
+        )
+    settings = _settings(cfg)
+
+    if subject.identity_conflict:
+        return _decision(
+            DecisionStatus.NO_DECISION, SeatAction.NONE, [ReasonCode.IDENTITY_CONFLICT]
+        )
+    target = subject.target
+    if not target.complete:
+        return _decision(
+            DecisionStatus.NO_DECISION, SeatAction.NONE, [ReasonCode.PARTIAL_MONTH]
+        )
+    complete = [month for month in subject.months if month.complete]
+    if len(complete) < settings.downgrade_min_complete_months:
+        return _decision(
+            DecisionStatus.NO_DECISION,
+            SeatAction.NONE,
+            [ReasonCode.INSUFFICIENT_HISTORY],
+        )
+
+    recent = _recent_reasons(subject, target.end, settings.recent_seat_change_days)
+    if recent:
+        return _decision(DecisionStatus.OBSERVE, SeatAction.NONE, recent)
+
+    # 評価窓は直近の完全月だけを新しい順に採る（間に部分月が挟まっても飛ばす）。必要な
+    # 長さは上の履歴不足の検査で保証されている
+    window = complete[-settings.downgrade_min_complete_months:]
+
+    # Premium での実課金は、需要が Premium の込み枠を超えた観測なので降格の候補にしない。
+    # 追加クレジット上限への到達は実課金の発生を含意する（_credit_reached と同じ理屈）ため、
+    # 上限到達の独立した検査は持たない。負の実課金（返金）は課金なしとして扱う
+    if any(month.billed_usd > 0.0 for month in window):
+        return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
+
+    if any(month.code_demand_usd is None for month in window):
+        # Code 需要が低いことを証明できないまま自動で降格しない（昇格側の None と同じ思想）
+        return _decision(
+            DecisionStatus.OBSERVE, SeatAction.NONE, [ReasonCode.DATA_CONFIDENCE_LOW]
+        )
+    if any(month.code_demand_usd >= settings.max_code_demand_usd for month in window):
+        # Code 実務者の席は自動で落とさない
+        return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
+
+    if target.supplementary_high:
+        # Code が低く supplementary が高いユーザは総需要が大きく、経済軸が成立しないことが
+        # 多い。経済軸より先に見るのは、その場合に現状維持で終わらせず「シートではなく
+        # アサインを人が見直す」To-Do として出すため（§12.5）
+        return _decision(
+            DecisionStatus.RECOMMENDED,
+            SeatAction.REVIEW_ASSIGNMENT,
+            [ReasonCode.REVIEW_NON_CODE_USAGE, ReasonCode.HIGH_SUPPLEMENTARY_USAGE],
+        )
+
+    # 評価窓の実課金は 0 と確定しているので、観測実課金による下限拘束（V1 の
+    # analyze._costs_for の premium 分岐に相当）は自然に無効になり、需要だけの純モデル
+    # 判定になる
+    if not all(_model_favors_standard(month, settings) for month in window):
+        return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
+
+    return _decision(
+        DecisionStatus.RECOMMENDED,
+        SeatAction.DOWNGRADE_TO_STANDARD,
+        [
+            ReasonCode.SUSTAINED_LOW_CODE_DEMAND,
+            ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,
+            # 5時間枠・週次上限は観測できない。この理由だけで保留にはせず情報として付ける（§12.3）
+            ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
+        ],
     )
 
 
@@ -499,6 +606,30 @@ def _model_favors_premium(month: MonthObservation, settings: _Settings) -> bool:
             agreeing += 1
         if scenario == "mid":
             mid_saving = standard_cost - premium_cost
+    return agreeing >= _MIN_AGREEING_SCENARIOS and _saving_qualifies(
+        mid_saving, settings
+    )
+
+
+def _model_favors_standard(month: MonthObservation, settings: _Settings) -> bool:
+    """純モデル経路の鏡像: 需要だけで Standard が有利か（降格の経済軸）。
+
+    条件の形は _model_favors_premium と同じで、比較の向きだけが逆。複数のシナリオで
+    Standard が安く、かつ mid の削減見込みが閾値以上のときだけ候補にする。
+    """
+    agreeing = 0
+    mid_saving = 0.0
+    for scenario in _SCENARIOS:
+        standard_cost = settings.standard_price_usd + max(
+            0.0, month.total_demand_usd - settings.standard_allowance_usd[scenario]
+        )
+        premium_cost = settings.premium_price_usd + max(
+            0.0, month.total_demand_usd - settings.premium_allowance_usd[scenario]
+        )
+        if standard_cost < premium_cost:
+            agreeing += 1
+        if scenario == "mid":
+            mid_saving = premium_cost - standard_cost
     return agreeing >= _MIN_AGREEING_SCENARIOS and _saving_qualifies(
         mid_saving, settings
     )

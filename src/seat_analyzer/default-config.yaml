@@ -47,11 +47,15 @@ decision_v2:
   # 降格側を重くする。
   upgrade:
     min_complete_months: 1
-    # 昇格候補の需要が Code 主体と言えるための最小の Code 需要（USD/月）。シート差額と
-    # 同額。これを下回る候補は自動で昇格させず、アサインの見直しとして人へ回す。
-    min_code_demand_usd: 100.0
+    # 昇格候補の需要が Code 主体と言えるための最小の Code 需要（USD/月）。シート差額
+    # ($100) 程度の需要は軽度の利用でも生じうるため、Code 主体の証明には差額の2倍を
+    # 要求する。これを下回る候補は自動で昇格させず、アサインの見直しとして人へ回す。
+    min_code_demand_usd: 200.0
   downgrade:
     min_complete_months: 2
+    # 降格候補の Code 需要が「低い」と言える上限（USD/月）。これ以上の Code 需要が
+    # 続く Premium ユーザは自動降格の対象にしない。
+    max_code_demand_usd: 200.0
   # 「直近のシート変更」とみなす日数。シート変更 event の区間がこの窓（分析月末から
   # 遡る）に重なるユーザは自動判定せず観察に倒す。
   recent_seat_change_days: 28

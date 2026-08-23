@@ -685,7 +685,7 @@ low/mid/highは引き続きscenario stabilityとして出力する。
 decision_v2:
   upgrade:
     min_complete_months: 1
-    min_code_demand_usd: 100.0
+    min_code_demand_usd: 200.0
 ```
 
 候補条件:
@@ -699,8 +699,10 @@ decision_v2:
    - 純モデル判定でPremiumが複数scenarioにおいて有利
 5. partial month、identity conflictではない
 
-条件3の閾値は`min_code_demand_usd`（既定はシート差額と同額）。Code需要を確定できない
-場合は、Code主体であることを証明できないまま自動で推奨しないため`OBSERVE`とする。
+条件3の閾値は`min_code_demand_usd`（既定はシート差額の2倍）。シート差額程度の需要は
+軽度の利用でも生じうるため、Code主体であることの証明には差額の2倍を要求する。Code需要を
+確定できない場合は、Code主体であることを証明できないまま自動で推奨しないため
+`OBSERVE`とする。
 
 条件4は費用の軸で、シートの込み枠がproduct共通であることから全product合算の需要と
 実課金で評価する。実課金を含む経路と純モデル経路はいずれも`min_assignment_saving_usd`
@@ -721,6 +723,7 @@ decision_v2:
 decision_v2:
   downgrade:
     min_complete_months: 2
+    max_code_demand_usd: 200.0
 ```
 
 候補条件:
@@ -732,7 +735,27 @@ decision_v2:
 5. 直近のシート変更ではない
 6. partial month、identity conflictではない
 
-Code需要が低くsupplementaryが高い場合は、自動downgradeせず`REVIEW_ASSIGNMENT`とする。
+条件2〜4の評価窓は直近の完全月`min_complete_months`ヶ月で、間に部分月が挟まる場合は
+飛ばして完全月だけを採る。誤ったdowngradeは業務を止めるため、条件は窓の全月で成立する
+ことを要求する。
+
+条件2の閾値は`max_code_demand_usd`（既定は昇格側の`min_code_demand_usd`と同額）。この値
+以上のCode需要が窓のいずれかの月にあるユーザは自動downgradeの対象にしない。Code需要を
+確定できない月がある場合は、低いことを証明できないまま自動でdowngradeしないため
+`OBSERVE`とする（upgradeのNA扱いと同じ）。
+
+条件4は窓のいずれかの月に実課金があれば候補から外す（Premiumでの実課金は、需要が
+Premiumの込み枠を超えた観測）。credit上限への到達は実課金の発生を伴うため、この検査に
+含まれる。
+
+条件3は費用の軸で、窓の実課金が0と確定しているため観測実課金による拘束は働かず、需要
+だけの純モデル判定になる。`min_assignment_saving_usd`以上のmid削減見込みと複数scenarioの
+一致を要求する点はupgradeと同じ。
+
+Code需要が低くsupplementaryが高い場合は、自動downgradeせず`REVIEW_ASSIGNMENT`とし、
+statusは`RECOMMENDED`とする（upgradeの条件3と同じ扱い）。この振り分けは条件3より先に
+行う。全product需要が大きく条件3が成立しない場合に現状維持で終わらせると、Premiumの枠を
+非Code利用で使っている状態が誰の作業としても残らないため。
 
 ### 12.6 Credit
 
@@ -2850,9 +2873,10 @@ decision_v2:
   enabled: false
   upgrade:
     min_complete_months: 1
-    min_code_demand_usd: 100.0
+    min_code_demand_usd: 200.0
   downgrade:
     min_complete_months: 2
+    max_code_demand_usd: 200.0
   recent_seat_change_days: 28
   min_assignment_saving_usd: 20.0
 
