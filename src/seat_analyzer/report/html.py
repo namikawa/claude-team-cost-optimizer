@@ -43,10 +43,10 @@ from .format import (
 )
 from .stats import KEY_API_COST, KIND_USD, Distribution, distributions, population
 from .text import (
+    _CREDIT_MODE_LABEL,
     GROUP_AXES,
     PREVIEW_ORDER,
     STATUS_ORDER,
-    _CREDIT_MODE_LABEL,
     _cap_legend_supplement,
     _disabled_cost_note,
     _embed_shared_text,

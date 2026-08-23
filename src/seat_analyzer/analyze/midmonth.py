@@ -313,13 +313,13 @@ def _compute_code_diff(input_dir: Path, month: str, cfg: dict) -> tuple[dict | N
     emails = sorted({e for s in snaps for e in s["loc"]})
     rows = []
     for email in emails:
-        loc_cum = [int(round(s["loc"].get(email, 0.0))) for s in snaps]
+        loc_cum = [round(s["loc"].get(email, 0.0)) for s in snaps]
         if all(c == 0 for c in loc_cum):
             continue   # 全時点で LoC 0 のユーザは省く
         loc_delta = loc_cum[-1] - loc_cum[-2]
         prs_delta = None
         if has_prs:
-            prs_cum = [int(round(s["prs"].get(email, 0.0))) for s in snaps]
+            prs_cum = [round(s["prs"].get(email, 0.0)) for s in snaps]
             prs_delta = prs_cum[-1] - prs_cum[-2]
         rows.append({"email": email, "loc_cum": loc_cum,
                      "loc_delta": loc_delta, "prs_delta": prs_delta})

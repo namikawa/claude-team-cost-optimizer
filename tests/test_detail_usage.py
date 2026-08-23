@@ -125,7 +125,7 @@ def _preview_detail_card(cfg, input_dir, tmp_path) -> str:
     out = tmp_path / "pv"
     write_preview(result, out)
     html = PREVIEW_DASHBOARD.path(out, "2026-06", "org-a").read_text(encoding="utf-8")
-    card = re.search(r"<h2>詳細利用状況（観測値）</h2>.*?</section>", html, re.S)
+    card = re.search(r"<h2>詳細利用状況（観測値）</h2>.*?</section>", html, re.DOTALL)
     assert card, "速報ダッシュボードに詳細利用状況のカードがありません"
     return card.group(0)
 

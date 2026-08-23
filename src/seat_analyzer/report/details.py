@@ -31,7 +31,7 @@ from .markdown import (
 )
 from .naming import DASHBOARD
 from .stats import distributions
-from .text import GROUP_AXES, STATUS_ORDER, _TEXT
+from .text import _TEXT, GROUP_AXES, STATUS_ORDER
 
 
 def _intro(result: AnalysisResult) -> str:

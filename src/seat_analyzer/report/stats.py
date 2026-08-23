@@ -151,7 +151,7 @@ def _describe(key: str, label: str, kind: str, values: pd.Series) -> Distributio
         key=key,
         label=label,
         kind=kind,
-        n=int(len(values)),
+        n=len(values),
         mean=float(values.mean()),
         median=float(values.median()),
         std=float(values.std(ddof=0)),

@@ -13,7 +13,7 @@ dependencies = [
 seat-analyzer = "seat_analyzer.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+dev = ["pytest>=8.0", "ruff>=0.16"]
 
 [build-system]
 requires = ["hatchling"]
@@ -21,6 +21,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/seat_analyzer"]
+
+[tool.ruff.lint.isort]
+# 再エクスポート（`X as X`）を他の名前と同じ import 文にまとめる。既定では別名ごとに
+# 1文へ切り出されるため、re-export が並ぶモジュールで同じ from 句が何度も繰り返される
+combine-as-imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

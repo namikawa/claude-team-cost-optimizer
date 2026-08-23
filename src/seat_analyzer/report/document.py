@@ -128,7 +128,8 @@ def _atomic_write(path: Path, text: str, *, expect: str | None = None) -> bool:
     mode = (path.stat().st_mode & 0o7777) if path.exists() else _default_file_mode()
     tmp: Path | None = None
     try:
-        f = tempfile.NamedTemporaryFile(
+        # 名前を close 後に os.replace で使うため with で開かない（直後に with f: で閉じる）
+        f = tempfile.NamedTemporaryFile(  # noqa: SIM115
             "w", encoding="utf-8", newline="\n", dir=path.parent,
             prefix=_TMP_PREFIX, suffix=".tmp", delete=False,
         )

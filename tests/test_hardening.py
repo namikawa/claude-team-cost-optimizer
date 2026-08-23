@@ -26,7 +26,6 @@ from seat_analyzer.report.html import (
 
 from .conftest import CONFIG, SPEND_HEADER, requires_posix_filenames, spend_row
 
-
 # --- 出力の安全性 ---
 
 def test_html_escapes_script_in_email(cfg, make_input, tmp_path):

@@ -29,7 +29,9 @@ from .naming import (
 from .usage_csv import write_usage_csv
 
 # 公開 API。write_preview_markdown は write_preview の内部実装なので含めない。
-__all__ = [
+# 並びは役割順（オーケストレーション → 出力形式ごとの writer → 考察 → 成果物名）。
+# 辞書順に並べ替えるとこの対応が読めなくなるため RUF022 は抑制する。
+__all__ = [  # noqa: RUF022
     "write_all",
     "write_preview",
     "write_markdown",

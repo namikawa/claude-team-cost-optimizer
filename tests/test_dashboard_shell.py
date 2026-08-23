@@ -187,7 +187,7 @@ def test_the_recommendation_table_repeats_the_column_legend(dashboards):
     """
     full, _ = dashboards
     panels = _panels(full)
-    footer = re.search(r'<div class="card-ft">(.*?)</div>', panels["actions"], re.S)
+    footer = re.search(r'<div class="card-ft">(.*?)</div>', panels["actions"], re.DOTALL)
     assert footer, "推奨一覧に脚注がありません"
     for shared in (
         "「Std時 / Prem時」= そのシートの場合の想定月額",
@@ -342,7 +342,7 @@ def _palettes() -> dict[str, dict[str, str]]:
 
 def _color_blocks() -> tuple[dict[str, str], list[dict[str, str]]]:
     """(Light のトークン, Dark ブロックごとのトークン)。判別は color-scheme 宣言。"""
-    css = re.sub(r"/\*.*?\*/", "", _DASHBOARD_CSS, flags=re.S)
+    css = re.sub(r"/\*.*?\*/", "", _DASHBOARD_CSS, flags=re.DOTALL)
     light: dict[str, str] = {}
     dark_blocks: list[dict[str, str]] = []
     # 入れ子の無いブロック（宣言だけを持つ塊）を拾う。@media の外枠は中に { を含む

@@ -539,7 +539,7 @@ def test_doctor_reports_unreadable_csv_as_structured_issue(make_input, capsys):
     (input_dir / "org-a" / "spend" / "spend_2026-07.csv").mkdir()
     assert _doctor(input_dir, "--month", "2026-07", "--format", "json") == 1
     issues = json.loads(capsys.readouterr().out)  # traceback で落ちず JSON が出る
-    assert [(i["severity"], i["code"]) for i in issues][0] == ("error", "MISSING_SPEND")
+    assert next((i["severity"], i["code"]) for i in issues) == ("error", "MISSING_SPEND")
     assert "読めません" in issues[0]["message"]
 
 

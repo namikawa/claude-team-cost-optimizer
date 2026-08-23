@@ -32,6 +32,7 @@ event が無いことを「変更が無かった」と読み替えられると�
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -301,7 +302,7 @@ def detect(snapshots: Iterable[MemberSnapshot]) -> SeatChanges:
     ]
     events: dict[_Key, SeatChangeEvent] = {}
     observations: dict[_ObservationKey, UnclassifiedObservation] = {}
-    for previous, current in zip(ordered, ordered[1:], strict=False):
+    for previous, current in itertools.pairwise(ordered):
         pair = _pair_changes(previous, current)
         for event in pair.events:
             events.setdefault(event.key, event)
