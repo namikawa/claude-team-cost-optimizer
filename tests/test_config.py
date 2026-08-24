@@ -212,6 +212,25 @@ def test_value_kind_mismatch_is_rejected(tmp_path, text, where, want):
         load_config(path)
 
 
+@pytest.mark.parametrize("section,canonical", [
+    ("spend", "user_id"),
+    ("members", "member_status"),
+    ("admin_organization", "org_credit_limit_usd"),
+    ("admin_users", "credit_enabled"),
+])
+def test_optional_column_needs_an_alias_definition(tmp_path, section, canonical):
+    """正準化する任意列は、入力CSVで省略できてもエイリアス定義そのものは必須。
+
+    定義を空にすると、その列を書いた入力があっても正準名へ写らず、値が黙って不明になる。
+    正準化する任意列を持つ全セクションで同じ検査が効くことを見る。
+    """
+    path = _override(tmp_path, f"columns:\n  {section}:\n    {canonical}: []\n")
+    with pytest.raises(
+        ValueError, match=f"columns.{section}.{canonical} のエイリアス定義がありません"
+    ):
+        load_config(path)
+
+
 @pytest.mark.parametrize("text,key", [
     # 同じセクションを2回書くと、先に書いた側が丸ごと消える
     ("decision:\n  hysteresis_months: 3\ndecision:\n  buffer_ratio: 0.5\n", "decision"),

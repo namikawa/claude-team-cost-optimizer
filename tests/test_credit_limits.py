@@ -5,7 +5,12 @@
 """
 
 import math
+from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
+
+import pandas as pd
+import pytest
 
 from seat_analyzer.analyze import (
     CREDIT_DISABLED,
@@ -16,7 +21,12 @@ from seat_analyzer.analyze import (
     preview,
 )
 from seat_analyzer.analyze.credits import _compute_e_distribution
-from seat_analyzer.ingest import parse_credit_limit
+from seat_analyzer.ingest import (
+    is_number_text,
+    load_members_info,
+    load_members_info_file,
+    parse_credit_limit,
+)
 from seat_analyzer.report import (
     PREVIEW,
     PREVIEW_DASHBOARD,
@@ -65,6 +75,233 @@ def test_parse_credit_limit_invalid_warns():
     assert math.isnan(v) and w is not None
     v2, w2 = parse_credit_limit("-100")
     assert math.isnan(v2) and w2 is not None
+
+
+@pytest.mark.parametrize("cell", ["Infinity", "+inf", "-inf", "1e309", "+nan"])
+def test_parse_credit_limit_non_finite_number_warns(cell):
+    """「無制限」は語彙で書かれた場合だけ。数値として非有限になる値は解釈不能に倒す。
+
+    ここを通すと、上限の書き間違いが警告なしで正反対の「無制限」になる。
+    """
+    v, w = parse_credit_limit(cell)
+    assert math.isnan(v) and w is not None
+
+
+@pytest.mark.parametrize("cell", [float("inf"), float("-inf")])
+def test_parse_credit_limit_non_finite_float_warns(cell):
+    """数値型で渡された無限大も解釈不能に倒す（str(inf) は「無制限」の語彙に一致する）。"""
+    v, w = parse_credit_limit(cell)
+    assert math.isnan(v) and w is not None
+
+
+def _scalar(value, dtype: str):
+    """固定幅のスカラーを pandas 経由で作る。
+
+    この関数へ実際に渡ってくる値は CSV を読んだ表のセルなので、値の出所をそれに揃える
+    （型を直接 import して作ると、実運用で来る型と違うものを検証しかねない）。
+    """
+    return pd.Series([value], dtype=dtype).iloc[0]
+
+
+class _FloatLike:
+    """float() で無限大になるが、数の階層に属さない型。
+
+    数値経路の入口（数として読める値かの判定）で落ちる。型を問わず float() へ通す実装
+    では素通りし、str() の "inf" が「無制限」の語彙に一致してしまう。
+    """
+
+    def __float__(self) -> float:
+        return float("inf")
+
+    def __str__(self) -> str:
+        return "inf"
+
+
+@pytest.mark.parametrize("cell", [
+    Decimal("Infinity"),
+    _FloatLike(),
+    10 ** 1000,
+    _scalar(float("inf"), "float32"),   # 固定幅の浮動小数（数として読める側の無限大）
+])
+def test_parse_credit_limit_non_float_infinity_warns(cell):
+    """float 以外の型の無限大・float へ収まらない巨大整数も、例外にせず不明 + 警告。"""
+    v, w = parse_credit_limit(cell)
+    assert math.isnan(v) and w is not None
+
+
+@pytest.mark.parametrize("cell,expected", [
+    (250, 250.0), (250.0, 250.0), (0, 0.0), (Decimal("125.5"), 125.5),
+    (Fraction(1, 2), 0.5),
+    (_scalar(1.5, "float32"), 1.5),
+    (_scalar(3, "int64"), 3.0),
+])
+def test_parse_credit_limit_numeric_types_are_read(cell, expected):
+    """実数として扱える有限値は型を問わず従来どおり読む。"""
+    assert parse_credit_limit(cell) == (expected, None)
+
+
+@pytest.mark.parametrize("cell", [250 + 7j, _scalar(250 + 7j, "complex64")])
+def test_parse_credit_limit_complex_warns(cell):
+    """虚部を持つ値は金額として読まない（float() が虚部を黙って捨てる）。"""
+    v, w = parse_credit_limit(cell)
+    assert math.isnan(v) and w is not None
+
+
+def test_parse_credit_limit_signaling_nan_warns():
+    """欠損かどうかを問うだけで例外になる値も、落ちずに不明 + 警告になる。"""
+    v, w = parse_credit_limit(Decimal("sNaN"))
+    assert math.isnan(v) and w is not None
+
+
+@pytest.mark.parametrize("cell", [True, False])
+def test_parse_credit_limit_bool_warns(cell):
+    """真偽値は上限として読まない（float(True) = 1.0 を κ にしない）。"""
+    v, w = parse_credit_limit(cell)
+    assert math.isnan(v) and w is not None
+
+
+class _BoolLike:
+    """float() で 1.0 になるが数ではない型。
+
+    読み取りライブラリが返す真偽値型は builtin の bool のサブクラスでないことがあり、
+    bool を除くだけでは落ちない。数として書かれていない値を金額にしないこと。
+    """
+
+    def __float__(self) -> float:
+        return 1.0
+
+    def __str__(self) -> str:
+        return "True"
+
+
+@pytest.mark.parametrize("cell", [
+    b"250",
+    _BoolLike(),
+    pd.Series([True]).to_numpy()[0],   # 固定幅の真偽値（bool のサブクラスではない）
+])
+def test_parse_credit_limit_non_number_objects_warn(cell):
+    """数として書かれていない値は金額にしない（bytes・真偽値風の型）。"""
+    v, w = parse_credit_limit(cell)
+    assert math.isnan(v) and w is not None
+
+
+@pytest.mark.parametrize("cell", [None, float("nan"), pd.NA, pd.NaT, Decimal("NaN")])
+def test_parse_credit_limit_missing_values_are_unknown_without_warning(cell):
+    """未記入は型を問わず不明（警告なし）。0 や無制限へは倒さない。"""
+    v, w = parse_credit_limit(cell)
+    assert math.isnan(v) and w is None
+
+
+@pytest.mark.parametrize("cell", ["￥1,500", "¥1500", "1500￥"])
+def test_parse_credit_limit_yen_warns(cell):
+    """円記号つきのセルは USD の金額として通さない（通貨の取り違えは桁が変わる）。"""
+    v, w = parse_credit_limit(cell)
+    assert math.isnan(v) and w is not None
+
+
+def test_parse_credit_limit_dollar_signs_still_accepted():
+    """$ と ＄ の表記は従来どおり許容する。"""
+    assert parse_credit_limit("＄250") == (250.0, None)
+    assert parse_credit_limit("$250") == (250.0, None)
+
+
+@pytest.mark.parametrize("cell", ["1_0", "1__0", "_10", "10_", "1e+_2"])
+def test_parse_credit_limit_underscore_warns(cell):
+    """数値の字句に "_" を書いた値は読まない（数値変換は桁区切りとして無視してしまう）。"""
+    v, w = parse_credit_limit(cell)
+    assert math.isnan(v) and w is not None
+
+
+@pytest.mark.parametrize("text,ok", [
+    ("250", True), ("7.0", True), ("1E+2", True), (".5", True), ("1500.", True),
+    ("1.5e-3", True),
+    ("-1", True),          # 字句としては数値（負値の判定は呼び出し側）
+    ("1E+9999", True),     # 指数は4桁まで受ける
+    ("1E+99999", False),   # 5桁以上は受けない（整数へ写すと桁数が実体化と表示に耐えない）
+    ("1E+999999999", False),
+    ("1_0", False), ("1__0", False), ("_10", False), ("10_", False), ("1e+_2", False),
+    ("２５０", False),      # 全角数字（数値変換は受けてしまう）
+    ("1 0", False), ("", False), ("inf", False), ("1e", False),
+])
+def test_number_text_rule(text, ok):
+    """数値として受ける字句の規則（3つの解釈経路が共有する1つの規則）。"""
+    assert is_number_text(text) is ok
+
+
+def _load_limits(tmp_path: Path, rows: str, cfg: dict) -> tuple[dict, list[str]]:
+    """members-info を1本置いて (email→κ, 警告) を返す（CSV から読む経路の検証用）。"""
+    (tmp_path / "members-info.csv").write_text(
+        "email,追加クレジット上限\n" + rows, encoding="utf-8", newline="\n")
+    result = load_members_info(tmp_path, cfg)
+    limits = dict(zip(result.df["email"], result.df["credit_limit_usd"], strict=True))
+    return limits, result.warnings
+
+
+@pytest.mark.parametrize("cell", ["Infinity", "1e309", "-Infinity"])
+def test_members_info_non_finite_limit_is_unknown_with_warning(tmp_path, cfg, cell):
+    """上限列が数値だけの表でも、非有限の値は「無制限」にならず不明 + 警告になる。
+
+    読み取りで数値へ変換されると、この値は parse_credit_limit に届く前に無限大へ変わり
+    「無制限」と区別できなくなる。CSV から読む経路でそうなっていないことを見る。
+    """
+    limits, warns = _load_limits(tmp_path, f"a@x.jp,{cell}\nb@x.jp,{cell}\n", cfg)
+
+    assert math.isnan(limits["a@x.jp"]) and math.isnan(limits["b@x.jp"])
+    assert len(warns) == 2
+    assert all("解釈できません" in w for w in warns)
+
+
+def test_members_info_explicit_unlimited_and_amounts_are_unchanged(tmp_path, cfg):
+    """明示語彙の無制限と通常の金額は従来どおり（文字列で読む変更の副作用がないこと）。"""
+    limits, warns = _load_limits(
+        tmp_path, "a@x.jp,inf\nb@x.jp,無制限\nc@x.jp,250\nd@x.jp,0\ne@x.jp,\n", cfg)
+
+    assert math.isinf(limits["a@x.jp"]) and math.isinf(limits["b@x.jp"])
+    assert limits["c@x.jp"] == 250.0
+    assert limits["d@x.jp"] == 0.0
+    assert math.isnan(limits["e@x.jp"])
+    assert warns == []
+
+
+def test_members_info_keeps_text_cells_verbatim(tmp_path, cfg):
+    """部署・備考などの文字列列は字句のまま保つ（数値として読むと先頭ゼロが落ちる）。"""
+    (tmp_path / "members-info.csv").write_text(
+        "email,部署,備考\na@x.jp,0123,0250\n", encoding="utf-8", newline="\n")
+    row = load_members_info(tmp_path, cfg).df.set_index("email").loc["a@x.jp"]
+
+    assert row["department"] == "0123"
+    assert row["note"] == "0250"
+
+
+@pytest.mark.parametrize("cell,expected_unknown", [("Infinity", True), ("inf", False)])
+def test_members_info_file_reads_limits_the_same_way(tmp_path, cfg, cell, expected_unknown):
+    """月中の κ 差分で使う単ファイル読みも同じ規則で読む。"""
+    path = tmp_path / "members-info-2026-08-01.csv"
+    path.write_text(f"email,追加クレジット上限\na@x.jp,{cell}\n",
+                    encoding="utf-8", newline="\n")
+    value = load_members_info_file(path, cfg).set_index("email").loc["a@x.jp",
+                                                                    "credit_limit_usd"]
+
+    assert math.isnan(value) is expected_unknown
+    assert math.isinf(value) is not expected_unknown
+
+
+def test_members_info_yen_limit_is_unknown_with_warning(make_input, cfg):
+    """members-info に円記号つきの上限が書かれていたら不明として扱い、警告に出す。
+
+    κ が有効（$1,500）として通ると ⚠️上限フラグが抑制される。不明のままなら残るので、
+    フラグの側から「金額として通っていない」ことを見る。
+    """
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 45.0, net=0.0)]},
+        members=["a@x.jp,Standard"],
+    )
+    _write_info(input_dir, "email,追加クレジット上限\na@x.jp,￥1500\n")
+    result = analyze(input_dir, "2026-06", cfg, org="org-a")
+
+    assert any("解釈できません" in w and "a@x.jp" in w for w in result.warnings)
+    by = result.users.set_index("email")
+    assert bool(by.loc["a@x.jp", "cap_suspected"]) is True
 
 
 # --- モード導出 -----------------------------------------------------------

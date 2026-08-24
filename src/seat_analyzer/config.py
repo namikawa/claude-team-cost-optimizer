@@ -14,7 +14,17 @@ from pathlib import Path, PurePath
 
 import yaml
 
+from .admin_inputs import ORGANIZATION_OPTIONAL_COLUMNS, USERS_OPTIONAL_COLUMNS
 from .ingest import MEMBERS_OPTIONAL_COLUMNS, REQUIRED_COLUMNS, SPEND_OPTIONAL_COLUMNS
+
+# 入力の正準化で参照する任意列（セクション → 正準名）。入力CSV上では省略できるが、
+# 正準化の設定そのもの（エイリアス定義）は必須にする
+_OPTIONAL_COLUMNS = {
+    "spend": SPEND_OPTIONAL_COLUMNS,
+    "members": MEMBERS_OPTIONAL_COLUMNS,
+    "admin_organization": ORGANIZATION_OPTIONAL_COLUMNS,
+    "admin_users": USERS_OPTIONAL_COLUMNS,
+}
 
 # パッケージ同梱の既定設定（prompts/・templates/ と同じ流儀でパッケージ内から読む）
 PACKAGE_CONFIG_PATH = Path(__file__).parent / "default-config.yaml"
@@ -504,10 +514,7 @@ def _validate(cfg: dict) -> None:
                 errors.append(f"columns.{section} がありません")
                 continue
             configured_columns = list(required)
-            if section == "spend":
-                configured_columns.extend(SPEND_OPTIONAL_COLUMNS)
-            elif section == "members":
-                configured_columns.extend(MEMBERS_OPTIONAL_COLUMNS)
+            configured_columns.extend(_OPTIONAL_COLUMNS.get(section, ()))
             for canonical in configured_columns:
                 aliases = sec.get(canonical)
                 if not isinstance(aliases, list) or not aliases:

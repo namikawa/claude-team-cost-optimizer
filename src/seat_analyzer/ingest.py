@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
+import math
+import numbers
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -31,6 +33,10 @@ REQUIRED_COLUMNS = {
     "members": ["email", "seat_type"],
     "code_analytics": ["email"],
     "members_info": ["email"],
+    # 管理画面の表を人手で写す admin/ の手入力CSV（読み取りは admin_inputs.py）。
+    # 取得日と取得元はどちらの表にも要る（時点を特定できない設定値は判定に使えない）
+    "admin_organization": ["snapshot_date", "source"],
+    "admin_users": ["snapshot_date", "email", "source"],
 }
 
 # Step 1で正準化するSpend任意列。既存の任意列は「列なし」を利用する処理があるため、
@@ -87,6 +93,70 @@ def normalize_affiliations(cell) -> str:
 # 受け付けず、解釈不能の警告に倒す（無効は 0、無制限はこのトークンで明示させる）
 _UNLIMITED_TOKENS = {"無制限", "unlimited", "inf", "∞"}
 
+# 円記号（半角・全角）。金額は USD 建てなので、円記号つきのセルは解釈不能に倒す
+# （通貨の取り違えは金額の桁が変わる）。除去する記号の一覧に円記号を入れないことでも
+# 同じ結果になるが、規則を一覧の中身に依存させないためここで明示的に閉じる
+_YEN_RE = re.compile(r"[¥￥]")
+
+
+def _is_blank(cell) -> bool:
+    """未記入（None・NaN・NaT・pd.NA）かどうか。文字列は対象にしない。"""
+    if cell is None:
+        return True
+    if isinstance(cell, str):
+        return False
+    try:
+        missing = pd.isna(cell)
+    except ArithmeticError:
+        # 欠損かどうかを問うだけで例外を出す値がある（signaling NaN）。未記入ではない
+        # ものとして後段へ流し、数値として読めないことを不明+警告で表す
+        return False
+    # 配列を渡された場合は要素ごとの結果が返る（1つのセルの判定には使えない）
+    return missing if isinstance(missing, bool) else False
+
+
+# 数値として受ける字句（符号・小数点・指数のみ。桁区切りは呼び出し側で除去済み）。
+# 数値への変換は字句中の "_" を桁区切りとして無視し、全角数字も受けるため、"1_0" や
+# "２５０" のような書き間違いが黙って別の値になる。受ける形をここで先に決める。
+# 指数部を4桁までにするのは、値の大きさを業務の上限として決めているのではなく、
+# 数値として書かれた字句の形を決めているため（それを超える指数は、整数へ写した後の
+# 桁数が実体化と表示に耐えず、不明として扱うほうが「解釈できない値は不明+警告」の
+# 約束を保てる）
+_NUMBER_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]{1,4})?")
+
+
+def is_number_text(text: str) -> bool:
+    """数値として読める字句か（桁区切り・通貨記号は呼び出し側で除去してから渡す）。
+
+    数値の解釈を持つ全ての入力（追加クレジット上限・admin の金額と個数）が同じ規則を
+    使う。規則を書き写すと、片方だけが緩いまま残る。
+    """
+    return _NUMBER_RE.fullmatch(text) is not None
+
+
+def _strip_currency(text: str) -> str:
+    """通貨記号（$・全角＄）と桁区切りを取り除く。円記号は対象にしない。"""
+    return text.replace("$", "").replace("＄", "").replace(",", "").strip()
+
+
+def _as_number(cell) -> object | None:
+    """数として書かれた値だけを返す（そうでなければ None ＝ 解釈不能）。
+
+    契約: 金額として読むのは、数の階層に属し実数として扱える値だけ（真偽値を除く）。
+
+    虚部を持つ値は読まない（float() が虚部を黙って捨てるため、金額が別の値になる）。
+    bytes や `__float__` だけを持つ型のように数の階層に属さない値も読まない（型を問わず
+    float() へ通すと、金額として書かれていない値が上限になる）。真偽値は
+    float(True) = 1.0 として読めてしまうため、数ではあっても除く（読み取りライブラリが
+    返す真偽値型のように bool のサブクラスでないものは、数の階層に属さないので前の
+    規則で落ちる）。
+    """
+    if isinstance(cell, bool) or not isinstance(cell, numbers.Number):
+        return None
+    if isinstance(cell, numbers.Complex) and not isinstance(cell, numbers.Real):
+        return None
+    return cell
+
 
 def parse_credit_limit(cell) -> tuple[float, str | None]:
     """追加クレジット上限セルを (値, 警告) に解釈する。
@@ -96,23 +166,40 @@ def parse_credit_limit(cell) -> tuple[float, str | None]:
       - 0 → 0.0（無効）
       - 無制限 / unlimited → inf（有効・上限なし）
       - 空欄 / NaN → NaN（不明）
-      - 負値・解釈不能な文字列 → NaN + 警告（不明扱い。データ入力ミスの検出用）
+      - 負値・解釈不能な値 → NaN + 警告（不明扱い。データ入力ミスの検出用）
+
+    「無制限」の語彙を認めるのは文字列として書かれた場合だけとする。数値の無限大は
+    str() で "inf" になるため、文字列へ写してから語彙を見ると両者を区別できない。
+    数（_as_number）は型を問わず float() の1経路に通し、変換できない値・有限でない値・
+    負値を不明へ倒す。文字列は `is_number_text` の字句規則を通ったものだけを数値として
+    読む。上限は $ 建てなので、円記号を含むセルも解釈不能に倒す（通貨の取り違えを金額と
+    して通さない）。
     """
-    if cell is None or (isinstance(cell, float) and pd.isna(cell)):
+    if _is_blank(cell):
         return float("nan"), None
-    s = str(cell).strip()
-    if s == "" or s.lower() == "nan":
-        return float("nan"), None
-    if s.lower() in _UNLIMITED_TOKENS:
-        return float("inf"), None
-    # "$1,500" のような通貨表記を許容する
-    cleaned = s.replace("$", "").replace("＄", "").replace("￥", "").replace(",", "").strip()
+    if isinstance(cell, str):
+        shown = cell.strip()
+        if shown == "" or shown.lower() == "nan":
+            return float("nan"), None
+        if shown.lower() in _UNLIMITED_TOKENS:
+            return float("inf"), None
+        number = None if _YEN_RE.search(shown) else _strip_currency(shown)
+        if number is not None and not is_number_text(number):
+            number = None
+    else:
+        shown = cell
+        number = _as_number(cell)
+    unreadable = f"追加クレジット上限を解釈できません: {shown!r}（不明として扱います）"
+    if number is None:
+        return float("nan"), unreadable
     try:
-        value = float(cleaned)
-    except ValueError:
-        return float("nan"), f"追加クレジット上限を解釈できません: {s!r}（不明として扱います）"
+        value = float(number)
+    except (TypeError, ValueError, OverflowError):
+        return float("nan"), unreadable
+    if not math.isfinite(value):
+        return float("nan"), unreadable
     if value < 0:
-        return float("nan"), f"追加クレジット上限が負値です: {s!r}（不明として扱います）"
+        return float("nan"), f"追加クレジット上限が負値です: {shown!r}（不明として扱います）"
     return value, None
 
 
@@ -801,11 +888,15 @@ def load_members_info(input_dir: Path, cfg: dict, month: str | None = None) -> L
     （対象月の月末以前で最新を採用）。月情報なしの手動メンテファイルで email 列のみ必須。
     department/team/role/note が無くても警告は出さず空文字列列で補完し、credit_limit_usd 列は
     parse_credit_limit で float 化する（列が無ければ全 NaN で付与）。
+
+    セルの字句を保つため文字列で読む。数値として読ませると、上限列が数値だけの場合に
+    "Infinity" や "1e309" が読み取りの時点で無限大へ変わり、parse_credit_limit が受け取る
+    前に「無制限」と区別できなくなる。
     """
     path, warnings = _resolve_members_info_path(Path(input_dir), month)
     if path is None:
         return None
-    df = _read_csv(path)
+    df = _read_csv(path, dtype=str)
     # department/team/role/note/credit_limit_usd が無い場合の「任意カラムなし」警告は捨てる
     df, _ = map_columns(
         df,
@@ -834,8 +925,9 @@ def load_members_info_file(path: Path, cfg: dict) -> pd.DataFrame:
     """指定パスの members-info を1つ読む（月中の κ 変更の差分用・スナップショット解決なし）。
 
     email と credit_limit_usd（無ければ全 NaN）だけを正規化して返す。
+    読み取りは load_members_info と同じく文字列で行う（上限列の字句を保つため）。
     """
-    df = _read_csv(Path(path))
+    df = _read_csv(Path(path), dtype=str)
     df, _ = map_columns(
         df,
         cfg["columns"]["members_info"],
