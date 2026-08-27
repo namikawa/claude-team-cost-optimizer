@@ -645,10 +645,12 @@ StrEnumは文字列と等値になるため、語彙をまたいだ等値比較�
 - `SUSTAINED_LOW_CODE_DEMAND`
 - `SUSTAINED_LOW_TOTAL_DEMAND`
 - `SUSTAINED_OVERAGE`
+- `ESTIMATED_STANDARD_OVERAGE`
 - `CREDIT_LIMIT_REACHED`
 - `CREDIT_SETTING_UNKNOWN`
 - `PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT`
 - `STANDARD_WITH_CREDIT_CHEAPER`
+- `CREDIT_CONSUMPTION_RISING`
 - `HIGH_SUPPLEMENTARY_USAGE`
 - `REVIEW_NON_CODE_USAGE`
 - `RECENT_MEMBER`
@@ -774,6 +776,49 @@ statusは`RECOMMENDED`とする（upgradeの条件3と同じ扱い）。この�
 安い場合は`UPGRADE_TO_PREMIUM`とする。
 
 credit設定が不明なら金額を断定せず`CreditAction.REVIEW`とする。
+
+継続性のゲートを適用するのはcreditが無効な組織（上限κ=0）の昇格だけとし、creditが有効な
+組織は§12.4どおり1完全月で判定する。実課金という観測がある組織では観測を優先し、観測が
+構造的に得られない組織（κ=0では実課金が常に0）でだけ継続性で代替する。
+
+κ=0で経済軸が1か月しか成立しない場合、およびestimated overageだけが成立する場合は、席を
+変えず`ENABLE_WITH_CAP`とする。上限つきcreditの付与は可逆な計測手段で、1か月の課金実測を
+取ることが「実課金が構造的に0のためPremium昇格の根拠が永久に出ない」行き詰まりへの回答に
+なる。この結論には分類軸（Codeゲート）をかけない。シートの込み枠はproduct共通で、付与は席の
+変更ではないため。
+
+週次snapshotの継続上昇は2完全月連続と同等の継続性として扱い、対象月内の当月消費の観測点が
+3点以上あって取得日順に狭義単調増加していることを要求する。当月消費は月次でリセットされる
+ため比較は対象月の点だけで行い、横ばいは上昇とみなさない（消費が止まった状態と区別できない）。
+
+継続性はいずれの形（2完全月連続・月内の継続上昇）でも、対象月で経済軸が成立していることを
+前提とする（継続性は「Premiumが安い状態が続いているか」を見る条件で、それ自体は候補化の
+根拠にならない）。κ=0の結論は次の3つに分かれる: 経済軸が成立し継続性もあれば分類軸へ進む。
+経済軸が成立しても継続性が無い場合、および推定ベースの超過だけが成立する場合は
+`ENABLE_WITH_CAP`に留まる。経済軸も推定ベースの超過も成立しなければ現状維持で、継続上昇
+だけでは候補にならない。
+
+estimated overageは、需要がStandardのallowance推定をlow/mid/highのうち2scenario以上で超え、
+かつmidの超過が`min_assignment_saving_usd`以上であることとする。課金の観測を使わない推定
+なので、複数scenarioの一致を純モデル判定と同じ理由で要求する（1scenarioだけの超過は
+allowance推定の誤差と区別できない）。閾値は既存の`min_assignment_saving_usd`を再利用し、
+新しいconfigキーは設けない。
+
+credit設定が不明な場合もseat判定は止めない（経済軸は実課金と需要だけで評価できる）。credit
+側は上限も有効・無効も分からず金額を断定できないため、`ENABLE_WITH_CAP`ではなく`REVIEW`を
+重ねる。`REVIEW`を出すのは経済軸または推定ベースの超過で候補になったユーザだけで、どちらも
+成立しないユーザには出さない（設定の不明だけで人へ回すと、確認すべき相手が組織の全員になる）。
+
+statusは人が取るべきアクションがあるかで決まる。seat actionが`UPGRADE_TO_PREMIUM`・
+`REVIEW_ASSIGNMENT`のとき、またはcredit actionが`ENABLE_WITH_CAP`・`REVIEW`のときは
+`RECOMMENDED`とする。seat側が`OBSERVE`でもcredit側に作業があれば`RECOMMENDED`になり、
+どちらの側の作業かはseat actionとcredit actionが示す。
+
+理由コードは、推定ベースの超過に`ESTIMATED_STANDARD_OVERAGE`、月内の消費上昇に
+`CREDIT_CONSUMPTION_RISING`を使う。金額差で成立した候補には
+`PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT`を、逆向き（Standard + creditの方が安い）が
+成立する場合は`STANDARD_WITH_CREDIT_CHEAPER`を添える。usage credit上限への到達だけで候補に
+なった場合は金額差を立証していないため前者を添えない（§12.4）。
 
 ### 12.7 Confidence
 

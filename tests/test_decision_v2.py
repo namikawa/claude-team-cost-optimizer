@@ -19,6 +19,7 @@ import pytest
 
 from seat_analyzer import seat_changes
 from seat_analyzer.decision_v2 import (
+    CreditPoint,
     DecisionV2,
     MonthObservation,
     SubjectHistory,
@@ -73,10 +74,12 @@ def test_reason_code_set_is_stable_in_design_order():
         "SUSTAINED_LOW_CODE_DEMAND",
         "SUSTAINED_LOW_TOTAL_DEMAND",
         "SUSTAINED_OVERAGE",
+        "ESTIMATED_STANDARD_OVERAGE",
         "CREDIT_LIMIT_REACHED",
         "CREDIT_SETTING_UNKNOWN",
         "PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT",
         "STANDARD_WITH_CREDIT_CHEAPER",
+        "CREDIT_CONSUMPTION_RISING",
         "HIGH_SUPPLEMENTARY_USAGE",
         "REVIEW_NON_CODE_USAGE",
         "RECENT_MEMBER",
@@ -150,6 +153,13 @@ _PREVIOUS_MONTH = "2026-06"
 _MONTH_END = dt.date(2026, 7, 31)
 _WINDOW_START = dt.date(2026, 7, 3)
 
+# 追加クレジット上限 κ の3状態。κ は結論の出し方を変えるので（設計書 §12.6）、この節の
+# 既定は「有効」にしてシート側の判定だけを見る。無効・不明はクレジット比較の節で明示的に
+# 渡す。有効な値は $250 で、この節の実課金（$130 以下）では上限到達の経路が成立しない
+_CREDIT_ENABLED = 250.0
+_CREDIT_DISABLED = 0.0
+_CREDIT_UNKNOWN = None
+
 
 def _month(
     month: str = _MONTH,
@@ -173,10 +183,11 @@ def _month(
 def _subject(
     *months: MonthObservation,
     seat: str = "standard",
-    credit: float | None = None,
+    credit: float | None = _CREDIT_ENABLED,
     conflict: bool = False,
     events: tuple[SeatChangeEvent, ...] = (),
     unclassified: tuple[UnclassifiedObservation, ...] = (),
+    points: tuple[CreditPoint, ...] = (),
 ) -> SubjectHistory:
     return SubjectHistory(
         email="a@example.com",
@@ -186,7 +197,17 @@ def _subject(
         months=months,
         seat_events=events,
         unclassified=unclassified,
+        credit_points=points,
     )
+
+
+def _point(day: int, mtd: float, *, month: int = 7) -> CreditPoint:
+    """対象月（既定）の追加クレジット消費の観測点。"""
+    return CreditPoint(taken_on=dt.date(2026, month, day), mtd_usd=mtd)
+
+
+# 対象月内で狭義単調増加する3点（継続上昇とみなす最小の並び）
+_RISING_POINTS = (_point(8, 10.0), _point(15, 30.0), _point(22, 60.0))
 
 
 def _event(
@@ -408,9 +429,9 @@ def test_old_seat_change_does_not_hold_the_decision(cfg):
 @pytest.mark.parametrize(
     ("month", "credit"),
     [
-        (_observed_path_month(), None),
+        (_observed_path_month(), _CREDIT_ENABLED),
         (_credit_path_month(), 100.0),
-        (_model_path_month(), None),
+        (_model_path_month(), _CREDIT_ENABLED),
     ],
 )
 def test_each_economic_path_alone_makes_a_candidate(cfg, month, credit):
@@ -428,9 +449,9 @@ def test_each_economic_path_alone_makes_a_candidate(cfg, month, credit):
 @pytest.mark.parametrize(
     ("month", "credit"),
     [
-        (_observed_path_month(), None),
+        (_observed_path_month(), _CREDIT_ENABLED),
         (_credit_path_month(), 100.0),
-        (_model_path_month(), None),
+        (_model_path_month(), _CREDIT_ENABLED),
     ],
 )
 def test_code_heavy_candidates_upgrade_via_any_economic_path(cfg, month, credit):
@@ -490,9 +511,14 @@ def test_observed_path_needs_a_positive_saving(cfg):
     ],
 )
 def test_credit_limit_path_boundaries(cfg, credit, billed, reached):
+    """到達したときだけシート側の候補になる（この需要では Code が閾値未満なので見直し）。
+
+    status ではなく seat_action で見る。κ が無効・不明のときはクレジット側のアクションが
+    付いて status が RECOMMENDED になるため（クレジット比較の節で扱う）。
+    """
     subject = _subject(_month(total=130.0, code=120.0, billed=billed), credit=credit)
     decision = decide_upgrade(subject, cfg)
-    assert (decision.status is DecisionStatus.RECOMMENDED) is reached
+    assert (decision.seat_action is SeatAction.REVIEW_ASSIGNMENT) is reached
     assert (ReasonCode.CREDIT_LIMIT_REACHED in decision.reason_codes) is reached
 
 
@@ -572,7 +598,11 @@ def test_low_code_demand_becomes_review_assignment(cfg):
     decision = decide_upgrade(subject, cfg)
     assert decision.status is DecisionStatus.RECOMMENDED
     assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
-    assert decision.reason_codes == (ReasonCode.REVIEW_NON_CODE_USAGE,)
+    assert decision.reason_codes == (
+        ReasonCode.REVIEW_NON_CODE_USAGE,
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+    )
 
 
 def test_review_assignment_reports_supplementary_usage(cfg):
@@ -581,6 +611,8 @@ def test_review_assignment_reports_supplementary_usage(cfg):
     assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
     assert decision.reason_codes == (
         ReasonCode.REVIEW_NON_CODE_USAGE,
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
         ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
     )
 
@@ -591,7 +623,11 @@ def test_unknown_code_demand_falls_back_to_observe(cfg):
     decision = decide_upgrade(subject, cfg)
     assert decision.status is DecisionStatus.OBSERVE
     assert decision.seat_action is SeatAction.NONE
-    assert decision.reason_codes == (ReasonCode.DATA_CONFIDENCE_LOW,)
+    assert decision.reason_codes == (
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+        ReasonCode.DATA_CONFIDENCE_LOW,
+    )
 
 
 def test_unknown_code_demand_without_economic_path_still_keeps(cfg):
@@ -601,17 +637,29 @@ def test_unknown_code_demand_without_economic_path_still_keeps(cfg):
 
 
 def test_review_assignment_keeps_the_economic_evidence(cfg):
-    """分類軸の振り分けで、候補になった根拠を落とさない。"""
+    """分類軸の振り分けで、候補になった根拠を落とさない。
+
+    この観測は上限到達だけで候補になっていて金額差は成立しない。純モデルは逆向き
+    （Standard + クレジットの方が安い）なので、その旨も根拠として残る。
+    """
     subject = _subject(_credit_path_month(code=50.0), credit=100.0)
     decision = decide_upgrade(subject, cfg)
     assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
     assert decision.reason_codes == (
         ReasonCode.REVIEW_NON_CODE_USAGE,
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
         ReasonCode.CREDIT_LIMIT_REACHED,
+        ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
     )
 
 
 def test_review_assignment_keeps_the_sustained_overage_evidence(cfg):
+    """観測経路と純モデルの向きは同時に成立しうる（見ている材料が違う）。
+
+    観測経路は実課金を含む現状の費用（$25 + $120）を Premium の試算と比べ、純モデルは
+    実課金を見ずに需要と allowance 推定だけで比べる。前者は Premium が安いと言い、後者は
+    Standard + クレジットが安いと言う。どちらも候補化の根拠として残す。
+    """
     subject = _subject(
         _observed_path_month(month=_PREVIOUS_MONTH, code=10.0),
         _observed_path_month(code=10.0),
@@ -620,7 +668,10 @@ def test_review_assignment_keeps_the_sustained_overage_evidence(cfg):
     assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
     assert decision.reason_codes == (
         ReasonCode.REVIEW_NON_CODE_USAGE,
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
         ReasonCode.SUSTAINED_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+        ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
     )
 
 
@@ -630,7 +681,9 @@ def test_unknown_code_demand_keeps_the_economic_evidence(cfg):
     decision = decide_upgrade(subject, cfg)
     assert decision.status is DecisionStatus.OBSERVE
     assert decision.reason_codes == (
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
         ReasonCode.CREDIT_LIMIT_REACHED,
+        ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
         ReasonCode.DATA_CONFIDENCE_LOW,
     )
 
@@ -645,7 +698,10 @@ def test_unknown_code_demand_keeps_sustained_overage(cfg):
     assert decision.status is DecisionStatus.OBSERVE
     assert decision.seat_action is SeatAction.NONE
     assert decision.reason_codes == (
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
         ReasonCode.SUSTAINED_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+        ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
         ReasonCode.DATA_CONFIDENCE_LOW,
     )
 
@@ -664,8 +720,10 @@ def test_upgrade_reasons_are_in_fixed_order(cfg):
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.reason_codes == (
         ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
         ReasonCode.CREDIT_LIMIT_REACHED,
         ReasonCode.SUSTAINED_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
         ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
     )
@@ -676,6 +734,8 @@ def test_upgrade_always_reports_the_base_reason_and_capacity_gap(cfg):
     decision = decide_upgrade(_subject(_code_heavy_month()), cfg)
     assert decision.reason_codes == (
         ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
 
@@ -717,8 +777,12 @@ def test_sustained_overage_absent_when_the_run_hits_a_partial_month(cfg):
         _subject(_model_path_month(code=1.0)),
     ],
 )
-def test_credit_action_is_never_proposed_here(cfg, subject):
-    """追加クレジットの提案はこのルールの担当外（全経路で NONE）。"""
+def test_credit_action_is_not_proposed_when_the_limit_is_enabled(cfg, subject):
+    """κ が有効な組織では、シート側のどの経路でもクレジットの提案を出さない。
+
+    上限が有効なら実課金という観測があり、判定はそれを使える。提案が要るのは κ が
+    無効・不明の場合で、クレジット比較の節で扱う。
+    """
     assert decide_upgrade(subject, cfg).credit_action is CreditAction.NONE
 
 
@@ -1189,6 +1253,475 @@ def test_premium_member_added_event_type_matches_seat_changes(cfg):
     assert decide_downgrade(subject, cfg).reason_codes == (ReasonCode.RECENT_MEMBER,)
 
 
+# ----------------------------------------------------- 追加クレジット比較（Step 18）
+#
+# 追加クレジット上限 κ の3状態（有効・無効・不明）で結論の出し方が変わる（設計書 §12.6）。
+# 上の昇格の節は κ を有効にしてシート側だけを見ているので、ここでは無効（$0）・不明（None）
+# を明示的に渡す。金額の前提は同じ既定 config（Standard $25・込み 30/50/75、Premium $125・
+# 込み 150/250/375、削減閾値 $20、Code 需要閾値 $200）。
+
+
+def _estimated_only_month(**overrides) -> MonthObservation:
+    """推定ベースの超過だけが成立する観測: 需要 $100・実課金なし。
+
+    需要は Standard の込み量推定（30/50/75）を3シナリオで超え、mid の超過 $50 は閾値
+    以上。一方この需要では Premium（$125）が有利にならないため経済軸は成立しない
+    （純モデルは逆に Standard + クレジットが安いと言う中間帯）。
+    """
+    return _month(**{"total": 100.0, "code": 50.0, **overrides})
+
+
+def _below_estimate_month(**overrides) -> MonthObservation:
+    """経済軸も推定ベースの超過も成立しない観測: 需要 $60。
+
+    超えるのは low・mid の2シナリオだが、mid の超過は $10 で閾値（$20）に届かない。
+    """
+    return _month(**{"total": 60.0, "code": 30.0, **overrides})
+
+
+# ------------------------------------------------------------- κ 不明（設定の確認）
+
+
+def test_unknown_credit_setting_is_reviewed_without_asserting_amounts(cfg):
+    """受け入れ条件: credit 設定が不明なら金額を断定せず REVIEW にする。
+
+    上限も有効・無効も分からないので、付与（ENABLE_WITH_CAP）は出さない。
+    """
+    subject = _subject(_estimated_only_month(), credit=_CREDIT_UNKNOWN)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.RECOMMENDED
+    assert decision.seat_action is SeatAction.KEEP
+    assert decision.credit_action is CreditAction.REVIEW
+    assert decision.reason_codes == (
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.CREDIT_SETTING_UNKNOWN,
+        ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
+    )
+
+
+def test_unknown_credit_setting_is_reviewed_alongside_a_seat_candidate(cfg):
+    """経済軸で候補になったユーザにも、クレジット側の確認を重ねる（シート判定は止めない）。"""
+    subject = _subject(_code_heavy_month(), credit=_CREDIT_UNKNOWN)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.RECOMMENDED
+    assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
+    assert decision.credit_action is CreditAction.REVIEW
+    assert decision.reason_codes == (
+        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.CREDIT_SETTING_UNKNOWN,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+        ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
+    )
+
+
+def test_unknown_credit_setting_is_reviewed_for_an_observed_candidate(cfg):
+    """推定超過が成立しなくても、観測経路で候補になれば REVIEW を重ねる。
+
+    REVIEW の条件は「経済軸または推定超過」で、推定側だけではない。実課金 $120 は観測経路を
+    成立させる（$25+$120 が Premium の試算 $125 を削減閾値ちょうど上回る）一方、需要 $60 の
+    mid 超過は $10 で推定超過の閾値（$20）に届かない。
+    """
+    subject = _subject(
+        _month(total=60.0, code=30.0, billed=120.0), credit=_CREDIT_UNKNOWN
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.RECOMMENDED
+    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
+    assert decision.credit_action is CreditAction.REVIEW
+    assert decision.reason_codes == (
+        ReasonCode.REVIEW_NON_CODE_USAGE,
+        ReasonCode.CREDIT_SETTING_UNKNOWN,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+        ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
+    )
+
+
+def test_unknown_credit_setting_alone_does_not_ask_for_a_review(cfg):
+    """経済軸も推定超過も成立しないユーザには REVIEW を出さない。
+
+    設定の不明だけで人へ回すと、確認すべき相手が組織の全員になる。
+    """
+    subject = _subject(_below_estimate_month(), credit=_CREDIT_UNKNOWN)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.KEEP
+    assert decision.seat_action is SeatAction.KEEP
+    assert decision.credit_action is CreditAction.NONE
+    assert decision.reason_codes == ()
+
+
+def test_status_is_recommended_when_only_the_credit_side_has_work(cfg):
+    """シート側が観察でも、クレジット側に作業があれば status は RECOMMENDED になる。
+
+    κ が不明で Code 需要も確定しないユーザは、シート判定は保留（seat_action は NONE で
+    DATA_CONFIDENCE_LOW）だが、設定を確認するという作業が残る。
+    """
+    subject = _subject(_code_heavy_month(code=None), credit=_CREDIT_UNKNOWN)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.RECOMMENDED
+    assert decision.seat_action is SeatAction.NONE
+    assert decision.credit_action is CreditAction.REVIEW
+    assert ReasonCode.DATA_CONFIDENCE_LOW in decision.reason_codes
+
+
+# ------------------------------------------------------ κ 無効（付与と継続性のゲート）
+
+
+def test_one_month_of_premium_economics_becomes_a_credit_candidate(cfg):
+    """受け入れ条件: 一時的な需要は credit 候補（席を変えず課金の実測を先に取る）。
+
+    追加クレジットが無効な組織では実課金が構造的に $0 で、コストモデルは Premium 昇格の
+    根拠になる観測を永久に得られない。上限つきクレジットの付与はその行き詰まりを解く
+    可逆な計測手段なので、1完全月の成立ではこちらを出す。
+    """
+    subject = _subject(_code_heavy_month(), credit=_CREDIT_DISABLED)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.RECOMMENDED
+    assert decision.seat_action is SeatAction.KEEP
+    assert decision.credit_action is CreditAction.ENABLE_WITH_CAP
+    assert decision.reason_codes == (
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+    )
+
+
+def test_estimated_overage_alone_becomes_a_credit_candidate(cfg):
+    """Premium が有利でない中間帯でも、込み枠の超過が推定できればクレジットで測る。"""
+    subject = _subject(_estimated_only_month(), credit=_CREDIT_DISABLED)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.RECOMMENDED
+    assert decision.credit_action is CreditAction.ENABLE_WITH_CAP
+    assert decision.reason_codes == (
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
+    )
+
+
+def test_disabled_credit_without_a_candidate_keeps_the_seat(cfg):
+    """需要が推定を超えなければ、クレジットの付与も提案しない。"""
+    subject = _subject(_below_estimate_month(), credit=_CREDIT_DISABLED)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.KEEP
+    assert decision.seat_action is SeatAction.KEEP
+    assert decision.credit_action is CreditAction.NONE
+    assert decision.reason_codes == ()
+
+
+@pytest.mark.parametrize("code", [None, 0.0, 99.0])
+def test_the_credit_candidate_does_not_pass_through_the_code_gate(cfg, code):
+    """クレジットの付与に分類軸はかけない（込み枠は product 共通で、付与は可逆）。"""
+    subject = _subject(_estimated_only_month(code=code), credit=_CREDIT_DISABLED)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.seat_action is SeatAction.KEEP
+    assert decision.credit_action is CreditAction.ENABLE_WITH_CAP
+    assert ReasonCode.ESTIMATED_STANDARD_OVERAGE in decision.reason_codes
+
+
+def test_credit_candidate_reasons_are_in_fixed_order(cfg):
+    """主理由（推定超過）→ 補助（金額比較）→ 情報（混在利用）の順。"""
+    subject = _subject(
+        _estimated_only_month(supplementary=True), credit=_CREDIT_DISABLED
+    )
+    assert decide_upgrade(subject, cfg).reason_codes == (
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
+        ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
+    )
+
+
+def test_two_months_of_premium_economics_become_an_upgrade(cfg):
+    """受け入れ条件: 継続需要は Premium 候補（2完全月連続で経済軸が成立）。"""
+    subject = _subject(
+        _code_heavy_month(month=_PREVIOUS_MONTH),
+        _code_heavy_month(),
+        credit=_CREDIT_DISABLED,
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.RECOMMENDED
+    assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
+    assert decision.credit_action is CreditAction.NONE
+    assert decision.reason_codes == (
+        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+        ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
+    )
+
+
+def test_sustained_premium_economics_without_code_evidence_observes(cfg):
+    """継続していても Code 需要が確定しなければ観察（分類軸は昇格側と同じ）。"""
+    subject = _subject(
+        _code_heavy_month(month=_PREVIOUS_MONTH),
+        _code_heavy_month(code=None),
+        credit=_CREDIT_DISABLED,
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.OBSERVE
+    assert decision.seat_action is SeatAction.NONE
+    assert decision.credit_action is CreditAction.NONE
+    assert decision.reason_codes == (
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+        ReasonCode.DATA_CONFIDENCE_LOW,
+    )
+
+
+def test_sustained_premium_economics_with_low_code_demand_is_reviewed(cfg):
+    """継続していて中身が Code でなければアサインの見直し（分類軸は昇格側と同じ）。"""
+    subject = _subject(
+        _code_heavy_month(month=_PREVIOUS_MONTH),
+        _code_heavy_month(code=1.0),
+        credit=_CREDIT_DISABLED,
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.RECOMMENDED
+    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
+    assert decision.credit_action is CreditAction.NONE
+
+
+def test_a_partial_month_breaks_the_run_and_leaves_a_credit_candidate(cfg):
+    """継続の走査は不完全月で打ち切る（`SUSTAINED_OVERAGE` の走査と同じ規則）。"""
+    subject = _subject(
+        _code_heavy_month(month="2026-05"),
+        _code_heavy_month(month=_PREVIOUS_MONTH, complete=False),
+        _code_heavy_month(),
+        credit=_CREDIT_DISABLED,
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.seat_action is SeatAction.KEEP
+    assert decision.credit_action is CreditAction.ENABLE_WITH_CAP
+
+
+def test_a_month_without_premium_economics_breaks_the_run(cfg):
+    """前月に経済軸が成立していなければ継続にならない（1ヶ月のスパイクで席を変えない）。"""
+    subject = _subject(
+        _estimated_only_month(month=_PREVIOUS_MONTH),
+        _code_heavy_month(),
+        credit=_CREDIT_DISABLED,
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.seat_action is SeatAction.KEEP
+    assert decision.credit_action is CreditAction.ENABLE_WITH_CAP
+
+
+# --------------------------------------------------- 月内の消費の継続上昇（κ 無効）
+
+
+def test_rising_credit_consumption_counts_as_continuity(cfg):
+    """対象月内の消費が継続上昇していれば、1完全月でも継続として扱う（§12.6）。"""
+    subject = _subject(
+        _code_heavy_month(), credit=_CREDIT_DISABLED, points=_RISING_POINTS
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
+    assert decision.credit_action is CreditAction.NONE
+    assert ReasonCode.CREDIT_CONSUMPTION_RISING in decision.reason_codes
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        _RISING_POINTS[:2],
+        (_point(8, 10.0), _point(15, 30.0), _point(22, 30.0)),
+        (_point(8, 10.0), _point(15, 30.0), _point(22, 20.0)),
+        (_point(8, 10.0, month=6), _point(15, 30.0), _point(22, 60.0)),
+    ],
+    ids=["点が2つ", "横ばいを含む", "下がる区間を含む", "対象月の点が2つ"],
+)
+def test_credit_consumption_is_not_rising(cfg, points):
+    """上昇と数えない並び。
+
+    3点未満は傾向と呼べず、横ばいは消費が止まった状態と区別できない。当月消費は月次で
+    リセットされる値なので、前月の点は対象月の並びに入れない。
+    """
+    subject = _subject(_code_heavy_month(), credit=_CREDIT_DISABLED, points=points)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.credit_action is CreditAction.ENABLE_WITH_CAP
+    assert ReasonCode.CREDIT_CONSUMPTION_RISING not in decision.reason_codes
+
+
+def test_rising_credit_consumption_alone_is_not_a_candidate(cfg):
+    """消費が上昇していても、経済軸も推定超過も成立しなければ現状維持のまま。"""
+    subject = _subject(
+        _below_estimate_month(), credit=_CREDIT_DISABLED, points=_RISING_POINTS
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.KEEP
+    assert decision.credit_action is CreditAction.NONE
+    assert decision.reason_codes == ()
+
+
+# ------------------------------------------------------------- κ 有効（現行の非対称）
+
+
+@pytest.mark.parametrize("credit", [_CREDIT_ENABLED, float("inf")])
+def test_enabled_credit_upgrades_on_a_single_complete_month(cfg, credit):
+    """κ が有効な組織の昇格は1完全月で判定する（§12.4 の非対称を保つ）。"""
+    subject = _subject(_code_heavy_month(), credit=credit)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
+    assert decision.credit_action is CreditAction.NONE
+
+
+@pytest.mark.parametrize("credit", [_CREDIT_ENABLED, float("inf")])
+def test_enabled_credit_does_not_act_on_an_estimate_alone(cfg, credit):
+    """実課金という観測が「枠内に収まっている」と言うとき、推定だけでは動かさない。"""
+    subject = _subject(_estimated_only_month(), credit=credit)
+    decision = decide_upgrade(subject, cfg)
+    assert decision.status is DecisionStatus.KEEP
+    assert decision.seat_action is SeatAction.KEEP
+    assert decision.credit_action is CreditAction.NONE
+    assert decision.reason_codes == ()
+
+
+@pytest.mark.parametrize("month", [_observed_path_month(), _model_path_month()])
+def test_amount_based_paths_report_the_premium_comparison(cfg, month):
+    """金額差の2経路（観測・純モデル）では「Premium が安い」を根拠として添える。"""
+    decision = decide_upgrade(_subject(month), cfg)
+    assert (
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT in decision.reason_codes
+    )
+
+
+def test_the_credit_limit_path_alone_does_not_report_the_comparison(cfg):
+    """上限到達だけで候補になった場合は、金額差を立証していないので添えない（§12.4）。"""
+    decision = decide_upgrade(_subject(_credit_path_month(), credit=100.0), cfg)
+    assert ReasonCode.CREDIT_LIMIT_REACHED in decision.reason_codes
+    assert (
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT
+        not in decision.reason_codes
+    )
+
+
+# ------------------------------------------------------------- 推定ベースの超過の境界
+
+
+@pytest.mark.parametrize(("total", "candidate"), [(70.0, True), (69.0, False)])
+def test_estimated_overage_threshold_boundary(cfg, total, candidate):
+    """mid の超過が閾値（$20）ちょうどなら候補、$1 足りなければ候補にしない。
+
+    閾値は `min_assignment_saving_usd` の再利用で、新しい設定キーは持たない。
+    """
+    subject = _subject(_month(total=total, code=10.0), credit=_CREDIT_DISABLED)
+    decision = decide_upgrade(subject, cfg)
+    assert (decision.credit_action is CreditAction.ENABLE_WITH_CAP) is candidate
+
+
+def test_estimated_overage_needs_two_agreeing_scenarios(cfg):
+    """1シナリオだけの超過は allowance 推定の誤差と区別できないので候補にしない。
+
+    既定の込み量では mid の超過が閾値に届く需要は low も必ず超えるため、シナリオ数の規則
+    だけが効く場面を作るには込み量を変える必要がある（純モデル経路のテストと同じやり方）。
+    どちらの設定でも mid の超過は $20 で閾値を満たす。
+    """
+    tuned = copy.deepcopy(cfg)
+    subject = _subject(_month(total=70.0, code=10.0), credit=_CREDIT_DISABLED)
+
+    tuned["seats"]["standard"]["allowance_usd"] = {
+        "low": 1000.0, "mid": 50.0, "high": 1000.0}   # 超えるのは mid だけ
+    assert decide_upgrade(subject, tuned).credit_action is CreditAction.NONE
+
+    tuned["seats"]["standard"]["allowance_usd"] = {
+        "low": 30.0, "mid": 50.0, "high": 1000.0}     # low も超える
+    assert decide_upgrade(subject, tuned).credit_action is (
+        CreditAction.ENABLE_WITH_CAP
+    )
+
+
+# ------------------------------------------------------------- 根拠の保全と理由の並び
+
+
+@pytest.mark.parametrize(
+    ("subject", "seat", "credit"),
+    [
+        (
+            _subject(_code_heavy_month(), credit=_CREDIT_DISABLED),
+            SeatAction.KEEP,
+            CreditAction.ENABLE_WITH_CAP,
+        ),
+        (
+            _subject(
+                _code_heavy_month(month=_PREVIOUS_MONTH),
+                _code_heavy_month(),
+                credit=_CREDIT_DISABLED,
+            ),
+            SeatAction.UPGRADE_TO_PREMIUM,
+            CreditAction.NONE,
+        ),
+        (
+            _subject(_code_heavy_month(), credit=_CREDIT_ENABLED),
+            SeatAction.UPGRADE_TO_PREMIUM,
+            CreditAction.NONE,
+        ),
+        (
+            _subject(_code_heavy_month(), credit=_CREDIT_UNKNOWN),
+            SeatAction.UPGRADE_TO_PREMIUM,
+            CreditAction.REVIEW,
+        ),
+    ],
+    ids=["κ無効・一時的", "κ無効・継続", "κ有効", "κ不明"],
+)
+def test_the_estimated_overage_evidence_survives_every_branch(cfg, subject, seat, credit):
+    """推定ベースの超過は、結論の振り分けが変わっても対象月の根拠として残る。
+
+    同じ対象月の観測に対して結論は付与・昇格・設定の確認と分かれるが、候補になった観測は
+    同じもの（decision-evidence.csv で月をまたいで突き合わせる対象）。
+    """
+    decision = decide_upgrade(subject, cfg)
+    assert decision.seat_action is seat
+    assert decision.credit_action is credit
+    assert ReasonCode.ESTIMATED_STANDARD_OVERAGE in decision.reason_codes
+
+
+def test_credit_reasons_are_in_fixed_order(cfg):
+    """主理由（推定超過・設定不明）→ 補助（継続超過・金額比較・消費上昇）→ 情報 の順。"""
+    subject = _subject(
+        _month(month=_PREVIOUS_MONTH, total=250.0, code=200.0, billed=130.0),
+        _month(total=250.0, code=200.0, billed=130.0, supplementary=True),
+        credit=_CREDIT_UNKNOWN,
+        points=_RISING_POINTS,
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.reason_codes == (
+        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
+        ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+        ReasonCode.CREDIT_SETTING_UNKNOWN,
+        ReasonCode.SUSTAINED_OVERAGE,
+        ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+        ReasonCode.CREDIT_CONSUMPTION_RISING,
+        ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
+        ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
+    )
+    # 同じコードを2度出さない（月をまたいだ突き合わせのキーになるため）
+    assert len(set(decision.reason_codes)) == len(decision.reason_codes)
+
+
+@pytest.mark.parametrize("credit", [_CREDIT_UNKNOWN, _CREDIT_DISABLED])
+@pytest.mark.parametrize(
+    ("conflict", "complete", "events"),
+    [
+        (True, True, ()),
+        (False, False, ()),
+        (False, True, (_event(dt.date(2026, 7, 5), dt.date(2026, 7, 20)),)),
+    ],
+    ids=["identity conflict", "部分月", "直近のシート変更"],
+)
+def test_hard_blockers_are_not_overridden_by_the_credit_comparator(
+    cfg, credit, conflict, complete, events
+):
+    """hard blocker と recent 窓は κ の状態に依らず先に確定する（判定順は不変）。"""
+    subject = _subject(
+        _code_heavy_month(complete=complete),
+        credit=credit,
+        conflict=conflict,
+        events=events,
+    )
+    decision = decide_upgrade(subject, cfg)
+    assert decision.seat_action is SeatAction.NONE
+    assert decision.credit_action is CreditAction.NONE
+    assert decision.status in (DecisionStatus.NO_DECISION, DecisionStatus.OBSERVE)
+
+
 # ------------------------------------------------------------- 値オブジェクトの検証
 
 
@@ -1301,3 +1834,60 @@ def test_credit_limit_rejects_negative_values(credit):
 def test_credit_limit_accepts_the_defined_states(credit):
     """不明（None）・無効（0）・上限ありの正数はそのまま受け取る。"""
     assert _subject(_month(), credit=credit).credit_limit_usd == credit
+
+
+def test_credit_points_default_to_empty():
+    """点を渡さない履歴は空（消費がゼロだった、ではない）。"""
+    assert _subject(_month()).credit_points == ()
+
+
+def test_credit_points_are_stored_as_a_tuple():
+    assert _subject(_month(), points=[_point(8, 10.0)]).credit_points == (
+        _point(8, 10.0),
+    )
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        (_point(15, 10.0), _point(8, 20.0)),   # 降順
+        (_point(8, 10.0), _point(8, 20.0)),    # 同じ取得日
+    ],
+)
+def test_credit_points_require_ascending_unique_dates(points):
+    """上昇の判定は並び順で行うので、並びと一意性を構築時に確かめる。"""
+    with pytest.raises(ValueError, match="credit_points"):
+        _subject(_month(), points=points)
+
+
+def test_credit_points_reject_other_element_types():
+    with pytest.raises(TypeError, match="credit_points"):
+        _subject(_month(), points=(dt.date(2026, 7, 8),))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_credit_point_rejects_non_finite_amounts(value):
+    """非有限値は比較を黙って偽にし、上昇の判定を変えてしまう。"""
+    with pytest.raises(ValueError, match="mtd_usd"):
+        CreditPoint(taken_on=dt.date(2026, 7, 8), mtd_usd=value)
+
+
+@pytest.mark.parametrize("value", [-0.01, -30.0])
+def test_credit_point_rejects_a_negative_amount(value):
+    """累計の当月消費が負になる状態は無い（上流の正準 loader も負値を不明へ倒す）。
+
+    受理すると -30→-20→-10 のような点列が「継続上昇」になる。減少しうるのは点と点の差で、
+    点そのものではない。
+    """
+    with pytest.raises(ValueError, match="mtd_usd"):
+        CreditPoint(taken_on=dt.date(2026, 7, 8), mtd_usd=value)
+
+
+@pytest.mark.parametrize(
+    "taken_on",
+    [dt.datetime(2026, 7, 8, 12, 0, tzinfo=dt.UTC), "2026-07-08", None],
+)
+def test_credit_point_requires_a_date(taken_on):
+    """時刻を持つ datetime は比較と月の判定が変わるため受けない。"""
+    with pytest.raises(TypeError, match="taken_on"):
+        CreditPoint(taken_on=taken_on, mtd_usd=10.0)
