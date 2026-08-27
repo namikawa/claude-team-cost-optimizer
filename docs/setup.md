@@ -197,7 +197,9 @@ seat-analyzer init
 以降 `analyze` / `doctor` / `discuss` はワークスペースのルートで実行する。入力・出力・
 設定をカレントディレクトリから解決するため、別の場所で実行すると入力が見つからない。
 入力・出力だけをワークスペースの外に置く場合は `config.yaml` の `paths.input` /
-`paths.output` に書く（相対パスは `config.yaml` の置き場所が基準）。
+`paths.output` に書く（相対パスは `config.yaml` の置き場所が基準）。コマンドに
+`--input-dir` / `--output-dir` を付けた実行では、そのフラグが `config.yaml` の
+`paths` より優先される。
 
 検証:
 
