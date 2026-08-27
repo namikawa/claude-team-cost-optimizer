@@ -262,8 +262,7 @@ class LoadResult:
 def normalize_header(name: str) -> str:
     s = str(name).strip().lower()
     s = s.replace("_", " ").replace("-", " ")
-    s = re.sub(r"\s+", " ", s)
-    return s
+    return re.sub(r"\s+", " ", s)
 
 
 def map_columns(
@@ -511,7 +510,7 @@ def validate_org_names(orgs: list[str]) -> None:
     check_org_name_collisions(orgs)
 
 
-def _read_csv(path: Path, *, dtype=None) -> pd.DataFrame:
+def read_csv(path: Path, *, dtype=None) -> pd.DataFrame:
     # utf-8-sig は BOM 無しの UTF-8 も読めるため、utf-8-sig と cp932 の2種で足りる
     for encoding in ("utf-8-sig", "cp932"):
         try:
@@ -541,7 +540,7 @@ def _read_spend_df(path: Path, month: str, cfg: dict) -> tuple[pd.DataFrame, lis
     """1つのスペンド CSV を読み、カラム正規化・数値化・email 正規化を施す。"""
     # IDの先頭ゼロや、欠損混在時の ".0" 付与を防ぐため、Spendはまず文字列で読む。
     # 数値列は正準化後に _to_numeric で明示的に変換する。
-    df = _read_csv(path, dtype=str)
+    df = read_csv(path, dtype=str)
     df, warnings = map_columns(
         df,
         cfg["columns"]["spend"],
@@ -701,7 +700,7 @@ def _read_members_df(
     あることそのものが判断材料になる、Identity 解決へ渡す形。
     """
     # 数値形式IDの先頭ゼロを保持するため、Membersはまず文字列で読む。
-    df = _read_csv(path, dtype=str)
+    df = read_csv(path, dtype=str)
     df, warnings = map_columns(
         df,
         cfg["columns"]["members"],
@@ -896,7 +895,7 @@ def load_members_info(input_dir: Path, cfg: dict, month: str | None = None) -> L
     path, warnings = _resolve_members_info_path(Path(input_dir), month)
     if path is None:
         return None
-    df = _read_csv(path, dtype=str)
+    df = read_csv(path, dtype=str)
     # department/team/role/note/credit_limit_usd が無い場合の「任意カラムなし」警告は捨てる
     df, _ = map_columns(
         df,
@@ -927,7 +926,7 @@ def load_members_info_file(path: Path, cfg: dict) -> pd.DataFrame:
     email と credit_limit_usd（無ければ全 NaN）だけを正規化して返す。
     読み取りは load_members_info と同じく文字列で行う（上限列の字句を保つため）。
     """
-    df = _read_csv(Path(path), dtype=str)
+    df = read_csv(Path(path), dtype=str)
     df, _ = map_columns(
         df,
         cfg["columns"]["members_info"],
@@ -946,7 +945,7 @@ def load_members_info_file(path: Path, cfg: dict) -> pd.DataFrame:
 
 def _read_code_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
     """1つの code-analytics CSV を読み、カラム正規化・数値化・email 正規化を施す。"""
-    df = _read_csv(path)
+    df = read_csv(path)
     df, warnings = map_columns(
         df,
         cfg["columns"]["code_analytics"],

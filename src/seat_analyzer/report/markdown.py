@@ -41,8 +41,7 @@ from .text import (
 def _md_cell(v) -> str:
     """Markdown 表セル用のエスケープ（表崩れ防止）。パイプ・改行が主な対象。"""
     s = "" if v is None else str(v)
-    s = s.replace("\\", "\\\\").replace("|", "\\|").replace("\r", "").replace("\n", "<br>")
-    return s
+    return s.replace("\\", "\\\\").replace("|", "\\|").replace("\r", "").replace("\n", "<br>")
 
 
 def _user_table_md(users: pd.DataFrame) -> str:

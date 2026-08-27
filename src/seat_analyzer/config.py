@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import math
 import os
-import unicodedata
 from pathlib import Path, PurePath
 
 import yaml
 
 from .admin_inputs import ORGANIZATION_OPTIONAL_COLUMNS, USERS_OPTIONAL_COLUMNS
 from .ingest import MEMBERS_OPTIONAL_COLUMNS, REQUIRED_COLUMNS, SPEND_OPTIONAL_COLUMNS
+from .product_usage import normalize_product_name
 
 # 入力の正準化で参照する任意列（セクション → 正準名）。入力CSV上では省略できるが、
 # 正準化の設定そのもの（エイリアス定義）は必須にする
@@ -274,251 +274,320 @@ def _merge_override(base: dict, override: dict, *, label: str, path: tuple[str, 
     return merged
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _is_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_finite(value: object) -> bool:
+    """有限の実数か。float 化で桁あふれする巨大な int も False。"""
+    try:
+        return _is_number(value) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _is_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _validate_paths(cfg: dict, errors: list[str]) -> None:
+    paths = cfg["paths"]
+    if not isinstance(paths, dict):
+        errors.append("paths セクションが辞書ではありません")
+        return
+    for key in ("input", "output"):
+        if not _is_text(paths.get(key)):
+            errors.append(f"paths.{key} は空でない文字列が必要です")
+
+
+def _validate_seats(cfg: dict, errors: list[str]) -> None:
+    seats = cfg["seats"]
+    for seat in ("standard", "premium"):
+        settings = seats.get(seat)
+        if not isinstance(settings, dict):
+            errors.append(f"seats.{seat} がありません")
+            continue
+        if not _is_finite(settings.get("price_usd")) or settings["price_usd"] < 0:
+            errors.append(f"seats.{seat}.price_usd は 0 以上の有限な数値が必要です")
+        allowance = settings.get("allowance_usd")
+        if not isinstance(allowance, dict):
+            errors.append(f"seats.{seat}.allowance_usd がありません")
+            continue
+        for scenario in ("low", "mid", "high"):
+            value = allowance.get(scenario)
+            if not _is_finite(value) or value < 0:
+                errors.append(
+                    f"seats.{seat}.allowance_usd.{scenario} は 0 以上の有限な数値が必要です"
+                )
+        if all(
+            _is_finite(allowance.get(key)) for key in ("low", "mid", "high")
+        ) and not allowance["low"] <= allowance["mid"] <= allowance["high"]:
+            errors.append(
+                f"seats.{seat}.allowance_usd は low <= mid <= high が必要です"
+            )
+
+    standard, premium = seats.get("standard"), seats.get("premium")
+    if (
+        isinstance(standard, dict)
+        and isinstance(premium, dict)
+        and _is_finite(standard.get("price_usd"))
+        and _is_finite(premium.get("price_usd"))
+        and premium["price_usd"] <= standard["price_usd"]
+    ):
+        errors.append("seats.premium.price_usd は standard より大きい必要があります")
+
+
+def _validate_decision(cfg: dict, errors: list[str]) -> None:
+    decision = cfg["decision"]
+    # 真偽値は int の一種なので _is_integer で除く。
+    if (
+        not _is_integer(decision.get("hysteresis_months"))
+        or decision["hysteresis_months"] < 1
+    ):
+        errors.append("decision.hysteresis_months は 1 以上の整数が必要です")
+    if (
+        not _is_finite(decision.get("buffer_ratio"))
+        or not 0 <= decision["buffer_ratio"] <= 1
+    ):
+        errors.append("decision.buffer_ratio は 0〜1 の数値が必要です")
+    if (
+        not _is_finite(decision.get("censoring_margin"))
+        or decision["censoring_margin"] <= 0
+    ):
+        errors.append("decision.censoring_margin は正の数値が必要です")
+
+
+def _validate_decision_v2(cfg: dict, errors: list[str]) -> None:
+    decision = cfg["decision_v2"]
+    if not isinstance(decision, dict):
+        errors.append("decision_v2 セクションが辞書ではありません")
+        return
+    if not isinstance(decision.get("enabled"), bool):
+        errors.append("decision_v2.enabled は真偽値が必要です")
+    for direction in ("upgrade", "downgrade"):
+        section = decision.get(direction)
+        months = (
+            section.get("min_complete_months") if isinstance(section, dict) else None
+        )
+        if not _is_integer(months) or months < 1:
+            errors.append(
+                f"decision_v2.{direction}.min_complete_months は 1 以上の整数が必要です"
+            )
+    for direction, key in (
+        ("upgrade", "min_code_demand_usd"),
+        ("downgrade", "max_code_demand_usd"),
+    ):
+        section = decision.get(direction)
+        threshold = section.get(key) if isinstance(section, dict) else None
+        if not _is_finite(threshold) or threshold < 0:
+            errors.append(
+                f"decision_v2.{direction}.{key} は 0 以上の有限な数値が必要です"
+            )
+    days = decision.get("recent_seat_change_days")
+    if not _is_integer(days) or days < 1:
+        errors.append("decision_v2.recent_seat_change_days は 1 以上の整数が必要です")
+    saving = decision.get("min_assignment_saving_usd")
+    if not _is_finite(saving) or saving < 0:
+        errors.append(
+            "decision_v2.min_assignment_saving_usd は 0 以上の有限な数値が必要です"
+        )
+
+
+def _validate_usage_credits(cfg: dict, errors: list[str]) -> None:
+    usage_credits = cfg["usage_credits"]
+    if not isinstance(usage_credits, dict):
+        errors.append("usage_credits セクションが辞書ではありません")
+        return
+    for key in ("cap_tolerance_usd", "grant_suggested_cap_usd"):
+        if not _is_finite(usage_credits.get(key)) or usage_credits[key] < 0:
+            errors.append(f"usage_credits.{key} は 0 以上の有限な数値が必要です")
+
+
+def _validate_cost_basis(cfg: dict, errors: list[str]) -> None:
+    basis = cfg.get("cost_basis", "auto")
+    allowed = ("computed", "net_spend", "auto")
+    if not (isinstance(basis, str) and basis.lower() in allowed):
+        errors.append(f"cost_basis は {' / '.join(allowed)} のいずれかが必要です")
+
+
+def _product_names(policy: dict, key: str) -> list[tuple[str, str]]:
+    """正規化した product 名と設定上の表記を、記述順で返す。"""
+    names = policy.get(key)
+    if not isinstance(names, list):
+        return []
+    return [
+        (normalized, value.strip())
+        for value in names
+        if _is_text(value)
+        and (normalized := normalize_product_name(value)) is not None
+    ]
+
+
+def _duplicate_product_names(policy: dict, key: str) -> list[str]:
+    """同じ正規化名を2回目以降に記述したときの、元の表記。"""
+    seen: set[str] = set()
+    repeated: list[str] = []
+    for normalized, written in _product_names(policy, key):
+        if normalized in seen:
+            repeated.append(written)
+        seen.add(normalized)
+    return repeated
+
+
+def _validate_product_policy(cfg: dict, errors: list[str]) -> None:
+    policy = cfg["product_policy"]
+    if not isinstance(policy, dict):
+        errors.append("product_policy セクションが辞書ではありません")
+        return
+
+    for key in ("primary", "supplementary", "prohibited"):
+        names = policy.get(key)
+        if not (isinstance(names, list) and all(_is_text(value) for value in names)):
+            errors.append(f"product_policy.{key} は空でない文字列のリストが必要です")
+    if isinstance(policy.get("primary"), list) and not policy["primary"]:
+        errors.append("product_policy.primary には1つ以上の product 名が必要です")
+    threshold = policy.get("supplementary_high_usd")
+    if not _is_finite(threshold) or threshold < 0:
+        errors.append(
+            "product_policy.supplementary_high_usd は 0 以上の有限な数値が必要です"
+        )
+
+    for key in ("primary", "supplementary", "prohibited"):
+        repeated = _duplicate_product_names(policy, key)
+        if repeated:
+            errors.append(
+                f"product_policy.{key} に同じ product 名が複数あります: "
+                + ", ".join(repeated)
+            )
+
+    supplementary = {
+        normalized for normalized, _ in _product_names(policy, "supplementary")
+    }
+    overlap = [
+        written
+        for normalized, written in _product_names(policy, "primary")
+        if normalized in supplementary
+    ]
+    if overlap:
+        errors.append(
+            "product_policy の primary と supplementary に同じ product 名があります"
+            "（どちらの分類として数えるかが決まりません）: " + ", ".join(overlap)
+        )
+
+
+def _validate_discussion_ranges(discussion: dict, errors: list[str]) -> None:
+    """discussion の型検査後に、整数・秒数の範囲を検査する。"""
+    if (
+        _is_integer(discussion.get("max_attempts"))
+        and discussion["max_attempts"] < 1
+    ):
+        errors.append("discussion.max_attempts は 1 以上が必要です")
+    if (
+        _is_integer(discussion.get("min_output_chars"))
+        and discussion["min_output_chars"] < 1
+    ):
+        errors.append("discussion.min_output_chars は 1 以上が必要です")
+    if _is_integer(discussion.get("retries")) and discussion["retries"] < 0:
+        errors.append("discussion.retries は 0 以上が必要です")
+    if (
+        not _is_finite(discussion.get("timeout_seconds"))
+        or discussion["timeout_seconds"] <= 0
+    ):
+        errors.append("discussion.timeout_seconds は正の有限な数値が必要です")
+    if (
+        not _is_finite(discussion.get("retry_wait_seconds"))
+        or discussion["retry_wait_seconds"] < 0
+    ):
+        errors.append("discussion.retry_wait_seconds は 0 以上の有限な数値が必要です")
+
+
+def _validate_discussion(cfg: dict, errors: list[str]) -> None:
+    discussion = cfg["discussion"]
+    if not isinstance(discussion, dict):
+        errors.append("discussion セクションが辞書ではありません")
+        return
+
+    for key in ("command", "model", "effort"):
+        if not _is_text(discussion.get(key)):
+            errors.append(f"discussion.{key} は空でない文字列が必要です")
+    efforts = ("low", "medium", "high", "xhigh", "max")
+    if discussion.get("effort") not in efforts:
+        errors.append(f"discussion.effort は {'/'.join(efforts)} のいずれかが必要です")
+    for key in ("max_attempts", "min_output_chars", "retries"):
+        if not _is_integer(discussion.get(key)):
+            errors.append(f"discussion.{key} は整数が必要です")
+    _validate_discussion_ranges(discussion, errors)
+    terms = discussion.get("allow_terms")
+    if not (
+        isinstance(terms, list)
+        and all(isinstance(value, str) and value.strip() for value in terms)
+    ):
+        errors.append("discussion.allow_terms は空でない文字列のリストが必要です")
+
+
+def _validate_model_prices(cfg: dict, errors: list[str]) -> None:
+    model_prices = cfg["model_prices"]
+    patterns = model_prices.get("patterns")
+    if not isinstance(patterns, list) or not patterns:
+        errors.append("model_prices.patterns が空です")
+    else:
+        for index, pattern in enumerate(patterns):
+            if (
+                not isinstance(pattern, dict)
+                or not _is_text(pattern.get("match"))
+                or not _is_finite(pattern.get("input"))
+                or not _is_finite(pattern.get("output"))
+            ):
+                errors.append(
+                    f"model_prices.patterns[{index}] には match（空でない文字列）と"
+                    "input/output（有限な数値）が必要です"
+                )
+    default = model_prices.get("default")
+    if (
+        not isinstance(default, dict)
+        or not _is_finite(default.get("input"))
+        or not _is_finite(default.get("output"))
+    ):
+        errors.append("model_prices.default には input/output の有限な数値が必要です")
+
+
+def _validate_columns(cfg: dict, errors: list[str]) -> None:
+    columns = cfg["columns"]
+    if not isinstance(columns, dict):
+        errors.append("columns セクションが辞書ではありません")
+        return
+    for section, required in REQUIRED_COLUMNS.items():
+        aliases_by_name = columns.get(section)
+        if not isinstance(aliases_by_name, dict):
+            errors.append(f"columns.{section} がありません")
+            continue
+        configured = [*required, *_OPTIONAL_COLUMNS.get(section, ())]
+        for canonical in configured:
+            aliases = aliases_by_name.get(canonical)
+            if not isinstance(aliases, list) or not aliases:
+                errors.append(
+                    f"columns.{section}.{canonical} のエイリアス定義がありません"
+                )
+
+
 def _validate(cfg: dict) -> None:
     """料金改定などで config.yaml を編集した際のミスを実行前に検出する。"""
     errors: list[str] = []
 
-    def _num(v) -> bool:
-        return isinstance(v, (int, float)) and not isinstance(v, bool)
-
-    def _int(v) -> bool:
-        return isinstance(v, int) and not isinstance(v, bool)
-
-    def _finite(v) -> bool:
-        # 巨大な int は float 変換で OverflowError になる。設定ミスとして扱う。
-        # 金額・比率には NaN・Infinity も使えない（比較が常に偽になり、判定が黙って
-        # 変わる）ので、数値の検査はすべてこちらを通す
-        try:
-            return _num(v) and math.isfinite(v)
-        except OverflowError:
-            return False
-
-    def _text(v) -> bool:
-        return isinstance(v, str) and bool(v.strip())
-
-    # 入出力ディレクトリ。空文字はカレントディレクトリとして解決され、意図しない場所を
-    # 入力元・出力先にする（--input-dir の省略時にだけ効くので気づきにくい）
-    paths = cfg["paths"]
-    if not isinstance(paths, dict):
-        errors.append("paths セクションが辞書ではありません")
-    else:
-        for key in ("input", "output"):
-            if not _text(paths.get(key)):
-                errors.append(f"paths.{key} は空でない文字列が必要です")
-
-    for seat in ("standard", "premium"):
-        s = cfg["seats"].get(seat)
-        if not isinstance(s, dict):
-            errors.append(f"seats.{seat} がありません")
-            continue
-        if not _finite(s.get("price_usd")) or s["price_usd"] < 0:
-            errors.append(f"seats.{seat}.price_usd は 0 以上の有限な数値が必要です")
-        allowance = s.get("allowance_usd")
-        if not isinstance(allowance, dict):
-            errors.append(f"seats.{seat}.allowance_usd がありません")
-        else:
-            for scenario in ("low", "mid", "high"):
-                v = allowance.get(scenario)
-                if not _finite(v) or v < 0:
-                    errors.append(
-                        f"seats.{seat}.allowance_usd.{scenario} は 0 以上の有限な数値が必要です")
-            if all(_finite(allowance.get(k)) for k in ("low", "mid", "high")) and not (
-                allowance["low"] <= allowance["mid"] <= allowance["high"]
-            ):
-                errors.append(f"seats.{seat}.allowance_usd は low <= mid <= high が必要です")
-    std, prem = cfg["seats"].get("standard"), cfg["seats"].get("premium")
-    if (
-        isinstance(std, dict) and isinstance(prem, dict)
-        and _finite(std.get("price_usd")) and _finite(prem.get("price_usd"))
-        and prem["price_usd"] <= std["price_usd"]
-    ):
-        errors.append("seats.premium.price_usd は standard より大きい必要があります")
-
-    d = cfg["decision"]
-    # 真偽値は int の一種なので _int で除く（yes と書くと 1 として通ってしまう）
-    if not _int(d.get("hysteresis_months")) or d["hysteresis_months"] < 1:
-        errors.append("decision.hysteresis_months は 1 以上の整数が必要です")
-    if not _finite(d.get("buffer_ratio")) or not 0 <= d["buffer_ratio"] <= 1:
-        errors.append("decision.buffer_ratio は 0〜1 の数値が必要です")
-    if not _finite(d.get("censoring_margin")) or d["censoring_margin"] <= 0:
-        errors.append("decision.censoring_margin は正の数値が必要です")
-
-    # V2判定の設定。enabled が偽のあいだも値を検査する（有効化した時点で壊れている
-    # 設定に気づくのでは遅い。編集ミスは編集した実行で検出する）
-    dv2 = cfg["decision_v2"]
-    if not isinstance(dv2, dict):
-        errors.append("decision_v2 セクションが辞書ではありません")
-    else:
-        if not isinstance(dv2.get("enabled"), bool):
-            errors.append("decision_v2.enabled は真偽値が必要です")
-        for direction in ("upgrade", "downgrade"):
-            section = dv2.get(direction)
-            months = section.get("min_complete_months") if isinstance(section, dict) else None
-            if not _int(months) or months < 1:
-                errors.append(
-                    f"decision_v2.{direction}.min_complete_months は 1 以上の整数が必要です")
-        # Code 需要の閾値は昇格・降格で向きが逆（以上で昇格・未満で降格）だが、値の
-        # 契約は同じなので同じ粒度で検査する（片方だけ緩いと、その向きの判定が壊れた
-        # 設定のまま動く）
-        for direction, key in (
-            ("upgrade", "min_code_demand_usd"),
-            ("downgrade", "max_code_demand_usd"),
-        ):
-            section = dv2.get(direction)
-            threshold = section.get(key) if isinstance(section, dict) else None
-            if not _finite(threshold) or threshold < 0:
-                errors.append(
-                    f"decision_v2.{direction}.{key} は 0 以上の有限な数値が必要です")
-        days = dv2.get("recent_seat_change_days")
-        if not _int(days) or days < 1:
-            errors.append("decision_v2.recent_seat_change_days は 1 以上の整数が必要です")
-        saving = dv2.get("min_assignment_saving_usd")
-        if not _finite(saving) or saving < 0:
-            errors.append("decision_v2.min_assignment_saving_usd は 0 以上の有限な数値が必要です")
-
-    # 追加クレジットの表示閾値。既定設定が必ず持ち、上書きはキーを消せないため常に検査する
-    # （NaN は上限到達の判定を黙って変え、非有限値は設定値の金額表示も壊す）
-    uc = cfg["usage_credits"]
-    if not isinstance(uc, dict):
-        errors.append("usage_credits セクションが辞書ではありません")
-    else:
-        for key in ("cap_tolerance_usd", "grant_suggested_cap_usd"):
-            if not _finite(uc.get(key)) or uc[key] < 0:
-                errors.append(f"usage_credits.{key} は 0 以上の有限な数値が必要です")
-
-    # 需要指標の算出基準。綴り違いは auto と同じ扱いで黙って通るため列挙を検証する
-    # （小文字化して照合するのは pricing.resolve_cost_basis に合わせるため）
-    basis = cfg.get("cost_basis", "auto")
-    bases = ("computed", "net_spend", "auto")
-    if not (isinstance(basis, str) and basis.lower() in bases):
-        errors.append(f"cost_basis は {' / '.join(bases)} のいずれかが必要です")
-
-    # product の分類。既定設定が必ず持ち、上書きはキーを消せないため常に検査する
-    # （欠けている場合は既定設定の破損として同じ経路で報告する）
-    policy = cfg["product_policy"]
-    if not isinstance(policy, dict):
-        errors.append("product_policy セクションが辞書ではありません")
-    else:
-        def _names(key: str) -> list[tuple[str, str]]:
-            """(照合用に正規化した product 名, 設定に書かれた名前) を記述順で返す。
-
-            前後空白・大小文字・Unicode の正規化形式の違いは同じ product 名として扱う
-            （設定ミスを拾うのが目的なので取りこぼしより誤検出に倒す）。NFC 正規化して
-            casefold する比較そのものは組織名の衝突判定 ingest.check_org_name_collisions
-            と同じ。組織名は前後空白を含むこと自体を不正にしているのに対し、product 名は
-            前後空白を落としてから比較する点だけが異なる。
-            """
-            names = policy.get(key)
-            if not isinstance(names, list):
-                return []
-            return [
-                (unicodedata.normalize("NFC", v.strip()).casefold(), v.strip())
-                for v in names if _text(v)
-            ]
-
-        for key in ("primary", "supplementary", "prohibited"):
-            names = policy.get(key)
-            if not (isinstance(names, list) and all(_text(v) for v in names)):
-                errors.append(f"product_policy.{key} は空でない文字列のリストが必要です")
-        # 空リストは supplementary・prohibited では正当（該当なし）だが、primary が空だと
-        # 「開発利用の主軸」を定義できず、活用の評価そのものが成立しない
-        if isinstance(policy.get("primary"), list) and not policy["primary"]:
-            errors.append("product_policy.primary には1つ以上の product 名が必要です")
-        threshold = policy.get("supplementary_high_usd")
-        if not _finite(threshold) or threshold < 0:
-            errors.append(
-                "product_policy.supplementary_high_usd は 0 以上の有限な数値が必要です")
-        # 同一リスト内の重複は分類こそ決まるが書き間違いなので弾く
-        for key in ("primary", "supplementary", "prohibited"):
-            seen: set[str] = set()
-            repeated: list[str] = []   # 報告は設定の記述順（集合の反復順に依らない）
-            for normalized, written in _names(key):
-                if normalized in seen:
-                    repeated.append(written)
-                seen.add(normalized)
-            if repeated:
-                errors.append(
-                    f"product_policy.{key} に同じ product 名が複数あります: "
-                    + ", ".join(repeated)
-                )
-        # 分類として排他なのは primary と supplementary だけ。prohibited は「この組織で
-        # 使わせない」という直交する指定なので、primary・supplementary と重ねて書ける
-        supplementary = {normalized for normalized, _ in _names("supplementary")}
-        overlap = [w for normalized, w in _names("primary") if normalized in supplementary]
-        if overlap:
-            errors.append(
-                "product_policy の primary と supplementary に同じ product 名があります"
-                "（どちらの分類として数えるかが決まりません）: " + ", ".join(overlap)
-            )
-
-    # discussion の各項目は既定設定が必ず持ち、上書きはキーを消せないため、値の有無を
-    # 条件にせず常に検査する（欠けている場合は既定設定の破損として同じ経路で報告する）
-    disc = cfg["discussion"]
-    if not isinstance(disc, dict):
-        errors.append("discussion セクションが辞書ではありません")
-    else:
-        for key in ("command", "model", "effort"):
-            if not (isinstance(disc.get(key), str) and disc[key].strip()):
-                errors.append(f"discussion.{key} は空でない文字列が必要です")
-        efforts = ("low", "medium", "high", "xhigh", "max")
-        if disc.get("effort") not in efforts:
-            errors.append(f"discussion.effort は {'/'.join(efforts)} のいずれかが必要です")
-        # 回数は int() で黙って切り捨てられると意図と違う挙動になるため整数を要求する。
-        # 秒数は inf/NaN を弾く（time.sleep(inf) は OverflowError で実行を止める）
-        for key in ("max_attempts", "min_output_chars", "retries"):
-            if not _int(disc.get(key)):
-                errors.append(f"discussion.{key} は整数が必要です")
-        if _int(disc.get("max_attempts")) and disc["max_attempts"] < 1:
-            errors.append("discussion.max_attempts は 1 以上が必要です")
-        if _int(disc.get("min_output_chars")) and disc["min_output_chars"] < 1:
-            errors.append("discussion.min_output_chars は 1 以上が必要です")
-        if _int(disc.get("retries")) and disc["retries"] < 0:
-            errors.append("discussion.retries は 0 以上が必要です")
-        if not _finite(disc.get("timeout_seconds")) or disc["timeout_seconds"] <= 0:
-            errors.append("discussion.timeout_seconds は正の有限な数値が必要です")
-        if not _finite(disc.get("retry_wait_seconds")) or disc["retry_wait_seconds"] < 0:
-            errors.append("discussion.retry_wait_seconds は 0 以上の有限な数値が必要です")
-        terms = disc.get("allow_terms")
-        if not (
-            isinstance(terms, list)
-            and all(isinstance(v, str) and v.strip() for v in terms)
-        ):
-            errors.append("discussion.allow_terms は空でない文字列のリストが必要です")
-
-    patterns = cfg["model_prices"].get("patterns")
-    if not isinstance(patterns, list) or not patterns:
-        errors.append("model_prices.patterns が空です")
-    else:
-        # match はモデル名との部分一致に使う文字列。数値等が入ると照合の時点で落ちる
-        for i, pat in enumerate(patterns):
-            if not isinstance(pat, dict) or not _text(pat.get("match")) \
-                    or not _finite(pat.get("input")) or not _finite(pat.get("output")):
-                errors.append(
-                    f"model_prices.patterns[{i}] には match（空でない文字列）と"
-                    "input/output（有限な数値）が必要です"
-                )
-    default = cfg["model_prices"].get("default")
-    if not isinstance(default, dict) or not _finite(default.get("input")) \
-            or not _finite(default.get("output")):
-        errors.append("model_prices.default には input/output の有限な数値が必要です")
-
-    # 入力処理が参照するカラムエイリアスが columns セクションに定義されているか。
-    # 任意列は入力CSV上では省略可能だが、正準化の設定自体は必須とする。
-    columns = cfg["columns"]
-    if not isinstance(columns, dict):
-        errors.append("columns セクションが辞書ではありません")
-    else:
-        for section, required in REQUIRED_COLUMNS.items():
-            sec = columns.get(section)
-            if not isinstance(sec, dict):
-                errors.append(f"columns.{section} がありません")
-                continue
-            configured_columns = list(required)
-            configured_columns.extend(_OPTIONAL_COLUMNS.get(section, ()))
-            for canonical in configured_columns:
-                aliases = sec.get(canonical)
-                if not isinstance(aliases, list) or not aliases:
-                    errors.append(f"columns.{section}.{canonical} のエイリアス定義がありません")
+    _validate_paths(cfg, errors)
+    _validate_seats(cfg, errors)
+    _validate_decision(cfg, errors)
+    _validate_decision_v2(cfg, errors)
+    _validate_usage_credits(cfg, errors)
+    _validate_cost_basis(cfg, errors)
+    _validate_product_policy(cfg, errors)
+    _validate_discussion(cfg, errors)
+    _validate_model_prices(cfg, errors)
+    _validate_columns(cfg, errors)
 
     if errors:
         raise ValueError("config.yaml の設定に問題があります:\n  - " + "\n  - ".join(errors))

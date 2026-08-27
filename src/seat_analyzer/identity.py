@@ -44,7 +44,7 @@ class ResolvedIdentity:
     user_ids: tuple[str, ...]
 
 
-def _normalize(
+def normalize_value(
     value: object,
     *,
     field_name: str,
@@ -120,16 +120,16 @@ def resolve_identities(
     unresolved: list[tuple[int, ResolvedIdentity]] = []
 
     for index, item in enumerate(evidence):
-        email = _normalize(
+        email = normalize_value(
             item.email,
             field_name="IdentityEvidence.email",
             lowercase=True,
         )
-        account_uuid = _normalize(
+        account_uuid = normalize_value(
             item.account_uuid,
             field_name="IdentityEvidence.account_uuid",
         )
-        user_id = _normalize(
+        user_id = normalize_value(
             item.user_id,
             field_name="IdentityEvidence.user_id",
         )
@@ -158,7 +158,7 @@ def resolve_identities(
         normalized
         for value in consistent_emails
         if (
-            normalized := _normalize(
+            normalized := normalize_value(
                 value,
                 field_name="consistent_emailsの要素",
                 lowercase=True,

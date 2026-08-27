@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.metadata
 import re
 import sys
@@ -72,10 +73,8 @@ def _force_utf8_io() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue  # テストの差し替え等、TextIOWrapper でないストリーム
-        try:
+        with contextlib.suppress(OSError, ValueError):
             reconfigure(encoding="utf-8", errors="strict")
-        except (OSError, ValueError):
-            pass
 
 
 def _print_permission_hint(exc: BaseException) -> None:

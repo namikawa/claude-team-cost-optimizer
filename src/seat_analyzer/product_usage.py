@@ -353,11 +353,10 @@ def _display_names(products: pd.Series) -> pd.Series:
     return names.mask(names == "")
 
 
-def _match_key(name: str) -> str | None:
+def normalize_product_name(name: str) -> str | None:
     """照合用の正準形。空文字になるものは product 名として扱わず None を返す。
 
-    正規化の規則（前後空白の除去 → NFC → casefold）は config の product_policy 内
-    重複判定と同じ。2箇所に分かれているため、片方を変えるときは両方を揃えること。
+    設定検証と利用集計の両方がこの関数を使い、表記ゆれの判定規則を一致させる。
     """
     key = unicodedata.normalize("NFC", name.strip()).casefold()
     return key or None
@@ -365,7 +364,7 @@ def _match_key(name: str) -> str | None:
 
 def _match_keys(names: pd.Series) -> pd.Series:
     """product 名の列を照合用の正準形へ揃える（欠損はそのまま）。"""
-    return names.map(_match_key, na_action="ignore")
+    return names.map(normalize_product_name, na_action="ignore")
 
 
 def _category_keys(policy: Mapping, key: str) -> set[str]:
@@ -376,7 +375,8 @@ def _category_keys(policy: Mapping, key: str) -> set[str]:
     return {
         normalized
         for name in names
-        if isinstance(name, str) and (normalized := _match_key(name)) is not None
+        if isinstance(name, str)
+        and (normalized := normalize_product_name(name)) is not None
     }
 
 

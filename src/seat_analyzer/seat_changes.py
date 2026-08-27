@@ -547,31 +547,19 @@ def _owner_index(row: _Row, owner: Mapping[_Node, int]) -> int | None:
 def _nodes(evidence: IdentityEvidence) -> tuple[_Node, ...]:
     """1行が持つ Identity 値（identity 側と同じ種別名・同じ正規化）。"""
     values = (
-        _text(evidence.email, lowercase=True),
-        _text(evidence.account_uuid),
-        _text(evidence.user_id),
+        identity.normalize_value(
+            evidence.email, field_name="IdentityEvidence.email", lowercase=True
+        ),
+        identity.normalize_value(
+            evidence.account_uuid, field_name="IdentityEvidence.account_uuid"
+        ),
+        identity.normalize_value(evidence.user_id, field_name="IdentityEvidence.user_id"),
     )
     return tuple(
         _Node(kind, value)
         for kind, value in zip(_NODE_KINDS, values, strict=True)
         if value is not None
     )
-
-
-def _text(value: object, *, lowercase: bool = False) -> str | None:
-    """Identity 値を照合用の文字列へ揃える（前後空白を除去。email だけ小文字化）。
-
-    identity 側の正規化と同じ規則にする（違うと逆引き表を引けない）。非スカラーは
-    resolve_identities が先に拒否するため、ここへは来ない。
-    """
-    if value is None or not pd.api.types.is_scalar(value) or pd.isna(value):
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    return text.lower() if lowercase else text
-
-
 def _seat_of(rows: Sequence[_Row]) -> str | None:
     """その時点の subject のシート。行が無ければ不在、食い違うなら None（分類不能）。
 
@@ -598,7 +586,14 @@ def _representative_email(
     for rows in (current_rows, previous_rows):
         emails = sorted(
             value
-            for value in (_text(row.evidence.email, lowercase=True) for row in rows)
+            for value in (
+                identity.normalize_value(
+                    row.evidence.email,
+                    field_name="IdentityEvidence.email",
+                    lowercase=True,
+                )
+                for row in rows
+            )
             if value is not None
         )
         if emails:

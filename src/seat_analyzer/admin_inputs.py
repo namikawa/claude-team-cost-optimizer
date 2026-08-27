@@ -551,7 +551,7 @@ def _raw_header(path: Path) -> list[str]:
 
     読み込みは同名の列を `Email` / `Email.1` へ改名するため、読み込み後の列名では
     「同じヘッダが2つある」ことが分からない。ヘッダの曖昧さは生の先頭行で判断する。
-    文字コードの判別は `ingest._read_csv` と同じ2種で行う。
+    文字コードの判別は `ingest.read_csv` と同じ2種で行う。
 
     先頭行はデータ行として読むため、既定では `NA` や `N/A` のようなヘッダが欠損へ
     変わってしまう（列名として書かれた語が消える）。`na_filter=False` で字句のまま受け、
@@ -620,7 +620,7 @@ def _read_table(
     ID の先頭ゼロと数値の表記をそのまま保つため文字列で読み、値の解釈はセル単位の
     パーサに任せる。任意列は欠損時に NA で補い、「任意カラムなし」の警告は出さない。
     """
-    df = ingest._read_csv(path, dtype=str)
+    df = ingest.read_csv(path, dtype=str)
     _reject_overlapping_aliases(section, cfg["columns"][section])
     _reject_ambiguous_headers(path, _raw_header(path), cfg["columns"][section])
     return ingest.map_columns(

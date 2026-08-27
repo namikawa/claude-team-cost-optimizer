@@ -46,7 +46,7 @@ _TEXT_SUFFIXES = (
 
 
 # 公開テキストの入力に想定する文字コード。utf-8-sig は BOM 無しの UTF-8 も読めるため、
-# ingest._read_csv と同じ2種で足りる
+# ingest.read_csv と同じ2種で足りる
 _INPUT_ENCODINGS = ("utf-8-sig", "cp932")
 
 # 扱わない文字コードの BOM。UTF-16 の BOM は UTF-32 の BOM の前方部分でもあるが、

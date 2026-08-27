@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import pandas as pd
 
-# クレジットモード（追加クレジット=usage credits の有効/無効）。値は report.py の表示と結合。
+# クレジットモード（追加クレジット=usage credits の有効/無効）。値は report の表示と結合。
 CREDIT_ENABLED = "enabled"    # κ>0 or 無制限、または実課金の観測から自動確定
 CREDIT_DISABLED = "disabled"  # κ==0
 CREDIT_UNKNOWN = "unknown"    # 未設定かつ実課金の観測なし
@@ -208,6 +209,73 @@ def _credit_reached_emails(users: pd.DataFrame, cfg: dict, billed_col: str) -> l
     return reached
 
 
+@dataclass(frozen=True)
+class _CreditReachContext:
+    """速報の追加クレジット残額行で共有する観測期間と課金増分。"""
+
+    tolerance: float
+    days_observed: int
+    days_in_month: int
+    interval_days: int
+    billed_delta: dict[str, float]
+
+
+def _credit_eta_day(
+    email: str,
+    kappa: float,
+    billed: float,
+    remaining: float,
+    context: _CreditReachContext,
+) -> int | None:
+    """最新区間、または月初からの平均ペースで月内の上限到達日を見積もる。"""
+    if email in context.billed_delta and context.interval_days > 0:
+        rate = context.billed_delta[email] / context.interval_days
+        estimated = context.days_observed + remaining / rate if rate > 0 else None
+    elif context.days_observed > 0:
+        estimated = kappa * context.days_observed / billed
+    else:
+        estimated = None
+    if estimated is None or estimated > context.days_in_month:
+        return None
+    return math.ceil(estimated)
+
+
+def _credit_reach_row(
+    row: pd.Series,
+    context: _CreditReachContext,
+) -> dict | None:
+    """速報の追加クレジット残額行を、対象外なら None を返して構築する。"""
+    if row.get("credits_mode") != CREDIT_ENABLED:
+        return None
+    kappa = row["credit_limit_usd"]
+    if pd.isna(kappa) or math.isinf(kappa) or kappa <= 0.0:
+        return None
+    billed = float(row["billed_observed_usd"] or 0.0)
+    if billed <= 0.0:
+        return None
+
+    kappa = float(kappa)
+    remaining = kappa - billed
+    reached = billed >= kappa - context.tolerance
+    eta_day = None
+    if not reached:
+        eta_day = _credit_eta_day(
+            row["email"],
+            kappa,
+            billed,
+            remaining,
+            context,
+        )
+    return {
+        "email": row["email"],
+        "billed": round(billed, 2),
+        "kappa": round(kappa, 2),
+        "remaining": round(remaining, 2),
+        "reached": reached,
+        "eta_day": eta_day,
+    }
+
+
 def _credit_reach_preview(users: pd.DataFrame, days_observed: int, days_in_month: int,
                           cfg: dict, snapshot: dict | None = None) -> dict | None:
     """速報の追加クレジット残額ブロック（enabled・有限 κ・実課金>0 のユーザ）。
@@ -224,36 +292,18 @@ def _credit_reach_preview(users: pd.DataFrame, days_observed: int, days_in_month
     # email → 最新区間の課金増分（スナップショットがあるユーザのみ）
     billed_delta = {r["email"]: float(r.get("billed_delta", 0.0))
                     for r in (snapshot.get("rows", []) if snapshot else [])}
-    rows = []
-    for _, r in users.iterrows():
-        if r.get("credits_mode") != CREDIT_ENABLED:
-            continue
-        kappa = r["credit_limit_usd"]
-        if pd.isna(kappa) or math.isinf(kappa) or kappa <= 0.0:
-            continue
-        billed = float(r["billed_observed_usd"] or 0.0)
-        if billed <= 0.0:
-            continue
-        remaining = float(kappa) - billed
-        reached = billed >= kappa - tol
-        eta_day = None
-        if not reached:
-            if r["email"] in billed_delta and interval_days > 0:
-                # 直近区間の課金ペース: 区間レートが 0 のユーザは予測せず None（直近は課金なし）
-                rate = billed_delta[r["email"]] / interval_days
-                if rate > 0:
-                    d_star = days_observed + remaining / rate
-                    if d_star <= days_in_month:
-                        eta_day = math.ceil(d_star)
-            elif days_observed > 0:
-                # 月初からの平均ペースへフォールバック（billed > 0 は上で保証済み）
-                d_star = kappa * days_observed / billed
-                if d_star <= days_in_month:
-                    eta_day = math.ceil(d_star)
-        rows.append({
-            "email": r["email"], "billed": round(billed, 2), "kappa": round(float(kappa), 2),
-            "remaining": round(remaining, 2), "reached": reached, "eta_day": eta_day,
-        })
+    context = _CreditReachContext(
+        tolerance=tol,
+        days_observed=days_observed,
+        days_in_month=days_in_month,
+        interval_days=interval_days,
+        billed_delta=billed_delta,
+    )
+    rows = [
+        reach
+        for _, row in users.iterrows()
+        if (reach := _credit_reach_row(row, context)) is not None
+    ]
     if not rows:
         return None
     rows.sort(key=lambda x: x["remaining"])
