@@ -13,10 +13,11 @@
 読まず、書かず、現在時刻も参照しないため、同じ入力からは常に同じ結論と同じ理由の並びを
 返す。
 
-扱うのはシートの昇格（Standard→Premium）と降格（Premium→Standard）で、追加クレジットの
-提案は持たない（credit_action は常に CreditAction.NONE）。判定できる現シート以外を
-どう扱うか（unknown を判定しない等）は呼び出し側の責務なので、ここでは ValueError に
-する。分析パイプライン・出力へは未結線。
+扱うのはシートの昇格（Standard→Premium）と降格（Premium→Standard）、および昇格側に
+重ねる追加クレジット（usage credits）の提案。降格側はクレジットの提案を持たない
+（credit_action は常に CreditAction.NONE）。判定できる現シート以外をどう扱うか
+（unknown を判定しない等）は呼び出し側の責務なので、ここでは ValueError にする。
+分析パイプライン・出力へは未結線。
 
 StrEnum は文字列として等値になり、語彙をまたいだ == が成立する（設計書 §12.1）。型では
 混同を防げないので、境界の値オブジェクト DecisionV2 が受け取る語彙を isinstance で
@@ -29,8 +30,9 @@ import calendar
 import datetime as dt
 import math
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import NamedTuple
 
 from .domain import CreditAction, DecisionStatus, ReasonCode, SeatAction
@@ -50,8 +52,21 @@ _SCENARIOS = ("low", "mid", "high")
 # 純モデル判定で候補とみなすのに要るシナリオ数（過半数）
 _MIN_AGREEING_SCENARIOS = 2
 
-# SUSTAINED_OVERAGE を付けるのに要る、直近から連続する完全月の数
+# SUSTAINED_OVERAGE を付けるのに要る、直近から連続する完全月の数。追加クレジットが
+# 無効な組織の昇格に要る継続性（§12.6）にも同じ月数を使う
 _SUSTAINED_MONTHS = 2
+
+# 追加クレジット消費の「継続上昇」とみなすのに要る、対象月内の観測点の数
+_RISING_MIN_POINTS = 3
+
+# status を RECOMMENDED へ上げるアクション（人が取るべき作業があるもの）。語彙ごとに
+# 別の組にする。StrEnum は値が等しければ語彙をまたいで == になるため、1つの組へ混ぜると
+# 別の語彙のメンバーが一致してしまう（§12.1）
+_ACTIONABLE_SEAT_ACTIONS = (
+    SeatAction.UPGRADE_TO_PREMIUM,
+    SeatAction.REVIEW_ASSIGNMENT,
+)
+_ACTIONABLE_CREDIT_ACTIONS = (CreditAction.ENABLE_WITH_CAP, CreditAction.REVIEW)
 
 _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
@@ -68,9 +83,14 @@ _REASON_ORDER = (
     ReasonCode.SUSTAINED_LOW_CODE_DEMAND,
     ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,
     ReasonCode.REVIEW_NON_CODE_USAGE,
+    ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+    ReasonCode.CREDIT_SETTING_UNKNOWN,
     # 補助: 主理由を補強する観測
     ReasonCode.CREDIT_LIMIT_REACHED,
     ReasonCode.SUSTAINED_OVERAGE,
+    ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
+    ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
+    ReasonCode.CREDIT_CONSUMPTION_RISING,
     # 情報: 結論は変えないが、人が判断するときに要る文脈
     ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
@@ -166,6 +186,38 @@ class MonthObservation:
 
 
 @dataclass(frozen=True)
+class CreditPoint:
+    """追加クレジット消費の観測点1つ。
+
+    taken_on はその値を写した日、mtd_usd はその時点での当月消費。月次でリセットされる
+    値なので、2点の比較は同じ月の点どうしでだけ意味を持つ。
+
+    値の由来（管理画面のスナップショット）はこのモジュールでは扱わない。点を組み立てて
+    渡すのは呼び出し側の責務で、ここは渡された点だけを見る。
+
+    負の値に対応する状態は無いので受け付けない。累計の消費が負になることは上流の語彙にも
+    なく（正準の loader は負の当月消費を不明へ倒す）、受理すると -30→-20→-10 のような
+    点列が「継続上昇」になってしまう。減少しうるのは点と点の差で、点そのものではない。
+    """
+
+    taken_on: dt.date
+    mtd_usd: float
+
+    def __post_init__(self) -> None:
+        # 時刻を持つ datetime は比較と月の判定が変わるため受けない（admin_inputs と同じ規則）
+        if not isinstance(self.taken_on, dt.date) or isinstance(
+            self.taken_on, dt.datetime
+        ):
+            raise TypeError(
+                f"taken_on には datetime.date が必要です: "
+                f"{type(self.taken_on).__name__}"
+            )
+        object.__setattr__(
+            self, "mtd_usd", _amount(self.mtd_usd, "mtd_usd", non_negative=True)
+        )
+
+
+@dataclass(frozen=True)
 class SubjectHistory:
     """1ユーザぶんの判定材料。months の最後が分析対象月。
 
@@ -176,6 +228,10 @@ class SubjectHistory:
     credit_limit_usd は追加クレジット上限 κ。None は「設定が分からない」で、0 は
     「従量課金が無効」という別の状態を表す。無制限の設定は Infinity で表せる。負の値に
     対応する状態は無いので受け付けない（黙って「無効」として扱わない）。
+
+    credit_points は追加クレジット消費（当月消費）の観測点で、取得日の昇順・重複なし。
+    どの月の点を渡してもよく、判定は対象月の点だけを使う。空（既定）は「点が無い」で、
+    消費がゼロだったことではない。
     """
 
     email: str
@@ -185,6 +241,7 @@ class SubjectHistory:
     months: tuple[MonthObservation, ...]
     seat_events: tuple[SeatChangeEvent, ...]
     unclassified: tuple[UnclassifiedObservation, ...]
+    credit_points: tuple[CreditPoint, ...] = ()
 
     def __post_init__(self) -> None:
         for name in ("email", "current_seat"):
@@ -206,7 +263,7 @@ class SubjectHistory:
         object.__setattr__(
             self, "identity_conflict", _flag(self.identity_conflict, "identity_conflict")
         )
-        for name in ("months", "seat_events", "unclassified"):
+        for name in ("months", "seat_events", "unclassified", "credit_points"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if not self.months:
             raise ValueError("months には1ヶ月以上の観測が必要です")
@@ -223,6 +280,20 @@ class SubjectHistory:
                     f"{previous!r} のあとに {month.month!r}"
                 )
             previous = month.month
+        previous_day: dt.date | None = None
+        for point in self.credit_points:
+            if not isinstance(point, CreditPoint):
+                raise TypeError(
+                    f"credit_points の要素には CreditPoint が必要です: "
+                    f"{type(point).__name__}"
+                )
+            if previous_day is not None and point.taken_on <= previous_day:
+                # 上昇の判定は並び順で行うため、並びと一意性を構築時に確かめる
+                raise ValueError(
+                    f"credit_points は取得日の昇順で重複なく並べてください: "
+                    f"{previous_day} のあとに {point.taken_on}"
+                )
+            previous_day = point.taken_on
 
     @property
     def target(self) -> MonthObservation:
@@ -319,14 +390,27 @@ def _settings(cfg: Mapping) -> _Settings:
 
 
 def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
-    """Standard ユーザ1人ぶんの昇格判定（設計書 §12.4・§12.7）。
+    """Standard ユーザ1人ぶんの昇格判定と追加クレジットの提案（§12.4・§12.6・§12.7）。
 
     上から順に見て、最初に該当したところで確定する:
 
     1. identity conflict・部分月・履歴不足は判定しない（hard blocker）
     2. 直近のシート変更・加入・分類できない観測に重なるユーザは観察へ倒す
-    3. 経済軸（観測・追加クレジット上限到達・純モデルのいずれか）が成立しなければ現状維持
-    4. 成立したら分類軸で、Code 主体なら昇格推奨、そうでなければアサインの見直し
+    3. 経済軸（観測・追加クレジット上限到達・純モデルのいずれか）も推定ベースの超過も
+       成立しなければ現状維持
+    4. どちらかが成立したら、追加クレジット上限 κ の3状態で結論の出し方が変わる（§12.6）
+       - 有効（正の有限値・無制限）: 経済軸が成立すれば分類軸へ。推定だけでは動かさない
+         （実課金という観測が「枠内に収まっている」と言っているとき、推定で席を変えない）
+       - 無効（0）: 実課金が構造的に $0 で観測が候補化の材料にならないため、継続性
+         （2完全月連続、または対象月内の消費の継続上昇）を要求する。一時的な成立は席を
+         変えず、上限つきクレジットの付与で1ヶ月の課金を実測する
+       - 不明（None）: シート判定は経済軸で進めつつ、クレジットは金額を断定せず REVIEW
+    5. 分類軸で、Code 主体なら昇格推奨、そうでなければアサインの見直し
+
+    status は「人が取るべきアクションがあるか」で決まる。seat_action が
+    UPGRADE_TO_PREMIUM・REVIEW_ASSIGNMENT のとき、または credit_action が
+    ENABLE_WITH_CAP・REVIEW のときは RECOMMENDED になる。シート側が観察でも、
+    クレジット側に作業（付与・設定の確認）があれば作業として出すため。
 
     current seat が Standard 以外のときは ValueError。unknown・unassigned・premium の
     振り分けは呼び出し側が決める（ここで既定の結論を持つと、呼び出し側が分岐を書き
@@ -360,46 +444,72 @@ def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
     if recent:
         return _decision(DecisionStatus.OBSERVE, SeatAction.NONE, recent)
 
-    observed = _observed_overage(target, settings)
-    credit_reached = _credit_reached(subject.credit_limit_usd, target, settings)
-    model = _model_favors_premium(target, settings)
-    if not (observed or credit_reached or model):
+    credit_limit = subject.credit_limit_usd
+    economics = _premium_economics(credit_limit, target, settings)
+    estimated = _estimated_standard_overage(target, settings)
+    if not (economics or estimated):
         return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
 
-    # 候補になった根拠。分類軸がどちらへ振り分けても消さない（結論だけが変わるのであって、
+    # 候補になった根拠。結論がどちらへ振り分けられても消さない（結論だけが変わるのであって、
     # 候補化の観測は同じもの。decision-evidence.csv で月をまたいで突き合わせる対象になる）
     evidence: list[ReasonCode] = []
-    if credit_reached:
+    if estimated:
+        # 推定ベースの超過も候補化の観測なので、結論がどこへ振り分けられても残す（κ の状態と
+        # 継続性で結論は変わるが、対象月の観測は同じもの）
+        evidence.append(ReasonCode.ESTIMATED_STANDARD_OVERAGE)
+    if _credit_reached(credit_limit, target, settings):
         evidence.append(ReasonCode.CREDIT_LIMIT_REACHED)
     if _sustained_overage(subject, settings):
         evidence.append(ReasonCode.SUSTAINED_OVERAGE)
+    if _premium_cheaper_by_amount(target, settings):
+        # 金額差で成立した候補にだけ付ける。上限到達だけで候補になった場合は、上限そのものが
+        # 根拠であって「Standard + クレジットより Premium が安い」を立証していない（§12.4）
+        evidence.append(ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT)
+    if _model_favors_standard(target, settings):
+        evidence.append(ReasonCode.STANDARD_WITH_CREDIT_CHEAPER)
+    rising = _credit_consumption_rising(subject, target.month)
+    if rising:
+        evidence.append(ReasonCode.CREDIT_CONSUMPTION_RISING)
 
-    if target.code_demand_usd is None:
-        # Code 主体であることを証明できないまま自動で昇格を推奨しない
-        return _decision(
-            DecisionStatus.OBSERVE,
-            SeatAction.NONE,
-            [*evidence, ReasonCode.DATA_CONFIDENCE_LOW],
-        )
+    if credit_limit is None:
+        # κ 不明: シート判定は止めない（経済軸は実課金と需要だけで評価できる）。クレジットは
+        # 上限も有効・無効も分からず金額を断定できないので、付与ではなく設定の確認へ回す
+        if economics:
+            status, action, reasons = _classification_axis(target, settings, evidence)
+        else:
+            status, action, reasons = (
+                DecisionStatus.KEEP,
+                SeatAction.KEEP,
+                list(evidence),
+            )
+        reasons.append(ReasonCode.CREDIT_SETTING_UNKNOWN)
+        return _decision(status, action, reasons, CreditAction.REVIEW)
 
-    if target.code_demand_usd < settings.min_code_demand_usd:
-        # 費用は見合うが中身が Code ではない。シートの前にアサインを人が見直す
-        reasons = [ReasonCode.REVIEW_NON_CODE_USAGE, *evidence]
+    if credit_limit == 0.0:
+        # κ 無効: 実課金が構造的に $0 になるため、観測は「枠内に収まっている」ことを語らない。
+        # §12.6 の継続性ゲートをここに置く（週次スナップショットの継続上昇は継続の同等物）
+        sustained = _premium_economics_run(subject, settings) >= _SUSTAINED_MONTHS
+        if economics and (sustained or rising):
+            status, action, reasons = _classification_axis(target, settings, evidence)
+            return _decision(status, action, reasons)
+        # 一時的な成立・推定だけの成立では席を変えず、上限つきクレジットで1ヶ月の課金を
+        # 実測する。分類軸（Code ゲート）はかけない — 込み枠は product 共通で、上限つきの
+        # 付与は可逆な計測手段なので、昇格と同じ強さで Code 主体であることを要求しない
+        reasons: list[ReasonCode] = [*evidence]
         if target.supplementary_high:
             reasons.append(ReasonCode.HIGH_SUPPLEMENTARY_USAGE)
         return _decision(
-            DecisionStatus.RECOMMENDED, SeatAction.REVIEW_ASSIGNMENT, reasons
+            DecisionStatus.RECOMMENDED,
+            SeatAction.KEEP,
+            reasons,
+            CreditAction.ENABLE_WITH_CAP,
         )
 
-    # 判定が直近1完全月の需要に基づくことを、基本理由として常に明示する
-    reasons = [ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND, *evidence]
-    # 5時間枠・週次上限は観測できない。この理由だけで保留にはせず情報として付ける（§12.3）
-    reasons.append(ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE)
-    if target.supplementary_high:
-        reasons.append(ReasonCode.HIGH_SUPPLEMENTARY_USAGE)
-    return _decision(
-        DecisionStatus.RECOMMENDED, SeatAction.UPGRADE_TO_PREMIUM, reasons
-    )
+    # κ 有効: 実課金の観測がある。経済軸が成立すれば分類軸へ振り分け、推定だけでは動かさない
+    if not economics:
+        return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
+    status, action, reasons = _classification_axis(target, settings, evidence)
+    return _decision(status, action, reasons)
 
 
 def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
@@ -497,15 +607,67 @@ def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
 
 
 def _decision(
-    status: DecisionStatus, seat_action: SeatAction, reasons: Iterable[ReasonCode]
+    status: DecisionStatus,
+    seat_action: SeatAction,
+    reasons: Iterable[ReasonCode],
+    credit_action: CreditAction = CreditAction.NONE,
 ) -> DecisionV2:
-    """結論を組み立てる。追加クレジットの提案はこのルールの担当外（常に NONE）。"""
+    """結論を組み立てる。追加クレジットの提案は既定では持たない（NONE）。"""
     return DecisionV2(
-        status=status,
+        status=_status(status, seat_action, credit_action),
         seat_action=seat_action,
-        credit_action=CreditAction.NONE,
+        credit_action=credit_action,
         reason_codes=_ordered(reasons),
     )
+
+
+def _status(
+    status: DecisionStatus, seat_action: SeatAction, credit_action: CreditAction
+) -> DecisionStatus:
+    """人が取るべきアクションがあれば RECOMMENDED へ上げる（§12.6）。
+
+    シート側が観察・現状維持でも、クレジット側に作業（付与・設定の確認）があれば作業として
+    出す。どちらの側の作業なのかは seat_action と credit_action が示すので、status は
+    「作業があるか」だけを表す。
+    """
+    if (
+        seat_action in _ACTIONABLE_SEAT_ACTIONS
+        or credit_action in _ACTIONABLE_CREDIT_ACTIONS
+    ):
+        return DecisionStatus.RECOMMENDED
+    return status
+
+
+def _classification_axis(
+    target: MonthObservation, settings: _Settings, evidence: Sequence[ReasonCode]
+) -> tuple[DecisionStatus, SeatAction, list[ReasonCode]]:
+    """分類軸（§12.4 条件3）: 候補になった需要の中身が Code かで振り分ける。
+
+    Code 需要が確定しなければ観察、閾値未満ならアサインの見直し、閾値以上なら昇格推奨。
+    どの結論でも候補化の根拠（evidence）は残す。
+    """
+    if target.code_demand_usd is None:
+        # Code 主体であることを証明できないまま自動で昇格を推奨しない
+        return (
+            DecisionStatus.OBSERVE,
+            SeatAction.NONE,
+            [*evidence, ReasonCode.DATA_CONFIDENCE_LOW],
+        )
+
+    if target.code_demand_usd < settings.min_code_demand_usd:
+        # 費用は見合うが中身が Code ではない。シートの前にアサインを人が見直す
+        reasons = [ReasonCode.REVIEW_NON_CODE_USAGE, *evidence]
+        if target.supplementary_high:
+            reasons.append(ReasonCode.HIGH_SUPPLEMENTARY_USAGE)
+        return DecisionStatus.RECOMMENDED, SeatAction.REVIEW_ASSIGNMENT, reasons
+
+    # 判定が直近1完全月の需要に基づくことを、基本理由として常に明示する
+    reasons = [ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND, *evidence]
+    # 5時間枠・週次上限は観測できない。この理由だけで保留にはせず情報として付ける（§12.3）
+    reasons.append(ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE)
+    if target.supplementary_high:
+        reasons.append(ReasonCode.HIGH_SUPPLEMENTARY_USAGE)
+    return DecisionStatus.RECOMMENDED, SeatAction.UPGRADE_TO_PREMIUM, reasons
 
 
 def _ordered(reasons: Iterable[ReasonCode]) -> tuple[ReasonCode, ...]:
@@ -545,6 +707,52 @@ def _recent_reasons(
         if overlaps(observation.changed_after, observation.changed_before):
             reasons.append(ReasonCode.DATA_CONFIDENCE_LOW)
     return reasons
+
+
+def _premium_economics(
+    credit_limit_usd: float | None, month: MonthObservation, settings: _Settings
+) -> bool:
+    """経済軸（§12.4 条件4）: 3経路のいずれかが成立するか。
+
+    観測（実課金を含む現状の費用）・追加クレジット上限への到達・純モデル判定のどれか1つで
+    候補になる。
+    """
+    return (
+        _observed_overage(month, settings)
+        or _credit_reached(credit_limit_usd, month, settings)
+        or _model_favors_premium(month, settings)
+    )
+
+
+def _premium_cheaper_by_amount(month: MonthObservation, settings: _Settings) -> bool:
+    """経済軸のうち、金額差で成立する2経路（観測・純モデル）。
+
+    追加クレジット上限への到達だけは金額差ではなく上限そのものを根拠にするため（§12.4）、
+    「Standard + クレジットより Premium が安い」と言えるかはこの2経路で判断する。
+    """
+    return _observed_overage(month, settings) or _model_favors_premium(month, settings)
+
+
+def _estimated_standard_overage(month: MonthObservation, settings: _Settings) -> bool:
+    """推定ベースの超過: 需要が Standard の込み量推定を超えているか。
+
+    課金の観測を使わず、需要と allowance 推定だけで見る（追加クレジットが無効・不明な
+    組織では実課金が構造的に $0 になり、超過が課金として現れないため）。
+
+    複数シナリオでの超過を要求するのは純モデル判定と同じ理由で、1シナリオだけの超過は
+    allowance 推定の誤差と区別できない。mid の超過額の閾値は
+    `min_assignment_saving_usd` を再利用する（新しい設定キーを設けない。この額に届かない
+    超過はクレジット付与の手間に見合わない、という同じ基準で足りる）。
+    """
+    agreeing = sum(
+        1
+        for scenario in _SCENARIOS
+        if month.total_demand_usd > settings.standard_allowance_usd[scenario]
+    )
+    mid_overage = month.total_demand_usd - settings.standard_allowance_usd["mid"]
+    return (
+        agreeing >= _MIN_AGREEING_SCENARIOS and mid_overage >= settings.min_saving_usd
+    )
 
 
 def _observed_overage(month: MonthObservation, settings: _Settings) -> bool:
@@ -647,3 +855,44 @@ def _sustained_overage(subject: SubjectHistory, settings: _Settings) -> bool:
             break
         run += 1
     return run >= _SUSTAINED_MONTHS
+
+
+def _premium_economics_run(subject: SubjectHistory, settings: _Settings) -> int:
+    """経済軸が直近から連続して成立する完全月の数。
+
+    走査の規則は `_sustained_overage` と同じ（不完全月・不成立で打ち切り、連続の判定は
+    暦の隣接ではなく渡された履歴の並びで行う）。見る条件が観測経路だけか経済軸の3経路かが
+    違う。追加クレジットが無効な組織では観測経路が成立しないため、継続性の判定には
+    こちらを使う（§12.6）。
+    """
+    run = 0
+    for month in reversed(subject.months):
+        if not month.complete or not _premium_economics(
+            subject.credit_limit_usd, month, settings
+        ):
+            break
+        run += 1
+    return run
+
+
+def _credit_consumption_rising(subject: SubjectHistory, month: str) -> bool:
+    """対象月内の追加クレジット消費が継続上昇しているか（§12.6）。
+
+    当月消費は月次でリセットされる値なので、比較は対象月の点だけで行う（月をまたいだ差は
+    増減を表さない）。点が `_RISING_MIN_POINTS` 個以上あり、取得日順に狭義単調増加して
+    いることを要求する。横ばい（同額）は上昇と読まない — 消費が止まった状態と区別
+    できないため。点は構築時に取得日の昇順で検証してあるので、絞り込んでも並びは保たれる。
+    """
+    values = [
+        point.mtd_usd
+        for point in subject.credit_points
+        if _month_key(point.taken_on) == month
+    ]
+    if len(values) < _RISING_MIN_POINTS:
+        return False
+    return all(later > earlier for earlier, later in pairwise(values))
+
+
+def _month_key(day: dt.date) -> str:
+    """その日が属する月（YYYY-MM）。MonthObservation.month と同じ形にそろえる。"""
+    return f"{day.year:04d}-{day.month:02d}"
