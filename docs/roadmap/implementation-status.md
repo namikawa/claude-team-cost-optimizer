@@ -195,6 +195,72 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 
 ## 6. 検証記録
 
+### 2026-08-28 — analyzeの分割とconfig検証の細分化（リファクタ）
+
+Stepではなく、mainへ直接コミットした構造変更の記録。挙動を変えない前提の変更なので、
+「本当に挙動が変わっていないか」の検証に重心を置いてレビューした。
+
+- 変更の内容:
+  - `analyze/__init__.py`から`pipeline.py`（正式分析）と`preview.py`（速報）を切り出し、
+    `__init__.py`は公開APIの再エクスポート（`__all__`つき）だけにした
+  - `analyze()`から`_load_spend_history`・`_build_analysis_users`・`_analysis_row`・
+    `_hysteresis_status`と文脈オブジェクト2つ（`_SpendHistory`・`_AnalysisContext`）、
+    `preview()`から`_preview_rows`、`_credit_reach_preview`から`_credit_reach_row`・
+    `_credit_eta_day`・`_CreditReachContext`を抽出した
+  - `config.py`の`_validate`を述語4つ（`_is_number`/`_is_integer`/`_is_finite`/`_is_text`）と
+    セクション別の検証12関数へ分割した
+  - 重複していた正規化を1箇所へ寄せた。product名の正準化は`product_usage.normalize_product_name`
+    へ統合してconfigの重複判定と共有し、`seat_changes._text`は`identity.normalize_value`へ
+    統合した（どちらも旧コードのコメントが「2箇所に分かれているので片方を変えるときは両方を
+    揃えること」と書いていた重複）
+  - 公開化3件: `ingest._read_csv`→`read_csv`、`identity._normalize`→`normalize_value`、
+    `product_usage._match_key`→`normalize_product_name`
+- 層は不変。`pipeline.py`・`preview.py`は`analyze`パッケージ（層20）の内側なので割り当ての
+  単位が増えない。新しく増えた`config`(20)→`product_usage`(15)のimportは下向き
+- 挙動保存の検証（テスト・lintの緑とは独立に4通り）:
+  1. AST突合（コメントと整形を落とした実体の比較）。`analyze`パッケージは旧64記号のうち60が
+     完全同一（27が同位置・33は移動のみ）で、実体が変わったのは`analyze`・`preview`・
+     `_preview_label`・`_credit_reach_preview`の4つ。他の9ファイルは変更が各1〜6記号で、
+     消えた記号は上記の改名3件と統合された`seat_changes._text`だけ
+  2. 文字列リテラルの突合（エラー・警告文の欠落検出）。消えたのは`config.py`の`'NFC'`のみ
+     （`normalize_product_name`へ寄せた結果）。増えたのは`__all__`の要素と、到達不能な内部
+     不変条件のメッセージ1件
+  3. config検証の差分テスト。既定設定の全ノード・全リーフを16通りに壊す＋キー削除＋product名の
+     表記ゆれ7通り＝1991ケースで、旧`_validate`と新`_validate`の出力が並び順まで含めて一致
+  4. 実データE2E。3組織×正式2ヶ月（2026-06・2026-07）＋速報1ヶ月（2026-08）を旧実装と新実装で
+     生成し、成果物33ファイルがバイト一致。標準出力の警告・サマリも出力先パスを除いて一致
+  - E2Eが通らない範囲（`admin/`入力が無いため`admin_inputs`、未結線の`seat_changes`・
+    `identity`）は、変更が改名と文の単純な置き換えに収まることを読んで確認した
+- 式が変わっている箇所の同値性:
+  - 削減額の計算を`if`の各枝から枝の外へ出した。`unknown`シートでは`nan - min(...)`となり、
+    旧の明示的なnanと同じ
+  - `_build_analysis_users`が対象月の表を`months_used[-1]`から採る。`discover_months`が昇順を
+    返し対象月の存在は呼び出し側が検証済みなので`months_used[-1] == month`は成立する。旧は
+    `month`を直接使っていたので不変条件が暗黙になった（対象月の扱いを触るStepでは明示に
+    戻すことも検討する）
+  - 月次表の`set_index`をユーザ×月のループ内から前段へ移した。結果は同じで索引化の重複が消える
+  - `_hysteresis_status`は`checks`を組んでから月数不足を見る順序も旧のまま
+- レビューで検出し、同じコミットで直した3件:
+  1. `_credit_eta_day`の非有限値。見積り日数がNaNのとき、旧は`d_star <= days_in_month`が偽で
+     `eta_day = None`になったが、`estimated > days_in_month`へ書き換わったため偽になり、
+     `math.ceil(NaN)`がValueErrorになっていた。「月内に収まる」を満たすことを条件にする形へ
+     戻し、検査を追加した（変異を入れて落ちることを確認済み）。対象はκが正の有限値・
+     実課金>0のユーザで、実課金は合計値（全欠損は0.0）なので実データでは到達しない
+  2. `seat_changes.py`の`_seat_of`の直前が空行0行になっていた（統合で消えた`_text`の跡）。
+     他のtop-level定義はすべて2行で、ruffの既定規則にE302が入らないためlintでは落ちない
+  3. `decision_v2.py`の2箇所のコメントが`analyze._costs_for`を参照していた。改名後の
+     `analyze.pipeline._costs_for_current_seat`へ更新した
+- 別コミットで対応する1件: 設計理由コメントの欠落。旧848件のコメント/docstringのうち45件が
+  新ツリーに無く、9件は参照名の更新・言い換え、36件が削除。名前で代替できたもの
+  （`ヒステリシス: …`→`_hysteresis_status`）を除いても、コードから復元できない理由が消えて
+  いる。`config.py`が15件でとくに多く、外部レビューや過去のStepで確定した判断が根拠を失った
+  （数値検査を`_is_finite`へ通す理由のうちNaN・Infinityで判定が黙って変わる点、V2設定を
+  enabledが偽のあいだも検査する理由、昇格・降格の閾値を同粒度で検査する理由、
+  `usage_credits`の非有限値が上限到達の判定と金額表示を壊すこと、報告が設定の記述順になる
+  こと）。速報側では`_preview_label`の「部分月の実課金は非線形なので拘束せず純モデル判定・
+  境界は判断保留へ倒す」と、`preview`の「code-analyticsのロード指摘は正式分析が出すため速報の
+  警告には足さない」が消えている
+
 ### 2026-08-27 — Step 18: Credit comparator
 
 - `decision_v2.py`（層20）の`decide_upgrade`へ追加クレジット比較（設計書§12.6）を組み込んだ。

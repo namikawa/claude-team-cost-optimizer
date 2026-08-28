@@ -589,8 +589,8 @@ def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
         )
 
     # 評価窓の実課金は 0 と確定しているので、観測実課金による下限拘束（V1 の
-    # analyze._costs_for の premium 分岐に相当）は自然に無効になり、需要だけの純モデル
-    # 判定になる
+    # analyze.pipeline._costs_for_current_seat の premium 分岐に相当）は自然に無効になり、
+    # 需要だけの純モデル判定になる
     if not all(_model_favors_standard(month, settings) for month in window):
         return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
 
@@ -760,7 +760,8 @@ def _observed_overage(month: MonthObservation, settings: _Settings) -> bool:
 
     現シートの費用は観測値（シート料 + 実課金）、変更先は allowance モデルの試算だが、
     込み量の大小関係（Standard の込み量 ≤ Premium の込み量）から、Premium での超過課金は
-    現在の実課金を超えない。V1 の analyze._costs_for（standard 分岐）と同じ拘束。
+    現在の実課金を超えない。V1 の analyze.pipeline._costs_for_current_seat（standard 分岐）
+    と同じ拘束。
     """
     overage = max(0.0, month.total_demand_usd - settings.premium_allowance_usd["mid"])
     standard_cost = settings.standard_price_usd + month.billed_usd

@@ -229,13 +229,17 @@ def _credit_eta_day(
 ) -> int | None:
     """最新区間、または月初からの平均ペースで月内の上限到達日を見積もる。"""
     if email in context.billed_delta and context.interval_days > 0:
+        # 直近区間の課金ペース: 区間レートが 0 のユーザは予測せず None（直近は課金なし）
         rate = context.billed_delta[email] / context.interval_days
         estimated = context.days_observed + remaining / rate if rate > 0 else None
     elif context.days_observed > 0:
+        # 月初からの平均ペースへフォールバック（billed > 0 は呼び出し側で保証済み）
         estimated = kappa * context.days_observed / billed
     else:
         estimated = None
-    if estimated is None or estimated > context.days_in_month:
+    # 「月内に収まる」を満たすことを条件にする。否定形（月末超えなら None）で書くと、
+    # NaN は比較が常に偽になるため月内扱いで math.ceil へ落ちて例外になる
+    if estimated is None or not estimated <= context.days_in_month:
         return None
     return math.ceil(estimated)
 

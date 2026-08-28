@@ -560,6 +560,8 @@ def _nodes(evidence: IdentityEvidence) -> tuple[_Node, ...]:
         for kind, value in zip(_NODE_KINDS, values, strict=True)
         if value is not None
     )
+
+
 def _seat_of(rows: Sequence[_Row]) -> str | None:
     """その時点の subject のシート。行が無ければ不在、食い違うなら None（分類不能）。
 

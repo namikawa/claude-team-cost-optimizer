@@ -20,7 +20,7 @@ from seat_analyzer.analyze import (
     credits_mode,
     preview,
 )
-from seat_analyzer.analyze.credits import _compute_e_distribution
+from seat_analyzer.analyze.credits import _compute_e_distribution, _credit_reach_preview
 from seat_analyzer.ingest import (
     is_number_text,
     load_members_info,
@@ -653,3 +653,21 @@ def test_credit_reach_interval_rate(make_snapshots, cfg):
     assert row["reached"] is False
     # レート 100/8=12.5/日 → 13 + (200-100)/12.5 = 21 日頃
     assert row["eta_day"] == 21
+
+
+def test_credit_reach_eta_skips_non_finite_estimate(cfg):
+    """見積り日数が非有限になっても到達日を出さず、残額ブロックの生成は続ける。
+
+    実データでは到達しない（実課金は合計値で全欠損なら 0.0）が、月内判定を否定形で
+    書くと NaN が月内扱いになり math.ceil で落ちるため、比較の向きを固定する。
+    """
+    users = pd.DataFrame([
+        {"email": "nan@x.jp", "credits_mode": CREDIT_ENABLED,
+         "credit_limit_usd": 200.0, "billed_observed_usd": float("nan")},
+    ])
+    reach = _credit_reach_preview(users, 10, 31, cfg)
+    assert reach is not None
+    row = reach["rows"][0]
+    assert row["email"] == "nan@x.jp"
+    assert row["eta_day"] is None
+    assert math.isnan(row["remaining"])
