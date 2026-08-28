@@ -198,6 +198,11 @@ columns:
                        "追加クレジット上限"]
     credit_mtd_usd:   ["credit mtd usd", "credit mtd", "credit used mtd", "当月消費"]
     source:           ["source", "取得元"]
+  # 任意ファイル github-members.csv（email → GitHub login の対応表。手動メンテ）
+  github_members:
+    email:        ["email", "user email", "メールアドレス"]
+    github_login: ["github login", "github username", "github user", "github id",
+                   "githubログイン", "githubユーザー名", "githubアカウント"]
 
 # 追加クレジット（usage credits）関連の閾値。
 usage_credits:

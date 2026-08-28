@@ -37,6 +37,9 @@ REQUIRED_COLUMNS = {
     # 取得日と取得元はどちらの表にも要る（時点を特定できない設定値は判定に使えない）
     "admin_organization": ["snapshot_date", "source"],
     "admin_users": ["snapshot_date", "email", "source"],
+    # email → GitHub login の対応表（読み取りは github_collect.py）。対応づけが目的の
+    # 表なので、どちらの列も欠けると表そのものが成立しない
+    "github_members": ["email", "github_login"],
 }
 
 # Step 1で正準化するSpend任意列。既存の任意列は「列なし」を利用する処理があるため、

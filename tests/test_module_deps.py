@@ -38,6 +38,7 @@ LAYERS = {
     "ingest": 10,
     "pricing": 10,
     "admin_inputs": 15,
+    "github_collect": 15,
     "product_usage": 15,
     "seat_changes": 15,
     "config": 20,

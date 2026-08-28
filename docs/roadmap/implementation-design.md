@@ -992,6 +992,13 @@ organizations:
     github_org: example-org
 ```
 
+GitHub分析は組織ごとのopt-inとする。`organizations.<組織名>.github_org`を設定した組織だけが
+対象で、収集・doctor検査・指標・出力のすべてが対象組織に限られる。未設定の組織はGitHub関連の
+処理と警告の一切から除外される（対応表が無いこと自体を問題として報告しない）。
+
+このゲートを持つのは消費側（doctor・指標）とし、対応表のloaderはゲートを持たない。loaderは
+純粋な読み取りに徹し、「GitHub分析をするかどうか」の判断を呼び出し側へ残す。
+
 ### 15.2 認証
 
 - `gh auth status`をread-onlyで確認
