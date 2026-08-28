@@ -60,9 +60,12 @@
    Releases のタイトルと本文も公開面なので、投稿する前に検査に通す（タイトルは
    `--text` で確かめる）
 
-7. 新しいタグから導入できることを確認する。ワークスペースとは別の場所で実行する
+7. 利用者と同じ経路で導入できることを確認する。ワークスペースとは別の場所で実行する
 
    ```sh
-   uv tool install git+https://github.com/namikawa/claude-team-cost-optimizer@vX.Y.Z
+   uv tool install "seat-analyzer @ https://github.com/namikawa/claude-team-cost-optimizer/releases/download/vX.Y.Z/seat_analyzer-X.Y.Z-py3-none-any.whl"
    seat-analyzer --version
    ```
+
+   確かめるのは手順 6 で添付した wheel の URL からの導入。[setup.md](./setup.md) が案内して
+   いるのがこの経路で、git の入っていないマシンでも導入できることがその前提になっている

@@ -1818,7 +1818,7 @@ docstringの前提の明記のみ）:
 コード・ファイル変更:
 
 - `config.yaml`
-- `docs/implementation-design.md`
+- `docs/roadmap/implementation-design.md`
 - `src/seat_analyzer/config.py`
 - `src/seat_analyzer/ingest.py`
 - `tests/test_hardening.py`
@@ -1858,7 +1858,7 @@ docstringの前提の明記のみ）:
 
 コード・ファイル変更:
 
-- `docs/implementation-design.md`
+- `docs/roadmap/implementation-design.md`
 - `src/seat_analyzer/identity.py`
 - `tests/test_identity.py`
 
@@ -1939,7 +1939,7 @@ docstringの前提の明記のみ）:
 コード・ファイル変更:
 
 - `README.md`
-- `docs/implementation-design.md`
+- `docs/roadmap/implementation-design.md`
 - `src/seat_analyzer/cli.py`
 - `src/seat_analyzer/data_quality.py`
 - `src/seat_analyzer/domain.py`
