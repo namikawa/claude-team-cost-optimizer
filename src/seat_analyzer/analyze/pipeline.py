@@ -115,7 +115,9 @@ def _costs_for_current_seat(
     従量課金が有効な組織では billed（実課金）が「そのシートでの実コスト」の
     観測値であり、allowance 推定より信頼できる。変更先のコストは観測できない
     ため allowance モデルで試算するが、込み量の大小関係
-    （Standard の込み量 ≤ Premium の込み量）から観測値で上下に拘束する。
+    （Standard の込み量 ≤ Premium の込み量）から観測値で上下に拘束する:
+      - Standard ユーザ → Premium に変えた場合の超過課金 ≤ 現在の実課金
+      - Premium ユーザ → Standard に変えた場合の超過課金 ≥ 現在の実課金
     """
     std_price = float(cfg["seats"]["standard"]["price_usd"])
     prem_price = float(cfg["seats"]["premium"]["price_usd"])
@@ -221,6 +223,7 @@ def _load_spend_history(
         sources[current_month] = str(result.source)
         raw[current_month] = pricing.add_computed_cost(result.df, cfg)
 
+        # ファイル名の期間が全月に満たない場合、月額前提の判定が歪む（過小評価）
         period = ingest.file_period(result.source)
         if period is not None and period.days is not None:
             year, mon = (int(part) for part in current_month.split("-"))
@@ -249,6 +252,8 @@ def _load_spend_history(
         if current_month == month and basis == "net_spend":
             warnings.extend(pricing.validate_spend(df, cfg))
 
+        # ユーザ非帰属の組織利用（例: "(org service usage)" の Code Review 等）は
+        # シート判定の対象外として分離し、別枠で計上する
         is_user = df["email"].str.contains("@", na=False)
         org_df = df[~is_user]
         if current_month == month and not org_df.empty:
@@ -266,9 +271,13 @@ def _load_spend_history(
                 ),
             }
         if current_month == month:
+            # 価格適用済みの明細から一度だけ計算する（後段が spend を読み直すと
+            # cost basis や採用ファイルが分析本体と食い違いうるため）
             product_usage = compute_product_usage(
                 df[is_user], cfg["product_policy"]
             )
+            # 禁止 product の観測は判定対象のユーザ行に限らず報告する。特徴量は
+            # ユーザ行だけで計算するので、組織サービス利用行の分をここで足す
             org_issue = find_org_service_prohibited(org_df, cfg["product_policy"])
             if org_issue is not None:
                 product_usage = ProductUsage(
@@ -429,11 +438,18 @@ def _analysis_row(
     monthly_row: pd.Series | None,
     context: _AnalysisContext,
 ) -> dict:
-    """正式分析のユーザ1名ぶんの出力行を組み立てる。"""
+    """正式分析のユーザ1名ぶんの出力行を組み立てる。
+
+    この行から作る users DataFrame は固定カラム（下記キー）を常に持つ。任意なのは
+    code-analytics 由来の prs_with_cc / loc_with_cc のみ。
+    """
     api_cost = float(monthly_row["api_cost"]) if monthly_row is not None else 0.0
+    # billed は aggregate_month が常に付与するため row があれば必ず存在する
     billed = float(monthly_row["billed"]) if monthly_row is not None else 0.0
 
     if seat == "unassigned":
+        # 意図的な未割当（別組織でアサイン済み・管理者等）は損益分岐判定の対象外。
+        # シート料 $0 の現状が最安のため、推奨もコスト試算も行わない
         nan = float("nan")
         recommendation, cost_std, cost_prem = "unassigned", nan, nan
         rec_low = rec_high = "unassigned"
@@ -464,6 +480,8 @@ def _analysis_row(
             for scenario in ("low", "high")
         )
         confidence = {2: "高", 1: "中", 0: "低"}[agree]
+        # 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ:
+        # 「実効込み量が推定より大きい」か「上限で止められた」かの要確認フラグ
         censored = (
             seat == "standard"
             and billed == 0.0

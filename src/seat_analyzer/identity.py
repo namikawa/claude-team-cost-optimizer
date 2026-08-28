@@ -50,6 +50,12 @@ def normalize_value(
     field_name: str,
     lowercase: bool = False,
 ) -> str | None:
+    """Identity 値を照合用の文字列へ揃える（前後空白を除去し、email だけ小文字化）。
+
+    空文字・欠損は None。非スカラーは TypeError で拒否する。resolve_identities と
+    seat_changes の逆引きは同じ規則で照合する必要があるため、この関数を共有する
+    （規則が違うと逆引き表を引けない）。
+    """
     if not pd.api.types.is_scalar(value):
         value_repr = repr(value)
         if len(value_repr) > 160:

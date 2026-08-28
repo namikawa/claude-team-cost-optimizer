@@ -76,7 +76,12 @@ def _preview_label(
     cfg: dict,
     min_saving: float,
 ) -> tuple[str, str]:
-    """月末ペース換算需要を allowance モデルにかけた一次判断ラベルと確度。"""
+    """月末ペース換算需要を allowance モデルにかけた一次判断ラベルと確度。
+
+    実課金の観測は部分月では非線形（込み量を使い切るまで $0）で月額に換算できない
+    ため、正式分析と違い観測実課金による拘束は行わず、純粋なモデル判定のみ。
+    境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒す。
+    """
     if seat == "unassigned":
         return LABEL_EXCLUDED, "—"
     if seat == "unknown":
@@ -115,6 +120,7 @@ def _preview_rows(
         seat = seat_by_email.get(email, "unknown")
         row = aggregate.loc[email] if email in aggregate.index else None
         api_observed = float(row["api_cost"]) if row is not None else 0.0
+        # billed は aggregate_month が常に付与するため row があれば必ず存在する
         billed_observed = float(row["billed"]) if row is not None else 0.0
         api_projected = api_observed * factor
         label, confidence = _preview_label(
@@ -154,6 +160,7 @@ def preview(
         )
     factor = days_in_month / days_observed
 
+    # 時点の違う入力が2つ以上あれば月中差分を発動する（重複警告の文言も変える）
     active = _diff_active(input_dir, month)
     spend_result = ingest.load_spend(
         input_dir, month, cfg, snapshot_active=active.spend
@@ -178,6 +185,9 @@ def preview(
     sources["members"] = str(members_result.source)
     seat_by_email = members.set_index("email")["seat_type"].to_dict()
 
+    # 活用度（任意ファイル code-analytics）。速報では詳細利用状況の LoC 列にしか使わない
+    # 表示専用のデータで、一次判断には入らない。ロード時の指摘（採用ファイルの選択・
+    # 任意カラムの欠落）は同じ入力に対して正式分析が出すため、速報の警告には足さない
     code_result = ingest.load_code_analytics(
         input_dir, month, cfg, snapshot_active=active.code
     )
@@ -194,6 +204,7 @@ def preview(
     users = _preview_rows(members, aggregate, seat_by_email, factor, cfg)
     warnings.extend(_merge_members_info(users, input_dir, cfg, sources, month))
     _merge_code_analytics(users, code_result)
+    # クレジットモード（速報は当月の観測実課金のみで billed_ever を判断）
     billed_ever = set(users.loc[users["billed_observed_usd"] > 0.0, "email"])
     _attach_credits_mode(users, billed_ever)
 

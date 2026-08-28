@@ -283,7 +283,11 @@ def _is_integer(value: object) -> bool:
 
 
 def _is_finite(value: object) -> bool:
-    """有限の実数か。float 化で桁あふれする巨大な int も False。"""
+    """有限の実数か。float 化で桁あふれする巨大な int も False。
+
+    金額・比率には NaN・Infinity も使えない（比較が常に偽になり、判定が黙って
+    変わる）ので、数値の検査はすべてこちらを通す。
+    """
     try:
         return _is_number(value) and math.isfinite(value)
     except OverflowError:
@@ -295,6 +299,8 @@ def _is_text(value: object) -> bool:
 
 
 def _validate_paths(cfg: dict, errors: list[str]) -> None:
+    # 入出力ディレクトリ。空文字はカレントディレクトリとして解決され、意図しない場所を
+    # 入力元・出力先にする（--input-dir の省略時にだけ効くので気づきにくい）
     paths = cfg["paths"]
     if not isinstance(paths, dict):
         errors.append("paths セクションが辞書ではありません")
@@ -343,7 +349,7 @@ def _validate_seats(cfg: dict, errors: list[str]) -> None:
 
 def _validate_decision(cfg: dict, errors: list[str]) -> None:
     decision = cfg["decision"]
-    # 真偽値は int の一種なので _is_integer で除く。
+    # 真偽値は int の一種なので _is_integer で除く（yes と書くと 1 として通ってしまう）
     if (
         not _is_integer(decision.get("hysteresis_months"))
         or decision["hysteresis_months"] < 1
@@ -362,6 +368,8 @@ def _validate_decision(cfg: dict, errors: list[str]) -> None:
 
 
 def _validate_decision_v2(cfg: dict, errors: list[str]) -> None:
+    # V2判定の設定。enabled が偽のあいだも値を検査する（有効化した時点で壊れている
+    # 設定に気づくのでは遅い。編集ミスは編集した実行で検出する）
     decision = cfg["decision_v2"]
     if not isinstance(decision, dict):
         errors.append("decision_v2 セクションが辞書ではありません")
@@ -377,6 +385,9 @@ def _validate_decision_v2(cfg: dict, errors: list[str]) -> None:
             errors.append(
                 f"decision_v2.{direction}.min_complete_months は 1 以上の整数が必要です"
             )
+    # Code 需要の閾値は昇格・降格で向きが逆（以上で昇格・未満で降格）だが、値の
+    # 契約は同じなので同じ粒度で検査する（片方だけ緩いと、その向きの判定が壊れた
+    # 設定のまま動く）
     for direction, key in (
         ("upgrade", "min_code_demand_usd"),
         ("downgrade", "max_code_demand_usd"),
@@ -398,6 +409,8 @@ def _validate_decision_v2(cfg: dict, errors: list[str]) -> None:
 
 
 def _validate_usage_credits(cfg: dict, errors: list[str]) -> None:
+    # 追加クレジットの表示閾値。既定設定が必ず持ち、上書きはキーを消せないため常に検査する
+    # （NaN は上限到達の判定を黙って変え、非有限値は設定値の金額表示も壊す）
     usage_credits = cfg["usage_credits"]
     if not isinstance(usage_credits, dict):
         errors.append("usage_credits セクションが辞書ではありません")
@@ -408,6 +421,8 @@ def _validate_usage_credits(cfg: dict, errors: list[str]) -> None:
 
 
 def _validate_cost_basis(cfg: dict, errors: list[str]) -> None:
+    # 需要指標の算出基準。綴り違いは auto と同じ扱いで黙って通るため列挙を検証する
+    # （小文字化して照合するのは pricing.resolve_cost_basis に合わせるため）
     basis = cfg.get("cost_basis", "auto")
     allowed = ("computed", "net_spend", "auto")
     if not (isinstance(basis, str) and basis.lower() in allowed):
@@ -415,7 +430,14 @@ def _validate_cost_basis(cfg: dict, errors: list[str]) -> None:
 
 
 def _product_names(policy: dict, key: str) -> list[tuple[str, str]]:
-    """正規化した product 名と設定上の表記を、記述順で返す。"""
+    """正規化した product 名と設定上の表記を、記述順で返す。
+
+    前後空白・大小文字・Unicode の正規化形式の違いは同じ product 名として扱う
+    （設定ミスを拾うのが目的なので取りこぼしより誤検出に倒す）。比較そのものは
+    組織名の衝突判定 ingest.check_org_name_collisions と同じだが、組織名は前後空白を
+    含むこと自体を不正にしているのに対し、product 名は前後空白を落としてから
+    比較する点だけが異なる。
+    """
     names = policy.get(key)
     if not isinstance(names, list):
         return []
@@ -428,7 +450,10 @@ def _product_names(policy: dict, key: str) -> list[tuple[str, str]]:
 
 
 def _duplicate_product_names(policy: dict, key: str) -> list[str]:
-    """同じ正規化名を2回目以降に記述したときの、元の表記。"""
+    """同じ正規化名を2回目以降に記述したときの、元の表記。
+
+    報告は設定の記述順（集合の反復順に依らない）。
+    """
     seen: set[str] = set()
     repeated: list[str] = []
     for normalized, written in _product_names(policy, key):
@@ -439,6 +464,8 @@ def _duplicate_product_names(policy: dict, key: str) -> list[str]:
 
 
 def _validate_product_policy(cfg: dict, errors: list[str]) -> None:
+    # product の分類。既定設定が必ず持ち、上書きはキーを消せないため常に検査する
+    # （欠けている場合は既定設定の破損として同じ経路で報告する）
     policy = cfg["product_policy"]
     if not isinstance(policy, dict):
         errors.append("product_policy セクションが辞書ではありません")
@@ -448,6 +475,8 @@ def _validate_product_policy(cfg: dict, errors: list[str]) -> None:
         names = policy.get(key)
         if not (isinstance(names, list) and all(_is_text(value) for value in names)):
             errors.append(f"product_policy.{key} は空でない文字列のリストが必要です")
+    # 空リストは supplementary・prohibited では正当（該当なし）だが、primary が空だと
+    # 「開発利用の主軸」を定義できず、活用の評価そのものが成立しない
     if isinstance(policy.get("primary"), list) and not policy["primary"]:
         errors.append("product_policy.primary には1つ以上の product 名が必要です")
     threshold = policy.get("supplementary_high_usd")
@@ -456,6 +485,7 @@ def _validate_product_policy(cfg: dict, errors: list[str]) -> None:
             "product_policy.supplementary_high_usd は 0 以上の有限な数値が必要です"
         )
 
+    # 同一リスト内の重複は分類こそ決まるが書き間違いなので弾く
     for key in ("primary", "supplementary", "prohibited"):
         repeated = _duplicate_product_names(policy, key)
         if repeated:
@@ -464,6 +494,8 @@ def _validate_product_policy(cfg: dict, errors: list[str]) -> None:
                 + ", ".join(repeated)
             )
 
+    # 分類として排他なのは primary と supplementary だけ。prohibited は「この組織で
+    # 使わせない」という直交する指定なので、primary・supplementary と重ねて書ける
     supplementary = {
         normalized for normalized, _ in _product_names(policy, "supplementary")
     }
@@ -480,7 +512,11 @@ def _validate_product_policy(cfg: dict, errors: list[str]) -> None:
 
 
 def _validate_discussion_ranges(discussion: dict, errors: list[str]) -> None:
-    """discussion の型検査後に、整数・秒数の範囲を検査する。"""
+    """discussion の型検査後に、整数・秒数の範囲を検査する。
+
+    回数は int() で黙って切り捨てられると意図と違う挙動になるため整数を要求する。
+    秒数は inf/NaN を弾く（time.sleep(inf) は OverflowError で実行を止める）。
+    """
     if (
         _is_integer(discussion.get("max_attempts"))
         and discussion["max_attempts"] < 1
@@ -506,6 +542,8 @@ def _validate_discussion_ranges(discussion: dict, errors: list[str]) -> None:
 
 
 def _validate_discussion(cfg: dict, errors: list[str]) -> None:
+    # discussion の各項目は既定設定が必ず持ち、上書きはキーを消せないため、値の有無を
+    # 条件にせず常に検査する（欠けている場合は既定設定の破損として同じ経路で報告する）
     discussion = cfg["discussion"]
     if not isinstance(discussion, dict):
         errors.append("discussion セクションが辞書ではありません")
@@ -535,6 +573,7 @@ def _validate_model_prices(cfg: dict, errors: list[str]) -> None:
     if not isinstance(patterns, list) or not patterns:
         errors.append("model_prices.patterns が空です")
     else:
+        # match はモデル名との部分一致に使う文字列。数値等が入ると照合の時点で落ちる
         for index, pattern in enumerate(patterns):
             if (
                 not isinstance(pattern, dict)
@@ -556,6 +595,8 @@ def _validate_model_prices(cfg: dict, errors: list[str]) -> None:
 
 
 def _validate_columns(cfg: dict, errors: list[str]) -> None:
+    # 入力処理が参照するカラムエイリアスが columns セクションに定義されているか。
+    # 任意列は入力CSV上では省略可能だが、正準化の設定自体は必須とする。
     columns = cfg["columns"]
     if not isinstance(columns, dict):
         errors.append("columns セクションが辞書ではありません")
