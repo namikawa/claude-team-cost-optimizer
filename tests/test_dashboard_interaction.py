@@ -286,7 +286,7 @@ def test_the_judge_filter_is_absent_when_there_is_nothing_to_filter():
 # --- CSV 由来の値を JS のコンテキストへ渡さない ---
 
 def test_the_script_block_is_exactly_the_static_asset(dashboard):
-    """埋め込まれた script は templates/dashboard.js そのもの。
+    """埋め込まれた script は、コメントを落とした templates/dashboard.js そのもの。
 
     等しいことが、この HTML の JS にデータが1文字も混ざっていないことの検査になる。
     """

@@ -41,6 +41,7 @@ from .format import (
     _scope_label,
     _sort_for_display,
 )
+from .minify import strip_css_comments, strip_js_comments
 from .stats import KEY_API_COST, KIND_USD, Distribution, distributions, population
 from .text import (
     _CREDIT_MODE_LABEL,
@@ -496,10 +497,13 @@ def _asset(name: str) -> str:
 
 # dashboard.html / preview-dashboard.html で共有する CSS（二重メンテを避けるため定数化）。
 # 速報専用の追加スタイル（バナー等）は速報テンプレート側で足す。
-_DASHBOARD_CSS = _asset("dashboard.css")
+#
+# 埋め込む前にコメントを落とす。実体ファイル側の説明は閲覧には要らないので、共有される
+# HTML には持ち込まない（テンプレートに書く注記も、出力に出ない Jinja の {# #} で書く）。
+_DASHBOARD_CSS = strip_css_comments(_asset("dashboard.css"))
 
 # 同じく共有する JS（タブとテーマの切替だけ）。CSV 由来の値はここへ渡さない。
-_DASHBOARD_JS = _asset("dashboard.js")
+_DASHBOARD_JS = strip_js_comments(_asset("dashboard.js"))
 
 # 「前月からの変化」の HTML 断片（正式ダッシュボードのみ）。二重メンテを避けるため
 # テンプレート本体には placeholder を置き、from_string 前に差し込む。
