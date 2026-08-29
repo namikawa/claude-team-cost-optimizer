@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude Team シート速報プレビュー — {{ scope }}</title>
 <style>{{ dashboard_css|safe }}
-  /* 速報専用: 一次判断であることを強調する注意バナー */
+  {#- 速報専用: 一次判断であることを強調する注意バナー。埋め込む CSS と同じく、
+      出力にはコメントを残さないので Jinja のコメントで書く #}
   .banner {
     background: var(--amber-soft); border: 1px solid var(--amber); border-left-width: 5px;
     border-radius: 10px; padding: 14px 18px; font-size: 12.5px; line-height: 1.8;

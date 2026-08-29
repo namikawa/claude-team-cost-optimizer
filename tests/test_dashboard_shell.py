@@ -58,7 +58,7 @@ def test_dashboards_have_no_external_references(dashboards):
 
 
 def test_style_and_script_are_embedded(dashboards):
-    """CSS と JS はファイルの中身がそのまま埋まっている（参照ではない）。"""
+    """CSS と JS は中身が埋まっている（外部ファイルへの参照ではない）。"""
     for html in dashboards:
         assert "<style>" in html and "<script>" in html
         assert "--accent:" in html                 # デザイントークンの実体

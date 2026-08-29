@@ -5,21 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Claude Team シート速報プレビュー — org-b — 2026-06</title>
 <style>
-  /* ---------- デザイントークン ----------
-     Light を :root に置き、Dark は html[data-theme="dark"]（明示選択）と
-     @media (prefers-color-scheme: dark)（Auto = 属性なし）の両方で効かせる。
-     書体はシステムフォントのみを使う（自己完結 HTML なので外部参照を持たない）。
-     字送り・ウェイト・サイズスケールと tabular-nums はデザイン指定のまま。
-
-     color-scheme はトークンと同じ場所で切り替える。スクロールバーやフォームの
-     既定色はこの宣言だけを見るため、両方を持たせたままにすると OS の設定が
-     選んだテーマと食い違ったときにネイティブ部品だけ逆の配色で残る。
-
-     文字に使う色は、実際に載る背景に対してコントラスト比 4.5:1 以上にする
-     （KPI の 32px のような大きい文字は 3:1）。比が最も低くなるのは、Light では
-     --muted が --surface-2 の上・--dim が行ホバーの --hover の上、Dark ではどちらも
-     --hover の上で、バッジの文字は両テーマとも各 *-soft の上。両テーマとも
-     tests/test_dashboard_shell.py が組み合わせごとに実測する。 */
   :root {
     color-scheme: light;
     --sans: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", sans-serif;
@@ -47,7 +32,6 @@
     --track: #e8ebe7;
     --dim: #697478;
     --shadow: 0 1px 2px rgba(20,24,26,.05), 0 14px 32px -22px rgba(20,24,26,.22);
-    /* ガイド線を載せる帯の左右余白。棒の行の「順位+名前」「金額」の列幅と揃える */
     --bar-head: 276px;
     --bar-tail: 124px;
   }
@@ -104,7 +88,6 @@
     --shadow: 0 1px 2px rgba(0,0,0,.5), 0 16px 34px -24px rgba(0,0,0,.8);
   }
 
-  /* ---------- 土台 ---------- */
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
@@ -113,7 +96,6 @@
   button { font-family: inherit; }
   h1, h2 { margin: 0; }
 
-  /* ---------- ヘッダー ---------- */
   .topbar {
     position: sticky; top: 0; z-index: 30;
     background: var(--surface); border-bottom: 1px solid var(--line);
@@ -145,29 +127,22 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* テーマ切替（Light / Dark / Auto）。JS が無い環境では押せないので出さない */
   .theme-switch {
     display: none; gap: 2px; padding: 3px;
     background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px;
   }
   html.js .theme-switch { display: flex; }
-  /* 枠線の場所は全ボタンで確保しておき、色を付けるのは選択中だけ
-     （選択のたびに幅が変わって残りの区画が動くのを避ける） */
   .theme-btn {
     border: 1px solid transparent; background: transparent; color: var(--muted);
     cursor: pointer;
     padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 500;
     transition: background .15s, border-color .15s, color .15s;
   }
-  /* 選択中は面と影だけでなく枠線でも示す。面の差は切替の地に対して 1.1:1 ほどしかなく、
-     影は Dark で効きが弱いため、それだけではどれが選ばれているか読み取れない。
-     枠線の色はグラブバーのグリップと同じ --dim で、切替の外枠は変えない */
   .theme-btn.is-active {
     background: var(--surface); border-color: var(--dim); color: var(--ink);
     box-shadow: var(--shadow);
   }
 
-  /* タブ。JS が無いと切り替えられないので、その場合はタブ行を出さず全 section を積む */
   .tabbar { display: none; gap: 4px; margin-top: 22px; flex-wrap: wrap; }
   html.js .tabbar { display: flex; }
   .tab {
@@ -183,31 +158,24 @@
     background: var(--surface-2); color: var(--muted);
   }
   .tab.is-active .tab-count { background: var(--accent-soft); color: var(--accent); }
-  /* タブ行を持たないページ（速報）でヘッダー下端の余白をタブ有りと揃える */
   .tabspacer { height: 22px; }
 
-  /* ---------- レイアウト ---------- */
   .main { max-width: 1600px; margin: 0 auto; padding: 32px 36px 96px; }
   .tabpanel { display: block; }
   .tabpanel + .tabpanel { margin-top: 28px; }
   html.js .tabpanel { display: none; }
   html.js .tabpanel.is-active { display: block; }
-  /* タブ行の代わりの見出し（JS が動く環境ではタブがラベルになるので出さない） */
   .panel-title {
     font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 18px;
   }
   html.js .panel-title { display: none; }
   .stack { display: flex; flex-direction: column; gap: 28px; }
-  /* 2列。列の下限は本文幅も上限にする（min() が無いと、本文が 400px を下回る
-     環境でページ全体に横スクロールが出る） */
   .grid-2 {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr));
     gap: 20px; align-items: start;
   }
-  /* 条件つき section が両方とも出ない月に、空の行の分だけ間隔が空くのを避ける */
   .stack > .grid-2:not(:has(> *)) { display: none; }
 
-  /* ---------- KPI カード ---------- */
   .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
   .kpis.five { grid-template-columns: repeat(5, 1fr); }
   .kpi {
@@ -226,7 +194,6 @@
   .kpi.hl .v { color: var(--accent); }
   .kpi .l { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
 
-  /* ---------- カード ---------- */
   .card {
     background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
     box-shadow: var(--shadow); overflow: hidden;
@@ -248,7 +215,6 @@
   }
   .lead { margin: 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.8; }
 
-  /* 凡例（カードヘッダー右） */
   .legend {
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
     font-size: 11.5px; color: var(--muted);
@@ -266,7 +232,6 @@
     background: repeating-linear-gradient(45deg, var(--dim) 0 3px, var(--track) 3px 6px);
   }
 
-  /* ---------- 表 ---------- */
   .tablebox { overflow: auto; max-height: 540px; }
   .tablebox.tall { max-height: 620px; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
@@ -290,7 +255,6 @@
   td.sub { color: var(--ink-2); }
   td.delta { color: var(--prem); font-weight: 500; }
   td.code { color: var(--accent); }
-  /* 増分列: ほぼ動いていない値は沈め、最新の累積に対して大きい増分だけを立てる */
   td.dim { color: var(--dim); }
   td.up { color: var(--prem); }
   td.gain { font-weight: 500; }
@@ -321,7 +285,6 @@
   .seat-premium { color: var(--prem); }
   .seat-unassigned, .seat-unknown { color: var(--dim); }
 
-  /* ---------- 棒（ユーザ別コスト / Code と他プロダクト） ---------- */
   .bars { position: relative; display: flex; flex-direction: column; gap: 9px; }
   .bar { display: flex; align-items: center; gap: 14px; }
   .bar .rank {
@@ -342,7 +305,6 @@
     font-family: var(--mono); font-variant-numeric: tabular-nums;
   }
   .bar .val.wide { width: 190px; font-size: 12px; color: var(--ink-2); }
-  /* 中央値・平均のガイド線は棒ごとに切らず、棒群全体を1本で貫く */
   .guides {
     position: absolute; top: -2px; bottom: -2px;
     left: var(--bar-head); right: var(--bar-tail);
@@ -357,7 +319,6 @@
     background: repeating-linear-gradient(45deg, var(--dim) 0 4px, var(--track) 4px 8px);
   }
 
-  /* ---------- 月次推移 ---------- */
   .months { display: flex; flex-direction: column; gap: 14px; }
   .m-row { display: flex; align-items: center; gap: 14px; }
   .m-month { width: 64px; font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
@@ -366,7 +327,6 @@
   .m-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; height: 100%; }
   .m-api { background: var(--std); }
   .m-billed { background: var(--accent); }
-  /* 最小幅は実課金が正の月にだけ効かせる（0 の月にも 2px の棒が立つのを避ける） */
   .m-billed.pos { min-width: 2px; }
   .m-vals {
     width: 110px; display: flex; flex-direction: column; gap: 5px; text-align: right;
@@ -379,7 +339,6 @@
     font-family: var(--mono); font-size: 12px; color: var(--muted);
   }
 
-  /* ---------- 前月からの変化 ---------- */
   .prev-group { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
   .prev-hd { display: flex; align-items: center; gap: 10px; }
   .kind {
@@ -405,14 +364,12 @@
   }
   .empty { padding: 4px 0 8px; font-size: 12.5px; color: var(--muted); }
 
-  /* ---------- 追加クレジットの状態 ---------- */
   .creditbar { display: flex; gap: 6px; height: 8px; }
   .creditbar span { border-radius: 99px; min-width: 4px; }
   .creditbar .c-enabled { background: var(--accent); }
   .creditbar .c-disabled { background: var(--track); }
   .creditbar .c-unknown { background: var(--warn); }
 
-  /* ---------- 判定サマリ ---------- */
   .jrow { display: flex; align-items: center; gap: 12px; }
   .jrow .label { width: 140px; font-size: 12.5px; color: var(--ink-2); }
   .jrow .track { flex: 1; height: 10px; border-radius: 3px; background: var(--track); overflow: hidden; }
@@ -426,7 +383,6 @@
   .f-keep { background: var(--muted); }
   .f-unknown { background: var(--warn); }
 
-  /* ---------- 箇条書き（メンバー変動・注記・付与候補） ---------- */
   .items { display: flex; flex-direction: column; }
   .items li {
     display: flex; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line-2);
@@ -441,8 +397,6 @@
   .notes li::before { content: "—"; color: var(--dim); }
   .notes.assumptions li { font-size: 12.5px; line-height: 1.85; }
   ul.items, ul.notes { margin: 0; padding: 0; list-style: none; }
-  /* 箇条書き・注記の中のユーザ表記。表や棒と同じく、出すのはローカル部だけで
-     完全なメールアドレスは title に持たせる */
   .uname { font-weight: 500; color: var(--ink); }
   .callout {
     padding: 12px 14px; background: var(--accent-soft); border-radius: 10px;
@@ -450,17 +404,10 @@
   }
   .badges { display: flex; flex-wrap: wrap; gap: 8px; }
 
-  /* ---------- 対話（列ソート・検索・高さ変更） ----------
-     この節の部品は押せて初めて意味を持つので、JS が付ける html.js の下でだけ出す。
-     JS が動かない環境ではツールバーもグラブバーも現れず、行はサーバが書き出したまま
-     全件が並ぶ（一覧は JS の有無によらず全行を出し、サーバは行を削らない）。 */
   .toolbar { display: none; }
   html.js .toolbar {
     display: flex; align-items: center; align-self: center; gap: 10px; flex-wrap: wrap;
   }
-  /* 枠線はグラブバーのグリップと同じ --dim。触る前の状態で輪郭が見えないと、空の入力欄が
-     見出しの一部と区別できず、絞り込めることに気づけない。フォーカスすると --accent へ
-     動くので、色相が変わって触っている間との区別も付く */
   .search, .filter {
     padding: 7px 11px; background: var(--surface-2);
     border: 1px solid var(--dim); border-radius: 8px;
@@ -477,17 +424,10 @@
     font-variant-numeric: tabular-nums; white-space: nowrap;
   }
 
-  /* ソート可能なヘッダ（クラスは JS が付ける） */
   th.sortable { cursor: pointer; transition: color .15s; }
   th.sortable:hover { color: var(--ink); }
   .sort-ind { display: inline-block; min-width: 10px; margin-left: 6px; color: var(--accent); }
 
-  /* スクロール領域の高さを変えるグラブバー（ブラウザ標準の resize コーナーは
-     ダークテーマで視認できないため使わない）。内容が最小高さに収まっていて動かしても
-     表示が変わらない表では、JS が is-on を外してバーごと消す。
-
-     掴めることを伝えているのはグリップ（--dim）で、帯そのものの上線は --line のまま。
-     ここを濃くすると表と脚注の間に強い横線が増え、情報より罫線が目立つため据え置く。 */
   .grab { display: none; }
   html.js .grab.is-on {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -497,14 +437,10 @@
   }
   html.js .grab.is-on:hover { background: var(--accent-soft); }
   .grab span { width: 28px; height: 3px; border-radius: 2px; background: var(--dim); }
-  /* ドラッグ中に本文が選択されるのを止める（高さを変えているだけなので） */
   body.resizing { user-select: none; -webkit-user-select: none; }
 
-  /* 絞り込みで隠す行。棒（display: flex）にも効かせるため、
-     行そのものの表示規則より後ろに置く（同じ詳細度なので後勝ちになる） */
   .is-out { display: none; }
 
-  /* 速報専用: 一次判断であることを強調する注意バナー */
   .banner {
     background: var(--amber-soft); border: 1px solid var(--amber); border-left-width: 5px;
     border-radius: 10px; padding: 14px 18px; font-size: 12.5px; line-height: 1.8;
@@ -512,15 +448,6 @@
   }
 </style>
 <script>
-/* ダッシュボードの対話部分（タブ・テーマ・列ソート・検索・高さ変更）。
-
-   共有先の閲覧環境をこちらで選べないため、JS が無効でも内容が読めることを前提に置く。
-   タブの出し分けと対話用の UI は、この直下で付ける html.js の下でしか効かない。
-   操作できる部品のうち、データから作る必要があるもの（判定フィルタの選択肢）だけを
-   サーバ側が描き、それ以外のツールバー・グラブバーはここで作る。
-
-   CSV 由来の値はここへ渡さない。データはサーバ側で描画済みで、ここは DOM の
-   テキストと属性を読んで並べ替え・出し入れをするだけ（数値は計算し直さない）。 */
 (function () {
   "use strict";
 
@@ -528,10 +455,8 @@
   var THEME_KEY = "seatdash-theme";
   var theme = "auto";
 
-  /* スクロール領域の最小高さ（デザイン仕様の数値）。 */
   var MIN_BOX_H = 180;
 
-  /* 組み立てた一覧。タブを切り替えたあとにグラブバーの要否を測り直すために持つ */
   var lists = [];
 
   function each(collection, fn) {
@@ -546,9 +471,7 @@
     return out;
   }
 
-  /* ---------- テーマ ---------- */
 
-  /* テーマは属性の付け外しで表す。Auto は属性を外して OS 設定（メディアクエリ）に委ねる */
   function applyTheme(mode) {
     if (mode === "light" || mode === "dark") {
       root.setAttribute("data-theme", mode);
@@ -561,7 +484,7 @@
     try {
       return window.localStorage.getItem(THEME_KEY);
     } catch (e) {
-      return null;                     /* プライベートモード等で読めないだけ。既定に倒す */
+      return null;
     }
   }
 
@@ -569,12 +492,9 @@
     try {
       window.localStorage.setItem(THEME_KEY, mode);
     } catch (e) {
-      /* 保存できなくても表示は成立する（次に開いたとき既定へ戻るだけ） */
     }
   }
 
-  /* 属性の反映は描画前に済ませる（本文の描画後に切り替えると色が一瞬入れ替わる）。
-     ボタンの選択表示は DOM ができてから当てる */
   root.className = root.className ? root.className + " js" : "js";
   var saved = readTheme();
   theme = (saved === "light" || saved === "dark") ? saved : "auto";
@@ -599,9 +519,7 @@
     saveTheme(mode);
   }
 
-  /* ---------- タブ ---------- */
 
-  /* タブは単純な表示切替。スクロール位置には触れない（切替後もその位置を保つ） */
   function showTab(name) {
     each(document.querySelectorAll(".tabpanel"), function (panel) {
       var on = panel.getAttribute("data-tab") === name;
@@ -620,21 +538,13 @@
       }
       tab.setAttribute("aria-selected", on ? "true" : "false");
     });
-    /* 隠れている間は高さが測れない（display: none の中は 0 になる）ので、
-       パネルを切り替えた「あと」に測り直す。前に測ると隠れる直前・隠れたままの
-       寸法を掴み、初期表示以外のタブでグラブバーが出ないままになる */
     refreshGrabs();
   }
 
-  /* ---------- 表示文字列の数値化（ソートの比較キー） ---------- */
 
   var UNITS = { B: 1e9, M: 1e6, K: 1e3 };
   var NUMBER_RE = /-?\d+(?:\.\d+)?[BMK]?/;
 
-  /* 画面に出ている文字列をそのまま解釈する（$1.2K → 1200）。書式を決めているのは
-     サーバ側で、ここは並べ替えのための比較キーを作るだけなので値を計算し直さない。
-     セルには金額のほかに ⚠ のような印が付くため、装飾を落としてから最初の数値を拾う。
-     解釈できない値（—・空）は最小に倒す。 */
   function toNumber(text) {
     var found = NUMBER_RE.exec(text.replace(/[\s,$+%]/g, ""));
     if (!found) {
@@ -661,10 +571,7 @@
     return a < b ? -1 : 1;
   }
 
-  /* ---------- 一覧（表の行 / 棒）の絞り込み ---------- */
 
-  /* 検索の突合先は、表示名（ローカル部）と title のメールアドレスの両方。
-     どちらもサーバが描画済みの DOM から読む。 */
   function searchText(row) {
     var cell = row.querySelector(".user, .name");
     if (!cell) {
@@ -685,8 +592,6 @@
     }
   }
 
-  /* 絞り込みの結果を一覧へ当てる。一覧は常に全行が対象で、隠すのは条件に合わない行だけ。
-     検索・フィルタのどちらが動いてもここを通す。 */
   function apply(list) {
     var matched = 0;
     each(list.rows, function (row) {
@@ -708,12 +613,9 @@
         ? matched + " / " + list.rows.length + " " + list.unit + "（絞り込み中）"
         : list.rows.length + " " + list.unit;
     }
-    /* 行の出し入れで内容の高さが変わる＝グラブバーで動かせるかどうかも変わる。
-       検索・フィルタはどちらもここを通るので、判定の更新もここに1つ置く */
     updateGrab(list);
   }
 
-  /* ---------- 列ソート ---------- */
 
   function markSort(list) {
     each(list.marks, function (mark, index) {
@@ -730,8 +632,6 @@
     each(list.rows, function (row, at) {
       keyed.push({ row: row, at: at, key: sortKey(row, index, numeric) });
     });
-    /* 同値の行はもとの並びを保つ（安定ソート）。向きを掛けるのはキーの比較だけで、
-       同値のときの比較には掛けない */
     keyed.sort(function (a, b) {
       var order = compare(a.key, b.key);
       return order === 0 ? a.at - b.at : dir * order;
@@ -750,8 +650,6 @@
       return;
     }
     each(head.rows[head.rows.length - 1].cells, function (th, index) {
-      /* 数値列の印は表側がすでに持っている（金額・件数の右寄せに使う .num）。
-         初回の向きは数値列が降順・文字列列が昇順 */
       list.numeric.push(th.classList.contains("num"));
       var indicator = document.createElement("span");
       indicator.className = "sort-ind";
@@ -769,16 +667,7 @@
     });
   }
 
-  /* ---------- スクロール領域の高さ変更 ---------- */
 
-  /* 掴んで動かせる範囲は [MIN_BOX_H, 内容の高さ] なので、内容が最小高さ以下の表は
-     どこへ動かしても表示が変わらない（max-height は内容を引き伸ばさない）。
-     そういう表ではバーを出さない ── ポインタ操作を扱えない環境でバーを作らないのと
-     同じ「操作できない部品を出さない」規則。
-
-     測れるのは表示中のタブだけ（display: none の中では 0 になる）なので、測り直す
-     契機を3つ持つ: 行数が変わったとき（apply）、タブが表に出たとき（showTab）、
-     幅が変わって折り返しが変わったとき（watchSize の窓と ResizeObserver）。 */
   function updateGrab(list) {
     if (!list.grab) {
       return;
@@ -794,17 +683,12 @@
     each(lists, updateGrab);
   }
 
-  /* 測るだけとはいえリサイズは連続で飛んでくるので、この間隔に1回へまとめる。
-
-     requestAnimationFrame ではなくタイマーで待つ。フレームは描画が止まっている間
-     （背景タブなど）配信されないことがあり、まとめ待ちの印を立てたまま次のフレームが
-     来ないと、以後の測り直しが全部落ちる。タイマーなら必ず動く。 */
   var REFRESH_MS = 120;
   var refreshTimer = 0;
 
   function scheduleRefresh() {
     if (refreshTimer) {
-      return;                            /* 待っている間に来た分は、この1回にまとまる */
+      return;
     }
     refreshTimer = window.setTimeout(function () {
       refreshTimer = 0;
@@ -812,14 +696,6 @@
     }, REFRESH_MS);
   }
 
-  /* 幅が変わるとセルの折り返しが変わり、内容の高さが最小高さの境界を跨ぐことがある
-     （ウィンドウのリサイズ・ズーム・端末の回転はどれもこの経路を通る）。測り直さないと、
-     狭めたときに必要になったバーが出ず、広げたときに動かせないバーが残る。
-
-     窓の寸法変化はどの環境でも拾えるので、まずそれを土台に置く。そのうえで、箱そのものの
-     寸法を見られる環境では ResizeObserver も併せて使う（窓の大きさは変わらないまま
-     折り返しだけが変わる場合 ── 拡大縮小・書体の読み込み・別の要素の増減 ── を拾うため）。
-     ResizeObserver の側だけに寄せると、非対応の環境で監視が丸ごと落ちる。 */
   function watchSize() {
     window.addEventListener("resize", scheduleRefresh);
     if (window.ResizeObserver) {
@@ -832,9 +708,6 @@
     }
   }
 
-  /* ブラウザ標準の resize コーナーは使わず（ダークテーマで見えないため）、
-     スクロール領域の直下にグラブバーを置いて縦だけを変える。ポインタ操作を
-     扱えない環境ではバーそのものを作らない（押せない部品を出さないため）。 */
   function addGrab(list) {
     if (!window.PointerEvent) {
       return null;
@@ -857,7 +730,7 @@
       dragging = true;
       startY = ev.clientY;
       startH = box.clientHeight;
-      contentH = box.scrollHeight;      /* 中身より高くしても余白が増えるだけなので上限に使う */
+      contentH = box.scrollHeight;
       document.body.classList.add("resizing");
       if (grab.setPointerCapture) {
         grab.setPointerCapture(ev.pointerId);
@@ -869,7 +742,6 @@
       if (!dragging) {
         return;
       }
-      /* 見るのは縦だけ（横幅は列構成で決まっており、ここでは変えない） */
       var wanted = startH + (ev.clientY - startY);
       var upper = Math.max(MIN_BOX_H, contentH);
       box.style.maxHeight = Math.max(MIN_BOX_H, Math.min(wanted, upper)) + "px";
@@ -892,7 +764,6 @@
     return grab;
   }
 
-  /* ---------- ツールバー（件数・検索・判定フィルタ） ---------- */
 
   function closestCard(element) {
     var node = element;
@@ -905,8 +776,6 @@
     return null;
   }
 
-  /* ツールバーはカードの見出し行に置く。判定フィルタを持つカードはサーバ側が
-     すでに空でないツールバーを描いているので、あればそれを使う */
   function toolbarOf(card) {
     if (!card) {
       return null;
@@ -955,7 +824,6 @@
     });
   }
 
-  /* ---------- 一覧の組み立て ---------- */
 
   function newList(rows) {
     var list = {
@@ -967,18 +835,13 @@
     return list;
   }
 
-  /* anchor は一覧の中のどこかのノード。ツールバーを置くのはカードの見出し行なので、
-     そこからカードまで辿れれば足りる（一覧そのものでも、その入れ物でも同じカードに着く）。 */
   function setUp(list, anchor) {
-    /* 検索・フィルタの突合先は行ごとに一度だけ読む（並べ替えても行の中身は変わらない） */
     var person = false;
     each(list.rows, function (row) {
       row._search = searchText(row);
       row._status = statusText(row);
       person = person || row._search !== "";
     });
-    /* 検索の対象は人が並ぶ一覧だけ（部署・チーム単位の集計表は対象にしない）。
-       件数の単位もそれに合わせる */
     list.unit = person ? "名" : "件";
     if (person) {
       var bar = toolbarOf(closestCard(anchor));
@@ -1003,7 +866,7 @@
       list.table = table;
       list.body = body;
       addSort(list);
-      addGrab(list);          /* スクロール領域を持つのは表だけなので、棒には付けない */
+      addGrab(list);
       setUp(list, box);
     });
   }
@@ -1037,7 +900,7 @@
     });
     setUpTables();
     setUpBars();
-    watchSize();          /* 監視の登録は一覧を組み立てたあと（箱が揃ってから） */
+    watchSize();
   }
 
   if (document.readyState === "loading") {
