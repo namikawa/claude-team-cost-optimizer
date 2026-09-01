@@ -1,8 +1,8 @@
 # 実装ステータス
 
-- 最終更新: 2026-08-29
+- 最終更新: 2026-09-01
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 7（GitHub）。次は Step 33（GitHub doctor）
+- 次のタスク: Track 7（GitHub）。次は Step 34（Repository自動発見）
   （Step 19（decision-evidence.csv）はF4のallowanceキャリブレーションの後に行う。較正の
   材料が2026-08の正式分析＝9月初旬に揃うため、その待ち時間にTrack 7のStep 32〜38を先行
   する段取り。2026-08-27合意。Step 9 はV2のrecent seat change判定材料として先行実装済みで、
@@ -91,9 +91,9 @@
 | 4 | V2判定 | 6 | 0 | 0 | 1 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
-| 7 | GitHub | 1 | 0 | 0 | 7 | 0 |
+| 7 | GitHub | 2 | 0 | 0 | 6 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **23** | **0** | **0** | **26** | **0** |
+| **合計** |  | **24** | **0** | **0** | **25** | **0** |
 
 ## 5. Step一覧
 
@@ -179,7 +179,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | Step | タスク | ステータス | 完了日 |
 |---|---|---|---|
 | 32 | GitHub mapping loader | `完了` | 2026-08-29 |
-| 33 | GitHub doctor | `未着手` |  |
+| 33 | GitHub doctor | `完了` | 2026-09-01 |
 | 34 | Repository自動発見 | `未着手` |  |
 | 35 | PR検索とraw cache | `未着手` |  |
 | 36 | マージPR数 | `未着手` |  |
@@ -196,6 +196,60 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-01 — Step 33: GitHub doctor
+
+- doctorにGitHub検査を追加した。GitHub分析は組織ごとのopt-in（設計書§15.1）で、configの
+  `organizations.<組織名>.github_org`を設定した組織だけが対象。キーは`input/`直下の組織名、
+  値はGitHubのOrganization名で、両者は一致しない前提の対応表として扱う。未設定の組織は
+  GitHub関連の処理と警告の一切から除外される
+- configの`organizations`直下だけは既定に無いキー（組織名）を受ける（`_DYNAMIC_ENTRIES`の
+  雛形方式）。エントリの中身は従来どおり閉じた集合で、未知キー・null・型違い・`github_org`の
+  字句不正はロード時にValueError。Organization名の字句検証は`github_collect`が持ち
+  （loginと違いアンダースコアは使えない）、configが下向きにimportする
+- probe（`github_collect.probe_github`）は認証・scope・rate残量・Organization参照可否の
+  4種で、read-onlyの参照だけを行う（PRもrepositoryも取得しない）。認証・scope・rateは
+  token単位なので実行1回につき1度だけ呼び、Organizationは重複を除いた分だけ。認証に
+  失敗したら後続を実行せず根本原因1件だけを報告する。runnerは注入可能で、テストは
+  実ghを一度も呼ばない
+- 受け入れ条件「token非表示」: `--show-token`を渡さず、環境変数のtokenも読まず、stderrは
+  DEVNULLで読み込みすらしない（診断文がPython側へ入る経路をfdの段階で断つ）。認証は
+  `gh auth status`の終了コードだけで判定し、ghの生出力をmessageへ写さない（分類語と
+  数値だけで組み立てる）。rateのreset時刻（実行のたびに変わる値）もmessageに入れない
+- 受け入れ条件「scope不足をissue化」: 出所は`X-OAuth-Scopes`ヘッダの1つだけ。必要scopeは
+  `read:org`と`repo`で、上位scope（admin:org等）が下位を含意する分は含意表で照合して
+  誤検出を防ぐ。ヘッダを持たないtoken（fine-grained PAT・GitHub App）は不判定として
+  issueを出さない（実際に参照できるかはOrganizationの検査が実地で確かめる）。SSOの
+  未承認は403+`X-GitHub-SSO: required`でGH_PERMISSION_INCOMPLETEにし、成功応答に付く
+  `partial-results`と見分ける
+- severityは認証系（GH_NOT_AUTHENTICATED / GH_ORG_NOT_ACCESSIBLE /
+  GH_PERMISSION_INCOMPLETE / GITHUB_MAPPING_DUPLICATE）がerror（opt-inを明示した組織で
+  収集の前提が壊れている＝fail-closed）、一時系（GH_RATE_LIMITED /
+  GITHUB_MAPPING_MISSING / GITHUB_CONFIG_UNMATCHED）がwarning。doctorの
+  「errorが1件でもあればexit 1」の規則は不変
+- Step 32の宿題だった対応表の警告発行を結線した: 未提供・membersに居るのに対応が無い・
+  loaderの警告行はGITHUB_MAPPING_MISSING（warning）、読めない・重複等で壊れている
+  対応表はGITHUB_MAPPING_DUPLICATE（error）。読み取り失敗（OSError）も後者に寄せた
+  （壊れた対応表で集計を完走させない。messageの「読めません: 理由」で内容は区別できる）
+- 新コードGITHUB_CONFIG_UNMATCHED（設計書§17へ追記）: `organizations`のキーが入力の
+  組織ディレクトリのどれとも一致しない場合のwarning。綴り違いでGitHub検査が黙って
+  全部飛ぶfail-openを防ぐ。突き合わせは`--org`の選択ではなく発見された全組織と行い、
+  入力ディレクトリ自体を読めない場合は出さない（全件が不一致に見えるため）。テキスト
+  出力では組織別セクションの後の「=== 設定検査 ===」に出す
+- 設計書§15.2の「private repository可視性のsmoke test」は見送り。`orgs/<org>`の
+  `total_private_repos`は認証ユーザがownerのときしか返らず非ownerで常に不判定になり、
+  「repo scope欠落→private不可視」はscope検査が既に覆う。repository列挙を要する判定は
+  Step 34の範囲
+- 実機較正（read-onlyのみ）: `gh api -i`は404でもヘッダをstdoutへ出して終了コード1に
+  なるため、runnerは「起動できたか」と「終了コード0か」を分けて持つ。ヘッダ名は
+  Go正準形（`X-Oauth-Scopes`）で来るため小文字化して照合する
+- 外部レビュー（codex 1巡目）: mid 1件・low 2件。①stderrを`capture_output`で読み込むのは
+  「保持しない」に反する件は採用（DEVNULLへ変更し、テストで呼び出しの形まで固定）
+  ②対象月を確定できないと未対応者の検査をスキップする件は不採用（spendが一切無い組織
+  だけで発生し、その状態ではMISSING_SPENDのerrorが先に立つ）③組織ゼロの読める入力で
+  GITHUB_CONFIG_UNMATCHEDを抑止する件は不採用（同じく入力側のerrorが先に立ち、
+  「存在する組織: なし」を重ねても綴り検出の価値が生まれない）
+- 1547 passed（新規91件）・ruff緑・golden不変（analyzeの経路に触れていない）
 
 ### 2026-08-29 — Step 32: GitHub mapping loader
 

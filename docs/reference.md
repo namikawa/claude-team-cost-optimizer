@@ -211,6 +211,39 @@ Team プランの各シートには利用の込み枠（レート制限型）が
   （上限が未記入）」を区別して示す
 - 速報では、有効ユーザの残額と到達見込み（観測実課金ペースの線形外挿による目安）
 
+## GitHub 分析の有効化（config.yaml > organizations）
+
+GitHub の情報（PR 数・リードタイム）を参考値として使うかどうかは組織ごとに決める。
+`organizations` に書いた組織だけが対象で、書かない組織は GitHub 関連の処理と警告から
+一切除外される。
+
+```yaml
+organizations:
+  example:
+    github_org: example-org
+```
+
+キーは入力ディレクトリ直下の組織名、値はその組織の GitHub Organization 名。両者は
+一致しない前提の対応表なので、名前が同じ組織でも省略はできない。`organizations` の
+直下だけは既定に無いキー（組織名）を書けるが、その中身に書けるのは `github_org` だけで、
+値が GitHub の Organization 名として読めなければ設定の読み込みでエラーになる。
+
+有効にした組織では `seat-analyzer doctor` が次を検査する。読み取りだけを行い、PR も
+repository も取得しない。
+
+- GitHub CLI（`gh`）で認証できているか。できていなければ error
+- token の権限（`read:org` と `repo`）が足りているか。足りなければ error。権限を
+  機械的に確認できない token（fine-grained PAT・GitHub App）では判定しない
+- 設定した Organization を参照できるか。参照できない場合と、SAML SSO の承認が要る
+  場合を区別して error
+- GitHub API の利用上限に達していないか。達していれば warning（再実行で解消する）
+- `input/<組織名>/github-members.csv`（email → GitHub login の対応表）の有無と中身。
+  無い場合と対応づかないメンバーが居る場合は warning、対応表そのものが壊れている場合は
+  error（誤った対応で集計を完走させない）
+
+`organizations` に書いた組織名が入力の組織ディレクトリのどれとも一致しない場合は、
+`=== 設定検査 ===` として warning を出す。綴り違いで検査が黙って全部飛ぶのを防ぐため。
+
 ## 判定ロジック概要
 
 ユーザ×月ごとに API 換算コスト `api_cost` を集計し、

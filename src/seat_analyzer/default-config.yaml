@@ -63,6 +63,17 @@ decision_v2:
   # 手間に見合わないとみなす。
   min_assignment_saving_usd: 20.0
 
+# GitHub 分析を有効にする組織（組織ごとの opt-in）。キーは入力ディレクトリ直下の組織名、
+# 値はその組織の GitHub Organization 名で、両者は一致しない前提の対応表として書く。
+# ここに書いた組織だけが doctor の GitHub 検査と GitHub 由来の集計の対象になり、
+# 書かない組織は GitHub 関連の処理と警告から一切除外される。
+# organizations の直下だけは既定に無いキー（組織名）を書ける。その中身は従来どおり
+# 厳格で、書けるのは github_org だけ。
+#   organizations:
+#     example:
+#       github_org: example-org
+organizations: {}
+
 # モデル単価（USD per 1M tokens）。model 名の部分一致（小文字）で判定、上から順に評価
 # するため、特例（sonnet-5, opus-4-1 等）は汎用パターンより上に置くこと。
 # 公式: https://platform.claude.com/docs/en/about-claude/models/overview（2026-07-05 照合）

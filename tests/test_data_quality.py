@@ -7,12 +7,15 @@ import pytest
 
 from seat_analyzer.data_quality import (
     _reason,
+    github_config_issues,
+    inspect_github,
     issue_to_dict,
     issues_to_canonical_json,
     issues_to_json,
     sort_issues,
 )
 from seat_analyzer.domain import IssueCode, QualityIssue, Severity
+from seat_analyzer.github_collect import GhFailure, GhResult, probe_github
 
 from .conftest import requires_symlink
 
@@ -48,6 +51,7 @@ EXPECTED_CODES = {
     "GH_PERMISSION_INCOMPLETE",
     "GH_RATE_LIMITED",
     "GH_PARTIAL_RESULT",
+    "GITHUB_CONFIG_UNMATCHED",
     # Policy
     "PROHIBITED_PRODUCT_OBSERVED",
     "CAPACITY_SIGNAL_UNAVAILABLE",
@@ -58,8 +62,8 @@ def test_issue_code_vocabulary_is_fixed():
     # __members__はaliasも列挙するため、別名の紛れ込みも検出できる
     members = IssueCode.__members__
     assert set(members) == EXPECTED_CODES
-    assert len(members) == 28
-    assert len(EXPECTED_CODES) == 28
+    assert len(members) == 29
+    assert len(EXPECTED_CODES) == 29
 
 
 def test_issue_code_value_equals_name():
@@ -492,3 +496,388 @@ def test_reason_relativizes_parent_relative_input_dir(tmp_path, monkeypatch):
 
     assert reason == "spend: 読めません"
     assert str(tmp_path) not in reason
+
+
+# --- GitHub の検査（config で有効にした組織のみ） ---
+#
+# gh は一度も呼ばない。記録済みの応答を返す runner を差し込み、probe から issue までを
+# 通して確かめる（probe の解釈と message の組み立ては、分かれていても1つの振る舞い）。
+
+ORG = "org-a"
+GH_ORG = "example-org"
+MONTH = "2026-06"
+
+# 正常な token の scope（PR の収集に必要な read:org と repo を含む）
+GRANTED_SCOPES = "gist, read:org, repo, workflow"
+
+
+def _api(status: int, headers: tuple[tuple[str, str], ...] = ()) -> GhResult:
+    """`gh api -i` の応答（ヘッダ + 空行 + 本文）。"""
+    lines = [f"HTTP/2.0 {status} -", *(f"{name}: {value}" for name, value in headers)]
+    return GhResult(ok=200 <= status < 300, stdout="\n".join(lines) + "\n\n{}\n")
+
+
+def _rate(core: int = 4999, search: int = 30) -> GhResult:
+    payload = {
+        "resources": {
+            "core": {"limit": 5000, "remaining": core, "reset": 1788233103},
+            "search": {"limit": 30, "remaining": search, "reset": 1788230720},
+        }
+    }
+    return GhResult(ok=True, stdout=json.dumps(payload))
+
+
+class _FakeGh:
+    """記録済みの応答を返す runner。呼び出しの並びを残す。"""
+
+    def __init__(self, responses: dict[str, GhResult]):
+        self._responses = responses
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, args):
+        args = tuple(args)
+        self.calls.append(args)
+        # 引数の末尾（status / user / rate_limit / orgs/<名前>）で応答を引く
+        return self._responses[args[-1]]
+
+    @property
+    def commands(self) -> list[str]:
+        return [call[-1] for call in self.calls]
+
+
+def _fake_gh(**overrides: GhResult) -> _FakeGh:
+    """すべて正常な応答を返す runner（overrides で1つずつ差し替える）。
+
+    キーは末尾の引数で、Organization は `orgs` で指す。
+    """
+    responses = {
+        "status": GhResult(ok=True),
+        "user": _api(200, (("X-Oauth-Scopes", GRANTED_SCOPES),)),
+        "rate_limit": _rate(),
+        f"orgs/{GH_ORG}": _api(200),
+    }
+    if "orgs" in overrides:
+        responses[f"orgs/{GH_ORG}"] = overrides.pop("orgs")
+    responses.update(overrides)
+    return _FakeGh(responses)
+
+
+def _org_input(
+    tmp_path: Path,
+    members: tuple[str, ...] = ("a@x.jp",),
+    mapping: tuple[str, ...] | None = ("a@x.jp,octo-example",),
+) -> Path:
+    """組織の入力ディレクトリ（メンバー一覧と、任意で対応表）。"""
+    base = tmp_path / ORG
+    (base / "members").mkdir(parents=True, exist_ok=True)
+    (base / "members" / f"members_{MONTH}.csv").write_text(
+        "Email,Seat Type\n" + "".join(f"{email},Premium\n" for email in members),
+        encoding="utf-8", newline="\n",
+    )
+    if mapping is not None:
+        (base / "github-members.csv").write_text(
+            "email,github_login\n" + "".join(f"{row}\n" for row in mapping),
+            encoding="utf-8", newline="\n",
+        )
+    return base
+
+
+def _inspect(input_dir: Path, cfg: dict, gh: _FakeGh) -> list[QualityIssue]:
+    probes = probe_github([GH_ORG], runner=gh)
+    return inspect_github(input_dir, MONTH, cfg, ORG, GH_ORG, probes)
+
+
+def _codes(issues) -> list[str]:
+    return [issue.code.value for issue in issues]
+
+
+def test_github_reports_nothing_when_everything_is_in_order(tmp_path, cfg):
+    assert _inspect(_org_input(tmp_path), cfg, _fake_gh()) == []
+
+
+def test_github_probes_are_called_once_each_in_a_fixed_order(tmp_path, cfg):
+    """認証・scope・利用上限は token 単位なので1度ずつ。Organization は対象の分だけ。"""
+    gh = _fake_gh()
+    probe_github([GH_ORG, GH_ORG], runner=gh)
+
+    assert gh.commands == ["status", "user", "rate_limit", f"orgs/{GH_ORG}"]
+
+
+# --- 認証
+
+
+@pytest.mark.parametrize(("result", "reason", "remedy"), [
+    (GhResult(ok=False), "未認証", "gh auth login"),
+    (GhResult(ok=False, failure=GhFailure.NOT_FOUND), "gh コマンドが見つかりません",
+     "GitHub CLI を導入"),
+    (GhResult(ok=False, failure=GhFailure.TIMEOUT), "制限時間内に応答がありません",
+     "ネットワークの状態"),
+    (GhResult(ok=False, failure=GhFailure.ERROR), "実行に失敗しました", "導入状態"),
+])
+def test_github_auth_failure_is_an_error(tmp_path, cfg, result, reason, remedy):
+    issues = _inspect(_org_input(tmp_path), cfg, _fake_gh(status=result))
+
+    assert _codes(issues) == ["GH_NOT_AUTHENTICATED"]
+    assert issues[0].severity is Severity.ERROR
+    assert reason in issues[0].message
+    assert remedy in issues[0].message
+    assert issues[0].scope["github_org"] == GH_ORG
+
+
+def test_github_auth_failure_stops_the_other_probes(tmp_path, cfg):
+    """根本原因1件だけを報告する（派生する参照失敗を並べない）。"""
+    gh = _fake_gh(status=GhResult(ok=False))
+    issues = _inspect(_org_input(tmp_path), cfg, gh)
+
+    assert gh.commands == ["status"]
+    assert _codes(issues) == ["GH_NOT_AUTHENTICATED"]
+
+
+def test_github_mapping_is_checked_even_when_gh_is_unavailable(tmp_path, cfg):
+    """対応表は gh と無関係なローカルの検査なので、認証できなくても見る。"""
+    input_dir = _org_input(tmp_path, mapping=None)
+    issues = _inspect(input_dir, cfg, _fake_gh(status=GhResult(ok=False)))
+
+    assert _codes(issues) == ["GH_NOT_AUTHENTICATED", "GITHUB_MAPPING_MISSING"]
+
+
+# --- Organization の参照
+
+
+def test_github_org_not_found_is_an_error(tmp_path, cfg):
+    issues = _inspect(_org_input(tmp_path), cfg, _fake_gh(orgs=_api(404)))
+
+    assert _codes(issues) == ["GH_ORG_NOT_ACCESSIBLE"]
+    assert issues[0].severity is Severity.ERROR
+    assert "HTTP 404" in issues[0].message
+    assert f"organizations.{ORG}.github_org" in issues[0].message
+
+
+def test_github_org_forbidden_without_sso_header_is_not_accessible(tmp_path, cfg):
+    issues = _inspect(_org_input(tmp_path), cfg, _fake_gh(orgs=_api(403)))
+
+    assert _codes(issues) == ["GH_ORG_NOT_ACCESSIBLE"]
+    assert "HTTP 403" in issues[0].message
+
+
+def test_github_org_forbidden_with_sso_header_is_a_permission_issue(tmp_path, cfg):
+    """SSO の未承認は権限の不足として区別する（綴りの確認を案内しない）。"""
+    gh = _fake_gh(orgs=_api(403, (
+        ("X-GitHub-SSO", "required; url=https://github.com/orgs/example-org/sso"),
+    )))
+    issues = _inspect(_org_input(tmp_path), cfg, gh)
+
+    assert _codes(issues) == ["GH_PERMISSION_INCOMPLETE"]
+    assert issues[0].severity is Severity.ERROR
+    assert "SAML SSO" in issues[0].message
+
+
+def test_github_sso_header_on_a_success_is_not_a_permission_issue(tmp_path, cfg):
+    """同じヘッダは成功応答に partial-results として付くことがある。"""
+    gh = _fake_gh(orgs=_api(200, (
+        ("X-GitHub-SSO", "partial-results; organizations=1"),
+    )))
+
+    assert _inspect(_org_input(tmp_path), cfg, gh) == []
+
+
+def test_github_org_probe_failure_names_the_classification_only(tmp_path, cfg):
+    gh = _fake_gh(**{f"orgs/{GH_ORG}": GhResult(ok=False, failure=GhFailure.TIMEOUT)})
+    issues = _inspect(_org_input(tmp_path), cfg, gh)
+
+    assert _codes(issues) == ["GH_ORG_NOT_ACCESSIBLE"]
+    assert "制限時間内に応答がありません" in issues[0].message
+
+
+def test_github_unreadable_response_is_not_accessible(tmp_path, cfg):
+    """応答として解釈できない出力を「参照できた」と読まない。"""
+    gh = _fake_gh(orgs=GhResult(ok=True, stdout="なにかの出力\n"))
+    issues = _inspect(_org_input(tmp_path), cfg, gh)
+
+    assert _codes(issues) == ["GH_ORG_NOT_ACCESSIBLE"]
+
+
+# --- scope
+
+
+def test_github_missing_scope_is_an_error(tmp_path, cfg):
+    gh = _fake_gh(user=_api(200, (("X-Oauth-Scopes", "gist, workflow"),)))
+    issues = _inspect(_org_input(tmp_path), cfg, gh)
+
+    assert _codes(issues) == ["GH_PERMISSION_INCOMPLETE"]
+    assert issues[0].severity is Severity.ERROR
+    assert "不足: read:org, repo" in issues[0].message
+    assert list(issues[0].scope["missing_scopes"]) == ["read:org", "repo"]
+
+
+def test_github_higher_scope_satisfies_the_required_one(tmp_path, cfg):
+    """上位 scope だけを持つ token を権限不足と誤検出しない。"""
+    gh = _fake_gh(user=_api(200, (("X-Oauth-Scopes", "admin:org, repo"),)))
+
+    assert _inspect(_org_input(tmp_path), cfg, gh) == []
+
+
+def test_github_without_the_scope_header_reports_nothing(tmp_path, cfg):
+    """fine-grained PAT・GitHub App の token は scope を判定できない。"""
+    gh = _fake_gh(user=_api(200))
+
+    assert _inspect(_org_input(tmp_path), cfg, gh) == []
+
+
+def test_github_empty_scope_header_is_a_permission_issue(tmp_path, cfg):
+    """ヘッダが空なのは「scope が1つも無い」で、判定できないのとは別。"""
+    gh = _fake_gh(user=_api(200, (("X-Oauth-Scopes", ""),)))
+
+    assert _codes(_inspect(_org_input(tmp_path), cfg, gh)) == [
+        "GH_PERMISSION_INCOMPLETE"
+    ]
+
+
+# --- 利用上限
+
+
+def test_github_rate_limit_is_a_warning(tmp_path, cfg):
+    issues = _inspect(_org_input(tmp_path), cfg, _fake_gh(rate_limit=_rate(core=0)))
+
+    assert _codes(issues) == ["GH_RATE_LIMITED"]
+    assert issues[0].severity is Severity.WARNING
+    assert "core: 残り 0 / 上限 5000" in issues[0].message
+    assert list(issues[0].scope["resources"]) == ["core"]
+
+
+def test_github_rate_limit_message_has_no_reset_time(tmp_path, cfg):
+    """回復時刻は実行のたびに変わるので message へ入れない。"""
+    issues = _inspect(_org_input(tmp_path), cfg, _fake_gh(rate_limit=_rate(core=0)))
+
+    assert "1788233103" not in issues[0].message
+    assert "reset" not in issues[0].message
+
+
+def test_github_rate_limit_covers_search(tmp_path, cfg):
+    issues = _inspect(
+        _org_input(tmp_path), cfg, _fake_gh(rate_limit=_rate(core=0, search=0)))
+
+    assert list(issues[0].scope["resources"]) == ["core", "search"]
+
+
+def test_github_unreadable_rate_status_is_not_reported(tmp_path, cfg):
+    """残量だけ読めない状況は通信の不調で、同じ原因が参照の検査で error になる。"""
+    gh = _fake_gh(rate_limit=GhResult(ok=True, stdout="{}"))
+
+    assert _inspect(_org_input(tmp_path), cfg, gh) == []
+
+
+# --- 対応表
+
+
+def test_github_mapping_file_missing_is_a_warning(tmp_path, cfg):
+    issues = _inspect(_org_input(tmp_path, mapping=None), cfg, _fake_gh())
+
+    assert _codes(issues) == ["GITHUB_MAPPING_MISSING"]
+    assert issues[0].severity is Severity.WARNING
+    assert "github-members.csv" in issues[0].message
+
+
+def test_github_members_without_a_login_are_warned_with_a_sample(tmp_path, cfg):
+    input_dir = _org_input(
+        tmp_path, members=("a@x.jp", "b@x.jp", "c@x.jp"),
+        mapping=("a@x.jp,octo-example",),
+    )
+    issues = _inspect(input_dir, cfg, _fake_gh())
+
+    assert _codes(issues) == ["GITHUB_MAPPING_MISSING"]
+    assert "2 名います" in issues[0].message
+    assert list(issues[0].scope["emails"]) == ["b@x.jp", "c@x.jp"]
+
+
+def test_github_loader_warning_becomes_an_issue(tmp_path, cfg):
+    """login の空欄・読めない字句は loader の警告として上がってくる。"""
+    input_dir = _org_input(
+        tmp_path, members=("a@x.jp",), mapping=("a@x.jp,@octo-example",))
+    issues = _inspect(input_dir, cfg, _fake_gh())
+
+    assert _codes(issues) == ["GITHUB_MAPPING_MISSING", "GITHUB_MAPPING_MISSING"]
+    assert any("解釈できません" in issue.message for issue in issues)
+    assert all("github-members.csv" in issue.message for issue in issues)
+
+
+def test_github_broken_mapping_is_an_error_without_absolute_paths(tmp_path, cfg):
+    """取り違えに直結する不備は fail-closed（読めない対応表で集計を完走させない）。"""
+    input_dir = _org_input(
+        tmp_path, mapping=("a@x.jp,octo-example", "a@x.jp,other-example"))
+    issues = _inspect(input_dir, cfg, _fake_gh())
+
+    assert _codes(issues) == ["GITHUB_MAPPING_DUPLICATE"]
+    assert issues[0].severity is Severity.ERROR
+    assert str(input_dir) not in issues[0].message
+
+
+def test_github_unmapped_check_is_skipped_when_members_are_unreadable(tmp_path, cfg):
+    """メンバー一覧の不備は inspect_input が報告するので、ここでは二重に出さない。"""
+    input_dir = _org_input(tmp_path)
+    (input_dir / "members" / f"members_{MONTH}.csv").write_text(
+        "Seat Type\nPremium\n", encoding="utf-8", newline="\n")
+
+    assert _inspect(input_dir, cfg, _fake_gh()) == []
+
+
+def test_github_unmapped_check_is_skipped_without_a_target_month(tmp_path, cfg):
+    input_dir = _org_input(tmp_path, members=("a@x.jp", "b@x.jp"))
+    probes = probe_github([GH_ORG], runner=_fake_gh())
+
+    assert inspect_github(input_dir, None, cfg, ORG, GH_ORG, probes) == []
+
+
+# --- 決定性
+
+
+def test_github_issues_are_identical_across_runs(tmp_path, cfg):
+    """同じ probe 結果からは常に同じ JSON（絶対パス・時刻・乱数を含めない）。"""
+    input_dir = _org_input(tmp_path, members=("a@x.jp", "b@x.jp"), mapping=())
+    gh = _fake_gh(orgs=_api(404), rate_limit=_rate(core=0))
+
+    first = issues_to_canonical_json(_inspect(input_dir, cfg, gh))
+    second = issues_to_canonical_json(_inspect(input_dir, cfg, gh))
+
+    assert first == second
+    assert str(tmp_path) not in first
+
+
+def test_github_issues_have_no_month_in_scope(tmp_path, cfg):
+    """GitHub の検査結果は対象月に依存しない。"""
+    issues = _inspect(_org_input(tmp_path, mapping=None), cfg, _fake_gh(orgs=_api(404)))
+
+    assert issues
+    for issue in issues:
+        assert "month" not in issue.scope
+        assert issue.scope["org"] == ORG
+
+
+# --- 設定のキーと組織ディレクトリの突き合わせ
+
+
+def _cfg_with_organizations(cfg: dict, **entries: str) -> dict:
+    return {**cfg, "organizations": {
+        org: {"github_org": github_org} for org, github_org in entries.items()
+    }}
+
+
+def test_config_key_without_a_matching_org_is_a_warning(cfg):
+    issues = github_config_issues(
+        _cfg_with_organizations(cfg, org_typo=GH_ORG), ["org-a", "org-b"])
+
+    assert _codes(issues) == ["GITHUB_CONFIG_UNMATCHED"]
+    assert issues[0].severity is Severity.WARNING
+    assert "org_typo" in issues[0].message
+    assert "org-a/org-b" in issues[0].message
+    assert issues[0].scope["config_org"] == "org_typo"
+    assert "org" not in issues[0].scope
+
+
+def test_config_key_that_matches_an_org_is_silent(cfg):
+    assert github_config_issues(
+        _cfg_with_organizations(cfg, **{"org-a": GH_ORG}), ["org-a", "org-b"]) == []
+
+
+def test_config_without_organizations_is_silent(cfg):
+    assert github_config_issues(cfg, ["org-a"]) == []

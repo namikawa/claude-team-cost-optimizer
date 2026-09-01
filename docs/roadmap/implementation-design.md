@@ -1130,6 +1130,12 @@ V2が安定するまで既定値は`v1`。
 - `GH_PERMISSION_INCOMPLETE`
 - `GH_RATE_LIMITED`
 - `GH_PARTIAL_RESULT`
+- `GITHUB_CONFIG_UNMATCHED`
+
+`GITHUB_CONFIG_UNMATCHED`は、`organizations`のキーが入力の組織ディレクトリのどれとも
+一致しない場合のwarning。綴り違いはGitHubの検査がまるごと飛ぶ形で表に出ないため、
+有効にしたつもりの組織が黙って対象外になる。組織に属さないissueなのでscopeはorgではなく
+`config_org`を持つ。
 
 ### Policy
 

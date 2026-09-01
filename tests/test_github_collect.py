@@ -1,23 +1,32 @@
-"""GitHub 対応表（input/<組織名>/github-members.csv）のロードのテスト。
+"""GitHub 対応表（input/<組織名>/github-members.csv）のロードと、gh を呼ぶ probe のテスト。
 
-取り違えに直結するものを止めること（必須カラムの欠落・email の欠落と重複・login の
-重複）と、読めない値で分析を止めないこと（空欄・字句として読めない login を未対応へ
-倒して警告する）の両方を固定する。
+対応表では、取り違えに直結するものを止めること（必須カラムの欠落・email の欠落と重複・
+login の重複）と、読めない値で分析を止めないこと（空欄・字句として読めない login を未対応へ
+倒して警告する）の両方を固定する。読み取りだけのモジュールなので、同じ入力からは常に同じ
+結果と同じ並びになることまで見る（entries は行順・警告も行順・未対応の一覧は昇順）。
 
-読み取りだけのモジュールなので、同じ入力からは常に同じ結果と同じ並びになることまで
-見る（entries は行順・警告も行順・未対応の一覧は昇順）。
+probe では、gh を実行できない場合の分類と、応答の解釈（HTTP ステータス・ヘッダ）を見る。
+実際の gh もネットワークも呼ばない。issue への変換は tests/test_data_quality.py が見る。
 """
 
 import copy
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from seat_analyzer.github_collect import (
     GITHUB_MEMBERS_FILENAME,
+    GhFailure,
+    GhResult,
     GithubMemberLink,
     GithubMembers,
+    _parse_response,
+    gated_orgs,
+    is_github_org_name,
     load_github_members,
+    missing_scopes,
+    run_gh,
     unmapped_emails,
 )
 
@@ -401,3 +410,183 @@ def test_members_allows_several_rows_without_a_login():
     )
     assert members.provided is True
     assert unmapped_emails(members, ["user1@example.com"]) == ("user1@example.com",)
+
+
+# ------------------------------------------------------------ Organization 名
+
+
+@pytest.mark.parametrize("name", [
+    "example",
+    "Example-Org",
+    "example-org-1",
+    "e",
+    "a" * 39,
+])
+def test_readable_organization_names_are_accepted(name):
+    assert is_github_org_name(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    "",
+    " example",
+    "-example",
+    "example-",
+    "example--org",
+    "example_org",      # login と違い Organization 名にアンダースコアは無い
+    "example/org",      # 経路を差し替えられる字句を通さない
+    "example org",
+    "a" * 40,
+    None,
+    1,
+])
+def test_unreadable_organization_names_are_rejected(name):
+    assert is_github_org_name(name) is False
+
+
+# ------------------------------------------------------------ 有効化のゲート
+
+
+def test_gated_orgs_keeps_the_configured_order(cfg):
+    config = {**cfg, "organizations": {
+        "org-b": {"github_org": "example-two"},
+        "org-a": {"github_org": "example-one"},
+    }}
+
+    assert gated_orgs(config) == {"org-b": "example-two", "org-a": "example-one"}
+
+
+def test_gated_orgs_is_empty_by_default(cfg):
+    """既定では1組織も有効になっていない（GitHub は組織ごとの opt-in）。"""
+    assert gated_orgs(cfg) == {}
+
+
+# ------------------------------------------------------------ gh の実行
+
+
+def test_run_gh_reports_a_missing_command(monkeypatch):
+    monkeypatch.setattr("seat_analyzer.github_collect.shutil.which", lambda _: None)
+
+    assert run_gh(("auth", "status")) == GhResult(
+        ok=False, failure=GhFailure.NOT_FOUND)
+
+
+def _fake_which(monkeypatch) -> None:
+    monkeypatch.setattr("seat_analyzer.github_collect.shutil.which", lambda _: "gh")
+
+
+def test_run_gh_reports_a_timeout(monkeypatch):
+    _fake_which(monkeypatch)
+
+    def _timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="gh", timeout=1)
+
+    monkeypatch.setattr("seat_analyzer.github_collect.subprocess.run", _timeout)
+
+    assert run_gh(("auth", "status")).failure is GhFailure.TIMEOUT
+
+
+def test_run_gh_reports_a_launch_failure(monkeypatch):
+    _fake_which(monkeypatch)
+
+    def _os_error(*args, **kwargs):
+        raise PermissionError("実行できません")
+
+    monkeypatch.setattr("seat_analyzer.github_collect.subprocess.run", _os_error)
+
+    assert run_gh(("auth", "status")).failure is GhFailure.ERROR
+
+
+class _Completed:
+    def __init__(self, returncode: int, stdout: bytes):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = "gh: 診断の文言".encode()
+
+
+def _fake_run(monkeypatch, returncode: int, stdout: bytes) -> dict:
+    """subprocess.run を差し替え、渡された kwargs を返す（呼び出しの形を検査できる）。"""
+    _fake_which(monkeypatch)
+    seen: dict = {}
+
+    def _run(*args, **kwargs):
+        seen.update(kwargs)
+        return _Completed(returncode, stdout)
+
+    monkeypatch.setattr("seat_analyzer.github_collect.subprocess.run", _run)
+    return seen
+
+
+def test_run_gh_keeps_stdout_and_drops_stderr(monkeypatch):
+    """返すのは終了コードと stdout だけ（診断文が message へ写る経路を作らない）。
+
+    stderr は DEVNULL で読み込みすらしないことまで固定する（診断文が Python 側へ入る
+    経路を fd の段階で断つ）。
+    """
+    kwargs = _fake_run(monkeypatch, 0, b"HTTP/2.0 200 OK\r\n\r\n{}\r\n")
+    result = run_gh(("api", "-i", "user"))
+
+    assert result.ok is True
+    assert result.stdout == "HTTP/2.0 200 OK\n\n{}\n"   # 改行は LF へ揃える
+    assert "診断" not in result.stdout
+    assert not hasattr(result, "stderr")
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is subprocess.PIPE
+
+
+def test_run_gh_marks_a_non_zero_exit_without_calling_it_a_launch_failure(monkeypatch):
+    """gh は 2xx 以外の応答でも終了コード 1 で終わる。応答は stdout に残る。"""
+    _fake_run(monkeypatch, 1, b"HTTP/2.0 404 Not Found\n\n{}\n")
+    result = run_gh(("api", "-i", "orgs/example-org"))
+
+    assert result.ok is False
+    assert result.failure is None
+    assert result.stdout.startswith("HTTP/2.0 404")
+
+
+def test_run_gh_rejects_output_that_is_not_utf8(monkeypatch):
+    _fake_run(monkeypatch, 0, b"\xff\xfe")
+
+    assert run_gh(("api", "rate_limit")).failure is GhFailure.ERROR
+
+
+# ------------------------------------------------------------ 応答の解釈
+
+
+def test_parse_response_lowercases_header_names_and_stops_at_the_body():
+    status, headers = _parse_response(
+        "HTTP/2.0 403 Forbidden\n"
+        "X-GitHub-SSO: required; url=https://example.invalid\n"
+        "\n"
+        "{\"Message\": \"本文はヘッダとして読まない\"}\n"
+    )
+
+    assert status == 403
+    assert headers == {"x-github-sso": "required; url=https://example.invalid"}
+
+
+def test_parse_response_joins_repeated_headers():
+    _, headers = _parse_response(
+        "HTTP/1.1 200 OK\nLink: <a>\nLink: <b>\n\n{}\n")
+
+    assert headers["link"] == "<a>, <b>"
+
+
+@pytest.mark.parametrize("stdout", ["", "なにかの出力\n", "HTTP/2.0 なにか\n\n"])
+def test_parse_response_returns_no_status_for_unreadable_output(stdout):
+    assert _parse_response(stdout)[0] is None
+
+
+# ------------------------------------------------------------ scope の充足
+
+
+@pytest.mark.parametrize(("granted", "missing"), [
+    (("read:org", "repo"), ()),
+    (("admin:org", "repo"), ()),          # 上位 scope は下位を含む
+    (("write:org", "repo"), ()),
+    (("repo",), ("read:org",)),
+    (("read:org",), ("repo",)),
+    ((), ("read:org", "repo")),
+    (("public_repo", "read:org"), ("repo",)),   # private を読めない scope では足りない
+])
+def test_missing_scopes(granted, missing):
+    assert missing_scopes(granted) == missing

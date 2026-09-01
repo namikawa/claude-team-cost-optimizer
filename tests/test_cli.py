@@ -876,3 +876,197 @@ def test_init_org_rejects_reserved_and_invalid_names(tmp_path, capsys):
         assert rc == 1
         assert fragment in capsys.readouterr().err
     assert not (tmp_path / "input").exists()
+
+
+# --- doctor の GitHub 検査（config で有効にした組織のみ） ---
+#
+# gh は差し替えて一度も実行しない。ここで見るのは結線（どの組織を対象にするか・
+# gh を何回呼ぶか・出力のどこへ出すか）で、issue の中身は tests/test_data_quality.py。
+
+GH_ORG = "example-org"
+
+
+def _gh_config(tmp_path: Path, **entries: str) -> str:
+    """organizations だけを書いた上書き設定を作り、そのパスを返す。"""
+    lines = ["organizations:"]
+    for org, github_org in entries.items():
+        lines += [f"  {org}:", f"    github_org: {github_org}"]
+    path = tmp_path / "gh-config.yaml"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return str(path)
+
+
+def _stub_gh(monkeypatch, *, authenticated: bool = True) -> list[tuple[str, ...]]:
+    """gh の呼び出しを記録して固定の応答を返す（実際の gh は呼ばない）。"""
+    from seat_analyzer.github_collect import GhResult
+
+    calls: list[tuple[str, ...]] = []
+    rate = json.dumps({"resources": {
+        "core": {"limit": 5000, "remaining": 4999},
+        "search": {"limit": 30, "remaining": 30},
+    }})
+
+    def _run(args):
+        args = tuple(args)
+        calls.append(args)
+        if args[-1] == "status":
+            return GhResult(ok=authenticated)
+        if args[-1] == "rate_limit":
+            return GhResult(ok=True, stdout=rate)
+        return GhResult(
+            ok=True, stdout="HTTP/2.0 200 OK\nX-Oauth-Scopes: read:org, repo\n\n{}\n")
+
+    monkeypatch.setattr("seat_analyzer.github_collect.run_gh", _run)
+    return calls
+
+
+def _mapping(input_dir: Path, org: str, rows: tuple[str, ...]) -> None:
+    (input_dir / org / "github-members.csv").write_text(
+        "email,github_login\n" + "".join(f"{row}\n" for row in rows),
+        encoding="utf-8", newline="\n",
+    )
+
+
+def _doctor_with(config: str, input_dir: Path, *extra: str) -> int:
+    return main(["doctor", "--config", config, "--input-dir", str(input_dir), *extra])
+
+
+def test_doctor_does_not_touch_gh_without_the_config(make_input, monkeypatch, capsys):
+    """github_org を設定していない組織は GitHub の処理と警告から一切除外される。"""
+    input_dir = _clean_org(make_input)
+    calls = _stub_gh(monkeypatch)
+
+    assert _doctor(input_dir, "--month", "2026-06") == 0
+
+    assert calls == []
+    assert "GITHUB" not in capsys.readouterr().out
+
+
+def test_doctor_checks_github_for_a_configured_org(make_input, tmp_path, monkeypatch, capsys):
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    calls = _stub_gh(monkeypatch)
+
+    # 対応表が無いだけなので warning（exit 0）
+    assert _doctor_with(config, input_dir, "--month", "2026-06") == 0
+
+    out = capsys.readouterr().out
+    assert "[warning] GITHUB_MAPPING_MISSING" in out
+    assert [call[-1] for call in calls] == [
+        "status", "user", "rate_limit", f"orgs/{GH_ORG}"]
+
+
+def test_doctor_reports_nothing_when_the_mapping_is_complete(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    input_dir = _clean_org(make_input)
+    _mapping(input_dir, "org-a", ("a@x.jp,octo-example",))
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_gh(monkeypatch)
+
+    assert _doctor_with(config, input_dir, "--month", "2026-06") == 0
+    assert "問題は見つかりませんでした" in capsys.readouterr().out
+
+
+def test_doctor_github_error_sets_the_exit_code(make_input, tmp_path, monkeypatch, capsys):
+    input_dir = _clean_org(make_input)
+    _mapping(input_dir, "org-a", ("a@x.jp,octo-example",))
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_gh(monkeypatch, authenticated=False)
+
+    assert _doctor_with(config, input_dir, "--month", "2026-06") == 1
+    assert "[error] GH_NOT_AUTHENTICATED" in capsys.readouterr().out
+
+
+def test_doctor_probes_gh_once_for_several_orgs(make_input, tmp_path, monkeypatch, capsys):
+    """認証・scope・利用上限は組織数ぶん叩かず、1回の結果を使い回す。"""
+    input_dir = _clean_org(make_input)
+    make_input(
+        {"2026-05": [spend_row("b@y.jp", 10.0)], "2026-06": [spend_row("b@y.jp", 12.0)]},
+        members=["b@y.jp,Premium"], org="org-b",
+    )
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG, "org-b": "another-example"})
+    calls = _stub_gh(monkeypatch, authenticated=False)
+
+    assert _doctor_with(config, input_dir, "--month", "2026-06") == 1
+
+    assert [call[-1] for call in calls] == ["status"]
+    # 認証の失敗は、有効にした各組織の issue として出る（組織別に読んで完結する）
+    issues = [line for line in capsys.readouterr().out.splitlines()
+              if "GH_NOT_AUTHENTICATED" in line]
+    assert len(issues) == 2
+
+
+def test_doctor_limits_github_checks_to_the_selected_orgs(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    input_dir = _clean_org(make_input)
+    make_input(
+        {"2026-05": [spend_row("b@y.jp", 10.0)], "2026-06": [spend_row("b@y.jp", 12.0)]},
+        members=["b@y.jp,Premium"], org="org-b",
+    )
+    config = _gh_config(tmp_path, **{"org-b": GH_ORG})
+    calls = _stub_gh(monkeypatch)
+
+    assert _doctor_with(config, input_dir, "--month", "2026-06", "--org", "org-a") == 0
+
+    assert calls == []
+    assert "GITHUB" not in capsys.readouterr().out
+
+
+def test_doctor_warns_about_a_config_key_without_an_org(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """綴り違いで GitHub の検査が黙って全部飛ぶ状態を、独立したセクションで知らせる。"""
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-typo": GH_ORG})
+    calls = _stub_gh(monkeypatch)
+
+    assert _doctor_with(config, input_dir, "--month", "2026-06") == 0
+
+    out = capsys.readouterr().out
+    assert calls == []
+    assert "=== 設定検査 ===" in out
+    assert "[warning] GITHUB_CONFIG_UNMATCHED" in out
+    assert "org-typo" in out
+    # 組織別のセクションの後に出す
+    assert out.index("=== org-a") < out.index("=== 設定検査 ===")
+
+
+def test_doctor_config_warning_uses_all_orgs_not_the_selection(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """--org で選ばなかった組織を「一致しない」と言わない。"""
+    input_dir = _clean_org(make_input)
+    make_input(
+        {"2026-06": [spend_row("b@y.jp", 12.0)]}, members=["b@y.jp,Premium"], org="org-b")
+    config = _gh_config(tmp_path, **{"org-b": GH_ORG})
+    _stub_gh(monkeypatch)
+
+    assert _doctor_with(config, input_dir, "--month", "2026-06", "--org", "org-a") == 0
+    assert "GITHUB_CONFIG_UNMATCHED" not in capsys.readouterr().out
+
+
+def test_doctor_config_warning_is_in_the_json_output(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-typo": GH_ORG})
+    _stub_gh(monkeypatch)
+
+    assert _doctor_with(config, input_dir, "--month", "2026-06", "--format", "json") == 0
+
+    issues = json.loads(capsys.readouterr().out)
+    assert [i["code"] for i in issues] == ["GITHUB_CONFIG_UNMATCHED"]
+    assert issues[0]["scope"] == {"config_org": "org-typo", "known_orgs": ["org-a"]}
+
+
+def test_doctor_does_not_blame_the_config_when_the_input_is_unreadable(
+    tmp_path, monkeypatch, capsys
+):
+    """入力を読めていないだけの状態で、設定側の綴りを疑わせない。"""
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_gh(monkeypatch)
+
+    assert _doctor_with(config, tmp_path / "nope", "--format", "json") == 1
+    assert [i["code"] for i in json.loads(capsys.readouterr().out)] == ["MISSING_SPEND"]

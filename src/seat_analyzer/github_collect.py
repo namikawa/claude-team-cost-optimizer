@@ -1,12 +1,11 @@
-"""`input/<組織名>/github-members.csv`（email → GitHub login の対応表）を読むモジュール。
+"""GitHub 由来の入力（email → login の対応表）と、`gh` の状態を調べる読み取り専用の probe。
 
-GitHub の PR を参考情報として集計するには、スペンドレポートの email と GitHub の login を
-突き合わせる表が要る（設計書 §7.3）。この表は管理画面から出力できないため、人手で保守
-される小さな CSV を正準形式として受け取る。
-
-読み取りだけを行う。ファイルを書かず、`gh` もネットワークも呼ばず、現在時刻も参照しない
-ため、同じ入力からは常に同じ結果と同じ警告の並びを返す。警告にはファイル名だけを載せ、
-絶対パスは持たせない（値を実行環境に依存させないため）。
+前半は `input/<組織名>/github-members.csv` の loader。GitHub の PR を参考情報として集計
+するには、スペンドレポートの email と GitHub の login を突き合わせる表が要る（設計書
+§7.3）。この表は管理画面から出力できないため、人手で保守される小さな CSV を正準形式と
+して受け取る。loader はファイルを書かず、`gh` もネットワークも呼ばず、現在時刻も参照
+しないため、同じ入力からは常に同じ結果と同じ警告の並びを返す。警告にはファイル名だけを
+載せ、絶対パスは持たせない（値を実行環境に依存させないため）。
 
 対応表が無くても分析は成立する（設計書 §20.2「GitHub なしでも分析できる」）。ファイルが
 無い場合はエラーにせず「未提供」として返し、「ファイルはあるがデータ行が無い」とは区別
@@ -18,12 +17,23 @@ GitHub の PR を参考情報として集計するには、スペンドレポー
 直結するもの——必須カラムの欠落、email の欠落・重複、login の重複——は ValueError で中止
 する。login の重複は大文字小文字を区別せずに見る（GitHub の login は大小を区別しないため、
 `Foo` と `foo` は同じ1人を指す）。
+
+後半は `gh` を呼ぶ probe（設計書 §15.2）。認証・付与された scope・利用上限の残量・
+Organization の参照可否だけを調べ、PR も repository も取得しない。token は Python 側へ
+取り出さない（`--show-token` を渡さず、環境変数の token も読まない）。gh の stderr は
+読み込まず、返すのは終了コードと stdout だけにする——診断文には実行環境に依存する文字列が
+混ざるため、issue の message へ写る経路そのものを作らない。probe は結果を値として返す
+だけで、警告にするかどうかと文面は消費側（`data_quality`）が決める。
 """
 
 from __future__ import annotations
 
+import enum
+import json
 import re
-from collections.abc import Iterable
+import shutil
+import subprocess
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +58,21 @@ _LOGIN_SEGMENT = r"[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*"
 _LOGIN_RE = re.compile(
     rf"(?=[A-Za-z0-9_-]{{1,39}}\Z){_LOGIN_SEGMENT}(?:_{_LOGIN_SEGMENT})?"
 )
+
+# GitHub の Organization 名として受ける字句。login と同じ並びだが、アンダースコアは
+# 使えない（Organization 名は英数字とハイフンだけ）。設定に書かれた値がこの形かどうかを
+# ロード時に確かめ、そのままリクエストのパスへ入れられる状態にしておく。
+_ORG_NAME_RE = re.compile(rf"(?=[A-Za-z0-9-]{{1,39}}\Z){_LOGIN_SEGMENT}")
+
+
+def is_github_org_name(value: object) -> bool:
+    """value が GitHub の Organization 名として読める字句か。
+
+    設定の検証から使う（`config._validate_organizations`）。読めない値をそのまま通すと、
+    GitHub 側に存在しない名前で参照して「参照できません」とだけ報告することになり、
+    設定の書き間違いだと分からない。
+    """
+    return isinstance(value, str) and _ORG_NAME_RE.fullmatch(value) is not None
 
 
 def _cell_text(cell: object) -> str | None:
@@ -368,3 +393,306 @@ def unmapped_emails(members: GithubMembers, emails: Iterable[str]) -> tuple[str,
         if email not in mapped:
             unmapped.add(email)
     return tuple(sorted(unmapped))
+
+
+def gated_orgs(cfg: dict) -> dict[str, str]:
+    """GitHub 分析を有効にした組織 → その GitHub Organization 名（設定の記述順）。
+
+    キーは入力ディレクトリ直下の組織名、値は GitHub の Organization 名で、両者は一致
+    しない前提の対応表として扱う。ここに書かれていない組織は GitHub 関連の処理と警告の
+    一切から除外される（設計書 §15.1）。値の字句は設定のロード時に検証済み。
+    """
+    organizations = cfg["organizations"]
+    return {
+        str(org): entry["github_org"]
+        for org, entry in organizations.items()
+        if isinstance(entry, dict) and isinstance(entry.get("github_org"), str)
+    }
+
+
+# ------------------------------------------------------------------ gh の実行
+
+# 実行する GitHub CLI と、1回あたりの応答待ち上限。probe は直列に呼ぶので、待ち時間は
+# そのまま doctor の所要時間になる
+GH_COMMAND = "gh"
+GH_TIMEOUT_SECONDS = 30.0
+
+
+@enum.unique
+class GhFailure(enum.StrEnum):
+    """gh を使えなかった理由の分類。gh の生出力は持たず、この語だけを外へ出す。"""
+
+    UNAUTHENTICATED = "unauthenticated"
+    NOT_FOUND = "not_found"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class GhResult:
+    """gh を1回実行した結果。
+
+    failure が None なら「プロセスは動いた」（終了コードは ok が表す）。gh は 2xx 以外の
+    応答でも終了コード 1 で終わるため、両者を分けて持つ。stderr は保持しない。
+    """
+
+    ok: bool
+    stdout: str = ""
+    failure: GhFailure | None = None
+
+
+# gh を1回呼ぶ関数の型。テストから記録済みの応答へ差し替えられるようにする
+Runner = Callable[[Sequence[str]], GhResult]
+
+
+def _decode(raw: bytes | None) -> str:
+    """gh の出力を UTF-8 として読み、改行を LF へ揃える。
+
+    改行を揃えるのは、応答ヘッダを行単位で解釈するため（Windows の gh は CRLF を出す）。
+    errors は既定の strict にする。置換して読み進めると、壊れた出力を正しい応答として
+    解釈しかねない。
+    """
+    if not raw:
+        return ""
+    return raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def run_gh(args: Sequence[str]) -> GhResult:
+    """gh を1回実行する（読み取りだけを行う参照に限って使う）。
+
+    token を Python 側へ取り出さない。`--show-token` を渡さず、環境変数の token も読まず、
+    出力から token を取り出しもしない（認証情報の管理は gh に委ねる）。
+    """
+    # which() が返した実体を起動する（Windows の CreateProcess は拡張子を補うとき .exe
+    # しか試さないため、名前だけでは起動できない配布形式がある）
+    resolved = shutil.which(GH_COMMAND)
+    if resolved is None:
+        return GhResult(ok=False, failure=GhFailure.NOT_FOUND)
+    try:
+        # stderr は DEVNULL で読み込みすらしない（診断文が Python 側へ入る経路を
+        # fd の段階で断つ。使うのは stdout と終了コードだけ）
+        proc = subprocess.run(
+            [resolved, *args], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=GH_TIMEOUT_SECONDS, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return GhResult(ok=False, failure=GhFailure.TIMEOUT)
+    except FileNotFoundError:
+        # which() の後に実体が消えた場合。導入されていない状態と同じ案内でよい
+        return GhResult(ok=False, failure=GhFailure.NOT_FOUND)
+    except OSError:
+        return GhResult(ok=False, failure=GhFailure.ERROR)
+    try:
+        stdout = _decode(proc.stdout)
+    except UnicodeDecodeError:
+        return GhResult(ok=False, failure=GhFailure.ERROR)
+    return GhResult(ok=proc.returncode == 0, stdout=stdout)
+
+
+def _parse_response(stdout: str) -> tuple[int | None, dict[str, str]]:
+    """`gh api -i` の出力を (HTTP ステータス, ヘッダ) に分ける。
+
+    ヘッダ名は小文字へ揃える（HTTP のヘッダ名は大文字小文字を区別せず、表記は gh の版に
+    依存する）。同じ名前が複数回現れたら HTTP の規則どおり "," で連結する。本文は使わない
+    ので返さない。ステータス行を読めない出力では None を返し、呼び出し側が「応答として
+    解釈できなかった」として扱う。
+    """
+    lines = stdout.split("\n")
+    if not lines[0].startswith("HTTP/"):
+        return None, {}
+    parts = lines[0].split()
+    status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        if not line.strip():
+            break   # ヘッダ部の終わり（以降は本文）
+        name, separator, value = line.partition(":")
+        if not separator:
+            continue
+        key = name.strip().lower()
+        text = value.strip()
+        headers[key] = f"{headers[key]}, {text}" if key in headers else text
+    return status, headers
+
+
+# ------------------------------------------------------------------ probe
+
+# PR の収集に必要な scope と、それを満たす scope。GitHub の scope は上位が下位を含むが、
+# 付与済みの一覧には上位だけが載るため、含意を書き下して照合する（含意を見ないと、
+# 上位 scope だけを持つ token を「権限不足」と誤検出して収集を止めてしまう）
+REQUIRED_SCOPES = ("read:org", "repo")
+_SCOPE_ALTERNATIVES = {
+    "read:org": ("read:org", "write:org", "admin:org"),
+    "repo": ("repo",),
+}
+
+# 残量を見る rate limit の区分（PR の検索が使うのはこの2つ）
+_RATE_RESOURCES = ("core", "search")
+
+
+@dataclass(frozen=True)
+class GhAuth:
+    """`gh auth status` の結果。"""
+
+    ok: bool
+    failure: GhFailure | None = None
+
+
+@dataclass(frozen=True)
+class GhRateResource:
+    """rate limit の1区分の残量。reset 時刻は持たない（実行のたびに変わるため）。"""
+
+    name: str
+    remaining: int
+    limit: int
+
+
+@dataclass(frozen=True)
+class GhOrgAccess:
+    """1つの Organization を参照できるか。
+
+    status は HTTP のステータス（応答として解釈できなければ None）、sso_required は
+    SAML SSO の承認が要る 403 かどうか。
+    """
+
+    github_org: str
+    status: int | None = None
+    sso_required: bool = False
+    failure: GhFailure | None = None
+
+    @property
+    def accessible(self) -> bool:
+        return self.status == 200
+
+
+@dataclass(frozen=True)
+class GithubProbes:
+    """doctor が使う gh の状態一式。
+
+    scopes は付与された scope（`None` は「判定できない token」）、rate は読めた区分だけ、
+    orgs は問い合わせた Organization の分だけを持つ。認証に失敗した場合は auth 以外が
+    空になる（同じ原因から派生する失敗を並べないため、後続を実行しない）。
+    """
+
+    auth: GhAuth
+    scopes: tuple[str, ...] | None = None
+    rate: tuple[GhRateResource, ...] = ()
+    orgs: tuple[GhOrgAccess, ...] = ()
+
+    def org(self, github_org: str) -> GhOrgAccess | None:
+        """github_org の参照可否（問い合わせていなければ None）。"""
+        for access in self.orgs:
+            if access.github_org == github_org:
+                return access
+        return None
+
+
+def probe_github(
+    github_orgs: Iterable[str], runner: Runner | None = None
+) -> GithubProbes:
+    """gh の認証・scope・rate 残量と、各 Organization の参照可否を調べる（設計書 §15.2）。
+
+    読み取りしか行わない（PR も repository も取得しない）。認証・scope・rate は token 単位
+    なので実行1回につき1度だけ問い合わせ、Organization ごとの問い合わせは重複を除いた
+    名前の分だけ行う。認証に失敗したら後続を実行せず、根本原因1件だけを返す。
+
+    github_orgs は設定のロード時に字句を検証済みの Organization 名（`is_github_org_name`）。
+    runner を渡すと gh の呼び出しを差し替えられる（テスト用）。
+    """
+    run = run_gh if runner is None else runner
+    auth = _probe_auth(run)
+    if not auth.ok:
+        return GithubProbes(auth=auth)
+    return GithubProbes(
+        auth=auth,
+        scopes=_probe_scopes(run),
+        rate=_probe_rate(run),
+        orgs=tuple(_probe_org(run, name) for name in dict.fromkeys(github_orgs)),
+    )
+
+
+def _probe_auth(run: Runner) -> GhAuth:
+    """認証の有無を `gh auth status` の終了コードだけで見る。
+
+    出力は解釈しない。表示は gh の版で変わるうえ、伏字とはいえ token の断片を含む。
+    """
+    result = run(("auth", "status"))
+    if result.ok:
+        return GhAuth(ok=True)
+    return GhAuth(ok=False, failure=result.failure or GhFailure.UNAUTHENTICATED)
+
+
+def _probe_scopes(run: Runner) -> tuple[str, ...] | None:
+    """token に付与された OAuth scope（判定できなければ None）。
+
+    出所は応答ヘッダ `X-OAuth-Scopes` の1つだけにする。fine-grained PAT と GitHub App の
+    token はこのヘッダを持たないため、そこでは scope の充足を判定できない。判定できない
+    ことと「scope が1つも無い」ことは別なので、前者は None を返して報告させない
+    （誤検出より不判定に倒す。実際に参照できるかは Organization の検査が確かめる）。
+    """
+    result = run(("api", "-i", "user"))
+    if result.failure is not None:
+        return None
+    status, headers = _parse_response(result.stdout)
+    if status != 200 or "x-oauth-scopes" not in headers:
+        return None
+    return tuple(sorted({
+        scope for raw in headers["x-oauth-scopes"].split(",") if (scope := raw.strip())
+    }))
+
+
+def missing_scopes(scopes: Iterable[str]) -> tuple[str, ...]:
+    """必要な scope のうち付与されていないもの（REQUIRED_SCOPES の並び順）。"""
+    granted = set(scopes)
+    return tuple(
+        required for required in REQUIRED_SCOPES
+        if granted.isdisjoint(_SCOPE_ALTERNATIVES[required])
+    )
+
+
+def _is_count(value: object) -> bool:
+    """件数として読める値か（真偽値は int の一種なので除く）。"""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _probe_rate(run: Runner) -> tuple[GhRateResource, ...]:
+    """rate limit の残量（読めない区分は落とす）。
+
+    読めなかった場合は空を返す。この問い合わせだけが失敗する状況は通信の不調なので、
+    同じ原因が Organization の参照でエラーとして出る（ここで二重に報告しない）。
+    """
+    result = run(("api", "rate_limit"))
+    if not result.ok:
+        return ()
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        return ()
+    resources = payload.get("resources") if isinstance(payload, dict) else None
+    if not isinstance(resources, dict):
+        return ()
+    found = []
+    for name in _RATE_RESOURCES:
+        entry = resources.get(name)
+        if not isinstance(entry, dict):
+            continue
+        remaining, limit = entry.get("remaining"), entry.get("limit")
+        if _is_count(remaining) and _is_count(limit):
+            found.append(GhRateResource(name=name, remaining=remaining, limit=limit))
+    return tuple(found)
+
+
+def _probe_org(run: Runner, github_org: str) -> GhOrgAccess:
+    """Organization を参照できるかを HTTP のステータスで見る。"""
+    result = run(("api", "-i", f"orgs/{github_org}"))
+    if result.failure is not None:
+        return GhOrgAccess(github_org=github_org, failure=result.failure)
+    status, headers = _parse_response(result.stdout)
+    if status is None:
+        return GhOrgAccess(github_org=github_org, failure=GhFailure.ERROR)
+    # SSO の未承認は 403 に `X-GitHub-SSO: required; url=...` が付く。同じヘッダは
+    # 一部の成功応答にも `partial-results` として付くため、値の先頭で見分ける
+    sso = headers.get("x-github-sso", "").strip().lower().startswith("required")
+    return GhOrgAccess(
+        github_org=github_org, status=status, sso_required=status == 403 and sso
+    )

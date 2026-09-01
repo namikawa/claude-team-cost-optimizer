@@ -14,6 +14,7 @@ from pathlib import Path, PurePath
 import yaml
 
 from .admin_inputs import ORGANIZATION_OPTIONAL_COLUMNS, USERS_OPTIONAL_COLUMNS
+from .github_collect import is_github_org_name
 from .ingest import MEMBERS_OPTIONAL_COLUMNS, REQUIRED_COLUMNS, SPEND_OPTIONAL_COLUMNS
 from .product_usage import normalize_product_name
 
@@ -241,6 +242,14 @@ def _kind(value) -> str:
     return "値"
 
 
+# 既定に列挙できないキー（利用者ごとの組織名）を書けるセクションと、その各エントリの
+# 雛形。ここに載るのは1階層だけで、エントリの中身は雛形との突き合わせで従来どおり厳格に
+# 検査する（書けるキー・値の種別・空値の扱いが既定のセクションと同じになる）。
+_DYNAMIC_ENTRIES: dict[tuple[str, ...], dict] = {
+    ("organizations",): {"github_org": ""},
+}
+
+
 def _merge_override(base: dict, override: dict, *, label: str, path: tuple[str, ...] = ()) -> dict:
     """既定設定 base に上書き override を重ねた辞書を返す（base は変更しない）。
 
@@ -249,15 +258,20 @@ def _merge_override(base: dict, override: dict, *, label: str, path: tuple[str, 
 
     この設定はどの階層でもキーが閉じた集合なので、既定に無いキーはエラーにする。
     綴り違い（columns.spend.emial 等）を黙って無視すると、上書きしたつもりの値が
-    効かないまま既定で分析が完走してしまう。
+    効かないまま既定で分析が完走してしまう。例外は `_DYNAMIC_ENTRIES` に挙げた
+    セクションの直下だけで、そこは利用者が名前を決めるキー（組織名）を受ける。
     """
     merged = dict(base)
     for key, value in override.items():
         where = ".".join((*path, str(key)))
         if key not in base:
-            raise ValueError(
-                f"{label} の '{where}' は既定に存在しないキーです（綴りを確認してください）")
-        current = base[key]
+            template = _DYNAMIC_ENTRIES.get(path)
+            if template is None:
+                raise ValueError(
+                    f"{label} の '{where}' は既定に存在しないキーです（綴りを確認してください）")
+            current = template
+        else:
+            current = base[key]
         if value is None:
             raise ValueError(
                 f"{label} の '{where}' の値が空です"
@@ -418,6 +432,34 @@ def _validate_usage_credits(cfg: dict, errors: list[str]) -> None:
     for key in ("cap_tolerance_usd", "grant_suggested_cap_usd"):
         if not _is_finite(usage_credits.get(key)) or usage_credits[key] < 0:
             errors.append(f"usage_credits.{key} は 0 以上の有限な数値が必要です")
+
+
+def _validate_organizations(cfg: dict, errors: list[str]) -> None:
+    """GitHub 分析を有効にする組織の対応表を検査する。
+
+    キーの綴り違いは「一致する組織ディレクトリが無い」形になるため、ここでは止めずに
+    doctor が GITHUB_CONFIG_UNMATCHED として報告する（入力の配置はロード時に分からない）。
+    値の側は GitHub の Organization 名として読める字句かをここで確かめる。読めない値を
+    通すと、そのままリクエストのパスへ入って「参照できません」とだけ報告することになり、
+    設定の書き間違いだと分からなくなる。
+    """
+    organizations = cfg["organizations"]
+    if not isinstance(organizations, dict):
+        errors.append("organizations セクションが辞書ではありません")
+        return
+    for name, entry in organizations.items():
+        if not _is_text(name):
+            errors.append(f"organizations のキーには組織名が必要です: {name!r}")
+            continue
+        if not isinstance(entry, dict):
+            errors.append(f"organizations.{name} は辞書が必要です")
+            continue
+        if not is_github_org_name(entry.get("github_org")):
+            errors.append(
+                f"organizations.{name}.github_org は GitHub の Organization 名が"
+                "必要です（英数字とハイフンの1〜39文字。先頭と末尾は英数字で、"
+                "ハイフンは連続しません）"
+            )
 
 
 def _validate_cost_basis(cfg: dict, errors: list[str]) -> None:
@@ -624,6 +666,7 @@ def _validate(cfg: dict) -> None:
     _validate_decision(cfg, errors)
     _validate_decision_v2(cfg, errors)
     _validate_usage_credits(cfg, errors)
+    _validate_organizations(cfg, errors)
     _validate_cost_basis(cfg, errors)
     _validate_product_policy(cfg, errors)
     _validate_discussion(cfg, errors)
