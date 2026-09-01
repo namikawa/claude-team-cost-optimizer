@@ -63,6 +63,21 @@ def test_seat_change_warning(cfg, make_snapshots, write_member_snapshots):
     assert any("月中にシート変更を検出" in w and "最新スナップショット時点" in w for w in warns)
 
 
+def test_seat_change_warning_counts_users_and_events(cfg, make_snapshots, write_member_snapshots):
+    # 同一ユーザが月内に2回シート変更する構成。イベントは区間ごとなので人数と件数が食い違う
+    input_dir = _spend(make_snapshots)
+    write_member_snapshots(input_dir, {
+        "2026-07-05": ["a@x.jp,standard"],
+        "2026-07-16": ["a@x.jp,premium"],
+        "2026-07-25": ["a@x.jp,standard"],
+    })
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
+    assert len(result.member_changes["seat_changes"]) == 2      # 表のイベントは2件のまま
+    warn = next(w for w in result.warnings if "月中にシート変更を検出" in w)
+    assert "ユーザ 1 名（変更 2 件）" in warn
+    assert warn.count("a@x.jp") == 1                            # 例示リストは人単位
+
+
 def test_month_kind_not_participating(cfg, make_snapshots, write_member_snapshots):
     # month-kind の members_2026-07.csv + date 1件 → date が1つのみで非発動
     input_dir = make_snapshots(
