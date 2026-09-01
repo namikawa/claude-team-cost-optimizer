@@ -1,27 +1,33 @@
-"""GitHub 対応表（input/<組織名>/github-members.csv）のロードと、gh を呼ぶ probe のテスト。
+"""GitHub 対応表（input/<組織名>/github-members.csv）のロードと、gh を呼ぶ probe・発見のテスト。
 
 対応表では、取り違えに直結するものを止めること（必須カラムの欠落・email の欠落と重複・
 login の重複）と、読めない値で分析を止めないこと（空欄・字句として読めない login を未対応へ
 倒して警告する）の両方を固定する。読み取りだけのモジュールなので、同じ入力からは常に同じ
 結果と同じ並びになることまで見る（entries は行順・警告も行順・未対応の一覧は昇順）。
 
-probe では、gh を実行できない場合の分類と、応答の解釈（HTTP ステータス・ヘッダ）を見る。
-実際の gh もネットワークも呼ばない。issue への変換は tests/test_data_quality.py が見る。
+probe では、gh を実行できない場合の分類と、応答の解釈（HTTP ステータス・ヘッダ・本文）を
+見る。repository の発見では、除外（archived / fork / template）と pagination のほか、
+完全な一覧を得られなかった場合に一覧を返さないことを固定する。実際の gh もネットワークも
+呼ばない。issue への変換は tests/test_data_quality.py が見る。
 """
 
 import copy
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from seat_analyzer.github_collect import (
+    _REPOS_PER_PAGE,
     GITHUB_MEMBERS_FILENAME,
     GhFailure,
     GhResult,
     GithubMemberLink,
     GithubMembers,
+    RepoDiscovery,
     _parse_response,
+    discover_repositories,
     gated_orgs,
     is_github_org_name,
     load_github_members,
@@ -553,7 +559,7 @@ def test_run_gh_rejects_output_that_is_not_utf8(monkeypatch):
 
 
 def test_parse_response_lowercases_header_names_and_stops_at_the_body():
-    status, headers = _parse_response(
+    status, headers, body = _parse_response(
         "HTTP/2.0 403 Forbidden\n"
         "X-GitHub-SSO: required; url=https://example.invalid\n"
         "\n"
@@ -562,18 +568,26 @@ def test_parse_response_lowercases_header_names_and_stops_at_the_body():
 
     assert status == 403
     assert headers == {"x-github-sso": "required; url=https://example.invalid"}
+    assert body == "{\"Message\": \"本文はヘッダとして読まない\"}\n"
 
 
 def test_parse_response_joins_repeated_headers():
-    _, headers = _parse_response(
+    _, headers, _ = _parse_response(
         "HTTP/1.1 200 OK\nLink: <a>\nLink: <b>\n\n{}\n")
 
     assert headers["link"] == "<a>, <b>"
 
 
+def test_parse_response_keeps_blank_lines_inside_the_body():
+    """本文を分けるのは最初の空行だけ（以降の空行は本文の一部）。"""
+    _, _, body = _parse_response("HTTP/2.0 200 OK\n\n[\n\n  {}\n]\n")
+
+    assert body == "[\n\n  {}\n]\n"
+
+
 @pytest.mark.parametrize("stdout", ["", "なにかの出力\n", "HTTP/2.0 なにか\n\n"])
 def test_parse_response_returns_no_status_for_unreadable_output(stdout):
-    assert _parse_response(stdout)[0] is None
+    assert _parse_response(stdout) == (None, {}, "")
 
 
 # ------------------------------------------------------------ scope の充足
@@ -590,3 +604,311 @@ def test_parse_response_returns_no_status_for_unreadable_output(stdout):
 ])
 def test_missing_scopes(granted, missing):
     assert missing_scopes(granted) == missing
+
+
+# ------------------------------------------------------ repository の発見
+#
+# gh は一度も呼ばない。記録済みの応答を返す runner を差し込み、リクエストのパスと
+# 解釈の両方を確かめる。
+
+GH_ORG = "example-org"
+
+
+def _repos_path(page: int) -> str:
+    """発見が使うリクエストのパス（page だけが変わる）。"""
+    return f"orgs/{GH_ORG}/repos?per_page={_REPOS_PER_PAGE}&sort=full_name&page={page}"
+
+
+def _repo(name: str, archived: bool = False, fork: bool = False,
+          is_template: bool = False) -> dict:
+    """repository 一覧の1要素（発見が読む項目だけを持つ）。"""
+    return {
+        "name": name, "archived": archived, "fork": fork, "is_template": is_template,
+    }
+
+
+def _full_page(prefix: str) -> list[dict]:
+    """ちょうど1ページ分の件数（次のページを読む条件）。"""
+    return [_repo(f"{prefix}-{index:03d}") for index in range(_REPOS_PER_PAGE)]
+
+
+def _response(body: object, status: int = 200) -> GhResult:
+    """`gh api -i` の応答（ステータス行 + ヘッダ + 空行 + 本文）。
+
+    body に文字列を渡すとその字句をそのまま本文にする（壊れた応答を表すため）。
+    """
+    text = body if isinstance(body, str) else json.dumps(body)
+    return GhResult(
+        ok=200 <= status < 300, stdout=f"HTTP/2.0 {status} -\n\n{text}\n"
+    )
+
+
+class _FakeGh:
+    """記録済みの応答を返す runner。呼び出しの並びを残す。
+
+    キーはリクエストのパス全体なので、ページごとに別の応答を表せる。並びに無いパスを
+    引かれたら KeyError で落ちる（想定外の問い合わせをテストが見逃さない）。
+    """
+
+    def __init__(self, responses: dict[str, GhResult]):
+        self._responses = responses
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, args):
+        args = tuple(args)
+        self.calls.append(args)
+        return self._responses[args[-1]]
+
+    @property
+    def paths(self) -> list[str]:
+        return [call[-1] for call in self.calls]
+
+
+class _AlwaysFull:
+    """どのページでも満杯を返す runner（終わりの来ない応答）。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, args):
+        self.calls += 1
+        return _response(_full_page(f"page{self.calls}"))
+
+
+def test_discovery_lists_the_repositories_of_one_page():
+    """名前は API の表記のまま、並びは小文字比較の昇順。"""
+    gh = _FakeGh({_repos_path(1): _response([
+        _repo("Beta"), _repo("alpha"), _repo("gamma.tools"),
+    ])})
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert found == RepoDiscovery(
+        github_org=GH_ORG, repos=("alpha", "Beta", "gamma.tools"), status=200
+    )
+    assert found.complete is True
+    assert gh.calls == [("api", "-i", _repos_path(1))]
+
+
+@pytest.mark.parametrize("flag", ["archived", "fork", "is_template"])
+def test_discovery_excludes_archived_forks_and_templates(flag):
+    gh = _FakeGh({_repos_path(1): _response([
+        _repo("alpha"), _repo("beta", **{flag: True}),
+    ])})
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert found.repos == ("alpha",)
+    assert found.excluded == 1
+    assert found.complete is True
+
+
+def test_discovery_counts_every_excluded_repository():
+    gh = _FakeGh({_repos_path(1): _response([
+        _repo("alpha"),
+        _repo("beta", archived=True),
+        _repo("gamma", fork=True),
+        _repo("delta", is_template=True),
+    ])})
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert found.repos == ("alpha",)
+    assert found.excluded == 3
+
+
+def test_discovery_needs_no_allowlist_to_find_every_repository():
+    """参照できる範囲は token の権限が決める（対象を手で書き並べる引数を持たない）。"""
+    gh = _FakeGh({_repos_path(1): _response(_full_page("alpha")[:3])})
+
+    assert discover_repositories(GH_ORG, runner=gh).repos == (
+        "alpha-000", "alpha-001", "alpha-002",
+    )
+
+
+def test_discovery_reads_the_next_page_while_a_page_is_full():
+    gh = _FakeGh({
+        _repos_path(1): _response(_full_page("alpha")),
+        _repos_path(2): _response([_repo("beta")]),
+    })
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert gh.paths == [_repos_path(1), _repos_path(2)]
+    assert len(found.repos) == _REPOS_PER_PAGE + 1
+    assert found.repos[0] == "alpha-000"
+    assert found.repos[-1] == "beta"
+    assert found.complete is True
+
+
+def test_discovery_stops_at_an_empty_page_after_a_full_one():
+    gh = _FakeGh({
+        _repos_path(1): _response(_full_page("alpha")),
+        _repos_path(2): _response([]),
+    })
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert gh.paths == [_repos_path(1), _repos_path(2)]
+    assert len(found.repos) == _REPOS_PER_PAGE
+    assert found.complete is True
+
+
+def test_discovery_keeps_the_first_of_a_name_that_appears_twice():
+    """列挙中の頁ズレで同じ repository が2ページに現れても1件に畳む（大小の違いも同じ）。"""
+    first = _full_page("alpha")
+    gh = _FakeGh({
+        _repos_path(1): _response(first),
+        _repos_path(2): _response([
+            _repo(first[0]["name"].upper()),   # 1ページ目と同じ repository
+            _repo("beta", archived=True),
+            _repo("BETA"),                     # 除外した名前も再出現の判定に入れる
+            _repo("gamma"),
+        ]),
+    })
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert len(found.repos) == _REPOS_PER_PAGE + 1
+    assert found.repos[-1] == "gamma"
+    assert found.excluded == 1
+
+
+def test_discovery_of_an_empty_organization_is_complete():
+    gh = _FakeGh({_repos_path(1): _response([])})
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert found == RepoDiscovery(github_org=GH_ORG, status=200)
+    assert found.complete is True
+
+
+@pytest.mark.parametrize("status", [403, 404, 500])
+def test_discovery_reports_the_status_without_repositories(status):
+    """権限か綴りかの区別は消費側が status で見る（一覧は返さない）。"""
+    gh = _FakeGh({_repos_path(1): _response([_repo("alpha")], status=status)})
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert found == RepoDiscovery(github_org=GH_ORG, status=status)
+    assert found.complete is False
+
+
+@pytest.mark.parametrize("failure", [
+    GhFailure.NOT_FOUND, GhFailure.TIMEOUT, GhFailure.ERROR,
+])
+def test_discovery_reports_a_runner_failure(failure):
+    gh = _FakeGh({_repos_path(1): GhResult(ok=False, failure=failure)})
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert found == RepoDiscovery(github_org=GH_ORG, failure=failure)
+    assert found.complete is False
+
+
+@pytest.mark.parametrize(("second", "expected"), [
+    (GhResult(ok=False, failure=GhFailure.TIMEOUT),
+     RepoDiscovery(github_org=GH_ORG, failure=GhFailure.TIMEOUT)),
+    (_response([_repo("beta")], status=403),
+     RepoDiscovery(github_org=GH_ORG, status=403)),
+])
+def test_discovery_drops_the_first_page_when_a_later_page_fails(second, expected):
+    """部分的な一覧は返さない（完全な一覧として集計されると参考指標が黙って小さく出る）。"""
+    gh = _FakeGh({
+        _repos_path(1): _response(_full_page("alpha")),
+        _repos_path(2): second,
+    })
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert found == expected
+    assert found.repos == ()
+    assert found.excluded == 0
+
+
+@pytest.mark.parametrize("body", [
+    "",                                       # 本文が無い
+    "[{\"name\": \"alpha\"",                  # JSON として読めない
+    {"repositories": []},                     # list でない
+    ["alpha"],                                # 要素が dict でない
+    [{"archived": False, "fork": False, "is_template": False}],   # name が無い
+    [{"name": 1, "archived": False, "fork": False, "is_template": False}],
+    [_repo("")],                              # 空の名前
+    [_repo(".")],                             # パスとして意味を持つ名前
+    [_repo("..")],
+    [_repo("owner/alpha")],                   # 名前ではなく full_name
+    [_repo("a" * 101)],                       # 100 文字を超える
+    [_repo("サンプル")],                        # ASCII 以外
+    [{"name": "alpha", "fork": False, "is_template": False}],       # archived が無い
+    [{"name": "alpha", "archived": False, "is_template": False}],   # fork が無い
+    [{"name": "alpha", "archived": False, "fork": False}],          # is_template が無い
+    [{"name": "alpha", "archived": "false", "fork": False, "is_template": False}],
+    [{"name": "alpha", "archived": 0, "fork": False, "is_template": False}],
+])
+def test_discovery_rejects_a_body_it_cannot_read(body):
+    """除外の判断材料が欠けた一覧はそのまま使わない（読めない要素だけを飛ばさない）。"""
+    gh = _FakeGh({_repos_path(1): _response(body)})
+
+    assert discover_repositories(GH_ORG, runner=gh) == RepoDiscovery(
+        github_org=GH_ORG, failure=GhFailure.ERROR
+    )
+
+
+@pytest.mark.parametrize("stdout", ["", "なにかの出力\n", "HTTP/2.0 なにか\n\n[]\n"])
+def test_discovery_rejects_output_that_is_not_a_response(stdout):
+    gh = _FakeGh({_repos_path(1): GhResult(ok=True, stdout=stdout)})
+
+    assert discover_repositories(GH_ORG, runner=gh) == RepoDiscovery(
+        github_org=GH_ORG, failure=GhFailure.ERROR
+    )
+
+
+def test_discovery_stops_with_an_error_at_the_page_limit(monkeypatch):
+    """上限まで満杯が続いたら、切り詰めた一覧ではなくエラーを返す。"""
+    monkeypatch.setattr("seat_analyzer.github_collect._MAX_REPO_PAGES", 2)
+    gh = _AlwaysFull()
+    found = discover_repositories(GH_ORG, runner=gh)
+
+    assert found == RepoDiscovery(github_org=GH_ORG, failure=GhFailure.ERROR)
+    assert gh.calls == 2
+
+
+def test_discovery_twice_gives_the_same_result():
+    """同じ応答からは常に同じ結果（並びも set の反復順に依らない）。"""
+    gh = _FakeGh({
+        _repos_path(1): _response(_full_page("alpha")),
+        _repos_path(2): _response([_repo("Beta"), _repo("gamma", fork=True)]),
+    })
+
+    assert discover_repositories(GH_ORG, runner=gh) == discover_repositories(
+        GH_ORG, runner=gh
+    )
+
+
+@pytest.mark.parametrize(("kwargs", "message"), [
+    ({"github_org": " "}, "github_org には Organization 名が必要です"),
+    ({"github_org": GH_ORG, "repos": ("alpha", "owner/beta"), "status": 200},
+     "repository 名として読めない値です"),
+    ({"github_org": GH_ORG, "repos": ("Alpha", "alpha"), "status": 200},
+     "repos の repository 名が重複しています"),
+    ({"github_org": GH_ORG, "repos": ("beta", "alpha"), "status": 200},
+     "repos は小文字比較の昇順で並べてください"),
+    ({"github_org": GH_ORG, "excluded": -1, "status": 200},
+     "excluded には0以上の件数が必要です"),
+    ({"github_org": GH_ORG, "status": "200"},
+     "status には HTTP ステータスが必要です"),
+    ({"github_org": GH_ORG, "repos": ("alpha",), "status": 404},
+     "完全な一覧でない結果に repository を持たせられません"),
+    ({"github_org": GH_ORG, "excluded": 1, "status": 200,
+      "failure": GhFailure.ERROR},
+     "完全な一覧でない結果に repository を持たせられません"),
+])
+def test_repo_discovery_validates_its_values(kwargs, message):
+    """不変条件は構築時にも確かめる（発見を通さずに組み立てた結果も同じ形にする）。"""
+    with pytest.raises(ValueError, match=message):
+        RepoDiscovery(**kwargs)
+
+
+def test_repo_discovery_rejects_wrong_types():
+    with pytest.raises(TypeError, match="repos には tuple が必要です"):
+        RepoDiscovery(github_org=GH_ORG, repos=["alpha"], status=200)
+    with pytest.raises(TypeError, match="failure には GhFailure が必要です"):
+        RepoDiscovery(github_org=GH_ORG, failure="error")
+
+
+def test_repo_discovery_accepts_a_complete_listing():
+    found = RepoDiscovery(
+        github_org=GH_ORG, repos=("alpha", "beta.js", "gamma_1"), excluded=2, status=200
+    )
+
+    assert found.complete is True

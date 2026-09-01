@@ -1,8 +1,8 @@
 # 実装ステータス
 
-- 最終更新: 2026-09-01
+- 最終更新: 2026-09-02
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 7（GitHub）。次は Step 34（Repository自動発見）
+- 次のタスク: Track 7（GitHub）。次は Step 35（PR検索とraw cache）
   （Step 19（decision-evidence.csv）はF4のallowanceキャリブレーションの後に行う。較正の
   材料が2026-08の正式分析＝9月初旬に揃うため、その待ち時間にTrack 7のStep 32〜38を先行
   する段取り。2026-08-27合意。Step 9 はV2のrecent seat change判定材料として先行実装済みで、
@@ -91,9 +91,9 @@
 | 4 | V2判定 | 6 | 0 | 0 | 1 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
-| 7 | GitHub | 2 | 0 | 0 | 6 | 0 |
+| 7 | GitHub | 3 | 0 | 0 | 5 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **24** | **0** | **0** | **25** | **0** |
+| **合計** |  | **25** | **0** | **0** | **24** | **0** |
 
 ## 5. Step一覧
 
@@ -180,7 +180,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 |---|---|---|---|
 | 32 | GitHub mapping loader | `完了` | 2026-08-29 |
 | 33 | GitHub doctor | `完了` | 2026-09-01 |
-| 34 | Repository自動発見 | `未着手` |  |
+| 34 | Repository自動発見 | `完了` | 2026-09-02 |
 | 35 | PR検索とraw cache | `未着手` |  |
 | 36 | マージPR数 | `未着手` |  |
 | 37 | PR lead time | `未着手` |  |
@@ -196,6 +196,40 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-02 — Step 34: Repository自動発見
+
+- `discover_repositories(github_org, runner=None)`を`github_collect.py`へ追加。
+  `gh api -i "orgs/<org>/repos?per_page=100&sort=full_name&page=N"`を直列に読み、
+  archived / fork / template を除外した repository 名の一覧を`RepoDiscovery`
+  （frozen dataclass）で返す。取るのはメタデータ（名前と除外の印）だけでPRもコードも
+  取得しない。probe と同じ流儀（runner注入・stderr不保持・token非接触・例外ではなく
+  値で返す）。現時点でどこからも呼ばれていない（結線はStep 35以降）
+- 受け入れ条件「手動allowlist不要」: 参照できる範囲はtokenの権限がそのまま決め、対象を
+  手で書き並べる引数を持たない。設計書§15.3のoptional denylistは今回見送り
+  （受け入れ条件に含まれず、使う組織が現状なく、必要になったらconfigキーの追加だけで
+  後から足せる）
+- 受け入れ条件「pagination」: ページの要素数がper_page（100）未満で終端。
+  `sort=full_name`で並びを固定する（既定のcreated降順では列挙中の新規作成で以降の
+  ページが1件ずつずれる）。頁ズレによる同名の再出現は小文字比較で最初の1件に畳む
+  （除外済みの名前も判定対象）。安全弁`_MAX_REPO_PAGES`=1000（10万件相当）を超えたら
+  切り詰めた一覧を返さずエラーにする
+- fail-closed: 途中のページの失敗・非200・本文の解釈不能（listでない・除外の印の
+  欠落や非bool・nameがrepository名として読めない）はすべてrepos空 + status/failureで
+  返す。部分的な一覧を完全な一覧として集計されると参考指標が黙って小さく出るため。
+  「completeでなければreposとexcludedは空」は`RepoDiscovery.__post_init__`が不変条件
+  として機械検査する（発見を通さずに組み立てた結果も同じ形になる）
+- repository名の字句検証`_REPO_NAME_RE`を新設（英数字・ハイフン・アンダースコア・
+  ピリオドの1〜100文字。`.`と`..`は不可）。名前は後続Stepでリクエストのパスへ入る
+  ため、パスとして意味を持つ字句を値の段階で締め出す
+- `_parse_response`を（ステータス, ヘッダ, 本文）の3要素へ拡張（本文は最初の空行より
+  後をそのまま返し、JSONとしての解釈は呼び出し側の責務）。probe側は本文を無視する
+  形の更新のみで挙動は不変
+- 受け入れ条件「fixture gh output」: テストは記録済み応答を返すrunnerだけで実ghを
+  一度も呼ばない。ページごとに別応答を表すためリクエストパス全体をキーに引き、
+  想定外の問い合わせはKeyErrorで落とす
+- 外部レビュー（codex 1巡目・受け入れ基準9点に範囲固定）: 指摘なし
+- 1598 passed（新規51ケース）・ruff緑・golden不変（analyzeの経路に触れていない）
 
 ### 2026-09-01 — Step 33: GitHub doctor
 
