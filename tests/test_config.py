@@ -932,3 +932,77 @@ def test_version_flag_prints_version(capsys):
         main(["--version"])
     assert e.value.code == 0
     assert "seat-analyzer" in capsys.readouterr().out
+
+
+# ------------------------------------------- GitHub 分析の有効化（organizations）
+
+
+def test_organizations_accepts_names_that_are_not_in_the_default(tmp_path):
+    """organizations の直下だけは利用者が決めるキー（組織名）を書ける。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    github_org: example-org\n"
+        "  another-example:\n"
+        "    github_org: Another-Example-1\n"
+    ))
+
+    assert load_config(path)["organizations"] == {
+        "example": {"github_org": "example-org"},
+        "another-example": {"github_org": "Another-Example-1"},
+    }
+
+
+def test_organizations_is_empty_by_default():
+    """既定では1組織も有効になっていない（書かなければ GitHub の処理は一切起きない）。"""
+    assert load_config(PACKAGE_CONFIG_PATH)["organizations"] == {}
+
+
+@pytest.mark.parametrize("text,where", [
+    ("organizations:\n  example:\n    github_orgs: example-org\n",
+     "organizations.example.github_orgs"),
+    ("organizations:\n  example:\n    github_org: example-org\n    note: x\n",
+     "organizations.example.note"),
+])
+def test_unknown_key_inside_an_organization_is_rejected(tmp_path, text, where):
+    """動的なのはキーの名前だけで、エントリの中身は従来どおり閉じた集合。"""
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=f"'{where}' は既定に存在しないキー"):
+        load_config(path)
+
+
+def test_empty_github_org_value_is_rejected(tmp_path):
+    path = _override(tmp_path, "organizations:\n  example:\n    github_org:\n")
+    with pytest.raises(ValueError, match="'organizations.example.github_org' の値が空です"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("text,where,want", [
+    ("organizations:\n  example: example-org\n", "organizations.example", "辞書"),
+    ("organizations:\n  example:\n    github_org: [a]\n",
+     "organizations.example.github_org", "値"),
+])
+def test_organization_entry_kind_mismatch_is_rejected(tmp_path, text, where, want):
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=f"'{where}' は{want}で指定してください"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", [
+    "example_org",      # Organization 名にアンダースコアは使えない
+    "-example",
+    "example--org",
+    '"example/org"',    # 経路を差し替えられる字句
+    '" "',
+])
+def test_unreadable_github_org_name_is_rejected(tmp_path, value):
+    """GitHub の Organization 名として読めない値をロード時に止める。
+
+    通すとそのままリクエストのパスへ入り、「参照できません」とだけ報告されて設定の
+    書き間違いだと分からなくなる。
+    """
+    path = _override(tmp_path, f"organizations:\n  example:\n    github_org: {value}\n")
+    with pytest.raises(
+        ValueError, match="organizations.example.github_org は GitHub の Organization 名"
+    ):
+        load_config(path)

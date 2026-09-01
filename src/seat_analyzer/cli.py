@@ -9,7 +9,15 @@ import re
 import sys
 from pathlib import Path
 
-from . import analyze, data_quality, discussion, ingest, public_text, report
+from . import (
+    analyze,
+    data_quality,
+    discussion,
+    github_collect,
+    ingest,
+    public_text,
+    report,
+)
 from .config import WORKSPACE_CONFIG_NAME, load_config, validate_config_path
 from .discussion import DiscussionError
 from .domain import IssueCode, QualityIssue, Severity
@@ -534,11 +542,17 @@ def _run_doctor(args: argparse.Namespace) -> int:
     as_json = args.format == "json"
     all_issues: list[QualityIssue] = []
     month = args.month
+    # 発見できた組織すべて（--org の選択より前）。設定の綴りの検査に使う。
+    # 検査対象を解決できなかった場合は None にして、その状態で「一致する組織が無い」と
+    # 報告しないようにする（入力を読めていないだけで全件が不一致に見えるため）
+    known_orgs: list[str] | None = None
     try:
+        known_orgs = _discover_inspect_orgs(input_dir)
         targets = _resolve_input_targets(input_dir, args.org)
     except OSError as exc:
         # 入力ディレクトリ自体が読めない・存在しない。使い方の誤り（組織名の誤り・
         # レイアウト混在）は ValueError のまま main で扱う
+        known_orgs = None
         targets = []
         all_issues.extend(data_quality.input_unavailable_issues(input_dir, exc))
 
@@ -549,13 +563,35 @@ def _run_doctor(args: argparse.Namespace) -> int:
         if month is not None:
             _notice(f"対象月未指定のため最新月を使用: {month}", as_json)
 
+    # GitHub の検査は config で有効にした組織だけ。認証・権限・利用上限は token 単位
+    # なので実行1回につき1度だけ調べ、対象の全組織で使い回す（gh を組織数ぶん叩かない）。
+    # 有効な組織が1つも無ければ gh を一度も呼ばない
+    enabled = github_collect.gated_orgs(cfg)
+    gated = {org: enabled[org] for org, _ in targets if org in enabled}
+    probes = github_collect.probe_github(gated.values()) if gated else None
+
     for org, org_input in targets:
         issues = data_quality.inspect_input(org_input, month, cfg, org=org)
+        if org in gated:
+            # 組織ごとのレポートが自己完結するよう、GitHub の issue もその組織へ合流させる
+            github = data_quality.inspect_github(
+                org_input, month, cfg, org, gated[org], probes)
+            issues = data_quality.sort_issues([*issues, *github])
         all_issues.extend(issues)
         if not as_json:
             _print_issues(org, month, issues)
     if not targets and not as_json:
         _print_issues(None, month, all_issues)
+
+    # どの組織にも属さない設定の問題は、組織別のセクションの後に独立して出す
+    # （JSON は従来どおり全 issue を正準順序で連結する）
+    config_issues = (
+        [] if known_orgs is None else data_quality.github_config_issues(cfg, known_orgs)
+    )
+    all_issues.extend(config_issues)
+    if config_issues and not as_json:
+        print("\n=== 設定検査 ===")
+        _print_issue_lines(config_issues)
 
     n_error = sum(1 for i in all_issues if i.severity is Severity.ERROR)
     if as_json:
@@ -574,6 +610,10 @@ def _print_issues(org: str | None, month: str | None, issues: list[QualityIssue]
     if not issues:
         print("  問題は見つかりませんでした")
         return
+    _print_issue_lines(issues)
+
+
+def _print_issue_lines(issues: list[QualityIssue]) -> None:
     for issue in issues:
         print(f"  [{issue.severity.value}] {issue.code.value}: {issue.message}")
 

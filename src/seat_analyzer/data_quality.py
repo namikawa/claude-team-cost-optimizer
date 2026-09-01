@@ -1,8 +1,12 @@
-"""既存入力（Spend / Members）の検査と、構造化品質issueの整列・JSON直列化。
+"""既存入力（Spend / Members / GitHub）の検査と、構造化品質issueの整列・JSON直列化。
 
 `inspect_input` は doctor の検査本体で、1組織・1対象月の入力を読み、issueを返す
 だけの純粋な関数（出力整形と終了コードは cli が担当）。同じ入力からは常にバイト
 一致の出力を得られるよう、messageには絶対パス・時刻・乱数を入れない。
+
+`inspect_github` と `github_config_issues` は GitHub 分析を有効にした組織のための検査で、
+gh の実行結果（`github_collect.probe_github` が返す値）と対応表を issue へ写す。gh を
+呼ぶのは probe 側だけなので、この2つも同じ入力から常に同じ出力を返す。
 
 整列と直列化は別の関心事として分けてある。`issues_to_json` は渡された順をそのまま
 保持するため、「同一のissue多重集合なら常に同一の文字列」は `sort_issues` を通した
@@ -24,8 +28,16 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import ingest, pricing
+from . import github_collect, ingest, pricing
 from .domain import IssueCode, QualityIssue, ScopeValue, Severity
+from .github_collect import (
+    GhAuth,
+    GhFailure,
+    GhOrgAccess,
+    GhRateResource,
+    GithubMembers,
+    GithubProbes,
+)
 
 # Severityの宣言順（ERROR→WARNING）をそのまま整列順に使う
 _SEVERITY_ORDER = {severity: index for index, severity in enumerate(Severity)}
@@ -120,7 +132,8 @@ def _issue(
 ) -> QualityIssue:
     """org・monthを先頭に置いたscopeでissueを作る。Noneのキーは省く。
 
-    org=Noneは「対象組織を解決する前の失敗」に限る（input_unavailable_issues）。
+    org=Noneは、どの組織にも属さないissueに限る（対象組織を解決する前の失敗＝
+    input_unavailable_issues と、設定だけの問題＝github_config_issues）。
     組織単位の検査は常にorgを持つ。
     """
     base: dict[str, ScopeValue] = {}
@@ -543,3 +556,233 @@ def inspect_input(
         issues.extend(_join_issues(spend_df, members_df, cfg, org, month))
 
     return sort_issues(issues)
+
+
+# --- GitHub（config で有効にした組織のみ） ---
+#
+# GitHub 分析は組織ごとのopt-in（設計書§15.1）。ここに来るのは
+# `organizations.<組織名>.github_org` を設定した組織だけで、未設定の組織は呼び出し側が
+# 除外する。したがって「対応表が無い」ことをここでは正常と扱わない。
+#
+# GitHubの検査結果は対象月に依存しないため、scopeにmonthを持たせない。gh の生出力も
+# 持ち込まず、分類語と数値だけでmessageを組み立てる（同じprobe結果からは常に同じmessage）。
+
+# ghを使えなかった理由の表示語
+_GH_FAILURE_TEXT = {
+    GhFailure.UNAUTHENTICATED: "未認証",
+    GhFailure.NOT_FOUND: "gh コマンドが見つかりません",
+    GhFailure.TIMEOUT: "制限時間内に応答がありません",
+    GhFailure.ERROR: "実行に失敗しました",
+}
+
+# 認証を確認できなかったときの対処。原因ごとに次の一手が違う
+_GH_AUTH_REMEDY = {
+    GhFailure.UNAUTHENTICATED: "gh auth login で認証してください",
+    GhFailure.NOT_FOUND: "GitHub CLI を導入して PATH に置いてください",
+    GhFailure.TIMEOUT: "ネットワークの状態を確認して再実行してください",
+    GhFailure.ERROR: "GitHub CLI の導入状態を確認してください",
+}
+
+
+def _github_auth_issues(auth: GhAuth, org: str, github_org: str) -> list[QualityIssue]:
+    """ghの認証を確認できない場合のissue（収集の前提が無いのでerror）。"""
+    if auth.ok:
+        return []
+    return [_issue(
+        Severity.ERROR, IssueCode.GH_NOT_AUTHENTICATED,
+        f"GitHub CLI の認証を確認できません（{_GH_FAILURE_TEXT[auth.failure]}）。"
+        f"{_GH_AUTH_REMEDY[auth.failure]}",
+        org, github_org=github_org, reason=auth.failure.value,
+    )]
+
+
+def _github_scope_issues(
+    scopes: tuple[str, ...] | None, org: str, github_org: str
+) -> list[QualityIssue]:
+    """tokenのscopeが足りない場合のissue。
+
+    scopes=None は「判定できないtoken」（fine-grained PAT・GitHub App）で、不足を報告
+    しない。参照できるかどうかはOrganizationの検査が実地で確かめる。
+    """
+    if scopes is None:
+        return []
+    missing = github_collect.missing_scopes(scopes)
+    if not missing:
+        return []
+    return [_issue(
+        Severity.ERROR, IssueCode.GH_PERMISSION_INCOMPLETE,
+        f"GitHub token の権限が足りません（不足: {', '.join(missing)}）。"
+        f"gh auth refresh {' '.join(f'-s {scope}' for scope in missing)} で"
+        "追加してください",
+        org, github_org=github_org, missing_scopes=list(missing),
+    )]
+
+
+def _github_rate_issues(
+    rate: tuple[GhRateResource, ...], org: str, github_org: str
+) -> list[QualityIssue]:
+    """利用上限に達している場合のissue（再実行で解消するのでwarning）。
+
+    回復時刻はmessageへ入れない（実行のたびに変わる値をmessageに持ち込まない）。
+    """
+    exhausted = [resource for resource in rate if resource.remaining == 0]
+    if not exhausted:
+        return []
+    detail = "、".join(
+        f"{resource.name}: 残り 0 / 上限 {resource.limit}" for resource in exhausted
+    )
+    return [_issue(
+        Severity.WARNING, IssueCode.GH_RATE_LIMITED,
+        f"GitHub API の利用上限に達しています（{detail}）。"
+        "上限が回復してから再実行してください",
+        org, github_org=github_org,
+        resources=[resource.name for resource in exhausted],
+    )]
+
+
+def _github_org_issues(
+    access: GhOrgAccess | None, org: str, github_org: str
+) -> list[QualityIssue]:
+    """Organizationを参照できない場合のissue（収集の前提が無いのでerror）。"""
+    if access is None or access.accessible:
+        return []
+    if access.failure is not None:
+        return [_issue(
+            Severity.ERROR, IssueCode.GH_ORG_NOT_ACCESSIBLE,
+            f"GitHub の Organization {github_org} を参照できません"
+            f"（{_GH_FAILURE_TEXT[access.failure]}）。"
+            "ネットワークと GitHub CLI の状態を確認して再実行してください",
+            org, github_org=github_org, reason=access.failure.value,
+        )]
+    if access.sso_required:
+        return [_issue(
+            Severity.ERROR, IssueCode.GH_PERMISSION_INCOMPLETE,
+            f"GitHub の Organization {github_org} は SAML SSO の承認が必要です"
+            "（HTTP 403）。GitHub の設定画面で token をこの Organization 向けに"
+            "承認してください",
+            org, github_org=github_org, status=access.status,
+        )]
+    return [_issue(
+        Severity.ERROR, IssueCode.GH_ORG_NOT_ACCESSIBLE,
+        f"GitHub の Organization {github_org} を参照できません"
+        f"（HTTP {access.status}）。config.yaml > organizations.{org}.github_org の"
+        "綴りと、token に付与された権限を確認してください",
+        org, github_org=github_org, status=access.status,
+    )]
+
+
+def _github_unmapped_issues(
+    input_dir: Path, month: str | None, cfg: dict, org: str, github_org: str,
+    members: GithubMembers,
+) -> list[QualityIssue]:
+    """メンバー一覧のうち GitHub login に対応づかない人を警告する。
+
+    メンバー一覧を読めない場合は静かに飛ばす（同じ原因を inspect_input が
+    MISSING_MEMBERS として報告するため、ここで二重に出さない）。
+    """
+    if month is None:
+        return []
+    try:
+        result = ingest.load_members(input_dir, month, cfg)
+    except (OSError, ValueError):
+        return []
+    unmapped = github_collect.unmapped_emails(members, result.df["email"])
+    if not unmapped:
+        return []
+    emails = list(unmapped[:_MAX_LISTED])
+    return [_issue(
+        Severity.WARNING, IssueCode.GITHUB_MAPPING_MISSING,
+        f"GitHub login に対応づかないメンバーが {len(unmapped)} 名います"
+        f"（例: {', '.join(emails)}）。"
+        f"{github_collect.GITHUB_MEMBERS_FILENAME} に github_login を追記してください"
+        "（対応づかない人の PR はどのユーザにも帰属しません）",
+        org, github_org=github_org, members=len(unmapped), emails=emails,
+    )]
+
+
+def _github_mapping_issues(
+    input_dir: Path, month: str | None, cfg: dict, org: str, github_org: str
+) -> list[QualityIssue]:
+    """email → GitHub login の対応表を検査する。
+
+    読めない対応表はerrorにする（fail-closed）。取り違えに直結する不備（email・login の
+    重複、必須カラムの欠落、列ずれ等）と読み取り失敗をまとめて GITHUB_MAPPING_DUPLICATE
+    で表す。壊れた対応表を使うと、別人のPRを帰属させたまま集計が完走する。
+    """
+    filename = github_collect.GITHUB_MEMBERS_FILENAME
+    try:
+        members = github_collect.load_github_members(input_dir, cfg)
+    except (OSError, ValueError) as exc:
+        return [_issue(
+            Severity.ERROR, IssueCode.GITHUB_MAPPING_DUPLICATE,
+            f"{filename} を読めません: {_reason(exc, input_dir)}",
+            org, github_org=github_org,
+        )]
+    if not members.provided:
+        return [_issue(
+            Severity.WARNING, IssueCode.GITHUB_MAPPING_MISSING,
+            f"GitHub 分析が有効な組織ですが {filename} がありません"
+            "（email → GitHub login の対応表）。組織ディレクトリ直下に置いてください"
+            "（無いあいだ PR はどのユーザにも帰属しません）",
+            org, github_org=github_org,
+        )]
+    issues = [
+        _issue(
+            Severity.WARNING, IssueCode.GITHUB_MAPPING_MISSING, warning,
+            org, github_org=github_org,
+        )
+        for warning in members.warnings
+    ]
+    issues.extend(
+        _github_unmapped_issues(input_dir, month, cfg, org, github_org, members)
+    )
+    return issues
+
+
+def inspect_github(
+    input_dir: Path | str, month: str | None, cfg: dict, org: str,
+    github_org: str, probes: GithubProbes,
+) -> list[QualityIssue]:
+    """GitHub分析を有効にした1組織分の検査（整列済み）。
+
+    probes は gh の実行結果（`github_collect.probe_github`）で、この関数自身は gh も
+    ネットワークも呼ばない。monthは突き合わせるメンバー一覧の選択にだけ使い、scopeには
+    持たせない（GitHubの検査結果は対象月に依存しないため）。
+
+    認証できていない場合、そこから派生する scope・rate・Organization の検査結果は意味を
+    持たないので probe 側が実行せず、ここでも報告しない。対応表の検査はghと無関係な
+    ローカルの検査なので、認証の可否によらず常に行う。
+    """
+    input_dir = Path(input_dir)
+    issues = _github_auth_issues(probes.auth, org, github_org)
+    if probes.auth.ok:
+        issues.extend(_github_scope_issues(probes.scopes, org, github_org))
+        issues.extend(_github_rate_issues(probes.rate, org, github_org))
+        issues.extend(_github_org_issues(probes.org(github_org), org, github_org))
+    issues.extend(_github_mapping_issues(input_dir, month, cfg, org, github_org))
+    return sort_issues(issues)
+
+
+def github_config_issues(cfg: dict, orgs: Iterable[str]) -> list[QualityIssue]:
+    """configのorganizationsのキーのうち、入力に組織ディレクトリが無いものを警告する。
+
+    綴り違いは「GitHubの検査がまるごと飛ぶ」形で表に出ないため、有効にしたつもりの組織が
+    黙って対象外になる。どの組織にも属さない設定の問題なので、scopeにorgは持たせず、
+    書かれたキーをconfig_orgとして持つ（実在する組織のorgと区別する）。
+
+    orgsは`--org`の選択ではなく、入力ディレクトリで見つかった組織すべて。
+    """
+    known = sorted(orgs)
+    found = set(known)
+    listed = "/".join(known) if known else "なし"
+    return sort_issues([
+        _issue(
+            Severity.WARNING, IssueCode.GITHUB_CONFIG_UNMATCHED,
+            f"config.yaml > organizations の '{name}' に一致する組織ディレクトリが"
+            f"ありません（存在する組織: {listed}）。この設定は GitHub の検査に"
+            "使われません。組織名の綴りを確認してください",
+            None, config_org=name, known_orgs=known,
+        )
+        for name in github_collect.gated_orgs(cfg)
+        if name not in found
+    ])
