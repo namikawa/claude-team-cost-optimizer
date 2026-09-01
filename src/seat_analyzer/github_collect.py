@@ -1,6 +1,6 @@
-"""GitHub 由来の入力（email → login の対応表）と、`gh` の状態を調べる読み取り専用の probe。
+"""GitHub 由来の入力（email → login の対応表）と、`gh` で読み取るだけの probe・repository の発見。
 
-前半は `input/<組織名>/github-members.csv` の loader。GitHub の PR を参考情報として集計
+1つ目は `input/<組織名>/github-members.csv` の loader。GitHub の PR を参考情報として集計
 するには、スペンドレポートの email と GitHub の login を突き合わせる表が要る（設計書
 §7.3）。この表は管理画面から出力できないため、人手で保守される小さな CSV を正準形式と
 して受け取る。loader はファイルを書かず、`gh` もネットワークも呼ばず、現在時刻も参照
@@ -18,12 +18,19 @@
 する。login の重複は大文字小文字を区別せずに見る（GitHub の login は大小を区別しないため、
 `Foo` と `foo` は同じ1人を指す）。
 
-後半は `gh` を呼ぶ probe（設計書 §15.2）。認証・付与された scope・利用上限の残量・
+2つ目は `gh` を呼ぶ probe（設計書 §15.2）。認証・付与された scope・利用上限の残量・
 Organization の参照可否だけを調べ、PR も repository も取得しない。token は Python 側へ
 取り出さない（`--show-token` を渡さず、環境変数の token も読まない）。gh の stderr は
 読み込まず、返すのは終了コードと stdout だけにする——診断文には実行環境に依存する文字列が
 混ざるため、issue の message へ写る経路そのものを作らない。probe は結果を値として返す
 だけで、警告にするかどうかと文面は消費側（`data_quality`）が決める。
+
+3つ目は Organization 内の repository の発見（設計書 §15.3）。取るのは repository の
+メタデータ（名前と、archived / fork / template の印）だけで、PR も title もコードも
+取得しない。対象は参照できる範囲そのままなので、手で書き並べた allowlist を要さない。
+返すのは全ページを読み切れた場合の完全な一覧に限り、途中で失敗した場合は名前を返さず
+理由だけを返す（部分的な一覧を完全な一覧として集計させないため）。probe と同じく、
+結果は値として返すだけで gh の生出力も token も保持しない。
 """
 
 from __future__ import annotations
@@ -63,6 +70,11 @@ _LOGIN_RE = re.compile(
 # 使えない（Organization 名は英数字とハイフンだけ）。設定に書かれた値がこの形かどうかを
 # ロード時に確かめ、そのままリクエストのパスへ入れられる状態にしておく。
 _ORG_NAME_RE = re.compile(rf"(?=[A-Za-z0-9-]{{1,39}}\Z){_LOGIN_SEGMENT}")
+
+# GitHub の repository 名として受ける字句。英数字・ハイフン・アンダースコア・ピリオドの
+# 1〜100 文字で、`.` と `..` そのものは受けない。発見した名前は後続の問い合わせで
+# リクエストのパスへ入るため、パスとして意味を持つ字句を値の段階で締め出す。
+_REPO_NAME_RE = re.compile(r"(?!\.{1,2}\Z)[A-Za-z0-9._-]{1,100}")
 
 
 def is_github_org_name(value: object) -> bool:
@@ -489,30 +501,33 @@ def run_gh(args: Sequence[str]) -> GhResult:
     return GhResult(ok=proc.returncode == 0, stdout=stdout)
 
 
-def _parse_response(stdout: str) -> tuple[int | None, dict[str, str]]:
-    """`gh api -i` の出力を (HTTP ステータス, ヘッダ) に分ける。
+def _parse_response(stdout: str) -> tuple[int | None, dict[str, str], str]:
+    """`gh api -i` の出力を (HTTP ステータス, ヘッダ, 本文) に分ける。
 
     ヘッダ名は小文字へ揃える（HTTP のヘッダ名は大文字小文字を区別せず、表記は gh の版に
-    依存する）。同じ名前が複数回現れたら HTTP の規則どおり "," で連結する。本文は使わない
-    ので返さない。ステータス行を読めない出力では None を返し、呼び出し側が「応答として
-    解釈できなかった」として扱う。
+    依存する）。同じ名前が複数回現れたら HTTP の規則どおり "," で連結する。本文は最初の
+    空行より後の全行で、字句には手を入れない（JSON として解釈するかどうかは呼び出し側が
+    決める）。ステータス行を読めない出力では None と空の本文を返し、呼び出し側が「応答
+    として解釈できなかった」として扱う。
     """
     lines = stdout.split("\n")
     if not lines[0].startswith("HTTP/"):
-        return None, {}
+        return None, {}, ""
     parts = lines[0].split()
     status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
     headers: dict[str, str] = {}
-    for line in lines[1:]:
+    body: list[str] = []
+    for index, line in enumerate(lines[1:], start=1):
         if not line.strip():
-            break   # ヘッダ部の終わり（以降は本文）
+            body = lines[index + 1:]   # ヘッダ部の終わり（以降は本文）
+            break
         name, separator, value = line.partition(":")
         if not separator:
             continue
         key = name.strip().lower()
         text = value.strip()
         headers[key] = f"{headers[key]}, {text}" if key in headers else text
-    return status, headers
+    return status, headers, "\n".join(body)
 
 
 # ------------------------------------------------------------------ probe
@@ -633,7 +648,7 @@ def _probe_scopes(run: Runner) -> tuple[str, ...] | None:
     result = run(("api", "-i", "user"))
     if result.failure is not None:
         return None
-    status, headers = _parse_response(result.stdout)
+    status, headers, _ = _parse_response(result.stdout)
     if status != 200 or "x-oauth-scopes" not in headers:
         return None
     return tuple(sorted({
@@ -687,7 +702,7 @@ def _probe_org(run: Runner, github_org: str) -> GhOrgAccess:
     result = run(("api", "-i", f"orgs/{github_org}"))
     if result.failure is not None:
         return GhOrgAccess(github_org=github_org, failure=result.failure)
-    status, headers = _parse_response(result.stdout)
+    status, headers, _ = _parse_response(result.stdout)
     if status is None:
         return GhOrgAccess(github_org=github_org, failure=GhFailure.ERROR)
     # SSO の未承認は 403 に `X-GitHub-SSO: required; url=...` が付く。同じヘッダは
@@ -696,3 +711,158 @@ def _probe_org(run: Runner, github_org: str) -> GhOrgAccess:
     return GhOrgAccess(
         github_org=github_org, status=status, sso_required=status == 403 and sso
     )
+
+
+# ------------------------------------------------------ repository の発見
+
+# 1ページあたりの件数（API の上限）と、読むページ数の上限。上限は 10 万件相当で、
+# 超えた場合は一覧を切り詰めずエラーにする
+_REPOS_PER_PAGE = 100
+_MAX_REPO_PAGES = 1000
+
+# 参考指標の対象から外す repository の印。archived は更新が止まった記録、fork は
+# 他所のコードの複製、template は雛形で、いずれも PR の実績として読む対象ではない
+_EXCLUDED_FLAGS = ("archived", "fork", "is_template")
+
+
+@dataclass(frozen=True)
+class RepoDiscovery:
+    """1つの Organization で発見した repository。
+
+    repos は除外を通過した名前で、表記は API が返したまま。小文字比較で重複がなく、
+    小文字比較の昇順に並ぶ（同じ応答からは常に同じ並びになる）。excluded は
+    archived / fork / template で除外した件数。
+
+    status は最後に読んだ応答の HTTP ステータス、failure は gh を使えなかった理由。
+    完全な一覧を得られなかった場合は repos を空にする（`complete`）。
+    """
+
+    github_org: str
+    repos: tuple[str, ...] = ()
+    excluded: int = 0
+    status: int | None = None
+    failure: GhFailure | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.github_org, str) or not self.github_org.strip():
+            raise ValueError(
+                f"github_org には Organization 名が必要です: {self.github_org!r}"
+            )
+        if not isinstance(self.repos, tuple):
+            raise TypeError(f"repos には tuple が必要です: {type(self.repos).__name__}")
+        for name in self.repos:
+            if not isinstance(name, str) or not _REPO_NAME_RE.fullmatch(name):
+                raise ValueError(f"repository 名として読めない値です: {name!r}")
+        keys = [name.lower() for name in self.repos]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"repos の repository 名が重複しています: {keys}")
+        if keys != sorted(keys):
+            raise ValueError(f"repos は小文字比較の昇順で並べてください: {keys}")
+        if not _is_count(self.excluded):
+            raise ValueError(f"excluded には0以上の件数が必要です: {self.excluded!r}")
+        if self.status is not None and not _is_count(self.status):
+            raise ValueError(f"status には HTTP ステータスが必要です: {self.status!r}")
+        if self.failure is not None and not isinstance(self.failure, GhFailure):
+            raise TypeError(
+                f"failure には GhFailure が必要です: {type(self.failure).__name__}"
+            )
+        # 完全な一覧でない結果は repository を持たない。部分的な一覧に値が入っていると、
+        # 参考指標が黙って小さく出る（消費側が完全な一覧として集計するため）
+        if not self.complete and (self.repos or self.excluded):
+            raise ValueError(
+                "完全な一覧でない結果に repository を持たせられません: "
+                f"status={self.status!r} failure={self.failure!r}"
+            )
+
+    @property
+    def complete(self) -> bool:
+        """全ページを読み切った完全な一覧か。False のとき repos は空。"""
+        return self.failure is None and self.status == 200
+
+
+def _repo_page(body: str) -> list[tuple[str, bool]] | None:
+    """repository 一覧の応答本文を (名前, 除外するか) の並びにする（読めなければ None）。
+
+    要素を1つでも解釈できなければ、そのページ全体を読めなかったものとして扱う。読めない
+    要素だけを飛ばすと、除外の印を読めなかった archived や fork の repository が対象へ
+    混ざる（応答の形が変わった兆候でもあるので、静かに続けない）。
+    """
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(payload, list):
+        return None
+    entries: list[tuple[str, bool]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            return None
+        name = item.get("name")
+        if not isinstance(name, str) or not _REPO_NAME_RE.fullmatch(name):
+            return None
+        flags = [item.get(flag) for flag in _EXCLUDED_FLAGS]
+        if not all(isinstance(flag, bool) for flag in flags):
+            return None
+        entries.append((name, any(flags)))
+    return entries
+
+
+def discover_repositories(
+    github_org: str, runner: Runner | None = None
+) -> RepoDiscovery:
+    """Organization 内の参照できる repository を列挙する（設計書 §15.3）。
+
+    取るのは repository のメタデータ（名前と除外の印）だけで、PR もコードも取得しない。
+    参照できる範囲は token の権限がそのまま決めるため、対象を手で書き並べた allowlist は
+    要らない。archived / fork / template は除外し、件数だけを残す。
+
+    返すのは全ページを読み切れた場合の完全な一覧に限る。途中で失敗した場合は repos を
+    空にして理由（status か failure）だけを返す——部分的な一覧を完全な一覧として集計
+    されると、参考指標が黙って小さく出るため。ページ数の上限を超えた場合も、切り詰めた
+    一覧を返さずエラーにする。
+
+    github_org は設定のロード時に字句を検証済みの Organization 名（`is_github_org_name`）。
+    runner を渡すと gh の呼び出しを差し替えられる（テスト用）。
+    """
+    run = run_gh if runner is None else runner
+    seen: set[str] = set()      # 小文字の名前（除外した分も含む）
+    kept: dict[str, str] = {}   # 小文字の名前 → API の表記
+    excluded = 0
+    for page in range(1, _MAX_REPO_PAGES + 1):
+        # 並びを full_name で固定する（既定の created の降順では、列挙中に作られた
+        # repository が先頭へ入り、以降のページが1件ずつずれる）
+        path = (
+            f"orgs/{github_org}/repos"
+            f"?per_page={_REPOS_PER_PAGE}&sort=full_name&page={page}"
+        )
+        result = run(("api", "-i", path))
+        if result.failure is not None:
+            return RepoDiscovery(github_org=github_org, failure=result.failure)
+        status, _, body = _parse_response(result.stdout)
+        if status is None:
+            return RepoDiscovery(github_org=github_org, failure=GhFailure.ERROR)
+        if status != 200:
+            # 403 と 404 の区別（権限か綴りか）は消費側が status で見る
+            return RepoDiscovery(github_org=github_org, status=status)
+        entries = _repo_page(body)
+        if entries is None:
+            return RepoDiscovery(github_org=github_org, failure=GhFailure.ERROR)
+        for name, drop in entries:
+            key = name.lower()
+            if key in seen:
+                continue   # 列挙中の頁ズレで、同じ repository が2ページに現れうる
+            seen.add(key)
+            if drop:
+                excluded += 1
+            else:
+                kept[key] = name
+        if len(entries) < _REPOS_PER_PAGE:
+            return RepoDiscovery(
+                github_org=github_org,
+                repos=tuple(kept[key] for key in sorted(kept)),
+                excluded=excluded,
+                status=200,
+            )
+    # 上限までのページがすべて満杯だった場合。読み切れていない一覧を完全な一覧として
+    # 返さない（この規模の Organization は想定外なので、値ではなくエラーで知らせる）
+    return RepoDiscovery(github_org=github_org, failure=GhFailure.ERROR)
