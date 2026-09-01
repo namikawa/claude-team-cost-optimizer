@@ -91,6 +91,22 @@ def test_kappa_change_detected_and_rendered(make_input, cfg, tmp_path):
     assert "追加クレジット上限 $100 → $200" in md
 
 
+def test_kappa_change_warning_counts_users_and_events(make_input, cfg):
+    # 同一ユーザが月内に2回 κ 変更する構成。イベントは区間ごとなので人数と件数が食い違う
+    input_dir = make_input(
+        {"2026-07": [spend_row("a@x.jp", 10.0, net=0.0)]},
+        members=["a@x.jp,Standard"], members_month="2026-07",
+    )
+    _write_snapshot(input_dir, "2026-07-05", ["a@x.jp,100"])
+    _write_snapshot(input_dir, "2026-07-16", ["a@x.jp,200"])
+    _write_snapshot(input_dir, "2026-07-25", ["a@x.jp,300"])
+    result = analyze(input_dir, "2026-07", cfg, org="org-a")
+    assert len(result.member_changes["credit_changes"]) == 2    # 表のイベントは2件のまま
+    warn = next(w for w in result.warnings if "追加クレジット上限の変更を検出" in w)
+    assert "1 名（変更 2 件）" in warn
+    assert warn.count("a@x.jp") == 1                            # 例示リストは人単位
+
+
 def test_single_snapshot_no_kappa_change(make_input, cfg):
     input_dir = make_input(
         {"2026-07": [spend_row("a@x.jp", 10.0, net=0.0)]},

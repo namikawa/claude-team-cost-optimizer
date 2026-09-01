@@ -219,6 +219,17 @@ def _compute_credit_changes(input_dir: Path, month: str, cfg: dict) -> tuple[lis
     return changes, [{"label": s["label"]} for s in snaps]
 
 
+def _unique_emails(changes: list[dict]) -> list[str]:
+    """変更イベントの列からユーザのメールを重複なく取り出す（出現順を保つ）。
+
+    seat_changes / credit_changes は区間ごとのイベントなので、月内に複数回変わった
+    ユーザは複数回現れる。件数ではなく人数を数える箇所で使う。set を使わないのは
+    反復順が実行ごとに変わるためで、dict.fromkeys で構築順（区間順・区間内はメール
+    昇順）をそのまま保つ。
+    """
+    return list(dict.fromkeys(c["email"] for c in changes))
+
+
 def _compute_member_changes(input_dir: Path, month: str, cfg: dict) -> tuple[dict | None, list[str]]:
     """対象月の単日スナップショット members（2つ以上）の隣接差分から月中の変動を検出する。
 
@@ -259,17 +270,21 @@ def _compute_member_changes(input_dir: Path, month: str, cfg: dict) -> tuple[dic
             left.append({"email": email, "seat": prev["seat_by"][email],
                          "interval_label": interval_label})
 
+    # 人数（ユニークなユーザ）と件数（区間ごとのイベント）は一致しないので両方出す。
+    # 例示リストも人単位（同一ユーザが並ばないように重複を除いてから先頭5件）。
     warnings: list[str] = []
     if seat_changes:
-        emails = [c["email"] for c in seat_changes]
+        emails = _unique_emails(seat_changes)
         warnings.append(
-            f"月中にシート変更を検出した ユーザ {len(emails)} 名: {emails[:5]}"
+            f"月中にシート変更を検出した ユーザ {len(emails)} 名"
+            f"（変更 {len(seat_changes)} 件）: {emails[:5]}"
             "（当月の損益分岐判定は最新スナップショット時点のシートで行うため参考値）"
         )
     if credit_changes:
-        emails = [c["email"] for c in credit_changes]
+        emails = _unique_emails(credit_changes)
         warnings.append(
-            f"月中に追加クレジット上限の変更を検出 {len(emails)} 名: {emails[:5]}"
+            f"月中に追加クレジット上限の変更を検出 {len(emails)} 名"
+            f"（変更 {len(credit_changes)} 件）: {emails[:5]}"
             "（変更月の課金は部分月のため、上限に基づく判定は翌月から行ってください）"
         )
 
