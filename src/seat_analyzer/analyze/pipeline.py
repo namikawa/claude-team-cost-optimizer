@@ -82,7 +82,7 @@ class AnalysisResult:
     code_diff: dict | None = None
     # 月中のメンバー変動（members 単日スナップショット差分。1つ以下なら None）
     member_changes: dict | None = None
-    # 込み枠の実測（E = API換算需要 − 実課金）。実課金発生ユーザがいなければ None
+    # シートが吸収した量の実測（E = API換算需要 − 実課金）。実課金発生ユーザがいなければ None
     e_distribution: dict | None = None
     # 追加クレジット付与候補（昇格前に上限つきクレジットで課金実測を薦めるユーザ）
     grant_candidates: list = field(default_factory=list)
@@ -635,7 +635,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisR
     summary["org_service_by_product"] = history.org_usage.get("by_product", {})
     # E 分布は cost_basis=computed のときのみ（net_spend 基準では需要=課金で E が無意味）
     e_distribution = (
-        _compute_e_distribution(users, cfg) if history.basis == "computed" else None
+        _compute_e_distribution(users) if history.basis == "computed" else None
     )
     # 付与候補の昇格方向は「実課金で拘束する前の純モデル判定」で見る（無効ユーザは billed=0 で
     # 拘束後は常に Standard 推奨になり本命対象が漏れるため）

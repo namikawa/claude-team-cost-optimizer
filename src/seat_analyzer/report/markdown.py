@@ -353,7 +353,7 @@ def _credit_summary_md_row(s: dict) -> str:
 
 
 def _e_distribution_md(edist: dict | None) -> str:
-    """「## 込み枠の実測（E = API換算需要 − 実課金）」セクション（None なら空文字列）。"""
+    """「## シートが吸収した量の実測（E = API換算需要 − 実課金）」セクション（None なら空文字列）。"""
     if not edist:
         return ""
     lines = [f"## {_TEXT['h_e_dist']}", ""]
@@ -370,17 +370,11 @@ def _e_distribution_md(edist: dict | None) -> str:
             f"- 件数 {g['count']} 名 / 中央値 {_fmt_usd(g['median'])} / "
             f"最小 {_fmt_usd(g['min'])} / 最大 {_fmt_usd(g['max'])}"
         )
-        if g.get("ratio") is not None:
-            lines.append(
-                f"- 参考: 実測 E の中央値は config の allowance"
-                f"（mid {_fmt_usd(g['allowance_mid'])}）の {g['ratio']:.1f} 倍"
-            )
         lines.append("")
     lines += [
-        ("- E は各ユーザが込み枠から実際に引き出せた量の実測。引き出せる量は利用の形"
-         "（毎日安定かバーストか）に依存するため個人差が大きい"),
-        ("- config.yaml > seats.*.allowance_usd のシナリオ見直しの材料になる"
-         "（バースト型ユーザでは過小評価になる点に注意）"),
+        "- E は需要のうち実際には課金されなかった額。その月にシートが吸収した量の実測にあたる",
+        ("- E はそのユーザの容量の下限を示す。上限は分からないため、E が小さいことは"
+         "容量に余裕がないことを意味しない"),
     ]
     return "\n".join(lines)
 

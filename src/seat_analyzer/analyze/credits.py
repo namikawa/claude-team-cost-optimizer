@@ -99,12 +99,12 @@ def _credit_summary(users: pd.DataFrame) -> dict:
     }
 
 
-def _compute_e_distribution(users: pd.DataFrame, cfg: dict) -> dict | None:
+def _compute_e_distribution(users: pd.DataFrame) -> dict | None:
     """実課金発生ユーザの E（=API換算需要 − 実課金）をシート種別ごとに集計する。
 
-    E は各ユーザが込み枠から実際に引き出せた量の実測。billers（実課金>0）がいなければ None。
+    E は需要のうち課金されなかった額＝その月にシートが吸収した量の実測で、そのユーザの
+    容量の下限を与える（上限は分からない）。billers（実課金>0）がいなければ None。
     cost_basis=computed 前提（net_spend 基準では需要=課金となり E が意味を持たない）。
-    シート種別ごとに config の allowance（mid）との倍率も添える（キャリブレーションの補助線）。
     """
     billers = users[users["billed_extra_usd"].fillna(0.0) > 0.0].copy()
     if billers.empty:
@@ -123,17 +123,11 @@ def _compute_e_distribution(users: pd.DataFrame, cfg: dict) -> dict | None:
             for _, r in g.sort_values(["_e", "email"], ascending=[False, True]).iterrows()
         ]
         es = g["_e"]
-        median = round(float(es.median()), 2)
-        # allowance が定義されたシート（standard/premium）のみ mid との倍率を出す
-        seat_cfg = cfg["seats"].get(seat)
-        allowance_mid = float(seat_cfg["allowance_usd"]["mid"]) if seat_cfg else None
-        ratio = round(median / allowance_mid, 1) if allowance_mid else None
         groups.append({
             "seat": seat, "rows": rows, "count": len(g),
-            "median": median,
+            "median": round(float(es.median()), 2),
             "min": round(float(es.min()), 2),
             "max": round(float(es.max()), 2),
-            "allowance_mid": allowance_mid, "ratio": ratio,
         })
     return {"groups": groups}
 

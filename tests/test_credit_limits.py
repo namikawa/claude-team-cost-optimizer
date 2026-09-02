@@ -398,6 +398,11 @@ def test_integrity_disabled_but_billed(make_input, cfg):
 
 # --- E 分布 ---------------------------------------------------------------
 
+def _e_section(md: str) -> str:
+    """details.md の「シートが吸収した量の実測」セクション本文。"""
+    return md.split("シートが吸収した量の実測")[1].split("\n## ")[0]
+
+
 def test_e_distribution_present_with_billers(make_input, cfg, tmp_path):
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 200.0, net=60.0),
@@ -413,9 +418,9 @@ def test_e_distribution_present_with_billers(make_input, cfg, tmp_path):
     out = tmp_path / "details.md"
     write_details(result, out)
     md = out.read_text(encoding="utf-8")
-    assert "## 込み枠の実測（E = API換算需要 − 実課金）" in md
+    assert "## シートが吸収した量の実測（E = API換算需要 − 実課金）" in md
     # 実課金ゼロの b は billers に含めない
-    assert "b@x.jp" not in md.split("込み枠の実測")[1].split("## ")[0]
+    assert "b@x.jp" not in _e_section(md)
 
 
 def test_e_distribution_absent_without_billers(make_input, cfg, tmp_path):
@@ -427,7 +432,7 @@ def test_e_distribution_absent_without_billers(make_input, cfg, tmp_path):
     assert result.e_distribution is None
     out = tmp_path / "details.md"
     write_details(result, out)
-    assert "込み枠の実測" not in out.read_text(encoding="utf-8")
+    assert "シートが吸収した量の実測" not in out.read_text(encoding="utf-8")
 
 
 def test_e_distribution_none_for_net_spend_basis(make_input, cfg):
@@ -440,8 +445,8 @@ def test_e_distribution_none_for_net_spend_basis(make_input, cfg):
     assert analyze(input_dir, "2026-06", cfg_net, org="org-a").e_distribution is None
 
 
-def test_e_distribution_ratio_comparison(make_input, cfg, tmp_path):
-    # 改善5: シート種別ごとに実測 E 中央値と config allowance(mid) の倍率を添える
+def test_e_distribution_does_not_calibrate_allowance(make_input, cfg, tmp_path):
+    # E はそのユーザの容量の下限にすぎないため、allowance シナリオとの倍率比較は出さない
     input_dir = make_input(
         {"2026-06": [spend_row("a@x.jp", 150.0, net=50.0)]},   # E=100, premium
         members=["a@x.jp,Premium"],
@@ -449,11 +454,10 @@ def test_e_distribution_ratio_comparison(make_input, cfg, tmp_path):
     result = analyze(input_dir, "2026-06", cfg, org="org-a")
     g = next(x for x in result.e_distribution["groups"] if x["seat"] == "premium")
     assert g["median"] == 100.0
-    assert g["allowance_mid"] == 250.0
-    assert g["ratio"] == 0.4    # 100 / 250
+    assert "allowance_mid" not in g and "ratio" not in g
     out = tmp_path / "details.md"
     write_details(result, out)
-    assert "config の allowance（mid $250.00）の 0.4 倍" in out.read_text(encoding="utf-8")
+    assert "allowance" not in _e_section(out.read_text(encoding="utf-8"))
 
 
 def test_e_distribution_row_order_is_independent_of_input_row_order(make_input, cfg):
@@ -471,7 +475,7 @@ def test_e_distribution_row_order_is_independent_of_input_row_order(make_input, 
     orders = (users, users.iloc[::-1],
               users.sort_values("email"), users.sort_values("email", ascending=False))
     for frame in orders:
-        groups = _compute_e_distribution(frame, cfg)["groups"]
+        groups = _compute_e_distribution(frame)["groups"]
         prem = next(g for g in groups if g["seat"] == "premium")
         assert [r["e"] for r in prem["rows"]] == [140.0, 140.0]   # 同点の前提を確認
         assert [r["email"] for r in prem["rows"]] == ["tie-a@x.jp", "tie-b@x.jp"]
