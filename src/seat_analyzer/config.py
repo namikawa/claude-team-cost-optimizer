@@ -609,6 +609,12 @@ def _validate_discussion(cfg: dict, errors: list[str]) -> None:
         errors.append("discussion.allow_terms は空でない文字列のリストが必要です")
 
 
+# 単価パターンに書けるキー。単価表はリストなので `_merge_override` のキー検査が届かない
+# （リストは丸ごと置換され、要素の中身は突き合わせの対象にならない）。「どの階層でも
+# キーが閉じた集合」を保つため、要素のキーはここで閉じる
+_MODEL_PRICE_PATTERN_KEYS = frozenset({"match", "input", "output", "cache_read"})
+
+
 def _validate_model_prices(cfg: dict, errors: list[str]) -> None:
     model_prices = cfg["model_prices"]
     patterns = model_prices.get("patterns")
@@ -617,6 +623,16 @@ def _validate_model_prices(cfg: dict, errors: list[str]) -> None:
     else:
         # match はモデル名との部分一致に使う文字列。数値等が入ると照合の時点で落ちる
         for index, pattern in enumerate(patterns):
+            if isinstance(pattern, dict):
+                # 綴り違いは「書いた設定が効かない」形になる（cache_raed と書くと倍率が
+                # 黙って既定へ落ちる）。必須キーの検査より先に置くのは、必須キーの綴りを
+                # 誤った場合に「無い」ではなく「その綴りは無い」と名指しできるため。
+                # 並びは set の反復順に依らせない（同じ設定から常に同じ並びで報告する）
+                for key in sorted(set(map(str, pattern)) - _MODEL_PRICE_PATTERN_KEYS):
+                    errors.append(
+                        f"'model_prices.patterns[{index}].{key}' は既定に存在しない"
+                        "キーです（綴りを確認してください）"
+                    )
             if (
                 not isinstance(pattern, dict)
                 or not _is_text(pattern.get("match"))
