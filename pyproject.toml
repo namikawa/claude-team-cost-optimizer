@@ -1,6 +1,6 @@
 [project]
 name = "seat-analyzer"
-version = "1.1.1"
+version = "1.1.2"
 description = "Claude Team プランのシート最適化分析ツール（Standard/Premium 損益分岐）"
 requires-python = ">=3.11"
 dependencies = [

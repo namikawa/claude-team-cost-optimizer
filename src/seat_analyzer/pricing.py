@@ -5,14 +5,38 @@ from __future__ import annotations
 import pandas as pd
 
 
-def price_for_model(model: str, cfg: dict) -> tuple[float, float]:
-    """(input, output) 単価 [USD per 1M tokens] を返す。部分一致・上から順に評価。"""
+def _matching_pattern(model: str, cfg: dict) -> dict | None:
+    """モデル名に一致する単価パターン（部分一致・上から順に評価）。無ければ None。
+
+    単価とキャッシュ読取倍率で同じパターンを引くため、照合の規則はここ1箇所に置く。
+    """
     name = str(model).lower()
     for pat in cfg["model_prices"]["patterns"]:
-        if pat["match"].lower() in name:
-            return float(pat["input"]), float(pat["output"])
-    default = cfg["model_prices"]["default"]
-    return float(default["input"]), float(default["output"])
+        if str(pat["match"]).lower() in name:
+            return pat
+    return None
+
+
+def price_for_model(model: str, cfg: dict) -> tuple[float, float]:
+    """(input, output) 単価 [USD per 1M tokens] を返す。部分一致・上から順に評価。"""
+    pat = _matching_pattern(model, cfg)
+    if pat is None:
+        pat = cfg["model_prices"]["default"]
+    return float(pat["input"]), float(pat["output"])
+
+
+def cache_read_multiplier_for_model(model: str, cfg: dict) -> float:
+    """キャッシュ読取の実効単価倍率（入力単価に対する倍率）を返す。
+
+    一致した単価パターンが `cache_read` を持てばその値、持たない場合とどのパターンにも
+    一致しない場合は `cache_multipliers.read`。モデルによって倍率が違うため、行ごとに
+    解決する（単価と同じパターンから引く）。
+    """
+    default = float(cfg.get("cache_multipliers", {}).get("read", 0.1))
+    pat = _matching_pattern(model, cfg)
+    if pat is None or pat.get("cache_read") is None:
+        return default
+    return float(pat["cache_read"])
 
 
 def unmatched_models(models, cfg: dict) -> list[str]:
@@ -34,7 +58,8 @@ CACHE_COLS = ("uncached_input_tokens", "cache_read_tokens",
 def add_computed_cost(spend_df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """行ごとの tokens×単価 コスト computed_cost_usd を付与する。
 
-    キャッシュ内訳列があれば実効単価（read 0.1x / write 1.25x / 2.0x）で計算する。
+    キャッシュ内訳列があれば実効単価（read / write 5m 1.25x / write 1h 2.0x）で計算する。
+    キャッシュ読取の倍率はモデルごとに違うため行ごとに解決する。
     prompt_tokens はキャッシュ読取を含むため、内訳なしで全量×入力単価にすると過大になる。
     需要指標 cost_usd と実課金 billed_usd の採用は apply_cost_basis に一本化する。
     """
@@ -45,7 +70,7 @@ def add_computed_cost(spend_df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
     if all(c in df.columns for c in CACHE_COLS):
         mult = cfg.get("cache_multipliers", {})
-        read_m = float(mult.get("read", 0.1))
+        read_m = df["model"].map(lambda m: cache_read_multiplier_for_model(m, cfg))
         w5m_m = float(mult.get("write_5m", 1.25))
         w1h_m = float(mult.get("write_1h", 2.0))
         input_cost = (

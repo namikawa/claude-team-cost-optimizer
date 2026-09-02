@@ -351,6 +351,82 @@ def test_values_that_break_later_stages_are_rejected(tmp_path, text, fragment):
         load_config(path)
 
 
+def _pattern_override(tmp_path: Path, entry: str) -> Path:
+    """単価パターンを1件だけ書いた上書き（リストは丸ごと置換される）。"""
+    return _override(
+        tmp_path, f'model_prices:\n  patterns:\n    - {{ {entry} }}\n')
+
+
+@pytest.mark.parametrize("cache_read", ["-0.1", "0", "0.0", ".inf", ".nan", '"0.1"', ""])
+def test_pattern_cache_read_must_be_positive_and_finite(tmp_path, cache_read):
+    """キャッシュ読取の倍率は正の有限な数値だけを受ける。
+
+    0 以下だとキャッシュ読取が無料・値引きとして計上され、非有限だと需要が NaN か
+    無限大になる。どちらも需要指標を黙って別の値に変える。
+    """
+    path = _pattern_override(
+        tmp_path, f'match: "sonnet", input: 3.0, output: 15.0, cache_read: {cache_read}')
+    with pytest.raises(ValueError, match=re.escape("patterns[0].cache_read")):
+        load_config(path)
+
+
+def test_pattern_cache_read_is_optional(tmp_path):
+    """cache_read は省略できる（省略したパターンは cache_multipliers.read を使う）。"""
+    path = _pattern_override(tmp_path, 'match: "sonnet", input: 3.0, output: 15.0')
+    assert load_config(path)["model_prices"]["patterns"] == [
+        {"match": "sonnet", "input": 3.0, "output": 15.0}]
+
+    path = _pattern_override(
+        tmp_path, 'match: "sonnet", input: 3.0, output: 15.0, cache_read: 0.025')
+    assert load_config(path)["model_prices"]["patterns"][0]["cache_read"] == 0.025
+
+
+def test_pattern_key_typo_is_rejected(tmp_path):
+    """単価パターンの綴り違いはロード時にエラーにする。
+
+    リストは丸ごと置換されるので、要素の中身には既定との突き合わせが届かない。
+    `cache_raed` と書いたまま通ると、指定したつもりの倍率が既定へ黙って落ちる。
+    """
+    path = _pattern_override(
+        tmp_path, 'match: "fable-5-1", input: 10.0, output: 50.0, cache_raed: 0.025')
+    want = "'model_prices.patterns[0].cache_raed' は既定に存在しないキー"
+    with pytest.raises(ValueError, match=re.escape(want)):
+        load_config(path)
+
+
+def test_pattern_required_key_typo_names_the_spelling(tmp_path):
+    """必須キーの綴りを誤った場合も、その綴りを名指しする。
+
+    「match が必要です」だけでは、既に書いてあるつもりの利用者に原因が伝わらない。
+    """
+    path = _pattern_override(tmp_path, 'mach: "sonnet", input: 3.0, output: 15.0')
+    with pytest.raises(ValueError, match=re.escape("'model_prices.patterns[0].mach'")):
+        load_config(path)
+
+
+def test_all_unknown_pattern_keys_are_listed(tmp_path):
+    """未知のキーが複数あればすべて挙げる（並びはキー名の昇順で固定）。"""
+    path = _pattern_override(
+        tmp_path, 'match: "sonnet", input: 3.0, output: 15.0, zzz: 1, aaa: 2')
+    with pytest.raises(ValueError) as excinfo:
+        load_config(path)
+
+    message = str(excinfo.value)
+    assert "patterns[0].aaa" in message and "patterns[0].zzz" in message
+    assert message.index("patterns[0].aaa") < message.index("patterns[0].zzz")
+
+
+def test_default_price_does_not_take_cache_read(tmp_path):
+    """default に cache_read は書けない（既定のキー集合に無いのでエラーになる）。
+
+    モデル別の倍率はパターン側で指定する。default に書けると、書いたのに効かない
+    設定になる（既定の倍率は cache_multipliers.read が持つ）。
+    """
+    path = _override(tmp_path, "model_prices:\n  default:\n    cache_read: 0.025\n")
+    with pytest.raises(ValueError, match="'model_prices.default.cache_read' は既定に存在しないキー"):
+        load_config(path)
+
+
 @pytest.mark.parametrize("value", ["computed", "net_spend", "auto", "Computed"])
 def test_cost_basis_accepts_its_documented_values(tmp_path, value):
     """列挙の検証は算出基準の正しい値を弾かない（照合は小文字化して行う）。"""
