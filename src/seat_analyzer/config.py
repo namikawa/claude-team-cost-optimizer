@@ -415,10 +415,18 @@ def _validate_decision_v2(cfg: dict, errors: list[str]) -> None:
     days = decision.get("recent_seat_change_days")
     if not _is_integer(days) or days < 1:
         errors.append("decision_v2.recent_seat_change_days は 1 以上の整数が必要です")
-    saving = decision.get("min_assignment_saving_usd")
-    if not _is_finite(saving) or saving < 0:
+    # Premium を正当化する需要の線。0 以下だと需要ゼロのユーザまで線を上回ったことに
+    # なり、降格の候補が全員消えて昇格の候補が全員になる（allowance の推定値ではなく
+    # 方針として決める額なので、大小関係の検査は持たない）
+    line = decision.get("premium_justification_usd")
+    if not _is_finite(line) or line <= 0:
         errors.append(
-            "decision_v2.min_assignment_saving_usd は 0 以上の有限な数値が必要です"
+            "decision_v2.premium_justification_usd は正の有限な数値が必要です"
+        )
+    margin = decision.get("observed_billing_margin_usd")
+    if not _is_finite(margin) or margin < 0:
+        errors.append(
+            "decision_v2.observed_billing_margin_usd は 0 以上の有限な数値が必要です"
         )
 
 

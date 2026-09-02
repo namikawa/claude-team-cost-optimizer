@@ -1,5 +1,13 @@
 # 変更履歴
 
+## [未リリース]
+
+### 変更
+
+- V2 判定の設定に `decision_v2.premium_justification_usd` を追加し、
+  `min_assignment_saving_usd` を `observed_billing_margin_usd` に改名した
+  （V2 は `enabled: false` のままで判定・出力に影響しない）
+
 ## [1.1.2] - 2026-09-02
 
 ### 追加

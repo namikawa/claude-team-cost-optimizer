@@ -2,11 +2,25 @@
 
 判断は2つの軸でできている:
 
-- 経済軸: シートを変えたら金額として見合うか。シートの込み枠は product をまたいで
-  共通なので、全 product 合算の需要と実課金で評価する
+- 経済軸: シートを変える金銭的な根拠があるか。変更先シートの従量課金は観測も推定も
+  できないので、変更先のコストは試算しない。使うのは観測できる事実（現シートの実課金・
+  追加クレジット上限 κ への到達）と、方針として決めた需要の線
+  （`decision_v2.premium_justification_usd`）だけ
 - 分類軸: その需要の中身が Code か。昇格では経済軸を満たした候補を「自動で昇格を推奨する」
   ものと「アサインそのものを人が見直す（REVIEW_ASSIGNMENT）」ものへ振り分けるゲートに
   なり、降格では Code 実務者の席を自動では落とさないための歯止めになる
+
+シートの込み枠を USD の月次プールとみなし `max(0, 需要 − allowance)` で変更先の課金を
+試算する関数形は、追加クレジットが有効で実課金がセンサーとして効く組織の観測で反証された
+（同一シート・同一月で課金の有無を分ける単一のしきい値が存在しない・課金が発生したあとに
+需要が伸びても課金は止まる・課金が利用者間で同期しない）。実機構は月より短い周期のレート
+制限と見られるが非公開なので、この判定では allowance を使わない（V1 は従来どおり使う）。
+
+昇格と降格を毎月往復しないための歯止めは、Code ゲートとヒステリシスが担う。昇格は対象月の
+Code 需要が `upgrade.min_code_demand_usd` 以上であることを要し、降格は評価窓の全完全月で
+Code 需要が `downgrade.max_code_demand_usd` 未満であることを要するので、往復するには
+実際の利用の変化が必要になる。加えて recent 窓（`recent_seat_change_days`）と降格の評価窓
+（`downgrade.min_complete_months` 完全月）が、1ヶ月の振れで席が動くことを防ぐ。
 
 設定は読み込まない。検証済みの config と、呼び出し側が組み立てた観測（SubjectHistory）
 だけを受けて結論を返す（product_usage が policy を引数で受けるのと同じ流儀）。ファイルを
@@ -46,12 +60,6 @@ _PREMIUM = "premium"
 # とは別の理由コードで表す
 _MEMBER_ADDED = "member_added"
 
-# allowance のシナリオ。V1（analyze.SCENARIOS）と同じ顔ぶれ・同じ意味
-_SCENARIOS = ("low", "mid", "high")
-
-# 純モデル判定で候補とみなすのに要るシナリオ数（過半数）
-_MIN_AGREEING_SCENARIOS = 2
-
 # SUSTAINED_OVERAGE を付けるのに要る、直近から連続する完全月の数。追加クレジットが
 # 無効な組織の昇格に要る継続性（§12.6）にも同じ月数を使う
 _SUSTAINED_MONTHS = 2
@@ -59,11 +67,15 @@ _SUSTAINED_MONTHS = 2
 # 追加クレジット消費の「継続上昇」とみなすのに要る、対象月内の観測点の数
 _RISING_MIN_POINTS = 3
 
+# 方針感度（§12.7）で方針線をずらす幅。シート差額（$100）と同じ大きさにしてある
+_POLICY_STABILITY_OFFSET_USD = 100.0
+
 # status を RECOMMENDED へ上げるアクション（人が取るべき作業があるもの）。語彙ごとに
 # 別の組にする。StrEnum は値が等しければ語彙をまたいで == になるため、1つの組へ混ぜると
 # 別の語彙のメンバーが一致してしまう（§12.1）
 _ACTIONABLE_SEAT_ACTIONS = (
     SeatAction.UPGRADE_TO_PREMIUM,
+    SeatAction.DOWNGRADE_TO_STANDARD,
     SeatAction.REVIEW_ASSIGNMENT,
 )
 _ACTIONABLE_CREDIT_ACTIONS = (CreditAction.ENABLE_WITH_CAP, CreditAction.REVIEW)
@@ -83,13 +95,13 @@ _REASON_ORDER = (
     ReasonCode.SUSTAINED_LOW_CODE_DEMAND,
     ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,
     ReasonCode.REVIEW_NON_CODE_USAGE,
-    ReasonCode.ESTIMATED_STANDARD_OVERAGE,
+    ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
     ReasonCode.CREDIT_SETTING_UNKNOWN,
     # 補助: 主理由を補強する観測
     ReasonCode.CREDIT_LIMIT_REACHED,
     ReasonCode.SUSTAINED_OVERAGE,
-    ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT,
-    ReasonCode.STANDARD_WITH_CREDIT_CHEAPER,
+    ReasonCode.SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
+    ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
     ReasonCode.CREDIT_CONSUMPTION_RISING,
     # 情報: 結論は変えないが、人が判断するときに要る文脈
     ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
@@ -344,17 +356,19 @@ class _Settings(NamedTuple):
 
     必要履歴と Code 需要の閾値は昇格・降格で別の値なので、どちらの向きの設定か
     名前で分かるようにする（min/max は比較の向きも表す）。
+
+    シート料はシート差額（Premium − Standard）を出すために持つ。込み枠の推定
+    （`seats.*.allowance_usd`）は使わないので取り出さない。
     """
 
     standard_price_usd: float
     premium_price_usd: float
-    standard_allowance_usd: dict[str, float]
-    premium_allowance_usd: dict[str, float]
+    premium_justification_usd: float
     upgrade_min_complete_months: int
     min_code_demand_usd: float
     downgrade_min_complete_months: int
     max_code_demand_usd: float
-    min_saving_usd: float
+    billing_margin_usd: float
     recent_seat_change_days: int
     cap_tolerance_usd: float
 
@@ -366,25 +380,19 @@ def _settings(cfg: Mapping) -> _Settings:
     「呼ばれたら判定する」ことだけを担う。
     """
     seats = cfg["seats"]
-    upgrade = cfg["decision_v2"]["upgrade"]
-    downgrade = cfg["decision_v2"]["downgrade"]
+    decision = cfg["decision_v2"]
+    upgrade = decision["upgrade"]
+    downgrade = decision["downgrade"]
     return _Settings(
         standard_price_usd=float(seats["standard"]["price_usd"]),
         premium_price_usd=float(seats["premium"]["price_usd"]),
-        standard_allowance_usd={
-            scenario: float(seats["standard"]["allowance_usd"][scenario])
-            for scenario in _SCENARIOS
-        },
-        premium_allowance_usd={
-            scenario: float(seats["premium"]["allowance_usd"][scenario])
-            for scenario in _SCENARIOS
-        },
+        premium_justification_usd=float(decision["premium_justification_usd"]),
         upgrade_min_complete_months=int(upgrade["min_complete_months"]),
         min_code_demand_usd=float(upgrade["min_code_demand_usd"]),
         downgrade_min_complete_months=int(downgrade["min_complete_months"]),
         max_code_demand_usd=float(downgrade["max_code_demand_usd"]),
-        min_saving_usd=float(cfg["decision_v2"]["min_assignment_saving_usd"]),
-        recent_seat_change_days=int(cfg["decision_v2"]["recent_seat_change_days"]),
+        billing_margin_usd=float(decision["observed_billing_margin_usd"]),
+        recent_seat_change_days=int(decision["recent_seat_change_days"]),
         cap_tolerance_usd=float(cfg["usage_credits"]["cap_tolerance_usd"]),
     )
 
@@ -396,16 +404,26 @@ def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
 
     1. identity conflict・部分月・履歴不足は判定しない（hard blocker）
     2. 直近のシート変更・加入・分類できない観測に重なるユーザは観察へ倒す
-    3. 経済軸（観測・追加クレジット上限到達・純モデルのいずれか）も推定ベースの超過も
-       成立しなければ現状維持
-    4. どちらかが成立したら、追加クレジット上限 κ の3状態で結論の出し方が変わる（§12.6）
-       - 有効（正の有限値・無制限）: 経済軸が成立すれば分類軸へ。推定だけでは動かさない
-         （実課金という観測が「枠内に収まっている」と言っているとき、推定で席を変えない）
-       - 無効（0）: 実課金が構造的に $0 で観測が候補化の材料にならないため、継続性
-         （2完全月連続、または対象月内の消費の継続上昇）を要求する。一時的な成立は席を
-         変えず、上限つきクレジットの付与で1ヶ月の課金を実測する
-       - 不明（None）: シート判定は経済軸で進めつつ、クレジットは金額を断定せず REVIEW
-    5. 分類軸で、Code 主体なら昇格推奨、そうでなければアサインの見直し
+    3. 追加クレジット上限 κ の3状態で、候補化に使う信号と結論の出し方が変わる（§12.6）
+    4. 候補になったら分類軸へ。Code 主体なら昇格推奨、そうでなければアサインの見直し
+
+    候補化に使う信号は3つある。「Standard の実課金がシート差額をマージ以上上回った」
+    （観測）、「追加クレジット上限 κ へ到達した」（観測）、「全 product 需要が方針線
+    `premium_justification_usd` 以上」（方針）。3 の内訳:
+
+    - 有効（正の有限値・無制限）: 実課金という観測がある。実課金または κ 到達で候補にし、
+      方針線は使わない
+    - 無効（0）: 実課金が構造的に $0 で観測が候補化の材料にならないため、方針線で候補に
+      する。継続性（2完全月連続、または対象月内の消費の継続上昇）があれば分類軸へ進み、
+      一時的な成立では席を変えず、上限つきクレジットの付与で1ヶ月の課金を実測する
+    - 不明（None）: 席を動かす判断は実課金だけで行う（有効か無効かが分からないので、
+      実課金 $0 が「枠内に収まっている」のか「そもそも課金されない設定」なのか決められ
+      ない）。方針線を上回っていれば席は動かさず、クレジット設定の確認へ回す
+
+    κ が 0（無効）と記入されているのに対象月の実課金が正のときは、記入と観測が矛盾して
+    いる（記入ミス、または月中の設定変更。V1 の analyze.credits も同じ状況を警告する）。
+    観測を捨てるほうが影響が大きいので、この判定では κ 不明として扱う。見るのは対象月の
+    実課金だけで、前月の課金は設定変更より前のものでありうるため参照しない。
 
     status は「人が取るべきアクションがあるか」で決まる。seat_action が
     UPGRADE_TO_PREMIUM・REVIEW_ASSIGNMENT のとき、または credit_action が
@@ -421,81 +439,79 @@ def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
             f"昇格判定の対象は current_seat が {_STANDARD!r} のユーザだけです: "
             f"{subject.current_seat!r}"
         )
-    settings = _settings(cfg)
+    return _upgrade(subject, _settings(cfg))
 
-    if subject.identity_conflict:
-        return _decision(
-            DecisionStatus.NO_DECISION, SeatAction.NONE, [ReasonCode.IDENTITY_CONFLICT]
-        )
+
+def _upgrade(subject: SubjectHistory, settings: _Settings) -> DecisionV2:
+    """昇格の規則そのもの（設定値を受ける形）。
+
+    方針感度（`policy_stability`）が同じ規則を別の方針線で評価するため、config からの
+    取り出しと現シートの検査だけを `decide_upgrade` に残して分けている。
+    """
+    blocked = _pre_checks(subject, settings, settings.upgrade_min_complete_months)
+    if blocked is not None:
+        return blocked
+
     target = subject.target
-    if not target.complete:
-        return _decision(
-            DecisionStatus.NO_DECISION, SeatAction.NONE, [ReasonCode.PARTIAL_MONTH]
-        )
-    complete_months = sum(1 for month in subject.months if month.complete)
-    if complete_months < settings.upgrade_min_complete_months:
-        return _decision(
-            DecisionStatus.NO_DECISION,
-            SeatAction.NONE,
-            [ReasonCode.INSUFFICIENT_HISTORY],
-        )
-
-    recent = _recent_reasons(subject, target.end, settings.recent_seat_change_days)
-    if recent:
-        return _decision(DecisionStatus.OBSERVE, SeatAction.NONE, recent)
-
     credit_limit = subject.credit_limit_usd
-    economics = _premium_economics(credit_limit, target, settings)
-    estimated = _estimated_standard_overage(target, settings)
-    if not (economics or estimated):
-        return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
+    if credit_limit == 0.0 and target.billed_usd > 0.0:
+        # 「無効」の記入と実課金の観測が矛盾している（記入ミスか月中の設定変更）。実課金と
+        # いう観測を捨てないため κ 不明として扱う（対象月の実課金だけを見る）
+        credit_limit = None
 
-    # 候補になった根拠。結論がどちらへ振り分けられても消さない（結論だけが変わるのであって、
-    # 候補化の観測は同じもの。decision-evidence.csv で月をまたいで突き合わせる対象になる）
-    evidence: list[ReasonCode] = []
-    if estimated:
-        # 推定ベースの超過も候補化の観測なので、結論がどこへ振り分けられても残す（κ の状態と
-        # 継続性で結論は変わるが、対象月の観測は同じもの）
-        evidence.append(ReasonCode.ESTIMATED_STANDARD_OVERAGE)
-    if _credit_reached(credit_limit, target, settings):
-        evidence.append(ReasonCode.CREDIT_LIMIT_REACHED)
-    if _sustained_overage(subject, settings):
-        evidence.append(ReasonCode.SUSTAINED_OVERAGE)
-    if _premium_cheaper_by_amount(target, settings):
-        # 金額差で成立した候補にだけ付ける。上限到達だけで候補になった場合は、上限そのものが
-        # 根拠であって「Standard + クレジットより Premium が安い」を立証していない（§12.4）
-        evidence.append(ReasonCode.PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT)
-    if _model_favors_standard(target, settings):
-        evidence.append(ReasonCode.STANDARD_WITH_CREDIT_CHEAPER)
+    billing = _standard_billing_exceeds_seat_gap(target, settings)
+    reached = _credit_reached(credit_limit, target, settings)
+    above = _above_policy_line(target, settings)
     rising = _credit_consumption_rising(subject, target.month)
-    if rising:
-        evidence.append(ReasonCode.CREDIT_CONSUMPTION_RISING)
 
     if credit_limit is None:
-        # κ 不明: シート判定は止めない（経済軸は実課金と需要だけで評価できる）。クレジットは
-        # 上限も有効・無効も分からず金額を断定できないので、付与ではなく設定の確認へ回す
-        if economics:
-            status, action, reasons = _classification_axis(target, settings, evidence)
-        else:
-            status, action, reasons = (
+        # κ 不明: 席を動かす判断は実課金だけで行う。クレジット側は上限も有効・無効も
+        # 分からず金額を断定できないので、付与ではなく設定の確認へ回す
+        if billing:
+            status, action, reasons = _classification_axis(
+                target,
+                settings,
+                _observed_evidence(
+                    subject, settings, billing=billing, reached=reached, rising=rising
+                ),
+            )
+            reasons.append(ReasonCode.CREDIT_SETTING_UNKNOWN)
+            return _decision(status, action, reasons, CreditAction.REVIEW)
+        if above:
+            # 需要は Premium を正当化する水準だが、κ が分からないと実課金 $0 の意味が
+            # 決まらない。席は動かさず、設定の確認だけを作業として出す
+            return _decision(
                 DecisionStatus.KEEP,
                 SeatAction.KEEP,
-                list(evidence),
+                [
+                    ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
+                    ReasonCode.CREDIT_SETTING_UNKNOWN,
+                ],
+                CreditAction.REVIEW,
             )
-        reasons.append(ReasonCode.CREDIT_SETTING_UNKNOWN)
-        return _decision(status, action, reasons, CreditAction.REVIEW)
+        # 設定の不明だけで人へ回すと、確認すべき相手が組織の全員になる
+        return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
 
     if credit_limit == 0.0:
-        # κ 無効: 実課金が構造的に $0 になるため、観測は「枠内に収まっている」ことを語らない。
-        # §12.6 の継続性ゲートをここに置く（週次スナップショットの継続上昇は継続の同等物）
-        sustained = _premium_economics_run(subject, settings) >= _SUSTAINED_MONTHS
-        if economics and (sustained or rising):
+        # κ 無効: 実課金が構造的に $0 になるため、観測は候補化の材料にならない。§12.6 の
+        # 継続性ゲートをここに置く（週次スナップショットの継続上昇は継続の同等物）
+        if not above:
+            return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
+        # 候補になった根拠。結論がどこへ振り分けられても消さない（結論だけが変わるので
+        # あって、候補化の観測は同じもの。月をまたいだ突き合わせの対象になる）
+        evidence = [ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE]
+        sustained = _policy_line_run(subject, settings) >= _SUSTAINED_MONTHS
+        if sustained:
+            evidence.append(ReasonCode.SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE)
+        if rising:
+            evidence.append(ReasonCode.CREDIT_CONSUMPTION_RISING)
+        if sustained or rising:
             status, action, reasons = _classification_axis(target, settings, evidence)
             return _decision(status, action, reasons)
-        # 一時的な成立・推定だけの成立では席を変えず、上限つきクレジットで1ヶ月の課金を
-        # 実測する。分類軸（Code ゲート）はかけない — 込み枠は product 共通で、上限つきの
-        # 付与は可逆な計測手段なので、昇格と同じ強さで Code 主体であることを要求しない
-        reasons: list[ReasonCode] = [*evidence]
+        # 一時的な成立では席を変えず、上限つきクレジットで1ヶ月の課金を実測する。分類軸
+        # （Code ゲート）はかけない — 込み枠は product 共通で、上限つきの付与は可逆な
+        # 計測手段なので、昇格と同じ強さで Code 主体であることを要求しない
+        reasons = [*evidence]
         if target.supplementary_high:
             reasons.append(ReasonCode.HIGH_SUPPLEMENTARY_USAGE)
         return _decision(
@@ -505,10 +521,16 @@ def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
             CreditAction.ENABLE_WITH_CAP,
         )
 
-    # κ 有効: 実課金の観測がある。経済軸が成立すれば分類軸へ振り分け、推定だけでは動かさない
-    if not economics:
+    # κ 有効: 実課金の観測がある。方針線は使わない（観測が語れる組織で方針で上書きしない）
+    if not (billing or reached):
         return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
-    status, action, reasons = _classification_axis(target, settings, evidence)
+    status, action, reasons = _classification_axis(
+        target,
+        settings,
+        _observed_evidence(
+            subject, settings, billing=billing, reached=reached, rising=rising
+        ),
+    )
     return _decision(status, action, reasons)
 
 
@@ -522,7 +544,7 @@ def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
     3. 評価窓に実課金のある月があれば現状維持（Premium の込み枠を超えた観測がある）
     4. Code 需要が確定しない月があれば観察、Code 需要が高い月があれば現状維持
     5. Code 需要が低く supplementary が高いならアサインの見直し
-    6. 経済軸が評価窓の全月で成立すれば降格推奨、そうでなければ現状維持
+    6. 評価窓の全月で全 product 需要が方針線を下回れば降格推奨、そうでなければ現状維持
 
     誤った降格は業務を止めるため、判断は対象月だけでなく評価窓（直近の完全月
     `downgrade.min_complete_months` ヶ月）の全月で成立することを要求する。
@@ -536,31 +558,19 @@ def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
             f"降格判定の対象は current_seat が {_PREMIUM!r} のユーザだけです: "
             f"{subject.current_seat!r}"
         )
-    settings = _settings(cfg)
+    return _downgrade(subject, _settings(cfg))
 
-    if subject.identity_conflict:
-        return _decision(
-            DecisionStatus.NO_DECISION, SeatAction.NONE, [ReasonCode.IDENTITY_CONFLICT]
-        )
+
+def _downgrade(subject: SubjectHistory, settings: _Settings) -> DecisionV2:
+    """降格の規則そのもの（設定値を受ける形。`_upgrade` と同じ理由で分けている）。"""
+    blocked = _pre_checks(subject, settings, settings.downgrade_min_complete_months)
+    if blocked is not None:
+        return blocked
+
     target = subject.target
-    if not target.complete:
-        return _decision(
-            DecisionStatus.NO_DECISION, SeatAction.NONE, [ReasonCode.PARTIAL_MONTH]
-        )
-    complete = [month for month in subject.months if month.complete]
-    if len(complete) < settings.downgrade_min_complete_months:
-        return _decision(
-            DecisionStatus.NO_DECISION,
-            SeatAction.NONE,
-            [ReasonCode.INSUFFICIENT_HISTORY],
-        )
-
-    recent = _recent_reasons(subject, target.end, settings.recent_seat_change_days)
-    if recent:
-        return _decision(DecisionStatus.OBSERVE, SeatAction.NONE, recent)
-
     # 評価窓は直近の完全月だけを新しい順に採る（間に部分月が挟まっても飛ばす）。必要な
-    # 長さは上の履歴不足の検査で保証されている
+    # 長さは `_pre_checks` の履歴不足の検査で保証されている
+    complete = [month for month in subject.months if month.complete]
     window = complete[-settings.downgrade_min_complete_months:]
 
     # Premium での実課金は、需要が Premium の込み枠を超えた観測なので降格の候補にしない。
@@ -579,19 +589,16 @@ def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
         return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
 
     if target.supplementary_high:
-        # Code が低く supplementary が高いユーザは総需要が大きく、経済軸が成立しないことが
-        # 多い。経済軸より先に見るのは、その場合に現状維持で終わらせず「シートではなく
-        # アサインを人が見直す」To-Do として出すため（§12.5）
+        # Code が低く supplementary が高いユーザは総需要が大きく、方針線を上回って
+        # 経済軸が成立しないことが多い。経済軸より先に見るのは、その場合に現状維持で
+        # 終わらせず「シートではなくアサインを人が見直す」To-Do として出すため（§12.5）
         return _decision(
             DecisionStatus.RECOMMENDED,
             SeatAction.REVIEW_ASSIGNMENT,
             [ReasonCode.REVIEW_NON_CODE_USAGE, ReasonCode.HIGH_SUPPLEMENTARY_USAGE],
         )
 
-    # 評価窓の実課金は 0 と確定しているので、観測実課金による下限拘束（V1 の
-    # analyze.pipeline._costs_for_current_seat の premium 分岐に相当）は自然に無効になり、
-    # 需要だけの純モデル判定になる
-    if not all(_model_favors_standard(month, settings) for month in window):
+    if any(_above_policy_line(month, settings) for month in window):
         return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
 
     return _decision(
@@ -604,6 +611,103 @@ def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
             ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
         ],
     )
+
+
+def policy_stability(subject: SubjectHistory, cfg: Mapping) -> int | None:
+    """方針線の感度（§12.7）: 方針線をずらしても同じ結論になるか。
+
+    方針線を ±`_POLICY_STABILITY_OFFSET_USD` ずらした3通り（−・基準・+ の順）で判定し、
+    基準と同じ seat_action になった数を返す（基準自身を含むので 1〜3）。3 は「線の置き場所
+    に結論が依存していない」、1 は「線をどこへ引くかで結論が変わる」を表す。
+
+    経済軸に到達しない判定では None を返す（hard blocker、または recent 窓で観察へ倒れた
+    場合）。「3/3 で安定」と「方針線が判定に関与しなかった」を区別するため。
+
+    current seat が Standard なら昇格、Premium なら降格の規則で評価する。それ以外は
+    ValueError（decide_* と同じ流儀）。渡された config は書き換えない。
+    """
+    settings = _settings(cfg)
+    if subject.current_seat == _STANDARD:
+        decide, min_complete_months = _upgrade, settings.upgrade_min_complete_months
+    elif subject.current_seat == _PREMIUM:
+        decide, min_complete_months = _downgrade, settings.downgrade_min_complete_months
+    else:
+        raise ValueError(
+            f"方針感度の対象は current_seat が {_STANDARD!r} か {_PREMIUM!r} の"
+            f"ユーザだけです: {subject.current_seat!r}"
+        )
+
+    if _pre_checks(subject, settings, min_complete_months) is not None:
+        return None
+
+    # 方針線だけを差し替えた設定で −・基準・+ の順に1度ずつ評価する（NamedTuple の
+    # _replace。入力の cfg には触れない）。ずらした値が 0 以下になっても需要との比較は
+    # 定義されるので、そのまま使う
+    actions = [
+        decide(
+            subject,
+            settings._replace(
+                premium_justification_usd=settings.premium_justification_usd + offset
+            ),
+        ).seat_action
+        for offset in (-_POLICY_STABILITY_OFFSET_USD, 0.0, _POLICY_STABILITY_OFFSET_USD)
+    ]
+    baseline = actions[1]
+    return sum(1 for action in actions if action is baseline)
+
+
+def _pre_checks(
+    subject: SubjectHistory, settings: _Settings, min_complete_months: int
+) -> DecisionV2 | None:
+    """昇格・降格に共通の前段（hard blocker と recent 窓）。
+
+    該当すればその結論を返し、経済軸へ進める状態なら None を返す。方針感度も同じ関数を
+    使うので、「判定が経済軸に到達したか」の定義が1箇所になる。
+    """
+    if subject.identity_conflict:
+        return _decision(
+            DecisionStatus.NO_DECISION, SeatAction.NONE, [ReasonCode.IDENTITY_CONFLICT]
+        )
+    target = subject.target
+    if not target.complete:
+        return _decision(
+            DecisionStatus.NO_DECISION, SeatAction.NONE, [ReasonCode.PARTIAL_MONTH]
+        )
+    if sum(1 for month in subject.months if month.complete) < min_complete_months:
+        return _decision(
+            DecisionStatus.NO_DECISION,
+            SeatAction.NONE,
+            [ReasonCode.INSUFFICIENT_HISTORY],
+        )
+    recent = _recent_reasons(subject, target.end, settings.recent_seat_change_days)
+    if recent:
+        return _decision(DecisionStatus.OBSERVE, SeatAction.NONE, recent)
+    return None
+
+
+def _observed_evidence(
+    subject: SubjectHistory,
+    settings: _Settings,
+    *,
+    billing: bool,
+    reached: bool,
+    rising: bool,
+) -> list[ReasonCode]:
+    """実課金の観測で候補になったときの根拠（κ が有効・不明の経路で共通）。
+
+    上限到達だけで候補になった場合は `STANDARD_BILLING_ABOVE_SEAT_GAP` を付けない。
+    上限そのものが根拠であって、実課金がシート差額を上回ったことは立証していない（§12.4）。
+    """
+    evidence: list[ReasonCode] = []
+    if reached:
+        evidence.append(ReasonCode.CREDIT_LIMIT_REACHED)
+    if _sustained_billing(subject, settings):
+        evidence.append(ReasonCode.SUSTAINED_OVERAGE)
+    if billing:
+        evidence.append(ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP)
+    if rising:
+        evidence.append(ReasonCode.CREDIT_CONSUMPTION_RISING)
+    return evidence
 
 
 def _decision(
@@ -709,73 +813,29 @@ def _recent_reasons(
     return reasons
 
 
-def _premium_economics(
-    credit_limit_usd: float | None, month: MonthObservation, settings: _Settings
+def _standard_billing_exceeds_seat_gap(
+    month: MonthObservation, settings: _Settings
 ) -> bool:
-    """経済軸（§12.4 条件4）: 3経路のいずれかが成立するか。
+    """観測経路: Standard の実課金がシート差額をマージ以上上回っているか。
 
-    観測（実課金を含む現状の費用）・追加クレジット上限への到達・純モデル判定のどれか1つで
-    候補になる。
+    見るのは実課金とシート差額（Premium − Standard）だけで、需要も込み枠の推定も使わない。
+    変更先（Premium）の従量課金は観測できず推定もしないため、比較をこの差額に閉じている。
+
+    マージを 0 に設定した場合でも、差額とちょうど同額は候補にしない（条件は「上回った」
+    ことなので、同額は満たさない）。
     """
-    return (
-        _observed_overage(month, settings)
-        or _credit_reached(credit_limit_usd, month, settings)
-        or _model_favors_premium(month, settings)
-    )
+    seat_gap = settings.premium_price_usd - settings.standard_price_usd
+    excess = month.billed_usd - seat_gap
+    return excess > 0.0 and excess >= settings.billing_margin_usd
 
 
-def _premium_cheaper_by_amount(month: MonthObservation, settings: _Settings) -> bool:
-    """経済軸のうち、金額差で成立する2経路（観測・純モデル）。
+def _above_policy_line(month: MonthObservation, settings: _Settings) -> bool:
+    """方針経路: 全 product 需要が方針線（`premium_justification_usd`）以上か。
 
-    追加クレジット上限への到達だけは金額差ではなく上限そのものを根拠にするため（§12.4）、
-    「Standard + クレジットより Premium が安い」と言えるかはこの2経路で判断する。
+    方針線は「この水準の需要なら Premium シートが正当化される」という決めた値で、込み枠の
+    推定ではない。境界（ちょうど同額）は「以上」として満たす側に含める。
     """
-    return _observed_overage(month, settings) or _model_favors_premium(month, settings)
-
-
-def _estimated_standard_overage(month: MonthObservation, settings: _Settings) -> bool:
-    """推定ベースの超過: 需要が Standard の込み量推定を超えているか。
-
-    課金の観測を使わず、需要と allowance 推定だけで見る（追加クレジットが無効・不明な
-    組織では実課金が構造的に $0 になり、超過が課金として現れないため）。
-
-    複数シナリオでの超過を要求するのは純モデル判定と同じ理由で、1シナリオだけの超過は
-    allowance 推定の誤差と区別できない。mid の超過額の閾値は
-    `min_assignment_saving_usd` を再利用する（新しい設定キーを設けない。この額に届かない
-    超過はクレジット付与の手間に見合わない、という同じ基準で足りる）。
-    """
-    agreeing = sum(
-        1
-        for scenario in _SCENARIOS
-        if month.total_demand_usd > settings.standard_allowance_usd[scenario]
-    )
-    mid_overage = month.total_demand_usd - settings.standard_allowance_usd["mid"]
-    return (
-        agreeing >= _MIN_AGREEING_SCENARIOS and mid_overage >= settings.min_saving_usd
-    )
-
-
-def _observed_overage(month: MonthObservation, settings: _Settings) -> bool:
-    """観測経路: 実課金を含む現状の費用が、Premium へ変えた場合の試算より高いか。
-
-    現シートの費用は観測値（シート料 + 実課金）、変更先は allowance モデルの試算だが、
-    込み量の大小関係（Standard の込み量 ≤ Premium の込み量）から、Premium での超過課金は
-    現在の実課金を超えない。V1 の analyze.pipeline._costs_for_current_seat（standard 分岐）
-    と同じ拘束。
-    """
-    overage = max(0.0, month.total_demand_usd - settings.premium_allowance_usd["mid"])
-    standard_cost = settings.standard_price_usd + month.billed_usd
-    premium_cost = settings.premium_price_usd + min(overage, month.billed_usd)
-    return _saving_qualifies(standard_cost - premium_cost, settings)
-
-
-def _saving_qualifies(saving: float, settings: _Settings) -> bool:
-    """削減見込みが候補の条件を満たすか。
-
-    候補条件は「Standard の費用が Premium より高い」こと（§12.4）なので、同額
-    （削減見込み 0）は満たさない。閾値を 0 に設定した場合でもこの関係は変わらない。
-    """
-    return saving > 0.0 and saving >= settings.min_saving_usd
+    return month.total_demand_usd >= settings.premium_justification_usd
 
 
 def _credit_reached(
@@ -796,55 +856,7 @@ def _credit_reached(
     )
 
 
-def _model_favors_premium(month: MonthObservation, settings: _Settings) -> bool:
-    """純モデル経路: 実課金による拘束を置かず、需要だけで Premium が有利か。
-
-    low/mid/high のうち複数のシナリオで Premium が安く、かつ mid の削減見込みが閾値以上の
-    ときだけ候補にする（1シナリオだけの一致は allowance 推定の誤差と区別できない）。
-    """
-    agreeing = 0
-    mid_saving = 0.0
-    for scenario in _SCENARIOS:
-        standard_cost = settings.standard_price_usd + max(
-            0.0, month.total_demand_usd - settings.standard_allowance_usd[scenario]
-        )
-        premium_cost = settings.premium_price_usd + max(
-            0.0, month.total_demand_usd - settings.premium_allowance_usd[scenario]
-        )
-        if premium_cost < standard_cost:
-            agreeing += 1
-        if scenario == "mid":
-            mid_saving = standard_cost - premium_cost
-    return agreeing >= _MIN_AGREEING_SCENARIOS and _saving_qualifies(
-        mid_saving, settings
-    )
-
-
-def _model_favors_standard(month: MonthObservation, settings: _Settings) -> bool:
-    """純モデル経路の鏡像: 需要だけで Standard が有利か（降格の経済軸）。
-
-    条件の形は _model_favors_premium と同じで、比較の向きだけが逆。複数のシナリオで
-    Standard が安く、かつ mid の削減見込みが閾値以上のときだけ候補にする。
-    """
-    agreeing = 0
-    mid_saving = 0.0
-    for scenario in _SCENARIOS:
-        standard_cost = settings.standard_price_usd + max(
-            0.0, month.total_demand_usd - settings.standard_allowance_usd[scenario]
-        )
-        premium_cost = settings.premium_price_usd + max(
-            0.0, month.total_demand_usd - settings.premium_allowance_usd[scenario]
-        )
-        if standard_cost < premium_cost:
-            agreeing += 1
-        if scenario == "mid":
-            mid_saving = premium_cost - standard_cost
-    return agreeing >= _MIN_AGREEING_SCENARIOS and _saving_qualifies(
-        mid_saving, settings
-    )
-
-
-def _sustained_overage(subject: SubjectHistory, settings: _Settings) -> bool:
+def _sustained_billing(subject: SubjectHistory, settings: _Settings) -> bool:
     """観測経路が直近から連続する完全月で続いているか。
 
     対象月から古い方へ遡り、完全月かつ観測経路が成立するあいだ数える。データが無い月は
@@ -852,25 +864,24 @@ def _sustained_overage(subject: SubjectHistory, settings: _Settings) -> bool:
     """
     run = 0
     for month in reversed(subject.months):
-        if not month.complete or not _observed_overage(month, settings):
+        if not month.complete or not _standard_billing_exceeds_seat_gap(
+            month, settings
+        ):
             break
         run += 1
     return run >= _SUSTAINED_MONTHS
 
 
-def _premium_economics_run(subject: SubjectHistory, settings: _Settings) -> int:
-    """経済軸が直近から連続して成立する完全月の数。
+def _policy_line_run(subject: SubjectHistory, settings: _Settings) -> int:
+    """方針線を上回る月が直近から連続している数。
 
-    走査の規則は `_sustained_overage` と同じ（不完全月・不成立で打ち切り、連続の判定は
-    暦の隣接ではなく渡された履歴の並びで行う）。見る条件が観測経路だけか経済軸の3経路かが
-    違う。追加クレジットが無効な組織では観測経路が成立しないため、継続性の判定には
-    こちらを使う（§12.6）。
+    走査の規則は `_sustained_billing` と同じ（不完全月・不成立で打ち切り、連続の判定は
+    暦の隣接ではなく渡された履歴の並びで行う）。見る条件が実課金か需要かが違う。追加
+    クレジットが無効な組織では実課金が語らないため、継続性の判定にはこちらを使う（§12.6）。
     """
     run = 0
     for month in reversed(subject.months):
-        if not month.complete or not _premium_economics(
-            subject.credit_limit_usd, month, settings
-        ):
+        if not month.complete or not _above_policy_line(month, settings):
             break
         run += 1
     return run
