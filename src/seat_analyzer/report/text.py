@@ -50,7 +50,7 @@ _TEXT = {
     "h_snapshot": "月中の利用推移（スナップショット差分）",
     "h_code_diff": "月中の Claude Code 活動（code-analytics 差分）",
     "h_member_changes": "月中のメンバー変動（スナップショット差分）",
-    "h_e_dist": "込み枠の実測（E = API換算需要 − 実課金）",
+    "h_e_dist": "シートが吸収した量の実測（E = API換算需要 − 実課金）",
     "h_grant": "追加クレジット付与候補",
     "h_credit_reach": "追加クレジット残額",
     "h_stats": "組織内の分布（参考値）",

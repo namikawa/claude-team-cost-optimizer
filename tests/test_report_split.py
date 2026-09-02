@@ -61,7 +61,7 @@ DETAILS_SECTIONS = [
     "月中の利用推移（スナップショット差分）",
     "月中の Claude Code 活動（code-analytics 差分）",
     "月中のメンバー変動（スナップショット差分）",
-    "込み枠の実測（E = API換算需要 − 実課金）",
+    "シートが吸収した量の実測（E = API換算需要 − 実課金）",
     "感度分析",
 ]
 
@@ -139,7 +139,7 @@ def _moved_blocks(result) -> dict[str, str]:
         "月中の利用推移": _snapshot_md(result.snapshot),
         "月中の Claude Code 活動": _code_diff_md(result.code_diff),
         "月中のメンバー変動": _member_changes_md(result.member_changes),
-        "込み枠の実測": _e_distribution_md(result.e_distribution),
+        "シートが吸収した量の実測": _e_distribution_md(result.e_distribution),
         "感度分析": _sensitivity_md(users),
     }
     for col, heading, include_unset in GROUP_AXES:

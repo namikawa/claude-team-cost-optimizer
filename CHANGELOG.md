@@ -5,6 +5,7 @@
 ### 変更
 
 - dashboard / preview-dashboard の出力 HTML から CSS・JS のコメントを除去した
+- details の「込み枠の実測」を「シートが吸収した量の実測」に改め、allowance との倍率比較を削除した
 
 ### 修正
 
