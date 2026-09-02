@@ -627,6 +627,16 @@ def _validate_model_prices(cfg: dict, errors: list[str]) -> None:
                     f"model_prices.patterns[{index}] には match（空でない文字列）と"
                     "input/output（有限な数値）が必要です"
                 )
+                continue
+            # cache_read（キャッシュ読取の倍率）は任意。0 以下・非有限の倍率は需要を
+            # 黙って過小に（あるいは無限に）見せるので、書かれた場合だけ検査する
+            if "cache_read" in pattern and not (
+                _is_finite(pattern["cache_read"]) and pattern["cache_read"] > 0
+            ):
+                errors.append(
+                    f"model_prices.patterns[{index}].cache_read は正の有限な数値が必要です"
+                    "（省略すると cache_multipliers.read を使います）"
+                )
     default = model_prices.get("default")
     if (
         not isinstance(default, dict)

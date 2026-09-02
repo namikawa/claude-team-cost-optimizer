@@ -76,16 +76,23 @@ organizations: {}
 
 # モデル単価（USD per 1M tokens）。model 名の部分一致（小文字）で判定、上から順に評価
 # するため、特例（sonnet-5, opus-4-1 等）は汎用パターンより上に置くこと。
-# 公式: https://platform.claude.com/docs/en/about-claude/models/overview（2026-07-05 照合）
+# cache_read は任意で、キャッシュ読取の倍率（入力単価に対する）をモデル別に指定する。
+# 省略したパターンは cache_multipliers.read を使う。
+# 公式: https://platform.claude.com/docs/en/about-claude/pricing（2026-09-02 照合）
 model_prices:
   patterns:
-    - { match: "fable",    input: 10.0, output: 50.0 }
-    - { match: "opus-4-1", input: 15.0, output: 75.0 }   # 旧世代 Opus のみ高単価
-    - { match: "opus",     input: 5.0,  output: 25.0 }   # 4.5〜4.8（実課金行との検算で一致確認済み）
-    # Sonnet 5 は 2026-08-31 まで導入価格 $2/$10。以降は 3.0/15.0 に更新すること
-    - { match: "sonnet-5", input: 2.0,  output: 10.0 }
-    - { match: "sonnet",   input: 3.0,  output: 15.0 }   # 4.5/4.6
-    - { match: "haiku",    input: 1.0,  output: 5.0 }
+    # Fable 5.1 / Mythos 5.1 のキャッシュ読取だけ 0.025 倍（他モデルは 0.1 倍）
+    - { match: "fable-5-1",  input: 10.0, output: 50.0, cache_read: 0.025 }
+    - { match: "fable",      input: 10.0, output: 50.0 }
+    - { match: "mythos-5-1", input: 10.0, output: 50.0, cache_read: 0.025 }
+    - { match: "mythos",     input: 10.0, output: 50.0 }
+    - { match: "opus-4-1",   input: 15.0, output: 75.0 }   # 旧世代 Opus のみ高単価
+    - { match: "opus",       input: 5.0,  output: 25.0 }   # 4.5〜4.8（実課金行との検算で一致確認済み）
+    # Sonnet 5 の $2/$10 は導入価格（2026-08-31 まで）として発表されたが、
+    # そのまま正式価格になり値上げは行われない（2026-09-02 公式確認）
+    - { match: "sonnet-5",   input: 2.0,  output: 10.0 }
+    - { match: "sonnet",     input: 3.0,  output: 15.0 }   # 4.5/4.6
+    - { match: "haiku",      input: 1.0,  output: 5.0 }
   default: { input: 5.0, output: 25.0 }
 
 # ユーザ需要（api_cost）の算出基準:
@@ -225,6 +232,7 @@ usage_credits:
 # キャッシュトークンの実効単価係数（入力単価に対する倍率）。
 # 実データで net_spend = uncached×1.0 + cache_read×0.1 + write_5m×1.25 + write_1h×2.0
 # + completion×出力単価 と一致することを確認済み（2026-07-05）。
+# read は全モデル共通の既定で、model_prices.patterns 側に cache_read があればそれを優先する。
 cache_multipliers:
   read: 0.1
   write_5m: 1.25

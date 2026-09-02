@@ -123,12 +123,15 @@ def test_preview_without_days_or_range_errors(make_input, tmp_path, capsys):
     assert "--days" in capsys.readouterr().err
 
 
-# --- モデル単価（2026-07-05 公式照合） ---
+# --- モデル単価（2026-09-02 公式照合） ---
 
 def test_model_price_patterns(cfg):
-    assert price_for_model("claude-sonnet-5", cfg) == (2.0, 10.0)          # 導入価格（〜2026-08-31）
+    assert price_for_model("claude-sonnet-5", cfg) == (2.0, 10.0)          # 導入価格が正式価格になった
     assert price_for_model("claude-sonnet-4-6", cfg) == (3.0, 15.0)
     assert price_for_model("claude-fable-5", cfg) == (10.0, 50.0)
+    assert price_for_model("claude-fable-5-1", cfg) == (10.0, 50.0)
+    assert price_for_model("claude-mythos-5-1", cfg) == (10.0, 50.0)
+    assert price_for_model("claude-mythos-5", cfg) == (10.0, 50.0)
     assert price_for_model("claude-opus-4-8", cfg) == (5.0, 25.0)
     assert price_for_model("claude-opus-4-1-20250805", cfg) == (15.0, 75.0)
     assert price_for_model("claude-haiku-4-5-20251001", cfg) == (1.0, 5.0)

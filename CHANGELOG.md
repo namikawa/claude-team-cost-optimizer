@@ -1,11 +1,21 @@
 # 変更履歴
 
-## [未リリース]
+## [1.1.2] - 2026-09-02
+
+### 追加
+
+- Fable 5.1 / Mythos の単価パターンを追加し、モデル別のキャッシュ読取倍率
+  （Fable 5.1 と Mythos 5.1 は 0.025 倍）を設定できるようにした
+- `doctor` に GitHub の検査（`gh` の認証・token の権限・Organization の参照・API の利用上限・
+  `github-members.csv` の email → GitHub login の対応表）を追加した。`config.yaml > organizations`
+  に `github_org` を書いた組織だけが対象
 
 ### 変更
 
 - dashboard / preview-dashboard の出力 HTML から CSS・JS のコメントを除去した
 - details の「込み枠の実測」を「シートが吸収した量の実測」に改め、allowance との倍率比較を削除した
+- members-info の追加クレジット上限の列で、全角数字・円記号・桁区切りの `_`・非有限の値を
+  「不明」として警告するようにした（従来は黙って別の金額や「無制限」として通っていた）
 
 ### 修正
 
@@ -71,6 +81,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.1.2]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.1.2
 [1.1.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.1.1
 [1.1.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.1.0
 [1.0.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.0.0
