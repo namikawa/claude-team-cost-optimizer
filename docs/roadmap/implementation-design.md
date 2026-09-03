@@ -644,12 +644,12 @@ StrEnumは文字列と等値になるため、語彙をまたいだ等値比較�
 - `ONE_MONTH_STRONG_CODE_DEMAND`
 - `SUSTAINED_LOW_CODE_DEMAND`
 - `SUSTAINED_LOW_TOTAL_DEMAND`
+- `TOTAL_DEMAND_ABOVE_PREMIUM_LINE`
 - `SUSTAINED_OVERAGE`
-- `ESTIMATED_STANDARD_OVERAGE`
+- `SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE`
 - `CREDIT_LIMIT_REACHED`
 - `CREDIT_SETTING_UNKNOWN`
-- `PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT`
-- `STANDARD_WITH_CREDIT_CHEAPER`
+- `STANDARD_BILLING_ABOVE_SEAT_GAP`
 - `CREDIT_CONSUMPTION_RISING`
 - `HIGH_SUPPLEMENTARY_USAGE`
 - `REVIEW_NON_CODE_USAGE`
@@ -663,18 +663,31 @@ StrEnumは文字列と等値になるため、語彙をまたいだ等値比較�
 
 ### 12.3 Cost
 
-```text
-standard_cost =
-  standard_unit_price
-  + expected_standard_credit
+変更先シートの従量課金は観測できず、推定もしない。判定に使うのは観測できる事実と、方針
+として決めた値だけとする。
 
-premium_cost =
-  premium_unit_price
-  + expected_premium_credit
-```
+- 観測: 現シートの実課金、usage credit上限κへの到達
+- 方針: `premium_justification_usd`（Premiumシートが正当化される全product需要の下限）
 
-現在シートの実課金を観測値として優先し、変更先は現行allowanceモデルを使用する。
-low/mid/highは引き続きscenario stabilityとして出力する。
+シートの込み枠をUSDの月次プールとみなして`max(0, 需要 − allowance)`で変更先の課金を試算
+する関数形は、追加クレジットが有効で実課金がセンサーとして効く組織の観測で反証された。
+同一シート・同一月で課金の有無を分ける単一のしきい値が存在せず、課金が発生したあとに需要が
+伸びても課金は止まり、課金は利用者間で同期しない。実機構は月より短い周期のレート制限と
+見られるが非公開なので、V2判定ではallowanceを使わない（V1は従来どおり使う）。
+
+費用の比較はシート差額に閉じる。Standardの実課金がシート差額（Premium − Standard）を
+`observed_billing_margin_usd`以上上回っていることを、席を上げる方針条件とする。差額と
+ちょうど同額はこの条件を満たさない（条件は「上回った」ことなので）。
+
+需要の側は方針線との比較だけで見る。降格は評価窓の全完全月で全product需要が方針線未満、
+実課金が観測できない組織の昇格は対象月の全product需要が方針線以上であることを条件とする。
+方針線は推定値ではないので、allowanceとの大小関係は検証しない。
+
+昇格と降格を毎月往復しないための歯止めは、Codeゲートとヒステリシスが担う。昇格は対象月の
+Code需要が`min_code_demand_usd`以上であることを要し、降格は評価窓の全完全月でCode需要が
+`max_code_demand_usd`未満であることを要するため、往復には実際の利用の変化が必要になる。
+加えてrecent窓（`recent_seat_change_days`）と降格の評価窓（`downgrade.min_complete_months`
+完全月）が、1か月の振れで席が動くことを防ぐ。
 
 5時間枠・週次上限を観測できないため、`CAPACITY_SIGNAL_UNAVAILABLE`を情報として付ける。
 この理由だけで全候補を保留にはしない。
@@ -695,10 +708,7 @@ decision_v2:
 1. current seatがStandard
 2. 完全月が1か月以上
 3. Code需要が設定閾値以上
-4. 次のいずれか
-   - Standardの実課金を含む費用がPremiumより高い
-   - usage credit上限へ到達
-   - 純モデル判定でPremiumが複数scenarioにおいて有利
+4. usage credit上限κの状態に応じた信号が成立
 5. partial month、identity conflictではない
 
 条件3の閾値は`min_code_demand_usd`（既定はシート差額の2倍）。シート差額程度の需要は
@@ -706,12 +716,27 @@ decision_v2:
 確定できない場合は、Code主体であることを証明できないまま自動で推奨しないため
 `OBSERVE`とする。
 
-条件4は費用の軸で、シートの込み枠がproduct共通であることから全product合算の需要と
-実課金で評価する。実課金を含む経路と純モデル経路はいずれも`min_assignment_saving_usd`
-以上の月あたり削減見込みを要求する。削減見込みは正であることも要求する
-（`min_assignment_saving_usd: 0`の設定でも、StandardとPremiumが同額の状態は「Standardの
-費用がPremiumより高い」を満たさない）。usage credit上限への到達だけは金額差ではなく上限
-そのものを根拠にし、到達には実課金の発生を伴う（実課金ゼロを到達とみなさない）。
+条件4は費用の軸で、シートの込み枠がproduct共通であることから全product合算で評価する。使う
+信号は3つあり、どれを見るかはκの状態が決める。
+
+| κ | 候補化の信号 | 結論 |
+|---|---|---|
+| 有効（正の有限値・無制限） | 実課金がシート差額を上回る、またはκへ到達 | 成立なら条件3の分類軸へ。不成立なら現状維持 |
+| 無効（0） | 全product需要が方針線以上 | 継続性があれば分類軸へ、無ければ`ENABLE_WITH_CAP`（§12.6） |
+| 不明（None） | 実課金がシート差額を上回る | 成立なら分類軸 + `CreditAction.REVIEW`。不成立で需要が方針線以上なら席は動かさず`REVIEW`だけ |
+
+実課金の経路は`observed_billing_margin_usd`以上の超過を要求し、超過が正であることも要求
+する（`observed_billing_margin_usd: 0`の設定でも、シート差額とちょうど同額の実課金は
+「上回った」を満たさない）。usage credit上限への到達だけは金額差ではなく上限そのものを
+根拠にし、到達には実課金の発生を伴う（実課金ゼロを到達とみなさない）。
+
+κが不明な場合、席を動かす判断は実課金だけで行う。有効か無効かが分からないと、実課金ゼロが
+「枠内に収まっている」のか「そもそも課金されない設定」なのか決められないため。需要が方針線
+以上でも席は動かさず、クレジット設定の確認（`REVIEW`）だけを作業として出す。
+
+κが0（無効）と記入されているのに対象月の実課金が正である場合は、記入と観測が矛盾している
+（記入ミス、または月中の設定変更）。この場合はκ不明として扱い、実課金という観測を捨てない。
+見るのは対象月の実課金だけとする（前月の課金は設定変更より前のものでありうる）。
 
 条件3は費用の軸を満たした候補を振り分けるゲートとして働く。Code需要が低く全product
 需要だけ高い場合は`REVIEW_ASSIGNMENT`とし、statusは`RECOMMENDED`とする。シートを変える
@@ -750,9 +775,8 @@ decision_v2:
 Premiumの込み枠を超えた観測）。credit上限への到達は実課金の発生を伴うため、この検査に
 含まれる。
 
-条件3は費用の軸で、窓の実課金が0と確定しているため観測実課金による拘束は働かず、需要
-だけの純モデル判定になる。`min_assignment_saving_usd`以上のmid削減見込みと複数scenarioの
-一致を要求する点はupgradeと同じ。
+条件3は費用の軸で、窓の全月で全product需要が方針線（`premium_justification_usd`）未満で
+あることを要求する。境界（ちょうど同額）は方針線以上として扱い、降格の候補にしない。
 
 Code需要が低くsupplementaryが高い場合は、自動downgradeせず`REVIEW_ASSIGNMENT`とし、
 statusは`RECOMMENDED`とする（upgradeの条件3と同じ扱い）。この振り分けは条件3より先に
@@ -761,19 +785,17 @@ statusは`RECOMMENDED`とする（upgradeの条件3と同じ扱い）。この�
 
 ### 12.6 Credit
 
-比較:
+κが無効な組織で使える信号:
 
-- Standard + observed/estimated credit
-- Premium + observed/estimated credit
+- 全product需要と方針線の比較（§12.3）
 
 継続性:
 
-- 1か月だけ高い
-- 2か月以上高い
-- 週次snapshotで継続上昇
+- 1か月だけ方針線以上
+- 2か月以上連続で方針線以上
+- 週次snapshotで当月消費が継続上昇
 
-一時的な高利用でStandard + creditが安い場合は`ENABLE_WITH_CAP`、継続的でPremiumが
-安い場合は`UPGRADE_TO_PREMIUM`とする。
+一時的に方針線以上なら`ENABLE_WITH_CAP`、継続していれば`UPGRADE_TO_PREMIUM`とする。
 
 credit設定が不明なら金額を断定せず`CreditAction.REVIEW`とする。
 
@@ -781,44 +803,39 @@ credit設定が不明なら金額を断定せず`CreditAction.REVIEW`とする�
 組織は§12.4どおり1完全月で判定する。実課金という観測がある組織では観測を優先し、観測が
 構造的に得られない組織（κ=0では実課金が常に0）でだけ継続性で代替する。
 
-κ=0で経済軸が1か月しか成立しない場合、およびestimated overageだけが成立する場合は、席を
-変えず`ENABLE_WITH_CAP`とする。上限つきcreditの付与は可逆な計測手段で、1か月の課金実測を
-取ることが「実課金が構造的に0のためPremium昇格の根拠が永久に出ない」行き詰まりへの回答に
-なる。この結論には分類軸（Codeゲート）をかけない。シートの込み枠はproduct共通で、付与は席の
-変更ではないため。
+κ=0で需要が方針線以上になったのが1か月だけの場合は、席を変えず`ENABLE_WITH_CAP`とする。
+上限つきcreditの付与は可逆な計測手段で、1か月の課金実測を取ることが「実課金が構造的に0の
+ためPremium昇格の根拠が永久に出ない」行き詰まりへの回答になる。この結論には分類軸
+（Codeゲート）をかけない。シートの込み枠はproduct共通で、付与は席の変更ではないため。
 
 週次snapshotの継続上昇は2完全月連続と同等の継続性として扱い、対象月内の当月消費の観測点が
 3点以上あって取得日順に狭義単調増加していることを要求する。当月消費は月次でリセットされる
 ため比較は対象月の点だけで行い、横ばいは上昇とみなさない（消費が止まった状態と区別できない）。
 
-継続性はいずれの形（2完全月連続・月内の継続上昇）でも、対象月で経済軸が成立していることを
-前提とする（継続性は「Premiumが安い状態が続いているか」を見る条件で、それ自体は候補化の
-根拠にならない）。κ=0の結論は次の3つに分かれる: 経済軸が成立し継続性もあれば分類軸へ進む。
-経済軸が成立しても継続性が無い場合、および推定ベースの超過だけが成立する場合は
-`ENABLE_WITH_CAP`に留まる。経済軸も推定ベースの超過も成立しなければ現状維持で、継続上昇
-だけでは候補にならない。
+継続性はいずれの形（2完全月連続・月内の継続上昇）でも、対象月で需要が方針線以上であること
+を前提とする（継続性は「その状態が続いているか」を見る条件で、それ自体は候補化の根拠に
+ならない）。κ=0の結論は次の3つに分かれる: 方針線以上で継続性もあれば分類軸へ進む。方針線
+以上だが継続性が無ければ`ENABLE_WITH_CAP`に留まる。方針線に届かなければ現状維持で、継続
+上昇だけでは候補にならない。
 
-estimated overageは、需要がStandardのallowance推定をlow/mid/highのうち2scenario以上で超え、
-かつmidの超過が`min_assignment_saving_usd`以上であることとする。課金の観測を使わない推定
-なので、複数scenarioの一致を純モデル判定と同じ理由で要求する（1scenarioだけの超過は
-allowance推定の誤差と区別できない）。閾値は既存の`min_assignment_saving_usd`を再利用し、
-新しいconfigキーは設けない。
-
-credit設定が不明な場合もseat判定は止めない（経済軸は実課金と需要だけで評価できる）。credit
-側は上限も有効・無効も分からず金額を断定できないため、`ENABLE_WITH_CAP`ではなく`REVIEW`を
-重ねる。`REVIEW`を出すのは経済軸または推定ベースの超過で候補になったユーザだけで、どちらも
-成立しないユーザには出さない（設定の不明だけで人へ回すと、確認すべき相手が組織の全員になる）。
+credit設定が不明な場合、席を動かす判断は実課金だけで行う（§12.4）。credit側は上限も有効・
+無効も分からず金額を断定できないため、`ENABLE_WITH_CAP`ではなく`REVIEW`を重ねる。`REVIEW`を
+出すのは実課金または方針線で候補になったユーザだけで、どちらも成立しないユーザには出さない
+（設定の不明だけで人へ回すと、確認すべき相手が組織の全員になる）。
 
 statusは人が取るべきアクションがあるかで決まる。seat actionが`UPGRADE_TO_PREMIUM`・
 `REVIEW_ASSIGNMENT`のとき、またはcredit actionが`ENABLE_WITH_CAP`・`REVIEW`のときは
 `RECOMMENDED`とする。seat側が`OBSERVE`でもcredit側に作業があれば`RECOMMENDED`になり、
 どちらの側の作業かはseat actionとcredit actionが示す。
 
-理由コードは、推定ベースの超過に`ESTIMATED_STANDARD_OVERAGE`、月内の消費上昇に
-`CREDIT_CONSUMPTION_RISING`を使う。金額差で成立した候補には
-`PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT`を、逆向き（Standard + creditの方が安い）が
-成立する場合は`STANDARD_WITH_CREDIT_CHEAPER`を添える。usage credit上限への到達だけで候補に
-なった場合は金額差を立証していないため前者を添えない（§12.4）。
+理由コードは、方針線以上の需要に`TOTAL_DEMAND_ABOVE_PREMIUM_LINE`、それが2完全月連続で
+続いている場合に`SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE`、月内の消費上昇に
+`CREDIT_CONSUMPTION_RISING`を使う。実課金がシート差額を上回って成立した候補には
+`STANDARD_BILLING_ABOVE_SEAT_GAP`を、それが2完全月連続で続いている場合に
+`SUSTAINED_OVERAGE`を添える。usage credit上限への到達だけで候補になった場合は実課金と
+シート差額の関係を立証していないため`STANDARD_BILLING_ABOVE_SEAT_GAP`を添えない（§12.4）。
+`TOTAL_DEMAND_ABOVE_PREMIUM_LINE`は方針線が候補化の信号になった場合（κ無効、またはκ不明で
+実課金が条件を満たさない場合）にだけ添える。
 
 ### 12.7 Confidence
 
@@ -828,7 +845,13 @@ statusは人が取るべきアクションがあるかで決まる。seat action
 - identity quality
 - seat history coverage
 - credit setting coverage
-- scenario stability
+- policy stability
+
+policy stabilityは、方針線（`premium_justification_usd`）を±$100ずらした3通り（−・基準・
++の順）でseat actionを評価し、基準と同じseat actionになった数（基準を含むので1〜3）とする。
+3は「線の置き場所に結論が依存していない」、1は「線をどこへ引くかで結論が変わる」を表す。
+判定が費用の軸に到達しない場合（hard blocker、またはrecent窓で`OBSERVE`へ倒れた場合）は
+値を持たない（None）。「3/3で安定」と「方針線が判定に関与しなかった」を区別するため。
 
 Billing契約情報やOTelをupgrade/downgradeの必須条件にしない。
 
@@ -2213,7 +2236,7 @@ dashboardで読めるようにする。
 
 実装:
 
-- Standard + credit対Premium
+- κの3状態に応じた候補化の信号（§12.4の表）
 - 継続性
 
 受け入れ条件:
@@ -2929,6 +2952,7 @@ product_policy:
 
 decision_v2:
   enabled: false
+  premium_justification_usd: 450.0
   upgrade:
     min_complete_months: 1
     min_code_demand_usd: 200.0
@@ -2936,7 +2960,7 @@ decision_v2:
     min_complete_months: 2
     max_code_demand_usd: 200.0
   recent_seat_change_days: 28
-  min_assignment_saving_usd: 20.0
+  observed_billing_margin_usd: 20.0
 
 follow_up:
   horizons_days: [14, 28, 56]
@@ -2969,6 +2993,10 @@ browser:
 5. V2 ruleを調整
 6. 明示承認後にdefaultをV2へ変更
 7. V1を最低3か月残す
+
+V1のallowanceモデルに依存する出力（込み枠推定の3scenario、⚠️上限到達疑い、追加クレジットの
+付与候補）は、V2を既定で有効にする時点で方針線と`ENABLE_WITH_CAP`へ置き換わる。V1が既定の
+あいだは両方が出力に並ぶ（V2はopt-inで、V1の判定・注記には影響しない）。
 
 ### 22.2 Rollback
 

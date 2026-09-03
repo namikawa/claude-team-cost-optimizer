@@ -1,12 +1,12 @@
 # 実装ステータス
 
-- 最終更新: 2026-09-02
+- 最終更新: 2026-09-03
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 7（GitHub）。次は Step 35（PR検索とraw cache）
-  （Step 19（decision-evidence.csv）はF4のallowanceキャリブレーションの後に行う。較正の
-  材料が2026-08の正式分析＝9月初旬に揃うため、その待ち時間にTrack 7のStep 32〜38を先行
-  する段取り。2026-08-27合意。Step 9 はV2のrecent seat change判定材料として先行実装済みで、
-  Track 3の残りStepは据え置き。根拠は設計書§12.7）
+- 次のタスク: Step 19（decision-evidence.csv）。前提だったF4（V2の経済軸を方針線
+  `premium_justification_usd`へ差し替える）は完了した（2026-09-03。設計書§12.3〜§12.7・
+  §21・§22.1に反映済み）。Track 7 の Step 35（PR検索とraw cache）はStep 19のあと
+  （Step 9 はV2のrecent seat change判定材料として先行実装済みで、Track 3の残りStepは
+  据え置き。根拠は設計書§12.7）
 - 予定タスク: なし（sonnet-5 の単価改定は不要になった。導入価格 $2/$10 はそのまま正式価格に
   なり、2026-09-01 の $3/$15 への値上げは行われないことを公式の料金ページで確認した
   ＝2026-09-02。`default-config.yaml` の値は現状のままで正しい）
@@ -17,9 +17,9 @@
     あった判定不変の改善、Step 17 の追加クレジット上限の字句厳格化。Step 17・18 のコードは
     同梱されるが`decision_v2.enabled: false`で不活性。Track 7 は Step 32〜34 まで
     （doctorのGitHub検査・GitHub members loader・repository列挙。Step 35 以降は継続）を含む
-  - v1.2.0（MINOR）: Step 19 と F4（allowanceのキャリブレーションは値の較正ではなく、V2の
-    経済軸を方針線`premium_justification_usd`に差し替える設計へ変更済み。詳細はF4着手時に
-    設計書へ）、V2判定のopt-in提供。V2は`decision_v2.enabled: false`のまま出し、
+  - v1.2.0（MINOR）: F4（完了。V2の経済軸を方針線`premium_justification_usd`へ差し替えた。
+    仕様は設計書§12.3が唯一の源）と Step 19、V2判定のopt-in提供。V2は
+    `decision_v2.enabled: false`のまま出し、
     2026-09・2026-10の分析でV1と並走比較したうえで、次の版で既定を有効へ切り替える
 
 ## 1. この文書の目的
@@ -200,6 +200,54 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-03 — F4: V2判定の経済軸を方針線へ差し替え
+
+- V2の経済軸から込み枠（allowance）モデルを外した。変更先シートの従量課金は観測できず
+  推定もしないことにし、判定に使うのは観測できる事実（現シートの実課金・追加クレジット
+  上限κへの到達）と方針として決めた需要の線（`decision_v2.premium_justification_usd`）
+  だけにした。V1は変更していない（`seats.*.allowance_usd`はV1が使うので残す）
+- 差し替えの理由は値の較正ではなく関数形の反証。追加クレジットが有効で実課金がセンサーと
+  して効く組織の観測では、同一シート・同一月で課金の有無を分ける単一のしきい値が存在せず、
+  課金が発生したあとに需要が伸びても課金が止まり、課金が利用者間で同期しない。実機構は月より
+  短い周期のレート制限と見られるが非公開なので、`max(0, 需要 − allowance)`という月次プールの
+  形そのものを使わない
+- configは2キー。`premium_justification_usd`（既定450.0・正の有限数を要求。0以下だと需要
+  ゼロのユーザまで線以上になり、降格の候補が全員消えて昇格の候補が全員になる）と、
+  `min_assignment_saving_usd`から改名した`observed_billing_margin_usd`（既定20.0・0以上の
+  有限数）。旧キーは既定に無いキーとしてロード時にエラーになる（テストで固定）。allowanceとの
+  大小関係は検証しない（方針として決める額なので）
+- 観測経路は「Standardの実課金がシート差額（Premium − Standard）をマージ以上上回った」に
+  変えた。需要も込み枠推定も見ない。旧経路は変更先の費用を「需要 − 込み枠推定」で試算して
+  いたため、実課金が同じでも需要が大きいほど成立しなくなっていた（需要$130なら候補・
+  $1,500なら候補にならない）。この逆転が消えた
+- κの3状態で候補化に使う信号を分けた。有効=実課金かκ到達（方針線は使わない）、無効=方針線
+  （継続性のゲートは従来どおり）、不明=席を動かす判断は実課金だけで行い、方針線以上なら席は
+  動かさず設定確認の`REVIEW`だけを出す。κ=0の記入と対象月の実課金（正）が矛盾する場合は
+  κ不明として扱い、実課金という観測を捨てない（対象月の実課金だけを見る。前月の課金は
+  設定変更より前のものでありうる）
+- 降格は手順6だけを差し替えた（評価窓の全完全月で全product需要が方針線未満）。手順1〜5
+  （hard blocker・recent窓・窓内実課金・Codeゲート・supplementary）は順序も含めて不変。
+  理由コードも不変
+- 理由コードは削除2（`ESTIMATED_STANDARD_OVERAGE`・`STANDARD_WITH_CREDIT_CHEAPER`。どちらも
+  出力の消費者がまだ無い）・改名1（`PREMIUM_CHEAPER_THAN_STANDARD_WITH_CREDIT`→
+  `STANDARD_BILLING_ABOVE_SEAT_GAP`）・追加2（`TOTAL_DEMAND_ABOVE_PREMIUM_LINE`・
+  `SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE`）。enumの並び・設計書§12.2の一覧・テストの
+  三者一致は保っている。新しい値はIssueCodeと同名にならない（StrEnumの等値衝突を避ける）
+- 堅牢化2件。`_ACTIONABLE_SEAT_ACTIONS`に`DOWNGRADE_TO_STANDARD`を足した（降格側が
+  `RECOMMENDED`を直接渡しているので結果は変わらないが、「人の作業なら中央で`RECOMMENDED`」の
+  不変条件が完全になる）。理由コードの順位表に全メンバーがあることをテストで固定した（抜けた
+  値を返す経路に入ると並べ替えが実行時KeyErrorで落ちる）
+- 方針感度`policy_stability(subject, cfg)`を公開関数として置いた（結線はStep 19）。方針線を
+  ±$100ずらした3通りでseat actionを評価し、基準と一致した数（1〜3）を返す。費用の軸に
+  到達しない判定（hard blocker・recent窓）はNoneで、「3/3で安定」と「方針線が判定に関与
+  しなかった」を区別する。両判定の前段をヘルパへ括り出して「到達したか」の定義を1箇所にし、
+  ずらした設定はNamedTupleの`_replace`で作る（渡されたconfigには触れない）
+- 往復（昇格と降格を毎月繰り返すこと）の歯止めはCodeゲートとヒステリシスであることを
+  設計書§12.3に書いた。昇格は対象月のCode需要が閾値以上、降格は評価窓の全完全月でCode需要が
+  閾値未満を要するため、往復には実際の利用の変化が必要になる
+- 1643 passed（decision_v2は226件・うち方針線・観測マージ・κ3状態・方針感度が新規）・
+  ruff緑・golden不変（V1の経路に触れていない）
 
 ### 2026-09-02 — Fable 5.1 / Mythos の単価とモデル別キャッシュ読取倍率（v1.1.2）
 

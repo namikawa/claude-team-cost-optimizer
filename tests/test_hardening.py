@@ -222,10 +222,11 @@ def test_decision_v2_defaults_exist(tmp_path):
     loaded = load_config(path)
     assert loaded["decision_v2"] == {
         "enabled": False,
+        "premium_justification_usd": 450.0,
         "upgrade": {"min_complete_months": 1, "min_code_demand_usd": 200.0},
         "downgrade": {"min_complete_months": 2, "max_code_demand_usd": 200.0},
         "recent_seat_change_days": 28,
-        "min_assignment_saving_usd": 20.0,
+        "observed_billing_margin_usd": 20.0,
     }
     assert loaded["decision"]["hysteresis_months"] == 2
 
@@ -241,7 +242,8 @@ def test_decision_v2_validation_catches_edit_mistakes(cfg):
     broken["decision_v2"]["upgrade"]["min_complete_months"] = 0
     broken["decision_v2"]["downgrade"]["min_complete_months"] = 1.5
     broken["decision_v2"]["recent_seat_change_days"] = True
-    broken["decision_v2"]["min_assignment_saving_usd"] = -1
+    broken["decision_v2"]["premium_justification_usd"] = 0
+    broken["decision_v2"]["observed_billing_margin_usd"] = -1
     with pytest.raises(ValueError) as e:
         _validate(broken)
     msg = str(e.value)
@@ -249,7 +251,8 @@ def test_decision_v2_validation_catches_edit_mistakes(cfg):
         "decision_v2.upgrade.min_complete_months",
         "decision_v2.downgrade.min_complete_months",
         "decision_v2.recent_seat_change_days",
-        "decision_v2.min_assignment_saving_usd",
+        "decision_v2.premium_justification_usd",
+        "decision_v2.observed_billing_margin_usd",
     ):
         assert fragment in msg
 
@@ -267,20 +270,71 @@ def test_decision_v2_enabled_must_be_boolean(cfg, value):
     "value",
     [float("nan"), float("inf"), float("-inf"), True, "20", None, -0.01],
 )
-def test_decision_v2_saving_threshold_rejects_invalid(cfg, value):
-    """削減閾値は 0 以上の有限な数値に限る（非有限値・真偽値・文字列を拒否する）。"""
+def test_decision_v2_billing_margin_rejects_invalid(cfg, value):
+    """観測マージは 0 以上の有限な数値に限る（非有限値・真偽値・文字列を拒否する）。"""
     broken = copy.deepcopy(cfg)
-    broken["decision_v2"]["min_assignment_saving_usd"] = value
-    with pytest.raises(ValueError, match="decision_v2.min_assignment_saving_usd"):
+    broken["decision_v2"]["observed_billing_margin_usd"] = value
+    with pytest.raises(ValueError, match="decision_v2.observed_billing_margin_usd"):
         _validate(broken)
 
 
 @pytest.mark.parametrize("value", [0, 0.0, 20, 1234.5])
-def test_decision_v2_saving_threshold_accepts_zero_and_positive(cfg, value):
-    """0 は「差額を問わない」の指定として正当なので拒否しない。"""
+def test_decision_v2_billing_margin_accepts_zero_and_positive(cfg, value):
+    """0 は「シート差額を上回れば額を問わない」の指定として正当なので拒否しない。"""
     ok = copy.deepcopy(cfg)
-    ok["decision_v2"]["min_assignment_saving_usd"] = value
+    ok["decision_v2"]["observed_billing_margin_usd"] = value
     _validate(ok)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), True, "450", None, 0, 0.0, -0.01],
+)
+def test_decision_v2_policy_line_rejects_invalid(cfg, value):
+    """方針線は正の有限な数値に限る。
+
+    0 以下だと需要ゼロのユーザまで「線以上」になり、降格の候補が全員消えて昇格の候補が
+    全員になる。NaN は逆に全員が線未満と判定される（比較が常に偽になるため）。
+    """
+    broken = copy.deepcopy(cfg)
+    broken["decision_v2"]["premium_justification_usd"] = value
+    with pytest.raises(ValueError, match="decision_v2.premium_justification_usd"):
+        _validate(broken)
+
+
+@pytest.mark.parametrize("value", [0.01, 100, 450.0, 5000.5])
+def test_decision_v2_policy_line_accepts_positive_values(cfg, value):
+    """allowance 推定との大小関係は検査しない（方針として決める額なので）。"""
+    ok = copy.deepcopy(cfg)
+    ok["decision_v2"]["premium_justification_usd"] = value
+    _validate(ok)
+
+
+def test_decision_v2_policy_line_is_required(cfg):
+    """キーそのものが無い設定も、値が不正な設定と同じく検証で落ちる。
+
+    値の None を拒否する検査だけでは、「キーがあるときだけ検証する」実装へ変わったときに
+    欠落が黙って通る。
+    """
+    broken = copy.deepcopy(cfg)
+    del broken["decision_v2"]["premium_justification_usd"]
+    with pytest.raises(ValueError, match="decision_v2.premium_justification_usd"):
+        _validate(broken)
+
+
+def test_decision_v2_rejects_the_renamed_saving_key(tmp_path):
+    """旧キー `min_assignment_saving_usd` は既定に無いキーとしてロード時に落ちる。
+
+    黙って無視すると、上書きしたつもりのマージが効かないまま既定値で判定が動く。
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "decision_v2:\n  min_assignment_saving_usd: 20.0\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    with pytest.raises(ValueError, match="min_assignment_saving_usd"):
+        load_config(path)
 
 
 # Code 需要の閾値は昇格・降格で向き（以上・未満）が逆なだけで、値の契約は同じなので
