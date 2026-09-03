@@ -1,6 +1,9 @@
 """レポート生成: report / details / dashboard / recommendations / usage-summary
 
 ファイル名は `{種別}-{YYYYMM}-{組織名}.{拡張子}`（組み立ては naming.py が持つ）。
+
+V2 判定の根拠（decision-evidence）は上の5種とは別で、`--decision-version v2` の
+ときだけ書く。write_all の成果物には含めない。
 """
 
 from __future__ import annotations
@@ -14,10 +17,12 @@ from ..analyze import (
 from .csv_out import write_csv
 from .details import write_details
 from .document import WriteResult, discussion_body, document_body, write_discussion
+from .evidence_csv import EVIDENCE_COLUMNS, write_decision_evidence
 from .html import write_html, write_preview_html
 from .markdown import write_markdown, write_org_summary, write_preview_markdown
 from .naming import (
     DASHBOARD,
+    DECISION_EVIDENCE,
     DETAILS,
     PREVIEW,
     PREVIEW_DASHBOARD,
@@ -40,6 +45,8 @@ __all__ = [  # noqa: RUF022
     "write_preview_html",
     "write_csv",
     "write_usage_csv",
+    "write_decision_evidence",
+    "EVIDENCE_COLUMNS",
     "write_org_summary",
     "write_discussion",
     "WriteResult",
@@ -51,6 +58,7 @@ __all__ = [  # noqa: RUF022
     "DASHBOARD",
     "RECOMMENDATIONS",
     "USAGE_SUMMARY",
+    "DECISION_EVIDENCE",
     "PREVIEW",
     "PREVIEW_DASHBOARD",
 ]

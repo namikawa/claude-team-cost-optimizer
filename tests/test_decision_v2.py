@@ -90,6 +90,7 @@ def test_reason_code_set_is_stable_in_design_order():
         "PARTIAL_MONTH",
         "INSUFFICIENT_HISTORY",
         "IDENTITY_CONFLICT",
+        "CURRENT_SEAT_UNKNOWN",
         "CAPACITY_SIGNAL_UNAVAILABLE",
         "DATA_CONFIDENCE_LOW",
     ]

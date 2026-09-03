@@ -9,11 +9,19 @@ from pathlib import Path
 
 import pytest
 
-from seat_analyzer import analyze, ingest
+from seat_analyzer import analyze, ingest, seat_changes
+from seat_analyzer.analyze import pipeline
 from seat_analyzer.cli import main
 from seat_analyzer.ingest import discover_orgs
 from seat_analyzer.product_usage import FEATURE_COLUMNS
-from seat_analyzer.report import DASHBOARD, REPORT, USAGE_SUMMARY
+from seat_analyzer.report import (
+    DASHBOARD,
+    DECISION_EVIDENCE,
+    DETAILS,
+    RECOMMENDATIONS,
+    REPORT,
+    USAGE_SUMMARY,
+)
 
 from .conftest import CONFIG, out_file, spend_row
 
@@ -254,6 +262,173 @@ def test_flat_layout_errors_in_discuss(make_input, tmp_path, capsys):
     ])
     assert rc == 1
     _assert_migration_guidance(capsys.readouterr().err)
+
+
+# --- --decision-version（V2 判定の根拠の併記） ---
+#
+# 判定そのものは tests/test_decision_evidence.py が固定する。ここで確かめるのは
+# 「どの実行で decision-evidence を書くか」と「V1 の成果物が変わらないこと」。
+
+# V1 の成果物5種（decision-evidence を書いても1バイトも変わらないこと）
+_V1_ARTIFACTS = (REPORT, DETAILS, DASHBOARD, RECOMMENDATIONS, USAGE_SUMMARY)
+
+
+def _v2_config(tmp_path: Path) -> str:
+    """V2 判定を既定で併記する上書き設定（他のキーは既定のまま）。"""
+    path = tmp_path / "config.yaml"
+    path.write_text("decision_v2:\n  enabled: true\n", encoding="utf-8", newline="\n")
+    return str(path)
+
+
+def _run_with(input_dir: Path, output_dir: Path, config: str, *extra: str) -> int:
+    return main([
+        "analyze", "--config", config,
+        "--input-dir", str(input_dir), "--output-dir", str(output_dir),
+        "--month", "2026-06", *extra,
+    ])
+
+
+def test_decision_evidence_is_not_written_by_default(make_input, tmp_path, capsys):
+    """既定は V1。V2 判定の根拠は書かず、出力一覧にも載せない。"""
+    input_dir = _make_two_orgs(make_input)
+    rc, out = _run(input_dir, tmp_path, "--month", "2026-06", "--org", "org-a")
+    assert rc == 0
+    assert not out_file(out, DECISION_EVIDENCE).exists()
+    assert "evidence:" not in capsys.readouterr().out
+
+
+def test_decision_version_v2_writes_the_evidence(make_input, tmp_path, capsys):
+    """--decision-version v2 で根拠 CSV を書き、出力一覧と内訳を出す。"""
+    input_dir = _make_two_orgs(make_input)
+    rc, out = _run(input_dir, tmp_path, "--month", "2026-06", "--org", "org-a",
+                   "--decision-version", "v2")
+    assert rc == 0
+    path = out_file(out, DECISION_EVIDENCE)
+    assert path.is_file()
+    printed = capsys.readouterr().out
+    assert f"evidence: {path}" in printed
+    assert "V2判定:" in printed
+
+
+def test_v2_does_not_change_the_v1_artifacts(make_input, tmp_path):
+    """V2 の併記は V1 の成果物を1バイトも変えない。"""
+    input_dir = _make_two_orgs(make_input)
+    v1_out, v2_out = tmp_path / "v1", tmp_path / "v2"
+    assert _run_with(input_dir, v1_out, CONFIG, "--org", "org-a") == 0
+    assert _run_with(input_dir, v2_out, CONFIG, "--org", "org-a",
+                     "--decision-version", "v2") == 0
+    for artifact in _V1_ARTIFACTS:
+        assert out_file(v2_out, artifact).read_bytes() == \
+            out_file(v1_out, artifact).read_bytes()
+    # 増えるのは根拠 CSV の1ファイルだけ
+    assert {p.name for p in (v2_out / "org-a" / "2026-06").iterdir()} - \
+        {p.name for p in (v1_out / "org-a" / "2026-06").iterdir()} == \
+        {DECISION_EVIDENCE.name("2026-06", "org-a")}
+
+
+def test_config_can_enable_the_evidence_and_the_flag_can_turn_it_off(
+    make_input, tmp_path
+):
+    """設定の decision_v2.enabled で併記でき、--decision-version v1 で戻せる。"""
+    input_dir = _make_two_orgs(make_input)
+    config = _v2_config(tmp_path)
+    enabled_out, back_out = tmp_path / "on", tmp_path / "off"
+    assert _run_with(input_dir, enabled_out, config, "--org", "org-a") == 0
+    assert out_file(enabled_out, DECISION_EVIDENCE).is_file()
+
+    assert _run_with(input_dir, back_out, config, "--org", "org-a",
+                     "--decision-version", "v1") == 0
+    assert not out_file(back_out, DECISION_EVIDENCE).exists()
+
+
+def test_v1_run_warns_about_a_leftover_evidence_file(make_input, tmp_path, capsys):
+    """V1 で実行したときに前回の根拠 CSV が残っていれば知らせる（消さない）。"""
+    input_dir = _make_two_orgs(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, CONFIG, "--org", "org-a",
+                     "--decision-version", "v2") == 0
+    path = out_file(out, DECISION_EVIDENCE)
+    before = path.read_bytes()
+    capsys.readouterr()
+
+    assert _run_with(input_dir, out, CONFIG, "--org", "org-a") == 0
+    printed = capsys.readouterr().out
+    assert f"{path.name} は今回の実行では更新されません" in printed
+    assert "--decision-version v2" in printed
+    assert path.read_bytes() == before      # 旧い成果物はツールが動かさない
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_decision_version_cannot_be_combined_with_preview(
+    make_input, tmp_path, capsys, version
+):
+    """速報モードは V2 判定を行わないので、判定の版を指定させない。"""
+    input_dir = _make_two_orgs(make_input)
+    rc = _run_with(input_dir, tmp_path / "reports", CONFIG, "--preview", "--days", "10",
+                   "--decision-version", version)
+    assert rc == 1
+    assert "--decision-version" in capsys.readouterr().err
+
+
+def test_preview_with_the_config_enabled_says_v2_is_skipped(make_input, tmp_path, capsys):
+    """設定で有効にした V2 を速報で黙って無視しない（組織ごとに1行知らせる）。"""
+    input_dir = _make_two_orgs(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _v2_config(tmp_path), "--org", "org-a",
+                     "--preview", "--days", "10") == 0
+    assert "速報モードでは V2 判定を行いません" in capsys.readouterr().out
+    assert not out_file(out, DECISION_EVIDENCE).exists()
+
+
+def test_v2_writes_one_evidence_file_per_org(make_input, tmp_path):
+    """複数組織の実行では組織ごとに根拠 CSV を書く。"""
+    input_dir = _make_two_orgs(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, CONFIG, "--decision-version", "v2") == 0
+    for org in ("org-a", "org-b"):
+        assert out_file(out, DECISION_EVIDENCE, org=org).is_file()
+
+
+def _counting(monkeypatch, module, name: str) -> list[int]:
+    """module.name の呼び出し回数を数える（元の実装はそのまま呼ぶ）。"""
+    calls: list[int] = []
+    original = getattr(module, name)
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, counted)
+    return calls
+
+
+def test_v1_run_adds_no_extra_computation(make_input, tmp_path, monkeypatch):
+    """V1 の実行では対象月の product 特徴量だけを計算し、シート変更の検出もしない。
+
+    V2 の結線で V1 の実行に計算・読み取りが増えていないことを固定する（増えても
+    出力は変わらないため、他のテストでは気づけない）。
+    """
+    input_dir = _make_two_orgs(make_input)      # org-a は 2026-05・2026-06 の2ヶ月
+    features = _counting(monkeypatch, pipeline, "compute_product_usage")
+    detect = _counting(monkeypatch, seat_changes, "detect_from_input")
+
+    assert _run_with(input_dir, tmp_path / "reports", CONFIG, "--org", "org-a") == 0
+    assert len(features) == 1     # 対象月のみ（過去月の特徴量は計算しない）
+    assert detect == []
+
+
+def test_v2_run_computes_features_for_every_month_and_detects_changes(
+    make_input, tmp_path, monkeypatch
+):
+    """V2 の実行では履歴の全月の特徴量を計算し、シート変更の検出を組織ごとに1度行う。"""
+    input_dir = _make_two_orgs(make_input)
+    features = _counting(monkeypatch, pipeline, "compute_product_usage")
+    detect = _counting(monkeypatch, seat_changes, "detect_from_input")
+
+    assert _run_with(input_dir, tmp_path / "reports", CONFIG,
+                     "--decision-version", "v2") == 0
+    assert len(features) == 3     # org-a の2ヶ月 + org-b の1ヶ月
+    assert len(detect) == 2       # 組織ごとに1度
 
 
 # --- doctor（既存入力の検査） ---

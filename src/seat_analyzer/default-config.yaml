@@ -41,6 +41,9 @@ decision:
 
 # V2 判定の設定（段階導入中）。enabled が false のあいだ、分析・レポートには影響しない。
 decision_v2:
+  # true にすると analyze が既定で V2 判定の decision-evidence を V1 の成果物に併記する
+  # （`--decision-version v1` で戻せる。速報モードには効かない）。V1 の判定・成果物は
+  # どちらでも変わらない。
   enabled: false
   # Premium シートが正当化される全 product 需要の下限（USD/月・方針値）。
   # 降格: 評価窓の全完全月でこれ未満なら候補。

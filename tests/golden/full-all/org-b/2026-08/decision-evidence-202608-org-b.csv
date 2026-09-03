@@ -1,0 +1,11 @@
+﻿email,subject_id,identity_quality,current_seat,month,complete,complete_months,total_demand_usd,code_demand_usd,supplementary_high,billed_extra_usd,credit_limit_usd,premium_justification_usd,status,seat_action,credit_action,reason_codes,policy_stability,suggested_credit_cap_usd
+abe@example.co.jp,account:uuid-39e417ae,stable,standard,2026-08,True,2026-05;2026-06;2026-07;2026-08,46.00,0.00,False,0.00,,450.00,keep,keep,none,,3,
+endo@example.co.jp,account:uuid-e3b58735,stable,unknown,2026-08,True,2026-08,8.00,0.00,False,0.00,,450.00,no_decision,none,none,CURRENT_SEAT_UNKNOWN,,
+hayashi@example.co.jp,email:hayashi@example.co.jp,email_fallback,premium,2026-08,True,2026-05;2026-06;2026-07;2026-08,0.00,0.00,False,0.00,0.00,450.00,recommended,downgrade_to_standard,none,SUSTAINED_LOW_CODE_DEMAND;SUSTAINED_LOW_TOTAL_DEMAND;CAPACITY_SIGNAL_UNAVAILABLE,3,
+ikeda@example.co.jp,email:ikeda@example.co.jp,email_fallback,premium,2026-08,True,2026-05;2026-06;2026-07;2026-08,0.00,0.00,False,0.00,250.00,450.00,keep,keep,none,,3,
+kudo@example.co.jp,account:uuid-cccfb0f6,stable,standard,2026-08,True,2026-05;2026-06;2026-07;2026-08,320.00,192.00,True,0.00,0.00,450.00,keep,keep,none,,3,
+mori@example.co.jp,account:uuid-83567d9d,stable,premium,2026-08,True,2026-05;2026-06;2026-07;2026-08,520.00,364.00,True,260.00,250.00,450.00,keep,keep,none,,3,
+okada@example.co.jp,email:okada@example.co.jp,email_fallback,unassigned,2026-08,True,2026-05;2026-06;2026-07;2026-08,0.00,0.00,False,0.00,,450.00,excluded,none,none,,,
+sasaki@example.co.jp,email:sasaki@example.co.jp,email_fallback,standard,2026-08,True,2026-08,0.00,0.00,False,0.00,,450.00,observe,none,none,RECENT_MEMBER,,
+shimizu@example.co.jp,account:uuid-6d746156,stable,standard,2026-08,True,2026-05;2026-06;2026-07;2026-08,48.00,48.00,False,0.00,inf,450.00,keep,keep,none,,3,
+tanabe@example.co.jp,account:uuid-c4d92aa4,stable,premium,2026-08,True,2026-08,180.00,144.00,False,30.00,100.00,450.00,no_decision,none,none,INSUFFICIENT_HISTORY,,
