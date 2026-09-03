@@ -7,20 +7,30 @@ import contextlib
 import importlib.metadata
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from . import (
     analyze,
     data_quality,
+    decision_evidence,
     discussion,
     github_collect,
     ingest,
     public_text,
     report,
+    seat_changes,
 )
 from .config import WORKSPACE_CONFIG_NAME, load_config, validate_config_path
 from .discussion import DiscussionError
-from .domain import IssueCode, QualityIssue, Severity
+from .domain import (
+    CreditAction,
+    DecisionStatus,
+    IssueCode,
+    QualityIssue,
+    SeatAction,
+    Severity,
+)
 from .leakcheck import LeakCheckError
 
 # ワークスペース雛形用の設定テンプレート（init がコピーする。中身は全行コメント）
@@ -132,6 +142,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--days", type=int,
         help="速報モードの観測日数。省略時はスペンドレポートのファイル名の期間から自動判別",
+    )
+    p.add_argument(
+        "--decision-version", choices=("v1", "v2"), default=None,
+        help="判定の版。v2 は V1 の成果物に加えて V2 判定の decision-evidence を書く"
+             f"（V1 の判定・成果物は変わらない）。省略時は {WORKSPACE_CONFIG_NAME} の"
+             " decision_v2.enabled に従う（既定は v1）。速報モードでは指定できない",
     )
     p.add_argument(
         "--with-discussion", action="store_true",
@@ -621,10 +637,21 @@ def _print_issue_lines(issues: list[QualityIssue]) -> None:
 def _run_analyze(args: argparse.Namespace) -> int:
     if args.days is not None and not args.preview:
         raise ValueError("--days は --preview 専用のオプションです")
+    if args.decision_version is not None and args.preview:
+        raise ValueError(
+            "--decision-version は速報モードでは指定できません"
+            "（速報は V2 判定を行いません）"
+        )
 
     cfg = load_config(args.config)
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
     output_dir = _resolve_dir(args.output_dir, cfg, "output")
+
+    # 判定の版: CLI の明示指定 > 設定の decision_v2.enabled > v1。
+    # enabled は「V1 の成果物に V2 判定の根拠を併記する」opt-in で、主判定は V1 のまま
+    decision_version = args.decision_version or (
+        "v2" if cfg["decision_v2"]["enabled"] else "v1"
+    )
 
     targets = _resolve_targets(input_dir, output_dir, args.org)
     # 使い方の誤りは分析を走らせる前に落とす（3組織の分析を完走してから失敗させない）
@@ -647,6 +674,13 @@ def _run_analyze(args: argparse.Namespace) -> int:
             skipped.append(org)
             continue
         if args.preview:
+            if decision_version == "v2":
+                # 設定で有効にした V2 を黙って無視しない（速報は純モデルの一次判断で、
+                # V2 判定の材料になる完全月の履歴を持たない）
+                print(
+                    f"{org}: 速報モードでは V2 判定を行いません"
+                    "（decision_v2.enabled は正式分析にだけ適用）"
+                )
             days = args.days
             if days is None:
                 period = ingest.spend_file_period(org_input, month)
@@ -663,11 +697,22 @@ def _run_analyze(args: argparse.Namespace) -> int:
             written.append((org, org_output))
             n_previewed += 1
             continue
-        result = analyze.analyze(org_input, month, cfg, org=org)
+        v2 = decision_version == "v2"
+        result = analyze.analyze(
+            org_input, month, cfg, org=org, decision_context=v2
+        )
         paths = report.write_all(result, org_output)
+        evidence: tuple[decision_evidence.EvidenceRow, ...] | None = None
+        notices: list[str] = []
+        if v2:
+            evidence = _write_decision_evidence(
+                result, org_input, org_output, cfg, paths
+            )
+        else:
+            notices = _stale_evidence_notices(result, org_output)
         results.append(result)
         written.append((org, org_output))
-        _print_result(result, paths)
+        _print_result(result, paths, evidence, notices)
 
     if skipped:
         print(f"\n! {month} のスペンドレポートが無いためスキップした組織: {', '.join(skipped)}")
@@ -962,7 +1007,97 @@ def _prohibited_warnings(result: analyze.AnalysisResult) -> list[str]:
     ]
 
 
-def _print_result(result: analyze.AnalysisResult, paths: dict[str, Path]) -> None:
+def _write_decision_evidence(
+    result: analyze.AnalysisResult,
+    org_input: Path,
+    org_output: Path,
+    cfg: dict,
+    paths: dict[str, Path],
+) -> tuple[decision_evidence.EvidenceRow, ...]:
+    """V2 判定の根拠を書き、出力一覧へ加える（V1 の成果物には触れない）。"""
+    changes = seat_changes.detect_from_input(org_input, cfg)
+    rows = decision_evidence.evaluate(result, changes, cfg)
+    path = report.DECISION_EVIDENCE.path(org_output, result.month, result.org)
+    report.write_decision_evidence(rows, path)
+    paths["evidence"] = path
+    return rows
+
+
+def _stale_evidence_notices(
+    result: analyze.AnalysisResult, org_output: Path
+) -> list[str]:
+    """V1 での実行で、前回の V2 判定の根拠が残っている場合の通知。
+
+    残っているファイルは消さない（意図的に残された成果物をツールが動かさない既存方針）。
+    ただし今回の実行では更新されないため、同じ月ディレクトリに並ぶ他の成果物と時点が
+    食い違うことを伝える。
+
+    宛先は分析の実行者なので、共有物であるレポートには載せず実行時の出力にだけ出す
+    （_prohibited_warnings と同じ扱い。レポートの内容が出力先に残っているファイルの
+    有無で変わらないようにするため）。
+    """
+    path = report.DECISION_EVIDENCE.path(org_output, result.month, result.org)
+    if not path.exists():
+        return []
+    return [
+        (f"{path.name} は今回の実行では更新されません"
+         "（V1 判定で実行したため。再生成するには --decision-version v2 を指定してください）")
+    ]
+
+
+# V2 判定の内訳の見出し（人数の集計順）。StrEnum は値が等しければ語彙をまたいで
+# 等値になるため、seat action・結論・credit action を1つの表へ混ぜない（§12.1）
+_V2_SEAT_LABELS = {
+    SeatAction.UPGRADE_TO_PREMIUM: "昇格候補",
+    SeatAction.DOWNGRADE_TO_STANDARD: "降格候補",
+    SeatAction.REVIEW_ASSIGNMENT: "アサイン見直し",
+    SeatAction.KEEP: "現状維持",
+}
+# seat action が none の行は、なぜ席を動かさないのかを結論の側が持つ
+_V2_STATUS_LABELS = {
+    DecisionStatus.OBSERVE: "観察",
+    DecisionStatus.NO_DECISION: "判定なし",
+    DecisionStatus.EXCLUDED: "対象外",
+}
+_V2_CREDIT_LABELS = {
+    CreditAction.ENABLE_WITH_CAP: "付与候補",
+    CreditAction.REVIEW: "設定確認",
+}
+
+# 表示順（人数の並び）。ラベルの定義順をそのまま使う
+_V2_SEAT_ORDER = (*_V2_SEAT_LABELS.values(), *_V2_STATUS_LABELS.values())
+_V2_CREDIT_ORDER = tuple(_V2_CREDIT_LABELS.values())
+
+
+def _counted(labels: list[str], order: tuple[str, ...]) -> str:
+    """ラベルの人数を固定順で並べた1行（0 名の区分は省く）。"""
+    return " / ".join(
+        f"{label} {labels.count(label)} 名" for label in order if label in labels
+    )
+
+
+def _print_decision_evidence(rows: tuple[decision_evidence.EvidenceRow, ...]) -> None:
+    """V2 判定の内訳（シート側とクレジット側）。"""
+    seat_labels = [
+        _V2_SEAT_LABELS.get(row.decision.seat_action)
+        or _V2_STATUS_LABELS.get(row.decision.status, "判定なし")
+        for row in rows
+    ]
+    print(f"V2判定: {_counted(seat_labels, _V2_SEAT_ORDER)}")
+    credit_labels = [
+        label for row in rows
+        if (label := _V2_CREDIT_LABELS.get(row.decision.credit_action)) is not None
+    ]
+    if credit_labels:
+        print(f"V2追加クレジット: {_counted(credit_labels, _V2_CREDIT_ORDER)}")
+
+
+def _print_result(
+    result: analyze.AnalysisResult,
+    paths: dict[str, Path],
+    evidence: tuple[decision_evidence.EvidenceRow, ...] | None = None,
+    notices: Sequence[str] = (),
+) -> None:
     s = result.summary
     print(f"\n=== {result.org} {result.month} 分析結果 ===")
     print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']}"
@@ -973,11 +1108,13 @@ def _print_result(result: analyze.AnalysisResult, paths: dict[str, Path]) -> Non
     print(f"変更推奨: {s['n_change_recommended']} 名 (削減見込み ${s['est_monthly_saving_usd']:,.2f}/月)")
     print(f"要観察: {s['n_watching']} 名, 上限到達疑い: {s['n_cap_suspected']} 名")
     print(f"使用データ: {', '.join(s['months_used'])}")
+    if evidence is not None:
+        _print_decision_evidence(evidence)
 
     prohibited = _prohibited_warnings(result)
-    if result.warnings or prohibited:
+    if result.warnings or prohibited or notices:
         print("\n--- 警告 ---")
-        for w in [*result.warnings, *prohibited]:
+        for w in [*result.warnings, *prohibited, *notices]:
             print(f"  ! {w}")
 
     print("\n--- 出力 ---")

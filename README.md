@@ -86,6 +86,7 @@ seat-analyzer --version
 - `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（概要 / 推奨アクション / メンバー別 / 組織 / 前提と注意 の5タブ。ソート・検索・テーマ切替つきの自己完結 HTML）
 - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
 - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
+- `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（`--decision-version v2` のときだけ出力。V1 の判定・成果物は変わりません）
 - `reports/summary/YYYY-MM.md` — 複数組織を一括分析した場合の組織横断サマリ（この名前は変わりません）
 
 速報モード（`--preview`）は `preview-YYYYMM-<組織名>.md` と

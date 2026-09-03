@@ -117,10 +117,17 @@ seat-analyzer init-org <組織名>
    seat-analyzer analyze --month YYYY-MM          # 月を指定
    seat-analyzer analyze --org <組織名>           # 特定組織のみ（複数指定可）
    seat-analyzer analyze --with-discussion        # 考察の執筆まで行う（tooling.md）
+   seat-analyzer analyze --decision-version v2    # V2 判定の根拠も併記する
    ```
 
    リポジトリを clone している場合は、Claude Code から `/seat-analysis` を実行すると、
    分析に加えて警告の検証と考察の執筆までを対話的に行える。
+
+   `--decision-version v2` は上の5種の成果物に加えて `decision-evidence` を出力する。
+   V1 の判定・成果物・組織横断サマリは変わらない（V2 の判定を並べて比較するための
+   追加出力）。省略時は `config.yaml > decision_v2.enabled` に従い、既定は v1。
+   速報モード（`--preview`）は V2 判定を行わないため、このオプションと併用できない。
+   列の意味は [docs/reference.md](reference.md) を参照
 
 6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される。ファイル名は
    `{種別}-{YYYYMM}-{組織名}.{拡張子}` で、共有でフォルダの外へ出しても
@@ -130,6 +137,7 @@ seat-analyzer init-org <組織名>
    - `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（自己完結 HTML）
    - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
    - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
+   - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（`--decision-version v2` のときだけ）
 
    以下では種別名（report / details / dashboard …）で呼ぶ。
 

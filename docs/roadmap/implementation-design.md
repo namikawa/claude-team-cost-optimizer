@@ -225,6 +225,7 @@ src/seat_analyzer/
 - `analyze.py`も`analyze/`パッケージになっている（`__init__.py`/`credits.py`/`midmonth.py`）
 - 段階的に追加する一覧のうち`domain.py`/`data_quality.py`/`identity.py`は追加済み。一覧に無いものとして考察執筆まわりの`discussion.py`/`leakcheck.py`/`public_text.py`がある
 - `report_v2.py`という単一モジュールは作らない。新しい出力は`report/`パッケージの中へ、出力形式ごとに足す（CSVなら`report/*_csv.py`）。以降のStepで対象として`report_v2.py`または`report.py`と書かれている箇所は、この方針に読み替える。責務ごとの実ファイル名は各Trackの着手時に個別に確定させる（着手しないTrackを先回りして書き換えない。§2.4）
+- V2判定の結線（SubjectHistoryの組み立てと判定の実行）は`decision_evidence.py`（層25）、CSVの書き出しは`report/evidence_csv.py`
 - 設定の既定は`src/seat_analyzer/default-config.yaml`が唯一の源。リポジトリ直下・ワークスペースの`config.yaml`は差分だけを書く任意の上書きファイルで、gitignore済み。以降のStepで対象として`config.yaml`と書かれている箇所は`default-config.yaml`に読み替える
 - モジュールを増やすときは`tests/test_module_deps.py`の`LAYERS`へ層を割り当てる。パッケージ内importは自分より厳密に下の層だけを指してよく、同層どうしのimportも認めない。層に無いモジュールを足すとテストが落ちる
 
@@ -658,6 +659,7 @@ StrEnumは文字列と等値になるため、語彙をまたいだ等値比較�
 - `PARTIAL_MONTH`
 - `INSUFFICIENT_HISTORY`
 - `IDENTITY_CONFLICT`
+- `CURRENT_SEAT_UNKNOWN`
 - `CAPACITY_SIGNAL_UNAVAILABLE`
 - `DATA_CONFIDENCE_LOW`
 
@@ -861,6 +863,9 @@ hard blocker:
 - identity conflict
 - current seat unknown
 - 必要履歴不足
+
+current seat unknownは`CURRENT_SEAT_UNKNOWN`を理由に`NO_DECISION`とする（membersに行が
+無い利用者。黙って除外すると判定から漏れたことが出力に残らない）。
 
 recent memberとrecent seat changeは既定で`OBSERVE`へ落とす。
 
@@ -1107,7 +1112,10 @@ uv run seat-analyzer collect \
   --month YYYY-MM
 ```
 
-V2が安定するまで既定値は`v1`。
+V2が安定するまで既定値は`v1`。`--decision-version`を省略した場合は
+`decision_v2.enabled`に従い、明示指定はそれに優先する。`enabled: true`は「V1の成果物に
+V2判定の根拠（decision-evidence）を併記する」opt-inで、主判定をV2へ切り替えるものではない。
+速報モード（`--preview`）はV2判定を行わないため、このオプションと併用できない。
 
 ## 17. 構造化issue
 

@@ -68,6 +68,8 @@ DETAILS = Artifact("details", ".md")
 DASHBOARD = Artifact("dashboard", ".html")
 RECOMMENDATIONS = Artifact("recommendations", ".csv")
 USAGE_SUMMARY = Artifact("usage-summary", ".csv")
+# V2 判定の根拠（--decision-version v2 のときだけ書く）
+DECISION_EVIDENCE = Artifact("decision-evidence", ".csv")
 # 速報モードの成果物
 PREVIEW = Artifact("preview", ".md")
 PREVIEW_DASHBOARD = Artifact("preview-dashboard", ".html")

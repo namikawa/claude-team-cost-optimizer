@@ -64,6 +64,30 @@ LABEL_EXCLUDED = "対象外（未割当）"
 # 速報モード: 観測需要がこの額 [USD] 未満なら「遊休候補」（数日〜半月でこの水準は実質未使用）
 PREVIEW_IDLE_OBS_USD = 1.0
 
+# Identity 証拠として取り出す列。spend・members のどちらも ingest が任意列を NA で
+# 補完するため、入力 CSV に列が無くても常に存在する
+_IDENTITY_COLUMNS = ("email", "account_uuid", "user_id")
+
+
+@dataclass(frozen=True)
+class DecisionContext:
+    """V2 判定の材料。ロード済みの明細から analyze() が組む（後段が spend を読み直さないため）。
+
+    後段が spend を読み直すと、採用ファイルの選択と cost basis の解決が分析本体と
+    食い違いうる。判定に使う月次の値は、この文脈に載せて1度の読み込みから配る。
+
+    months は months_used（昇順・最後が対象月）、complete は月 → その月の spend が
+    全月データか、aggregates は月 → aggregate_month の結果、product_usage は月 →
+    product 特徴量、identity_rows は対象月の Identity 証拠行（email・account_uuid・
+    user_id の3列）。
+    """
+
+    months: tuple[str, ...]
+    complete: dict[str, bool]
+    aggregates: dict[str, pd.DataFrame]
+    product_usage: dict[str, ProductUsage]
+    identity_rows: pd.DataFrame
+
 
 @dataclass
 class AnalysisResult:
@@ -88,6 +112,8 @@ class AnalysisResult:
     grant_candidates: list = field(default_factory=list)
     # 対象月の product 利用特徴量（費用は全 product・活用は Code。判定には使わない）
     product_usage: ProductUsage | None = None
+    # V2 判定の材料（decision_context=True で分析したときだけ入る）
+    decision_context: DecisionContext | None = None
 
 
 def _seat_cost(api_cost: float, seat: str, scenario: str, cfg: dict) -> float:
@@ -190,7 +216,14 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
 
 @dataclass(frozen=True)
 class _SpendHistory:
-    """分析用に読み込み・価格適用を済ませたスペンド履歴。"""
+    """分析用に読み込み・価格適用を済ませたスペンド履歴。
+
+    complete は月 → その月の spend が全月データか（ファイル名の期間が暦日数に届いて
+    いれば全月。期間の無い命名は従来どおり全月として扱う）。
+
+    monthly_product_usage と identity_rows は V2 判定の材料で、要求されたときだけ
+    埋まる（V1 の実行に過去月の product 特徴量という新しい計算経路を足さないため）。
+    """
 
     monthly: dict[str, pd.DataFrame]
     sources: dict[str, str]
@@ -198,6 +231,9 @@ class _SpendHistory:
     basis: str
     org_usage: dict
     product_usage: ProductUsage
+    complete: dict[str, bool]
+    monthly_product_usage: dict[str, ProductUsage]
+    identity_rows: pd.DataFrame | None
 
 
 def _load_spend_history(
@@ -207,11 +243,17 @@ def _load_spend_history(
     cfg: dict,
     *,
     snapshot_active: bool,
+    decision_context: bool = False,
 ) -> _SpendHistory:
-    """対象月までのスペンドを読み、全月へ同じ需要基準を適用する。"""
+    """対象月までのスペンドを読み、全月へ同じ需要基準を適用する。
+
+    decision_context=True のときだけ、V2 判定の材料（全月の product 特徴量と対象月の
+    Identity 証拠行）も併せて組み立てる。
+    """
     warnings: list[str] = []
     raw: dict[str, pd.DataFrame] = {}
     sources: dict[str, str] = {}
+    complete: dict[str, bool] = {}
     for current_month in months_used:
         result = ingest.load_spend(
             input_dir,
@@ -224,10 +266,12 @@ def _load_spend_history(
         raw[current_month] = pricing.add_computed_cost(result.df, cfg)
 
         # ファイル名の期間が全月に満たない場合、月額前提の判定が歪む（過小評価）
+        complete[current_month] = True
         period = ingest.file_period(result.source)
         if period is not None and period.days is not None:
             year, mon = (int(part) for part in current_month.split("-"))
             if period.days < calendar.monthrange(year, mon)[1]:
+                complete[current_month] = False
                 warnings.append(
                     f"{result.source.name}: {current_month} は部分月データ"
                     f"（{period.start:%m-%d}〜{period.end:%m-%d} の {period.days}日分）ですが"
@@ -247,6 +291,7 @@ def _load_spend_history(
     monthly: dict[str, pd.DataFrame] = {}
     org_usage: dict = {}
     product_usage: ProductUsage | None = None
+    monthly_product_usage: dict[str, ProductUsage] = {}
     for current_month, raw_df in raw.items():
         df = pricing.apply_cost_basis(raw_df, basis)
         if current_month == month and basis == "net_spend":
@@ -284,6 +329,13 @@ def _load_spend_history(
                     features=product_usage.features,
                     issues=[*product_usage.issues, org_issue],
                 )
+            if decision_context:
+                monthly_product_usage[current_month] = product_usage
+        elif decision_context:
+            # 過去月の特徴量は V2 判定の履歴にだけ使う（issues は対象月のものだけを扱う）
+            monthly_product_usage[current_month] = compute_product_usage(
+                df[is_user], cfg["product_policy"]
+            )
         monthly[current_month] = aggregate_month(df[is_user])
 
     # 対象月の存在は呼び出し側で検証済みなので、通常は到達しない内部不変条件。
@@ -296,6 +348,11 @@ def _load_spend_history(
         basis=basis,
         org_usage=org_usage,
         product_usage=product_usage,
+        complete=complete,
+        monthly_product_usage=monthly_product_usage,
+        identity_rows=(
+            target_user_rows[list(_IDENTITY_COLUMNS)] if decision_context else None
+        ),
     )
 
 
@@ -548,8 +605,20 @@ def _build_analysis_users(
     return pd.DataFrame(rows), hysteresis_months
 
 
-def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisResult:
-    """1組織分の分析。input_dir はその組織の入力ディレクトリ（spend/ 等を直下に持つ）。"""
+def analyze(
+    input_dir: str | Path,
+    month: str,
+    cfg: dict,
+    org: str,
+    *,
+    decision_context: bool = False,
+) -> AnalysisResult:
+    """1組織分の分析。input_dir はその組織の入力ディレクトリ（spend/ 等を直下に持つ）。
+
+    decision_context=True のとき、V2 判定の材料（DecisionContext）も組んで結果に載せる。
+    既定では組まない（V1 の実行に過去月の product 特徴量という新しい計算経路を足さない
+    ため）。V1 の users・summary・warnings はどちらでも同じ。
+    """
     input_dir = Path(input_dir)
 
     # --- 対象月まで（ヒステリシス判定に必要な過去月含む）のスペンドをロード ---
@@ -569,6 +638,7 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisR
         months_used,
         cfg,
         snapshot_active=active.spend,
+        decision_context=decision_context,
     )
     warnings = history.warnings
     monthly = history.monthly
@@ -648,6 +718,34 @@ def analyze(input_dir: str | Path, month: str, cfg: dict, org: str) -> AnalysisR
         trend=trend, snapshot=snapshot, code_diff=code_diff, member_changes=member_changes,
         e_distribution=e_distribution, grant_candidates=grant_candidates,
         product_usage=history.product_usage,
+        decision_context=(
+            _decision_context(history, months_used, members_result.df)
+            if decision_context else None
+        ),
+    )
+
+
+def _decision_context(
+    history: _SpendHistory, months_used: list[str], members: pd.DataFrame
+) -> DecisionContext:
+    """ロード済みの明細から V2 判定の材料を組む。
+
+    identity_rows は members → 対象月の spend の順に縦へ積み、同じ証拠の重複行だけを
+    畳む（並びを入力の行順で決めることで、同じ入力からは常に同じ解決結果になる）。
+    """
+    # 材料つきで読み込んだ履歴からのみ組める（呼び出し側で保証済みの内部不変条件）
+    if history.identity_rows is None:  # pragma: no cover
+        raise AssertionError("V2 判定の材料が読み込まれていません")
+    identity_rows = pd.concat(
+        [members[list(_IDENTITY_COLUMNS)], history.identity_rows],
+        ignore_index=True,
+    ).drop_duplicates(ignore_index=True)
+    return DecisionContext(
+        months=tuple(months_used),
+        complete=dict(history.complete),
+        aggregates=dict(history.monthly),
+        product_usage=dict(history.monthly_product_usage),
+        identity_rows=identity_rows,
     )
 
 

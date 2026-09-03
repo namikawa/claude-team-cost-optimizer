@@ -69,7 +69,9 @@ CASES = {
     # golden に固定される。
     "preview-snapshots": Case("2026-07", ("--org", "org-b", "--preview", "--days", "31")),
     # 条件つき section がすべて出る月（examples/generate_sample_data.py の全部入りサンプル）。
-    "full-all": Case("2026-08", ("--org", "org-b")),
+    # V2 判定の decision-evidence もこのケースで固定する。他のケースは v1 のままなので、
+    # V1 の成果物が V2 の結線で変わらないことの検査になる。
+    "full-all": Case("2026-08", ("--org", "org-b", "--decision-version", "v2")),
 }
 
 # 差分は該当箇所が分かれば十分なので、1ファイルあたりこの行数で打ち切る。

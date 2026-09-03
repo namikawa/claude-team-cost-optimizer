@@ -86,6 +86,7 @@ _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 # 月をまたいだ比較の突き合わせ対象になるため、同じ入力からは常に同じ並びで返す
 _REASON_ORDER = (
     # 主理由: 結論がその値になった直接の理由
+    ReasonCode.CURRENT_SEAT_UNKNOWN,
     ReasonCode.IDENTITY_CONFLICT,
     ReasonCode.PARTIAL_MONTH,
     ReasonCode.INSUFFICIENT_HISTORY,

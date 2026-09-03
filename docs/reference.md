@@ -183,6 +183,60 @@ CSV のための再計算はしない。
 そのものが無いスペンドレポートでは、その行をどう数えるかで結論が変わる特徴量が空欄になる
 （変わらないものは確定した値が入る）。
 
+## decision-evidence の列（V2 判定）
+
+V2 判定の結論と、その結論を出すのに使った材料。V1 の判定（report / details / dashboard /
+recommendations）とは別系統の出力で、V1 の内容には影響しない。
+
+出力するのは正式分析で判定の版が v2 のときだけ。版は「CLI の `--decision-version` の明示指定 >
+`config.yaml > decision_v2.enabled` > v1」で決まる。`enabled: true` は「V1 の成果物に V2 判定の
+根拠を併記する」ワークスペースの opt-in で、主判定が V2 に変わるわけではない（`--decision-version v1`
+を渡せばその実行では併記しない）。速報モード（`--preview`）は V2 判定を行わないため出力されず、
+`--decision-version` との併用もできない。
+
+行は members ∪ 対象月のスペンドのユーザ（メールアドレス昇順）で、recommendations と同じ対象。
+
+- `email` — ユーザのメールアドレス
+- `subject_id` — 解決した stable ID（`account:` / `user:` / `email:` の接頭辞つき。確定できなければ空欄）
+- `identity_quality` — `stable` / `email_consistent` / `email_fallback` / `conflict` / `unresolved`
+- `current_seat` — 対象月末時点のシート（`standard` / `premium` / `unassigned` / `unknown`）
+- `month` — 対象月
+- `complete` — 対象月のスペンドが全月ぶんか（True / False）
+- `complete_months` — 履歴のうち完全月（`;` 区切り・昇順）
+- `total_demand_usd` — 対象月の全 product の API 換算需要 [USD/月]
+- `code_demand_usd` — 対象月の primary product の需要（確定できなければ空欄）
+- `supplementary_high` — supplementary の需要が閾値以上か（確定できなければ空欄）
+- `billed_extra_usd` — 対象月の実課金
+- `credit_limit_usd` — 追加クレジット上限 κ（空欄は不明・`0.00` は無効・`inf` は上限なし）
+- `premium_justification_usd` — 判定に使った方針線（`decision_v2.premium_justification_usd`）
+- `status` — 結論（`recommended` / `observe` / `no_decision` / `keep` / `excluded`）
+- `seat_action` — シートへの推奨（`upgrade_to_premium` / `downgrade_to_standard` /
+  `review_assignment` / `keep` / `none`）
+- `credit_action` — 追加クレジットへの推奨（`enable_with_cap` / `review` / `keep` / `none`）
+- `reason_codes` — 判定の根拠・保留理由（`;` 区切り・主理由 → 補助 → 情報の固定順）
+- `policy_stability` — 方針線を ±$100 ずらしても同じ seat action になった数（1〜3。経済軸に
+  到達しない判定は空欄）
+- `suggested_credit_cap_usd` — `credit_action` が `enable_with_cap` のときに提示する初期上限
+
+金額は小数2桁、確定できなかった値は空欄にする（usage-summary と同じ流儀）。語彙の一覧と
+各理由コードの意味は実装設計書の §12 が唯一の源。
+
+履歴（判定が見る月の並び）は次のように組む。
+
+- 対象月から古い方へ遡り、暦で連続する月だけを採る（間に欠月があればそこで打ち切る）
+- スペンドに明細が無い月は需要ゼロの観測として入れる（利用ゼロは観測であって欠損ではない）
+- シート変更 event から加入が読み取れる場合は、加入より前の月を履歴から外し、加入がまたがる
+  月を完全月に数えない（在籍が月全体に及んでいない月を完全月として扱わないため）
+
+既知の制約が3点ある。
+
+- 日付つきの members スナップショットが2つ未満の組織では加入・シート変更の event を作れない。
+  この場合は加入の考慮が働かず、実際には在籍していなかった月も需要ゼロの観測として履歴に入る
+- Identity は対象月の行だけで解く。月をまたいだメールアドレスの変更は同一人物として束ねない
+  （過去の全期間を一括で解くと、退職者のアドレスが再割当された場合に別人どうしが1人へ結合する）
+- 管理画面の当月消費（`input/<組織名>/admin/`）はまだ読まない。実課金はスペンドレポートの
+  `net_spend` 由来で、この列を持たない旧形式のレポートでは実課金 0 として扱う
+
 ## 追加クレジット（usage credits）の上限
 
 Team プランの各シートには利用の込み枠（レート制限型）があり、組織やユーザ設定で「追加

@@ -2,14 +2,15 @@
 
 - 最終更新: 2026-09-03
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 19（decision-evidence.csv）。前提だったF4（V2の経済軸を方針線
-  `premium_justification_usd`へ差し替える）は完了した（2026-09-03。設計書§12.3〜§12.7・
-  §21・§22.1に反映済み）。Track 7 の Step 35（PR検索とraw cache）はStep 19のあと
-  （Step 9 はV2のrecent seat change判定材料として先行実装済みで、Track 3の残りStepは
-  据え置き。根拠は設計書§12.7）
-- 予定タスク: なし（sonnet-5 の単価改定は不要になった。導入価格 $2/$10 はそのまま正式価格に
-  なり、2026-09-01 の $3/$15 への値上げは行われないことを公式の料金ページで確認した
-  ＝2026-09-02。`default-config.yaml` の値は現状のままで正しい）
+- 次のタスク: Track 7 の Step 35（PR検索とraw cache）。Step 19（decision-evidence.csv）は
+  完了した（2026-09-03。V2判定を分析パイプラインへ結線し、`--decision-version v2` で
+  根拠CSVを併記できるようにした）。Step 9 はV2のrecent seat change判定材料として先行実装済みで、
+  Track 3の残りStepは据え置き（根拠は設計書§12.7）
+- 予定タスク: admin/ の結線（κと当月消費の第一ソース化。adminのrecordがあれば採用し、
+  矛盾・不明は不明へ倒し、無ければmembers-infoをfallbackにする）。sonnet-5 の単価改定は
+  不要になった（導入価格 $2/$10 はそのまま正式価格になり、2026-09-01 の $3/$15 への値上げは
+  行われないことを公式の料金ページで確認した＝2026-09-02。`default-config.yaml` の値は
+  現状のままで正しい）
 - 現在のリリーススコープ: v1.1.1（判定不変のPATCH）までリリース済み。Milestone Aは
   v1.1.0で完了した。以降の計画は次の2段。
   - v1.1.2（PATCH）: Fable 5.1 / Mythos の単価パターンとモデル別のキャッシュ読取倍率
@@ -18,7 +19,8 @@
     同梱されるが`decision_v2.enabled: false`で不活性。Track 7 は Step 32〜34 まで
     （doctorのGitHub検査・GitHub members loader・repository列挙。Step 35 以降は継続）を含む
   - v1.2.0（MINOR）: F4（完了。V2の経済軸を方針線`premium_justification_usd`へ差し替えた。
-    仕様は設計書§12.3が唯一の源）と Step 19、V2判定のopt-in提供。V2は
+    仕様は設計書§12.3が唯一の源）と Step 19（完了。`--decision-version v2`で
+    decision-evidenceを併記できるようにした）、V2判定のopt-in提供。V2は
     `decision_v2.enabled: false`のまま出し、
     2026-09・2026-10の分析でV1と並走比較したうえで、次の版で既定を有効へ切り替える
 
@@ -92,12 +94,12 @@
 | 1 | 入力と品質 | 5 | 0 | 0 | 0 | 0 |
 | 2 | Code中心の利用可視化 | 7 | 0 | 0 | 0 | 0 |
 | 3 | シート変更履歴 | 1 | 0 | 0 | 3 | 0 |
-| 4 | V2判定 | 6 | 0 | 0 | 1 | 0 |
+| 4 | V2判定 | 7 | 0 | 0 | 0 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 3 | 0 | 0 | 5 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **25** | **0** | **0** | **24** | **0** |
+| **合計** |  | **26** | **0** | **0** | **23** | **0** |
 
 ## 5. Step一覧
 
@@ -154,7 +156,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 16 | Downgrade rule | `完了` | 2026-08-23 |
 | 17 | Admin credit loader | `完了` | 2026-08-24 |
 | 18 | Credit comparator | `完了` | 2026-08-27 |
-| 19 | decision-evidence.csv | `未着手` |  |
+| 19 | decision-evidence.csv | `完了` | 2026-09-03 |
 
 ### Track 5: 変更後評価
 
@@ -200,6 +202,64 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-03 — Step 19: decision-evidence.csv
+
+- V2判定（decision_v2）を分析パイプラインへ結線し、判定の結論と材料を
+  `decision-evidence-YYYYMM-<組織名>.csv`として出力できるようにした。V1の判定・成果物5種・
+  組織横断サマリは1バイトも変えない（golden の差分は新規CSV 1ファイルの追加だけ）
+- 判定の版は「CLIの`--decision-version`の明示指定 > `decision_v2.enabled` > v1」で決める。
+  `enabled: true`の意味は「V1の成果物にV2のevidenceを併記する」ワークスペースのopt-inで、
+  主判定をV2へ切り替えるものではない（§16.2・config・docsで同じ言い方にそろえた）。
+  `--decision-version v1`を渡せばenabledの環境でも併記しない（§22.2のrollback）
+- 速報モードとの併用は禁じた。明示指定はエラー、config由来のv2は組織ごとに1行通知して
+  V2判定を行わない（速報は純モデルの一次判断で、V2が要求する完全月の履歴を持たない。
+  黙って無視すると設定が効いていないことに気づけない）
+- 判定の材料は`analyze()`が持つ（`AnalysisResult.decision_context`）。後段がspendを読み直すと
+  採用ファイルの選択とcost basisの解決が分析本体と食い違いうるため、月次の観測・全月の
+  product特徴量・対象月のIdentity証拠行を1度の読み込みから配る。`decision_context=True`の
+  ときだけ組み、既定では組まない（V1の実行に過去月のproduct特徴量という新しい計算経路を
+  足さない）
+- モジュールは2つに分けた。結線（SubjectHistoryの組み立てと判定の実行）は
+  `decision_evidence.py`で層25を新設し、CSVの書き出しは`report/evidence_csv.py`（層30）。
+  行の組み立てを結線側に置いたのは、Step 11のsnapshot保存が同じ行から同じバイト列を
+  保存できるようにするため（writerは直列化だけを行う）
+- 履歴の組み立ては3つの規則で決めた。①対象月から古い方へ遡り暦で連続する月だけを採る
+  （判定エンジンは渡された並びの隣接を「連続」と数えるので、暦の隣接は組み立て側が保証する）
+  ②spendに行の無い月は需要ゼロの観測として入れる（利用ゼロは観測であって欠損ではない）
+  ③加入eventがあれば加入前の月を履歴から外し、加入がまたがる月を完全月に数えない
+  （在籍が月全体に及んでいない月を完全月として扱わない）。product名が分からず確定できない
+  Code需要は`None`のまま渡し、0・Falseで埋めない
+- eventと未分類観測の帰属はeventごとに決める。eventのsubject_idが判定対象ユーザの誰かを
+  指せばその人だけへ帰属させる（stable IDはemailより信頼できる＝§8の優先順位。再割当された
+  emailの新しい持ち主へ前の持ち主の加入eventを付け替えると、stable IDが指す本人から加入の
+  歯止めが外れ、在籍していなかった月の利用ゼロが完全月として数えられる）。指さないとき
+  （membersエクスポートにstable IDが無くsubject_idがemail由来のとき）だけemailで引く。
+  subjectを確定できない未分類観測（identity conflict）は、関係するemailを持つ対象ユーザ全員へ
+  帰属させて保留側へ倒す。Identityは対象月の証拠だけで解く（全期間を一括で解くと、再割当された
+  emailで別人どうしが1人へ結合する。seat_changesが隣接ペアで解決するのと同じ理由）
+- 判定できない現シートの扱いを結線側で決めた。未割当は`EXCLUDED`（理由なし）、シート不明は
+  新設の理由コード`CURRENT_SEAT_UNKNOWN`で`NO_DECISION`（§12.7のhard blocker）。それ以外の値は
+  ValueErrorにする（黙って除外すると判定から漏れたことが出力に残らない）。理由コードは
+  IssueCodeの`SEAT_TYPE_UNKNOWN`とは別名にしてStrEnumの等値衝突を避け、enumの並び・
+  設計書§12.2・テストの三者一致は保っている
+- V1実行時に前回のevidenceが残っていれば「今回の実行では更新されない」と通知する（削除は
+  しない＝旧い成果物をツールが動かさない既存方針）。宛先は実行者なので共有物のレポートには
+  載せず実行時の出力にだけ出す（レポートの内容が出力先に残っているファイルの有無で変わらない
+  ようにするため）
+- 今回行っていない: dashboardへの表示・history/へのsnapshot保存（Step 11）・実変更との照合
+  （Step 12）・admin/の結線（当月消費の観測点`credit_points`は空で渡すため、
+  `CREDIT_CONSUMPTION_RISING`は現状では発火しない）
+- 外部レビュー（codex 2巡・受け入れ確認10点に範囲固定）: 1巡目は9点が指摘なしで、mid 1件
+  （eventの帰属を人ごとに「email一致 OR subject_id一致」で評価すると、再割当されたemailで同じ
+  eventが2人へ帰属する）とlow 4件（加入境界の等値・V1経路の計算量・帰属とIdentityの分岐・
+  CSVの式エスケープ境界のテスト不足）を全件採用。2巡目は修正範囲に限定し、mid 1件（email優先
+  では再割当されたemailの新しい持ち主へ前の持ち主の加入eventが付け替わる→subject_id優先へ）を
+  採用、low 2件（conflictの未分類観測が関係者全員へ帰属する件）は意図した保守側の挙動として
+  実装は変えず文書を追従。3巡目は省略（本題の10点は1巡目で通過し、指摘が低確率のIdentityの
+  長尾に移ったため）
+- 1690 passed（新規47件: 結線・帰属・書式が35件・CLIの版の解決と計算量が11件・成果物名が1件）・ruff緑・
+  golden はV1の全ファイルがバイト一致で、追加は`decision-evidence`の1ファイルのみ
 
 ### 2026-09-03 — F4: V2判定の経済軸を方針線へ差し替え
 
