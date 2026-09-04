@@ -1,4 +1,4 @@
-"""CLI エントリポイント: seat-analyzer {analyze,discuss,check-text,doctor,init,init-org}"""
+"""CLI エントリポイント: seat-analyzer {analyze,collect,discuss,check-text,doctor,init,init-org}"""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ from .domain import (
     SeatAction,
     Severity,
 )
+from .github_collect import GhFailure
 from .leakcheck import LeakCheckError
 
 # ワークスペース雛形用の設定テンプレート（init がコピーする。中身は全行コメント）
@@ -212,6 +213,23 @@ def main(argv: list[str] | None = None) -> int:
         help="出力形式。json は構造化issueの配列を stdout へ出す (default: text)",
     )
     pdoc.set_defaults(func=_run_doctor)
+
+    pcol = sub.add_parser(
+        "collect", help="外部データを収集してローカルのキャッシュへ保存する")
+    pcol.add_argument(
+        "--org", required=True, metavar="組織名",
+        help="対象組織（input/ 直下のディレクトリ名）。1組織ずつ指定する",
+    )
+    pcol.add_argument(
+        "--source", required=True, choices=["github"],
+        help="収集元。github は merged PR のメタデータを取得する"
+             f"（{WORKSPACE_CONFIG_NAME} の organizations.<組織名>.github_org を"
+             "設定した組織のみ）",
+    )
+    pcol.add_argument("--month", required=True, help="対象月 (YYYY-MM)")
+    pcol.add_argument("--config", default=None, help=_CONFIG_HELP)
+    _add_dir_options(pcol, output=False)   # レポートを書かないコマンド
+    pcol.set_defaults(func=_run_collect)
 
     pchk = sub.add_parser(
         "check-text",
@@ -737,16 +755,21 @@ def _run_analyze(args: argparse.Namespace) -> int:
 _MONTH_RE = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
 
 
-def _resolve_month(targets: list[tuple[str, Path, Path]], month: str | None) -> str:
-    """対象月。未指定なら対象組織全体での spend の最新月。
+def _validate_month(month: str) -> str:
+    """対象月の形式を確かめる（不正なら ValueError）。
 
-    対象月は出力パスの一部（reports/<組織名>/<月>/）になるため形式を厳密に検証する。
-    検証しないと `--month ../<他組織>/<月>` で別組織のレポートを読み書きできてしまう。
+    対象月は成果物とキャッシュのパスの一部になるため厳密に検証する。検証しないと
+    `--month ../<他組織>/<月>` で別組織のファイルを読み書きできてしまう。
     """
+    if not _MONTH_RE.fullmatch(month):
+        raise ValueError(f"対象月の形式が不正です: {month!r}（YYYY-MM 形式で指定してください）")
+    return month
+
+
+def _resolve_month(targets: list[tuple[str, Path, Path]], month: str | None) -> str:
+    """対象月。未指定なら対象組織全体での spend の最新月。"""
     if month is not None:
-        if not _MONTH_RE.fullmatch(month):
-            raise ValueError(f"対象月の形式が不正です: {month!r}（YYYY-MM 形式で指定してください）")
-        return month
+        return _validate_month(month)
     latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_months(d))]
     if not latest:
         raise FileNotFoundError(
@@ -755,6 +778,61 @@ def _resolve_month(targets: list[tuple[str, Path, Path]], month: str | None) -> 
     month = max(latest)
     print(f"対象月未指定のため最新月を使用: {month}")
     return month
+
+
+# 収集を中断した理由の表示語。gh の生出力・token・ヘッダの値は出さず、この語と
+# HTTP ステータスだけを出す
+_COLLECT_FAILURE_TEXT = {
+    GhFailure.UNAUTHENTICATED: "gh の認証がありません（gh auth login を実行してください）",
+    GhFailure.NOT_FOUND: "gh コマンドが見つかりません",
+    GhFailure.TIMEOUT: "gh の応答がありません",
+    GhFailure.RATE_LIMITED: "GitHub API の利用上限に達しました（時間をおいて再実行してください）",
+    GhFailure.TOO_MANY_RESULTS: "1 日の merged PR が検索の上限（1000 件）を超えています",
+    GhFailure.ERROR: "GitHub API の応答を解釈できませんでした",
+}
+
+
+def _run_collect(args: argparse.Namespace) -> int:
+    """外部データを収集してローカルのキャッシュへ保存する（設計書 §16.2）。
+
+    対象は GitHub 分析を有効にした組織だけで、保存するのは merged PR のメタデータ
+    （設計書 §7.6 の9項目）。レポートは書かず、判定にも影響しない。
+    """
+    cfg = load_config(args.config)
+    input_dir = _resolve_dir(args.input_dir, cfg, "input")
+    month = _validate_month(args.month)
+    # 組織の存在は doctor と同じ経路で確かめる（このコマンドだけが受理する形を作らない）
+    org, org_input = _resolve_input_targets(input_dir, [args.org])[0]
+
+    enabled = github_collect.gated_orgs(cfg)
+    if org not in enabled:
+        raise ValueError(
+            f"組織 {org} は GitHub 分析が有効ではありません"
+            f"（{WORKSPACE_CONFIG_NAME} の organizations.{org}.github_org に"
+            " GitHub の Organization 名を設定してください）"
+        )
+
+    collected = github_collect.collect_merged_prs(
+        enabled[org], month, org_input / github_collect.PR_CACHE_DIRNAME
+    )
+    print(
+        f"{org} {month}: merged PR {collected.total} 件"
+        f"（今回 {collected.upserted} 件を更新）→ {collected.path}"
+    )
+    if collected.failure is not None:
+        reason = _COLLECT_FAILURE_TEXT[collected.failure]
+        if collected.status is not None:
+            reason += f"（HTTP {collected.status}）"
+        print(
+            f"  収集を中断しました: {collected.stopped.start}〜{collected.stopped.end} で"
+            f"{reason}。完了した期間は保存済みで、再実行すると続きから収集します",
+            file=sys.stderr,
+        )
+        return 1
+    if not collected.complete:
+        print("  対象月の直近の期間は次回の実行で再取得します"
+              "（期間の終わりから1日が過ぎるまで完了にしないため）")
+    return 0
 
 
 def _check_text_sources(name: str) -> list[tuple[str, str]]:

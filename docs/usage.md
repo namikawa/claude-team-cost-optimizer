@@ -25,6 +25,8 @@ input/
     members/          members_YYYY-MM.csv      （必須）
     code-analytics/   cc_YYYY-MM.csv           （任意）
     members-info.csv                           （任意）
+    github-members.csv                         （任意・GitHub 分析を有効にした組織のみ）
+    github-cache/     prs-YYYY-MM.json         （collect が作る。手で編集しない）
   <組織名B>/
     ...
 ```
@@ -161,6 +163,35 @@ seat-analyzer init-org <組織名>
    ファイル名の規則を変える前に生成した成果物（`report.md` 等）は自動で改名も削除も
    しない。再生成すると新旧が併存するので、旧名の整理は必要に応じて手で行う。
    記入済みの「## 考察」は旧名のレポートからも引き継がれる
+
+## GitHub の PR メタデータの収集（有効にした組織のみ）
+
+GitHub 分析は組織ごとの opt-in で、`config.yaml` の
+`organizations.<組織名>.github_org` に GitHub の Organization 名を書いた組織だけが
+対象になる（書き方は [reference.md](./reference.md) の GitHub 分析の有効化）。
+設定していない組織でこのコマンドを実行すると、設定の場所を示して終了コード 1 を返す。
+
+```sh
+seat-analyzer collect --org <組織名> --source github --month YYYY-MM
+```
+
+対象月に merge された PR のメタデータを `input/<組織名>/github-cache/prs-YYYY-MM.json`
+へ保存する。月ごとに実行するコマンドなので、初回は直近3ヶ月分を月を変えて順に実行する。
+
+- 保存するのは repository 名・PR 番号・作成者・作成日時・merge 日時・追加行数・
+  削除行数・draft かどうかだけ。title・本文・レビュー本文・変更ファイル・diff・
+  コミットメッセージ・コードは取得も保存もしない
+- GitHub 側の情報は参照するだけで変更しない（読み取りの API しか呼ばない）
+- 認証は GitHub CLI（`gh`）に委ねる。事前に `seat-analyzer doctor` で認証・権限・
+  利用上限を確認できる
+- GitHub 側の一時的なエラー（HTTP 502 など）は、少し待って数回まで自動で再試行する
+- API の利用上限や、再試行しても解消しないエラーで止まった場合は、それまでに読み切れた
+  期間を保存して終了コード 1 を返す。時間をおいて同じコマンドを実行すると続きから収集する
+- 対象月がまだ終わっていない場合、期間の終わりから1日が過ぎていない部分は次回の実行でも
+  取り直す（検索の反映遅れで日付境界の PR を取りこぼさないため）。同じ PR は何度取っても
+  1件にまとまる
+- 収集したキャッシュは GitHub 由来の参考値の材料で、`analyze` の判定・成果物には
+  影響しない
 
 ## 速報モード（部分月データでの一次判断）
 

@@ -6,13 +6,13 @@ claude-team-cost-optimizer のドキュメント一覧。ツールの概要と�
 ## 利用者向け
 
 - [setup.md](./setup.md) — ゼロから動く状態にするまでのセットアップ手順（Claude Code に実行させる形式）
-- [usage.md](./usage.md) — 入力データの構成、CSV のエクスポート手順、月次運用、速報モード
-- [reference.md](./reference.md) — レポート各セクションの読み方、追加クレジットの上限、判定ロジックの前提
+- [usage.md](./usage.md) — 入力データの構成、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、速報モード
+- [reference.md](./reference.md) — レポート各セクションの読み方、追加クレジットの上限、GitHub 分析の有効化、判定ロジックの前提
 - [tooling.md](./tooling.md) — 考察の自動執筆（`discuss`）と公開テキストの検査（`check-text`）
 
 ## 保守者向け
 
-- [release.md](./release.md) — リリース手順（タグと GitHub Releases）
+- [release.md](./release.md) — リリース手順（タグと GitHub Releases）とブランチ運用
 - [../CHANGELOG.md](../CHANGELOG.md) — バージョンごとの変更履歴
 
 ## 開発ロードマップ

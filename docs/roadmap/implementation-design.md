@@ -2662,13 +2662,16 @@ dashboardで読めるようにする。
 対象:
 
 - `src/seat_analyzer/github_collect.py`
+- `src/seat_analyzer/cli.py`
 - `tests/test_github_collect.py`
+- `tests/test_cli.py`
 
 実装:
 
 - merge date range
 - metadataだけ
 - upsert
+- `collect --source github`（§16.2）
 
 受け入れ条件:
 

@@ -99,8 +99,8 @@ seat-analyzer --version
 | ドキュメント | 内容 |
 | --- | --- |
 | [docs/setup.md](docs/setup.md) | ゼロから動く状態にするまでのセットアップ手順（Claude Code に実行させる形式） |
-| [docs/usage.md](docs/usage.md) | 入力データの構成、CSV のエクスポート手順、月次運用、速報モード |
-| [docs/reference.md](docs/reference.md) | レポート各セクションの読み方、追加クレジットの上限、判定ロジックの前提 |
+| [docs/usage.md](docs/usage.md) | 入力データの構成、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、速報モード |
+| [docs/reference.md](docs/reference.md) | レポート各セクションの読み方、追加クレジットの上限、GitHub 分析の有効化、判定ロジックの前提 |
 | [docs/tooling.md](docs/tooling.md) | 考察の自動執筆（`discuss`）と公開テキストの検査（`check-text`） |
 | [CHANGELOG.md](CHANGELOG.md) | バージョンごとの変更履歴 |
 
