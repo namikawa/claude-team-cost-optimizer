@@ -165,8 +165,8 @@ seat-analyzer --version
 seat-analyzer --help
 ```
 
-サブコマンド `analyze` / `discuss` / `doctor` / `check-text` / `init` / `init-org` が
-並べば成功。
+サブコマンド `analyze` / `discuss` / `doctor` / `collect` / `check-text` / `init` /
+`init-org` が並べば成功。
 
 ## ステップ 3: ワークスペースを作る
 
@@ -429,6 +429,10 @@ uv tool install "seat-analyzer @ <最新リリースの wheel の URL>"
   スペンドレポートのエクスポートには Owner / Primary Owner 権限が必要で、
   90 日より前には遡れない
 - 入力データの事前検査: `seat-analyzer doctor`
+- GitHub の PR 数とリードタイムを参考値として使う場合（任意・組織ごと）: ワークスペースの
+  `config.yaml` に対象組織の GitHub Organization 名を書き、`members-info.csv` の
+  `GitHub ID` 列を記入する（[reference.md](./reference.md) の「GitHub 分析の有効化」）。
+  収集は `seat-analyzer collect --source github`（[usage.md](./usage.md)）
 - 料金前提の確認: 既定設定のシート料金とモデル単価は特定時点の値なので、使う前に最新の
   公式情報と照合する。変える必要があればワークスペースの `config.yaml` に差分を書く
 - Claude Code のスラッシュコマンド `/seat-analysis` で、分析から考察執筆までを
