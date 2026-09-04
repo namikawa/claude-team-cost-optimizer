@@ -4,14 +4,17 @@
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
 - 次のタスク: v1.2.0 のリリース（Track 7 の Step 35〜38 が揃った）。Step 38
   （github-summary.csv）は完了した（2026-09-04。参考値の CSV を正式分析が書くようになり、
-  repository の一覧は収集時に月キャッシュへ保存する形にした。Step 39 は Track 5 の
-  Step 23 に依存するため v1.2.0 の対象外）。
+  repository の一覧は収集時に月キャッシュへ保存する形にした）。
   Step 9 はV2のrecent seat change判定材料として先行実装済みで、
   Track 3の残りStepは据え置き（根拠は設計書§12.7）
-- 予定タスク: admin/ の結線（κと当月消費の第一ソース化。adminのrecordがあれば採用し、
-  矛盾・不明は不明へ倒し、無ければmembers-infoをfallbackにする）。sonnet-5 の単価改定は
-  不要になった（導入価格 $2/$10 はそのまま正式価格になり、2026-09-01 の $3/$15 への値上げは
-  行われないことを公式の料金ページで確認した＝2026-09-02。`default-config.yaml` の値は
+- 予定タスク: Track 5（Step 20〜24）と Step 39 を同じ版で出す。Step 39 は変更前後の PR 数と
+  lead time を並べる参考表示で、書き込む先の`decision_audit.py`は Step 21 が新設する。
+  依存は Step 23（8週間評価）まで連なり、さらにシート変更の実施から8週間の観測が要るため、
+  GitHub 側の材料が揃っても Track 5 なしでは着手できない（2026-09-04 ユーザー確定。Track 7 の
+  未着手 Step はこの1つだけ）。admin/ の結線（κと当月消費の第一ソース化。adminのrecordが
+  あれば採用し、矛盾・不明は不明へ倒し、無ければmembers-infoをfallbackにする）。sonnet-5 の
+  単価改定は不要になった（導入価格 $2/$10 はそのまま正式価格になり、2026-09-01 の $3/$15 への
+  値上げは行われないことを公式の料金ページで確認した＝2026-09-02。`default-config.yaml` の値は
   現状のままで正しい）
 - 現在のリリーススコープ: v1.1.1（判定不変のPATCH）までリリース済み。Milestone Aは
   v1.1.0で完了した。以降の計画は次の2段。
@@ -20,10 +23,11 @@
     あった判定不変の改善、Step 17 の追加クレジット上限の字句厳格化。Step 17・18 のコードは
     同梱されるが`decision_v2.enabled: false`で不活性。Track 7 は Step 32〜34 まで
     （doctorのGitHub検査・GitHub members loader・repository列挙。Step 35 以降は継続）を含む
-  - v1.2.0（MINOR）: Track 7（Step 35〜38。Step 39 は Track 5 の Step 23 に依存するため
-    対象外）と、mainに入っているV2判定のopt-in提供（F4・Step 19）。V2は
-    `decision_v2.enabled: false`のまま出し、2026-09・2026-10の分析でV1と並走比較した
-    うえで、次の版で既定を有効へ切り替える
+  - v1.2.0（MINOR）: Track 7（Step 35〜38）と、mainに入っているV2判定のopt-in提供
+    （F4・Step 19）。V2は`decision_v2.enabled: false`のまま出し、2026-09・2026-10の分析で
+    V1と並走比較したうえで、次の版で既定を有効へ切り替える。Step 39 は含めない
+    （Track 5 の Step 23 に依存し、実態としても変更後評価の機能なので Track 5 と同じ版で
+    出す。2026-09-04 ユーザー確定）
 
 ## 1. この文書の目的
 
