@@ -203,6 +203,43 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 
 ## 6. 検証記録
 
+### 2026-09-04 — GitHub対応表の源をmembers-infoのGitHub ID列へ
+
+- email → GitHub loginの対応表を`github-members.csv`から`members-info.csv`の`GitHub ID`列へ
+  移した。メンバーごとの属性は既にmembers-infoで保守しているので、別ファイルだと2つの一覧が
+  ずれる。`columns.members_info.github_login`（エイリアスに`github id`等）を足し、
+  `columns.github_members`セクションは削除した（上書きconfigに残っていればロード時にエラー）
+- 採用するファイルは`ingest.members_info_path`（`_resolve_members_info_path`を公開名にした）で
+  members-infoの読み取りと同じ規則で選ぶ。日付つきがあれば対象月の月末以前で最新。パス解決の
+  警告は対応表側では捨てる（members-infoの読み取り側が同じ警告を出すため二重にしない）
+- 列の値は3種類。空欄=未記入（未対応・warning）／`なし`・`none`・`-`=アカウントを持たない
+  （未対応だがwarningなし。毎月同じ警告が残って記入漏れが埋もれるのを避ける）／それ以外=login。
+  `GithubMemberLink.no_account`で表し、loginとの併存は構築時に拒否する。`unmapped_emails`は
+  no_accountを未対応の一覧から外す
+- 対応表として読むときの厳格さは据え置き。emailの重複はerrorにする（`load_members_info`は
+  同じファイルをkeep-lastで畳むが、対応表としては取り違えに直結するため中止する）。ヘッダの
+  検査はemailとGitHub IDの2列に絞った部分表で行い、部署・備考など読まない列の別名・重複では
+  止めない。読み取りは`keep_default_na=False`（既定では`None`が欠損へ変わり、空欄と区別できない）
+- `GithubMembers`に`has_column`を足し、`provided`は「ファイルがあり列がある」に変えた。
+  doctorはファイルなし／列なしを別々の文言のwarningにする（IssueCodeの語彙は増やしていない）
+- 旧`github-members.csv`が残っていたら`ValueError`で中止し、移し替えを案内する（黙って無視すると
+  そこに書いた対応が使われていないことに気付けない）。doctorではerrorとして出る
+- `init-org`のmembers-info雛形ヘッダを`email,部署,チーム,職種,追加クレジット上限,備考,GitHub ID`に
+  した（末尾に追加＝既存ファイルへ列を足すときと並びが揃う）
+- V1不変: `github_login`は`map_columns`で正準名へ写るだけで、`_merge_members_info`は名前を挙げた
+  列しかusersへ載せないため、列を足しても分析結果・成果物は変わらない（ユニットテストで固定）
+- 外部レビュー（Fable 1巡目・受け入れ基準8点に範囲固定）: 6点は指摘なし。low 3件のうち1件を採用
+  （doctorのerror文言の前置を固定名「members-info.csv を読めません」から「GitHub ID の対応表を
+  読めません」へ。日付つきファイルや旧ファイルの検出では前置とファイル名が食い違うため）。
+  2件は見送り: `--month`省略かつspendが1件も無い状態で日付つきmembers-infoしか無い組織に
+  「members-info.csvがありません」と出る点（init-org直後にしか起きず、同時にspend欠落のエラーが
+  出て月を確定できないことは読み取れる）と、日付つきmembers-infoの採用で月末以前に無く未来の
+  ファイルへフォールバックした事実がdoctorの出力に出ない点（analyze側で同じ状況に強警告が出る。
+  doctorの対応表検査は中身の検査が主目的。既知の限界として記録）
+- テスト: 1951件（+23件。loaderの列なし・旧ファイル・日付つきの選択・`なし`の各形・
+  ヘッダ重複・値オブジェクトの不変条件、doctorの列なし／旧ファイル／`なし`、configの
+  既定と`columns.github_members`拒否、init-orgの雛形、V1不変）
+
 ### 2026-09-04 — Step 35: PR検索とraw cache
 
 - merged PRのメタデータを収集して月ごとのJSONへ保存する経路を`github_collect.py`へ追加した

@@ -203,6 +203,13 @@ columns:
     # 正数=有効（上限あり）/ 0=無効 / 無制限=有効（上限なし）/ 空欄=不明
     credit_limit_usd: ["credit limit", "credit limit usd", "extra usage limit",
                        "spending limit", "追加クレジット上限", "従量上限"]
+    # GitHub の login（email → login の対応表。GitHub 分析を有効にした組織だけが使う）。
+    # 空欄=未記入（未対応として扱い警告する）/ なし・none・- =アカウントを持たない
+    # （未対応として扱い警告しない）/ それ以外=GitHub の login（英数字で始まり英数字で
+    # 終わる1〜39文字・連続しないハイフン・高々1個のアンダースコア）
+    github_login: ["github id", "github login", "github username", "github user",
+                   "github account", "githubログイン", "githubユーザー名",
+                   "githubアカウント", "github"]
   # 管理画面の手入力CSV input/<組織名>/admin/（organization-YYYY-MM-DD.csv /
   # users-YYYY-MM-DD.csv）。CSVエクスポートの無い管理画面の表を人手で写すための正準形式。
   # organization は1ファイル1行（ある時点の組織の契約）、users は1メール1行。
@@ -226,11 +233,6 @@ columns:
                        "追加クレジット上限"]
     credit_mtd_usd:   ["credit mtd usd", "credit mtd", "credit used mtd", "当月消費"]
     source:           ["source", "取得元"]
-  # 任意ファイル github-members.csv（email → GitHub login の対応表。手動メンテ）
-  github_members:
-    email:        ["email", "user email", "メールアドレス"]
-    github_login: ["github login", "github username", "github user", "github id",
-                   "githubログイン", "githubユーザー名", "githubアカウント"]
 
 # 追加クレジット（usage credits）関連の閾値。
 usage_credits:

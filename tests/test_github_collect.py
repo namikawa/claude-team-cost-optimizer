@@ -1,10 +1,12 @@
-"""GitHub 対応表（input/<組織名>/github-members.csv）のロードと、gh を呼ぶ probe・発見・
-merged PR の収集のテスト。
+"""GitHub 対応表（input/<組織名>/members-info.csv の GitHub ID 列）のロードと、gh を呼ぶ
+probe・発見・merged PR の収集のテスト。
 
 対応表では、取り違えに直結するものを止めること（必須カラムの欠落・email の欠落と重複・
 login の重複）と、読めない値で分析を止めないこと（空欄・字句として読めない login を未対応へ
 倒して警告する）の両方を固定する。読み取りだけのモジュールなので、同じ入力からは常に同じ
 結果と同じ並びになることまで見る（entries は行順・警告も行順・未対応の一覧は昇順）。
+members-info は対応表以外の列も持つ表なので、対応表として読むときに見るのが email と
+GitHub ID の2列だけであることも固定する。
 
 probe では、gh を実行できない場合の分類と、応答の解釈（HTTP ステータス・ヘッダ・本文）を
 見る。repository の発見では、除外（archived / fork / template）と pagination のほか、
@@ -37,7 +39,7 @@ from seat_analyzer.github_collect import (
     _SEARCH_RESULT_CAP,
     _TRANSIENT_STATUSES,
     GH_EXIT_AUTH_REQUIRED,
-    GITHUB_MEMBERS_FILENAME,
+    LEGACY_GITHUB_MEMBERS_FILENAME,
     PR_CACHE_DIRNAME,
     PR_CACHE_SCHEMA,
     CachedPr,
@@ -63,17 +65,18 @@ from seat_analyzer.github_collect import (
     run_gh,
     unmapped_emails,
 )
+from seat_analyzer.ingest import MEMBERS_INFO_FILENAME
 
-HEADER = "email,github_login"
+HEADER = "email,GitHub ID"
 JP_HEADER = "メールアドレス,githubユーザー名"
 
 
 def _write(input_dir: Path, rows: list[str], header: str = HEADER,
-           encoding: str = "utf-8") -> Path:
-    """組織ディレクトリ直下に対応表を1つ置く（行はそのまま書く）。"""
+           encoding: str = "utf-8", name: str = MEMBERS_INFO_FILENAME) -> Path:
+    """組織ディレクトリ直下に members-info を1つ置く（行はそのまま書く）。"""
     input_dir.mkdir(parents=True, exist_ok=True)
     body = "".join(f"{row}\n" for row in rows)
-    (input_dir / GITHUB_MEMBERS_FILENAME).write_text(
+    (input_dir / name).write_text(
         header + "\n" + body, encoding=encoding, newline="\n"
     )
     return input_dir
@@ -83,11 +86,25 @@ def _write(input_dir: Path, rows: list[str], header: str = HEADER,
 
 
 def test_missing_file_is_not_provided(tmp_path, cfg):
-    """対応表が無くてもエラーにしない（GitHub なしでも分析できる）。"""
+    """members-info が無くてもエラーにしない（GitHub なしでも分析できる）。"""
     result = load_github_members(tmp_path, cfg)
 
-    assert result == GithubMembers(entries=(), source=None, warnings=())
+    assert result == GithubMembers(
+        entries=(), source=None, has_column=False, warnings=()
+    )
     assert result.provided is False
+
+
+def test_file_without_the_github_column_is_not_provided(tmp_path, cfg):
+    """GitHub ID の列が無い members-info は、対応表としては使えない状態にする。"""
+    _write(tmp_path, ["user1@example.com,架空推進3部"], header="email,部署")
+    result = load_github_members(tmp_path, cfg)
+
+    assert result.source == MEMBERS_INFO_FILENAME
+    assert result.has_column is False
+    assert result.provided is False
+    assert result.entries == ()
+    assert result.warnings == ()
 
 
 def test_header_only_file_is_provided_but_empty(tmp_path, cfg):
@@ -96,11 +113,38 @@ def test_header_only_file_is_provided_but_empty(tmp_path, cfg):
     result = load_github_members(tmp_path, cfg)
 
     assert result.provided is True
-    assert result.source == GITHUB_MEMBERS_FILENAME
+    assert result.source == MEMBERS_INFO_FILENAME
     assert result.entries == ()
     assert result.warnings == (
-        (f"{GITHUB_MEMBERS_FILENAME}: データ行がありません"
+        (f"{MEMBERS_INFO_FILENAME}: データ行がありません"
          "（ヘッダだけのファイルが置かれています）"),
+    )
+
+
+def test_legacy_mapping_file_is_rejected(tmp_path, cfg):
+    """旧ファイルが残っていたら中止する（書いた対応が黙って使われない状態を作らない）。"""
+    _write(tmp_path, ["user1@example.com,example-user"])
+    _write(tmp_path, ["user2@example.com,other-user"],
+           header="email,github_login", name=LEGACY_GITHUB_MEMBERS_FILENAME)
+
+    with pytest.raises(ValueError, match="は読まなくなりました") as excinfo:
+        load_github_members(tmp_path, cfg)
+    assert LEGACY_GITHUB_MEMBERS_FILENAME in str(excinfo.value)
+    assert MEMBERS_INFO_FILENAME in str(excinfo.value)
+
+
+def test_dated_snapshot_is_chosen_by_the_target_month(tmp_path, cfg):
+    """日付つきが複数あれば、対象月の月末以前で最新のものを対応表として読む。"""
+    _write(tmp_path, ["user1@example.com,june-login"],
+           name="members-info-2026-06-10.csv")
+    _write(tmp_path, ["user1@example.com,july-login"],
+           name="members-info-2026-07-20.csv")
+
+    assert load_github_members(tmp_path, cfg, "2026-06").entries == (
+        GithubMemberLink(email="user1@example.com", github_login="june-login"),
+    )
+    assert load_github_members(tmp_path, cfg, "2026-07").entries == (
+        GithubMemberLink(email="user1@example.com", github_login="july-login"),
     )
 
 
@@ -140,6 +184,8 @@ def test_email_is_normalized_but_login_keeps_its_case(tmp_path, cfg):
     "User Email,GitHub Username",
     "email,GitHub User",
     "email,GitHub ID",
+    "email,GitHub Account",
+    "email,GitHub",
     "メールアドレス,githubログイン",
     JP_HEADER,
     "メールアドレス,githubアカウント",
@@ -166,9 +212,22 @@ def test_cp932_csv_is_read(tmp_path, cfg):
 
 
 def test_extra_columns_are_ignored(tmp_path, cfg):
-    """正準列以外の列（メモ等）があっても読める。"""
-    _write(tmp_path, ["user1@example.com,example-user,確認済み"],
-           header="email,github_login,備考")
+    """対応表に関係のない列（部署・備考等）があっても読める。"""
+    _write(tmp_path, ["user1@example.com,開発,確認済み,example-user"],
+           header="email,部署,備考,GitHub ID")
+    assert load_github_members(tmp_path, cfg).entries == (
+        GithubMemberLink(email="user1@example.com", github_login="example-user"),
+    )
+
+
+def test_duplicate_headers_outside_the_mapping_do_not_stop_the_read(tmp_path, cfg):
+    """対応表として読まない列は、同じ列を指すヘッダが2つ並んでいても止めない。
+
+    members-info は部署・備考も持つ表なので、GitHub と無関係な列の書き方で email →
+    login の読み取りが落ちると、対応表を直す手がかりにならない。
+    """
+    _write(tmp_path, ["user1@example.com,開発,Dev,example-user"],
+           header="email,部署,department,GitHub ID")
     assert load_github_members(tmp_path, cfg).entries == (
         GithubMemberLink(email="user1@example.com", github_login="example-user"),
     )
@@ -203,7 +262,7 @@ def test_duplicate_login_is_rejected_case_insensitively(tmp_path, cfg):
         "user1@example.com,Example-User",
         "user2@example.com,example-user",
     ])
-    with pytest.raises(ValueError, match="github_login 'example-user' の行が複数あります"):
+    with pytest.raises(ValueError, match="GitHub ID 'example-user' の行が複数あります"):
         load_github_members(tmp_path, cfg)
 
 
@@ -214,29 +273,34 @@ def test_blank_email_is_rejected(tmp_path, cfg):
         load_github_members(tmp_path, cfg)
 
 
-@pytest.mark.parametrize("header", ["email,github_id_x", "user email,login"])
+@pytest.mark.parametrize("header", ["identifier,GitHub ID", "名前,GitHub ID"])
 def test_missing_required_column_names_the_file(tmp_path, cfg, header):
-    """必須カラムが見つからなければ、ファイル名を挙げて中止する。"""
+    """必須カラム（email）が見つからなければ、ファイル名を挙げて中止する。"""
     _write(tmp_path, ["user1@example.com,example-user"], header=header)
     with pytest.raises(ValueError, match="必須カラムが見つかりません") as excinfo:
         load_github_members(tmp_path, cfg)
-    assert GITHUB_MEMBERS_FILENAME in str(excinfo.value)
+    assert MEMBERS_INFO_FILENAME in str(excinfo.value)
 
 
 def test_empty_file_is_a_clear_error(tmp_path, cfg):
     """0バイトのファイルも読み込みライブラリの例外ではなく、明確な ValueError にする。"""
     tmp_path.mkdir(parents=True, exist_ok=True)
-    (tmp_path / GITHUB_MEMBERS_FILENAME).write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / MEMBERS_INFO_FILENAME).write_text("", encoding="utf-8", newline="\n")
     with pytest.raises(ValueError, match="ヘッダ行がありません") as excinfo:
         load_github_members(tmp_path, cfg)
-    assert GITHUB_MEMBERS_FILENAME in str(excinfo.value)
+    assert MEMBERS_INFO_FILENAME in str(excinfo.value)
 
 
-def test_ambiguous_header_is_rejected(tmp_path, cfg):
-    """1つの正準列に対応するヘッダが2つある表は中止する。"""
-    _write(tmp_path, ["user1@example.com,user2@example.com,example-user"],
-           header="email,user email,github_login")
-    with pytest.raises(ValueError, match="同じ列 email に対応するヘッダが複数あります"):
+@pytest.mark.parametrize("header,canonical", [
+    ("email,user email,GitHub ID", "email"),
+    ("email,GitHub ID,github_login", "github_login"),
+])
+def test_ambiguous_header_is_rejected(tmp_path, cfg, header, canonical):
+    """1つの正準列に対応するヘッダが2つある表は中止する（どちらが正か決められない）。"""
+    _write(tmp_path, ["user1@example.com,x@example.com,example-user"], header=header)
+    with pytest.raises(
+        ValueError, match=f"同じ列 {canonical} に対応するヘッダが複数あります"
+    ):
         load_github_members(tmp_path, cfg)
 
 
@@ -253,17 +317,17 @@ def test_rows_with_more_fields_than_the_header_are_rejected(tmp_path, cfg):
     ])
     with pytest.raises(ValueError, match="列の対応を決められません") as excinfo:
         load_github_members(tmp_path, cfg)
-    assert GITHUB_MEMBERS_FILENAME in str(excinfo.value)
+    assert MEMBERS_INFO_FILENAME in str(excinfo.value)
     assert str(tmp_path) not in str(excinfo.value)
 
 
 def test_alias_shared_by_two_canonical_columns_is_an_error(tmp_path, cfg):
     """1つのヘッダが2つの正準列の候補になっている設定は、入力を読む前に中止する。"""
     broken = copy.deepcopy(cfg)
-    broken["columns"]["github_members"]["email"] = ["value"]
-    broken["columns"]["github_members"]["github_login"] = ["value"]
+    broken["columns"]["members_info"]["email"] = ["value"]
+    broken["columns"]["members_info"]["github_login"] = ["value"]
     _write(tmp_path, ["user1@example.com,example-user"])
-    with pytest.raises(ValueError, match="columns.github_members: ヘッダ 'value' が"):
+    with pytest.raises(ValueError, match="columns.members_info: ヘッダ 'value' が"):
         load_github_members(tmp_path, broken)
 
 
@@ -279,8 +343,37 @@ def test_blank_login_is_unmapped_with_a_warning(tmp_path, cfg):
         email="user1@example.com", github_login=None
     )
     assert result.warnings == (
-        (f"{GITHUB_MEMBERS_FILENAME}: user1@example.com: "
-         "github_login が空欄です（未対応として扱います）"),
+        (f"{MEMBERS_INFO_FILENAME}: user1@example.com: "
+         "GitHub ID が空欄です（未対応として扱います。アカウントを持たない人は"
+         "「なし」と書いてください）"),
+    )
+
+
+@pytest.mark.parametrize("cell", ["なし", "none", "NONE", "None", "-", "  なし  "])
+def test_no_account_marker_is_unmapped_without_a_warning(tmp_path, cfg, cell):
+    """アカウントを持たないと書かれた行は、未対応のまま警告しない。"""
+    _write(tmp_path, [f"user1@example.com,{cell}"])
+    result = load_github_members(tmp_path, cfg)
+
+    assert result.entries == (
+        GithubMemberLink(
+            email="user1@example.com", github_login=None, no_account=True
+        ),
+    )
+    assert result.warnings == ()
+
+
+def test_several_rows_can_declare_no_account(tmp_path, cfg):
+    """アカウントを持たない人は何人いてもよい（値の重複ではない）。"""
+    _write(tmp_path, ["user1@example.com,なし", "user2@example.com,なし"])
+
+    assert load_github_members(tmp_path, cfg).entries == (
+        GithubMemberLink(
+            email="user1@example.com", github_login=None, no_account=True
+        ),
+        GithubMemberLink(
+            email="user2@example.com", github_login=None, no_account=True
+        ),
     )
 
 
@@ -308,7 +401,7 @@ def test_unreadable_login_is_unmapped_with_a_warning(tmp_path, cfg, login):
         GithubMemberLink(email="user1@example.com", github_login=None),
     )
     assert len(result.warnings) == 1
-    assert "github_login を GitHub のログイン名として解釈できません" in result.warnings[0]
+    assert "GitHub ID を GitHub のログイン名として解釈できません" in result.warnings[0]
 
 
 @pytest.mark.parametrize("login", [
@@ -394,6 +487,21 @@ def test_unreadable_login_counts_as_unmapped(tmp_path, cfg):
     assert unmapped_emails(members, ["user1@example.com"]) == ("user1@example.com",)
 
 
+def test_no_account_is_not_listed_as_unmapped(tmp_path, cfg):
+    """アカウントを持たない人は挙げない（記入で解消できる状態だけを返す）。"""
+    _write(tmp_path, [
+        "user1@example.com,なし",
+        "user2@example.com,",
+    ])
+    members = load_github_members(tmp_path, cfg)
+
+    assert unmapped_emails(members, [
+        "user1@example.com",   # アカウントを持たない
+        "user2@example.com",   # 空欄（未記入）
+        "user3@example.com",   # 表に行が無い
+    ]) == ("user2@example.com", "user3@example.com")
+
+
 # ------------------------------------------------------------ 値オブジェクト
 
 
@@ -408,6 +516,18 @@ def test_link_normalizes_and_validates_its_values():
         GithubMemberLink(email="user1@example.com", github_login="@example-user")
     with pytest.raises(TypeError, match="github_login には文字列が必要です"):
         GithubMemberLink(email="user1@example.com", github_login=1)
+
+
+def test_link_rejects_a_login_on_a_row_without_an_account():
+    """アカウントを持たない行に login は持たせられない（両立する状態を作らない）。"""
+    with pytest.raises(ValueError, match="アカウントを持たない行に github_login"):
+        GithubMemberLink(
+            email="user1@example.com", github_login="example-user", no_account=True
+        )
+    with pytest.raises(TypeError, match="no_account には真偽値が必要です"):
+        GithubMemberLink(
+            email="user1@example.com", github_login=None, no_account="なし"
+        )
 
 
 @pytest.mark.parametrize("entries,message", [
@@ -429,7 +549,20 @@ def test_link_normalizes_and_validates_its_values():
 def test_members_rejects_duplicates(entries, message):
     """一意性は構築時にも確かめる（loader を通さずに組み立てた結果も同じ形にする）。"""
     with pytest.raises(ValueError, match=message):
-        GithubMembers(entries=entries, source=GITHUB_MEMBERS_FILENAME, warnings=())
+        GithubMembers(
+            entries=entries, source=MEMBERS_INFO_FILENAME, has_column=True,
+            warnings=(),
+        )
+
+
+def test_members_rejects_a_column_without_a_file():
+    """ファイルが無い結果に列があるという状態は作らない。"""
+    with pytest.raises(ValueError, match="ファイルが無い結果に GitHub ID の列"):
+        GithubMembers(entries=(), source=None, has_column=True, warnings=())
+    with pytest.raises(TypeError, match="has_column には真偽値が必要です"):
+        GithubMembers(
+            entries=(), source=MEMBERS_INFO_FILENAME, has_column="yes", warnings=()
+        )
 
 
 def test_members_allows_several_rows_without_a_login():
@@ -439,7 +572,8 @@ def test_members_allows_several_rows_without_a_login():
             GithubMemberLink(email="user1@example.com", github_login=None),
             GithubMemberLink(email="user2@example.com", github_login=None),
         ),
-        source=GITHUB_MEMBERS_FILENAME,
+        source=MEMBERS_INFO_FILENAME,
+        has_column=True,
         warnings=(),
     )
     assert members.provided is True

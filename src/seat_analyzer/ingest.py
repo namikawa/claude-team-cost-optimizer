@@ -37,10 +37,12 @@ REQUIRED_COLUMNS = {
     # 取得日と取得元はどちらの表にも要る（時点を特定できない設定値は判定に使えない）
     "admin_organization": ["snapshot_date", "source"],
     "admin_users": ["snapshot_date", "email", "source"],
-    # email → GitHub login の対応表（読み取りは github_collect.py）。対応づけが目的の
-    # 表なので、どちらの列も欠けると表そのものが成立しない
-    "github_members": ["email", "github_login"],
 }
+
+# 部署・チーム・職種・追加クレジット上限・備考・GitHub ID をメールに紐づける任意ファイルの
+# 固定名。日付つきスナップショットの解決（members_info_path）と、このファイルを読む側が
+# ファイル名を文言に載せるときの1箇所の源にする。
+MEMBERS_INFO_FILENAME = "members-info.csv"
 
 # Step 1で正準化するSpend任意列。既存の任意列は「列なし」を利用する処理があるため、
 # 一律には補完せず、この4列だけを欠損時にNAで追加する。
@@ -513,11 +515,16 @@ def validate_org_names(orgs: list[str]) -> None:
     check_org_name_collisions(orgs)
 
 
-def read_csv(path: Path, *, dtype=None) -> pd.DataFrame:
-    # utf-8-sig は BOM 無しの UTF-8 も読めるため、utf-8-sig と cp932 の2種で足りる
+def read_csv(path: Path, *, dtype=None, keep_default_na: bool = True) -> pd.DataFrame:
+    # utf-8-sig は BOM 無しの UTF-8 も読めるため、utf-8-sig と cp932 の2種で足りる。
+    # keep_default_na=False は、書かれた字句そのものを見る読み手のための指定
+    # （既定では "None" や "NA" のような語が読み取りの時点で欠損へ変わり、空欄と
+    # 区別できなくなる）
     for encoding in ("utf-8-sig", "cp932"):
         try:
-            return pd.read_csv(path, encoding=encoding, dtype=dtype)
+            return pd.read_csv(
+                path, encoding=encoding, dtype=dtype, keep_default_na=keep_default_na
+            )
         except UnicodeDecodeError:
             continue
     raise ValueError(f"{path}: 文字コードを判別できません（utf-8 / cp932 を試行）")
@@ -850,16 +857,20 @@ def load_members(input_dir: Path, month: str, cfg: dict, snapshot_active: bool =
     return LoadResult(df=df, source=path, warnings=warnings)
 
 
-def _resolve_members_info_path(input_dir: Path, month: str | None) -> tuple[Path | None, list[str]]:
-    """採用する members-info ファイルとロード警告を決める。
+def members_info_path(input_dir: Path, month: str | None) -> tuple[Path | None, list[str]]:
+    """採用する members-info ファイルとロード警告を決める（無ければ None）。
 
     日付つきスナップショットが1つでもあれば固定名は無視し、対象月 M の月末以前で最新の
     日付を採用する。月末以前に無ければ最古へフォールバックして強警告を出す。
     日付つきが無ければ従来どおり固定名 members-info.csv を使う。
+
+    このファイルを別の観点で読む側（GitHub ID の対応表）も同じ規則で1つを選べるように
+    公開する。どのファイルを見ているかが読む側で食い違うと、同じ組織の同じ月から別々の
+    設定を読むことになる。
     """
     input_dir = Path(input_dir)
     snapshots = member_info_files(input_dir)
-    fixed = input_dir / "members-info.csv"
+    fixed = input_dir / MEMBERS_INFO_FILENAME
     warnings: list[str] = []
     if snapshots and month is not None:
         month_end = _month_end(month)
@@ -895,7 +906,7 @@ def load_members_info(input_dir: Path, cfg: dict, month: str | None = None) -> L
     "Infinity" や "1e309" が読み取りの時点で無限大へ変わり、parse_credit_limit が受け取る
     前に「無制限」と区別できなくなる。
     """
-    path, warnings = _resolve_members_info_path(Path(input_dir), month)
+    path, warnings = members_info_path(Path(input_dir), month)
     if path is None:
         return None
     df = read_csv(path, dtype=str)

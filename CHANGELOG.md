@@ -8,9 +8,13 @@
   を出力できるようにした（V1 の判定・成果物は変わらない。省略時は `decision_v2.enabled` に従い既定は v1）
 - `collect --source github` で GitHub の merged PR のメタデータを `input/<組織名>/github-cache/`
   に収集できるようにした（`organizations.<組織名>.github_org` を設定した組織だけが対象）
+- members-info の GitHub ID 列に `なし` と書くと、GitHub アカウントを持たない人として
+  未対応の警告が出ないようにした
 
 ### 変更
 
+- GitHub の email → login の対応表を `github-members.csv` から `members-info.csv` の
+  `GitHub ID` 列へ移した（旧ファイルが残っていると読み取り時にエラーで案内する）
 - V2 判定の設定に `decision_v2.premium_justification_usd` を追加し、
   `min_assignment_saving_usd` を `observed_billing_margin_usd` に改名した
   （V2 は `enabled: false` のままで判定・出力に影響しない）

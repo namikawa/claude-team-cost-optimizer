@@ -694,8 +694,9 @@ def _github_unmapped_issues(
         Severity.WARNING, IssueCode.GITHUB_MAPPING_MISSING,
         f"GitHub login に対応づかないメンバーが {len(unmapped)} 名います"
         f"（例: {', '.join(emails)}）。"
-        f"{github_collect.GITHUB_MEMBERS_FILENAME} に github_login を追記してください"
-        "（対応づかない人の PR はどのユーザにも帰属しません）",
+        f"{ingest.MEMBERS_INFO_FILENAME} の GitHub ID 列に記入してください"
+        "（アカウントを持たない人は「なし」と書くとこの警告から外れます。"
+        "対応づかない人の PR はどのユーザにも帰属しません）",
         org, github_org=github_org, members=len(unmapped), emails=emails,
     )]
 
@@ -703,27 +704,38 @@ def _github_unmapped_issues(
 def _github_mapping_issues(
     input_dir: Path, month: str | None, cfg: dict, org: str, github_org: str
 ) -> list[QualityIssue]:
-    """email → GitHub login の対応表を検査する。
+    """members-info の GitHub ID 列（email → GitHub login の対応表）を検査する。
 
     読めない対応表はerrorにする（fail-closed）。取り違えに直結する不備（email・login の
     重複、必須カラムの欠落、列ずれ等）と読み取り失敗をまとめて GITHUB_MAPPING_DUPLICATE
     で表す。壊れた対応表を使うと、別人のPRを帰属させたまま集計が完走する。
     """
-    filename = github_collect.GITHUB_MEMBERS_FILENAME
+    filename = ingest.MEMBERS_INFO_FILENAME
     try:
-        members = github_collect.load_github_members(input_dir, cfg)
+        members = github_collect.load_github_members(input_dir, cfg, month)
     except (OSError, ValueError) as exc:
         return [_issue(
             Severity.ERROR, IssueCode.GITHUB_MAPPING_DUPLICATE,
-            f"{filename} を読めません: {_reason(exc, input_dir)}",
+            # 前置に固定名を使わない。読んだのは日付つきのファイルかもしれず、旧ファイルの
+            # 検出はそもそも members-info を読む前に止まる（実ファイル名は理由の側に残る）
+            f"GitHub ID の対応表を読めません: {_reason(exc, input_dir)}",
             org, github_org=github_org,
         )]
-    if not members.provided:
+    if members.source is None:
         return [_issue(
             Severity.WARNING, IssueCode.GITHUB_MAPPING_MISSING,
             f"GitHub 分析が有効な組織ですが {filename} がありません"
-            "（email → GitHub login の対応表）。組織ディレクトリ直下に置いてください"
-            "（無いあいだ PR はどのユーザにも帰属しません）",
+            "（GitHub ID の列で email → GitHub login の対応表を持ちます。組織"
+            "ディレクトリ直下に置いてください。無いあいだ PR はどのユーザにも"
+            "帰属しません）",
+            org, github_org=github_org,
+        )]
+    if not members.has_column:
+        return [_issue(
+            Severity.WARNING, IssueCode.GITHUB_MAPPING_MISSING,
+            f"{members.source} に GitHub ID の列がありません"
+            "（email → GitHub login の対応表。列を足して各メンバーの GitHub login を"
+            "記入してください。アカウントを持たない人は「なし」）",
             org, github_org=github_org,
         )]
     issues = [
