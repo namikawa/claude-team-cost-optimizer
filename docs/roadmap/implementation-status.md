@@ -2,10 +2,11 @@
 
 - 最終更新: 2026-09-04
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 7 の Step 37（PR lead time）。Step 36（マージPR数）は完了した
-  （2026-09-04。`github_metrics.merged_pr_counts` がキャッシュ・対応表・repository 一覧から
-  ユーザ×月の merged PR 数を出す。CLI への結線と成果物は Step 38。repository 除外の材料を
-  実行時の gh 呼び出しで取るか collect 時に保存するかは Step 38 の着手時に決める）。
+- 次のタスク: Track 7 の Step 38（github-summary.csv）。Step 37（PR lead time）は完了した
+  （2026-09-04。`github_metrics.pr_metrics`——`merged_pr_counts`から改名——が件数に加えて
+  lead time（`merged_at − created_at`）の median / P75 / P90 を個人別と組織全体で返す。
+  CLI への結線と成果物は Step 38。repository 除外の材料を実行時の gh 呼び出しで取るか
+  collect 時に保存するかも Step 38 の着手時に決める）。
   Step 9 はV2のrecent seat change判定材料として先行実装済みで、
   Track 3の残りStepは据え置き（根拠は設計書§12.7）
 - 予定タスク: admin/ の結線（κと当月消費の第一ソース化。adminのrecordがあれば採用し、
@@ -98,9 +99,9 @@
 | 4 | V2判定 | 7 | 0 | 0 | 0 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
-| 7 | GitHub | 5 | 0 | 0 | 3 | 0 |
+| 7 | GitHub | 6 | 0 | 0 | 2 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **28** | **0** | **0** | **21** | **0** |
+| **合計** |  | **29** | **0** | **0** | **20** | **0** |
 
 ## 5. Step一覧
 
@@ -190,7 +191,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 34 | Repository自動発見 | `完了` | 2026-09-02 |
 | 35 | PR検索とraw cache | `完了` | 2026-09-04 |
 | 36 | マージPR数 | `完了` | 2026-09-04 |
-| 37 | PR lead time | `未着手` |  |
+| 37 | PR lead time | `完了` | 2026-09-04 |
 | 38 | github-summary.csv | `未着手` |  |
 | 39 | GitHub follow-up参考表示 | `未着手` |  |
 
@@ -203,6 +204,54 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-04 — Step 37: PR lead time
+
+- Step 36 の純粋関数に lead time を足した。件数と lead time の両方を返す関数になったので
+  `merged_pr_counts`を`pr_metrics`へ改名した（後方互換の別名は残さない。CLI からはまだ
+  呼ばれておらず、参照はテストだけ）。CLI への結線と成果物は Step 38
+- lead time は`merged_at − created_at`を時（hours）で表した実数。`CachedPr`の日時は UTC
+  固定の字句なので UTC のまま解析し、実行環境の timezone（`TZ`）には依らせない。丸めない
+  （表示の丸めは出力側の責務）。Draft だった期間も含めるので`is_draft`は見ない
+  （設計書§15.5）。公開ヘルパ`lead_time_hours(pr)`として出した
+- unmerged（open / closed）の PR の除外はコードではなく構造で保証されている。キャッシュは
+  `is:merged`検索の結果だけを持ち、`CachedPr.merged_at`は必須なので、merge していない PR は
+  そもそもキャッシュに入らない。新しい除外処理は書かず、値オブジェクトが受け付けないことを
+  テストで固定した
+- 百分位は線形補間（numpy / pandas の既定・Excel の PERCENTILE.INC・Hyndman & Fan の
+  type 7）。median は同じ方法の P50 なので、偶数件では中央2値の平均と一致する。
+  `statistics.quantiles`は使わない（要素1件で例外になる。1件でも要約する仕様と噛み合わない）
+- 値オブジェクト`LeadTimeSummary`（count・median_hours・p75_hours・p90_hours）を新設した。
+  count は1件以上、3つの値は0以上の有限な時間で median ≤ P75 ≤ P90 の順であることを
+  `__post_init__`が検査する。整数で渡した時間は float へ揃える。型違いは TypeError、
+  値の矛盾は ValueError（`github_collect`の慣例に合わせ、件数は型を問わず ValueError）
+- 個人別（`UserPrMetrics.lead_time`）は本人の PR だけを母数にする。`merged_pr_count`が0の
+  人だけ None で、値があるときの`count`は`merged_pr_count`と一致する（片方だけが立つ行は
+  ValueError）。既定値を置かずに必須フィールドにしたのは、件数と要約が食い違う行を
+  書けなくするため
+- 組織全体（`GithubMetrics.lead_time`）の母数は`human_prs`——対象 repository の PR から Bot を
+  除いた分、つまり個人へ帰属した PR・対応表に無い作成者の PR・削除済みのアカウントの PR の
+  合計。対応表の記入状況で母数が動かないので Organization 全体の基準線になる。削除済みの
+  アカウントは種別が分からないが Bot と確定できないので人の側へ置く
+- 最小件数の閾値は設けない（1件でも要約する）。件数を値の隣に持たせるので、データ不足の
+  明示は表示側（Step 38 / 39）の責務。config も足さない
+- 区分けのループは1つのまま（件数と lead time を同じ走査で集める）。warnings の内容・順序は
+  変えず、lead time 用の警告も足していない。層は 20 のままで、パッケージ内 import も
+  `github_collect`（層 15）だけ
+- テスト: 2045 passed（+38件。lead time の値と同時刻・timezone を変えても不変・月境界を
+  またぐ lead time・Draft 込み・unmerged が構造で入らないこと・百分位の線形補間（4件 / 1件 /
+  2件）・入力順に依らないこと・空は None・個人別の母数・組織全体の母数（Bot と対象外
+  repository が入らないことを桁違いの値で確認）・人の PR が0件なら None・3つの値
+  オブジェクトの不変条件）、ruff 緑。timezone のテストは`time.tzset`が無い環境（Windows）
+  では skip する
+- 実データ確認: GitHub 分析を有効にした2組織の 2026-08 キャッシュに対して2回流して結果が
+  等しく、個人別・組織全体とも件数と要約の対応（0件 ⇔ None・count の一致）が全件成立した。
+  百分位の実装は numpy の既定と乱数入力で一致し、median は`statistics.median`と一致する
+- 外部レビュー（codex 1巡目・受け入れ基準8点に範囲固定）: 7点は指摘なし。A4（百分位）に
+  low 1件（`_as_hours`が float へ変換できない巨大な整数で ValueError ではなく OverflowError
+  を出す）は見送り。実行経路では`lead_time_hours`が`timedelta`由来の float しか渡さないので
+  到達せず、値オブジェクトを誤った値で直接生成した場合だけに起きる。Step 36 の同種の低優先
+  指摘と同じ判断
 
 ### 2026-09-04 — Step 36: マージPR数
 
