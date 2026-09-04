@@ -46,6 +46,7 @@ LAYERS = {
     "analyze": 20,
     "decision_v2": 20,
     "data_quality": 20,
+    "github_metrics": 20,
     "leakcheck": 20,
     "decision_evidence": 25,
     "report": 30,

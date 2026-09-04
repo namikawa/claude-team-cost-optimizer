@@ -2,9 +2,10 @@
 
 - 最終更新: 2026-09-04
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 7 の Step 36（マージPR数）。Step 35（PR検索とraw cache）は完了した
-  （2026-09-04。`collect --source github` で merged PR のメタデータを
-  `input/<組織名>/github-cache/` へ収集できるようにした。指標計算はまだ無い）。
+- 次のタスク: Track 7 の Step 37（PR lead time）。Step 36（マージPR数）は完了した
+  （2026-09-04。`github_metrics.merged_pr_counts` がキャッシュ・対応表・repository 一覧から
+  ユーザ×月の merged PR 数を出す。CLI への結線と成果物は Step 38。repository 除外の材料を
+  実行時の gh 呼び出しで取るか collect 時に保存するかは Step 38 の着手時に決める）。
   Step 9 はV2のrecent seat change判定材料として先行実装済みで、
   Track 3の残りStepは据え置き（根拠は設計書§12.7）
 - 予定タスク: admin/ の結線（κと当月消費の第一ソース化。adminのrecordがあれば採用し、
@@ -97,9 +98,9 @@
 | 4 | V2判定 | 7 | 0 | 0 | 0 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
-| 7 | GitHub | 4 | 0 | 0 | 4 | 0 |
+| 7 | GitHub | 5 | 0 | 0 | 3 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **27** | **0** | **0** | **22** | **0** |
+| **合計** |  | **28** | **0** | **0** | **21** | **0** |
 
 ## 5. Step一覧
 
@@ -188,7 +189,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 33 | GitHub doctor | `完了` | 2026-09-01 |
 | 34 | Repository自動発見 | `完了` | 2026-09-02 |
 | 35 | PR検索とraw cache | `完了` | 2026-09-04 |
-| 36 | マージPR数 | `未着手` |  |
+| 36 | マージPR数 | `完了` | 2026-09-04 |
 | 37 | PR lead time | `未着手` |  |
 | 38 | github-summary.csv | `未着手` |  |
 | 39 | GitHub follow-up参考表示 | `未着手` |  |
@@ -202,6 +203,50 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-04 — Step 36: マージPR数
+
+- 収集した merged PR をユーザ×月の件数へ畳む純粋関数`github_metrics.merged_pr_counts`を
+  新設した（層 20）。入力はその月の`PrCache`・対応表`GithubMembers`・repository 一覧
+  `RepoDiscovery`の3つで、gh・ファイル・現在時刻を参照しない。出力`GithubMetrics`は
+  対応表に login を持つ全員の行（PR 0 件も行にする・email 昇順）と、集計から外した PR の
+  区分別件数・`cache_complete`・warnings を持つ。CLI への結線と成果物は Step 38
+- 区分は排他で、PR 1 件を「対象外 repository → 削除済み author → Bot → 対応表の login →
+  対応表に無い作成者」の順に最初に該当した1つへ入れる。repository 名も login も小文字で
+  突き合わせる（GitHub はどちらも大小を区別しない）。区分の合計がキャッシュの全件数に
+  一致することと、対応表に無い作成者の人数と件数の整合（両方 0 か両方正・人数 ≤ 件数）を
+  `GithubMetrics.__post_init__`が機械検査する
+- merge 月帰属は`PrCache`が構造で保証している（`merged_at`の UTC 月 = キャッシュの月）ので、
+  この計算は`created_at`を見ない。前月に作られ当月に merge された PR が当月に数えられる
+  ことをテストで固定
+- 対応表に無い作成者（GitHub の Organization には対応表に載らない人も居る前提）は件数と人数
+  だけを残し、login は結果にも warning にも一切持たせない。件数入りの warning 1 行
+  「対応表に無い作成者 N 人による PR M 件を個人別の集計から除外しました」で表す。削除済みの
+  アカウント（author が null）は対応表の記入では解消しないので件数だけ残して警告しない
+- fail-closed: `RepoDiscovery.complete`が False の一覧と、キャッシュと Organization が違う
+  一覧は ValueError で中止する（部分的な一覧で照合すると対象の PR が「対象外」へ流れ、参考指標
+  が黙って小さく出る）。収集が未完了のキャッシュ（`PrCache.complete`が False）は集計するが
+  `cache_complete=False`と warning で部分的な値と明示する
+- warnings は固定順3種（対応表なし → 対応表に無い作成者 → 収集未完了）。`GithubMembers.
+  warnings`は転記しない（doctor が同じ内容を出す）
+- repository 除外（archived / fork / template）の材料は`RepoDiscovery`を引数で受けるだけに
+  した。実行時に gh を呼ぶか、collect 時に一覧をキャッシュへ保存するかは Step 38 の着手時に
+  決める（analyze / review はオフラインで動くのが現状なので、保存する方式が自然と見ている）
+- 実データ確認: GitHub 分析を有効にした2組織の 2026-08 キャッシュに対して、区分の合計が
+  キャッシュの全件数と一致し、Bot の件数は Step 35 の収集時に観測した件数と一致した。
+  Organization に対応表の外の作成者が多い組織では想定どおり件数入りの warning が出る。
+  2回流して結果が等しいことも確認
+- テスト: 2007 passed（+56件。帰属・大小違いの照合・Bot / 削除済み / 対象外 repository・
+  除外の優先順・対応表に無い作成者の人数と件数と login の非露出・0 件の行・`なし`と空欄の
+  除外・email 昇順・対応表なし2通り・収集未完了・不完全な一覧3通り・Organization 不一致・
+  型違い・決定性・空キャッシュ・両値オブジェクトの不変条件）、ruff 緑、層テストに
+  `github_metrics: 20`を追加
+- 外部レビュー（codex 1巡目・受け入れ基準8点に範囲固定）: 8点すべて指摘なし。補助基準に
+  対する low 1件（値オブジェクトの件数・Organization 名の型違いが TypeError ではなく
+  ValueError になる）は見送り。`github_collect`の値オブジェクトが同じ慣例（件数と
+  Organization 名は型を問わず ValueError・TypeError は tuple / 真偽値 / インスタンスの
+  検査に限る）で書かれており、新モジュールだけ変えると慣例が食い違う。発生条件は値
+  オブジェクトを誤った型で直接生成した場合だけで、実行経路には無い
 
 ### 2026-09-04 — GitHub対応表の源をmembers-infoのGitHub ID列へ
 
