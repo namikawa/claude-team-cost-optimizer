@@ -173,6 +173,42 @@ def test_load_members_info_none_when_absent(make_input, cfg):
     assert analyze_mod.ingest.load_members_info(input_dir, cfg) is None
 
 
+def test_github_id_column_does_not_change_v1(make_input, cfg):
+    """GitHub ID の列を足しても V1 の読み取りと分析結果は変わらない。
+
+    この列は GitHub 分析だけが読む（`github_collect.load_github_members`）。列の有無で
+    部署別サマリや判定が動くと、GitHub を使わない組織にまで影響が出る。
+    """
+    rows = "a@example.com,開発部,基盤チーム,エンジニア,テスト備考\n"
+    without = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"], org="org-a",
+    )
+    _write_info(without, "org-a", "email,部署,チーム,職種,備考\n" + rows)
+    with_column = make_input(
+        {"2026-06": [spend_row("a@example.com", 10.0)]},
+        members=["a@example.com,Standard"], org="org-b",
+    )
+    _write_info(
+        with_column, "org-b",
+        "email,部署,チーム,職種,備考,GitHub ID\n" + rows.rstrip("\n") + ",example-user\n",
+    )
+
+    plain = analyze_mod.ingest.load_members_info(without / "org-a", cfg)
+    extended = analyze_mod.ingest.load_members_info(with_column / "org-b", cfg)
+    # 正準名へ写るだけで V1 の列は増えも減りもしない（読むのは GitHub 分析だけ）
+    assert [c for c in extended.df.columns if c != "github_login"] == list(
+        plain.df.columns
+    )
+    assert plain.warnings == extended.warnings
+
+    left = analyze(without / "org-a", "2026-06", cfg, org="org-a")
+    right = analyze(with_column / "org-b", "2026-06", cfg, org="org-b")
+    assert list(left.users.columns) == list(right.users.columns)
+    assert left.users.to_dict("records") == right.users.to_dict("records")
+    assert left.warnings == right.warnings
+
+
 # --- 未登録ユーザの警告 -----------------------------------------------------
 
 UNREGISTERED = "members-info.csv に未登録のユーザ"

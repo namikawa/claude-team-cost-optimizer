@@ -569,8 +569,9 @@ def _org_input(
     tmp_path: Path,
     members: tuple[str, ...] = ("a@x.jp",),
     mapping: tuple[str, ...] | None = ("a@x.jp,octo-example",),
+    header: str = "email,GitHub ID",
 ) -> Path:
-    """組織の入力ディレクトリ（メンバー一覧と、任意で対応表）。"""
+    """組織の入力ディレクトリ（メンバー一覧と、任意で members-info の対応表）。"""
     base = tmp_path / ORG
     (base / "members").mkdir(parents=True, exist_ok=True)
     (base / "members" / f"members_{MONTH}.csv").write_text(
@@ -578,8 +579,8 @@ def _org_input(
         encoding="utf-8", newline="\n",
     )
     if mapping is not None:
-        (base / "github-members.csv").write_text(
-            "email,github_login\n" + "".join(f"{row}\n" for row in mapping),
+        (base / "members-info.csv").write_text(
+            header + "\n" + "".join(f"{row}\n" for row in mapping),
             encoding="utf-8", newline="\n",
         )
     return base
@@ -784,7 +785,40 @@ def test_github_mapping_file_missing_is_a_warning(tmp_path, cfg):
 
     assert _codes(issues) == ["GITHUB_MAPPING_MISSING"]
     assert issues[0].severity is Severity.WARNING
+    assert "members-info.csv" in issues[0].message
+
+
+def test_github_mapping_column_missing_is_a_warning(tmp_path, cfg):
+    """members-info はあるが GitHub ID の列が無い状態は、列を足す案内にする。"""
+    input_dir = _org_input(tmp_path, mapping=("a@x.jp,架空推進3部",), header="email,部署")
+    issues = _inspect(input_dir, cfg, _fake_gh())
+
+    assert _codes(issues) == ["GITHUB_MAPPING_MISSING"]
+    assert issues[0].severity is Severity.WARNING
+    assert "GitHub ID の列がありません" in issues[0].message
+
+
+def test_github_legacy_mapping_file_is_an_error(tmp_path, cfg):
+    """旧ファイルが残っていたら error（そこに書いた対応は読まれない）。"""
+    input_dir = _org_input(tmp_path)
+    (input_dir / "github-members.csv").write_text(
+        "email,github_login\na@x.jp,octo-example\n", encoding="utf-8", newline="\n")
+    issues = _inspect(input_dir, cfg, _fake_gh())
+
+    assert _codes(issues) == ["GITHUB_MAPPING_DUPLICATE"]
+    assert issues[0].severity is Severity.ERROR
     assert "github-members.csv" in issues[0].message
+    assert str(input_dir) not in issues[0].message
+
+
+def test_github_members_without_an_account_are_not_listed(tmp_path, cfg):
+    """「なし」と書かれた人は、記入漏れの一覧に入れない。"""
+    input_dir = _org_input(
+        tmp_path, members=("a@x.jp", "b@x.jp"),
+        mapping=("a@x.jp,octo-example", "b@x.jp,なし"),
+    )
+
+    assert _inspect(input_dir, cfg, _fake_gh()) == []
 
 
 def test_github_members_without_a_login_are_warned_with_a_sample(tmp_path, cfg):
@@ -807,7 +841,7 @@ def test_github_loader_warning_becomes_an_issue(tmp_path, cfg):
 
     assert _codes(issues) == ["GITHUB_MAPPING_MISSING", "GITHUB_MAPPING_MISSING"]
     assert any("解釈できません" in issue.message for issue in issues)
-    assert all("github-members.csv" in issue.message for issue in issues)
+    assert all("members-info.csv" in issue.message for issue in issues)
 
 
 def test_github_broken_mapping_is_an_error_without_absolute_paths(tmp_path, cfg):

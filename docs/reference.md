@@ -288,6 +288,22 @@ organizations:
 直下だけは既定に無いキー（組織名）を書けるが、その中身に書けるのは `github_org` だけで、
 値が GitHub の Organization 名として読めなければ設定の読み込みでエラーになる。
 
+### GitHub ID の列（email → GitHub login の対応表）
+
+PR を誰の実績として数えるかは、`members-info.csv` の `GitHub ID` 列が決める。GitHub の
+API から email は取れないため人手で記入する列で、有効にした組織だけが使う。値は3種類:
+
+| 値 | 意味 |
+|---|---|
+| 空欄 | 未記入。未対応として扱い、doctor が記入を促す |
+| `なし` / `none` / `-` | GitHub のアカウントを持たない。未対応として扱うが警告しない |
+| それ以外 | GitHub の login（英数字で始まり英数字で終わる 1〜39 文字。区切りに使えるのは連続しないハイフンと高々 1 個のアンダースコア） |
+
+login として読めない値は未対応として扱い、写し間違いに気付けるよう warning に出す。
+email の重複と login の重複（大文字小文字を区別しない）は error で、対応表としては
+読まない（別人の PR を帰属させたまま集計が完走しないようにするため）。日付つきの
+members-info を置いている組織では、対象月の月末以前で最新のファイルの列を読む。
+
 有効にした組織では `seat-analyzer doctor` が次を検査する。読み取りだけを行い、PR も
 repository も取得しない。
 
@@ -297,9 +313,9 @@ repository も取得しない。
 - 設定した Organization を参照できるか。参照できない場合と、SAML SSO の承認が要る
   場合を区別して error
 - GitHub API の利用上限に達していないか。達していれば warning（再実行で解消する）
-- `input/<組織名>/github-members.csv`（email → GitHub login の対応表）の有無と中身。
-  無い場合と対応づかないメンバーが居る場合は warning、対応表そのものが壊れている場合は
-  error（誤った対応で集計を完走させない）
+- `input/<組織名>/members-info.csv` の `GitHub ID` 列（email → GitHub login の対応表）の
+  有無と中身。ファイルが無い場合・列が無い場合・対応づかないメンバーが居る場合は
+  warning、対応表そのものが壊れている場合は error（誤った対応で集計を完走させない）
 
 `organizations` に書いた組織名が入力の組織ディレクトリのどれとも一致しない場合は、
 `=== 設定検査 ===` として warning を出す。綴り違いで検査が黙って全部飛ぶのを防ぐため。

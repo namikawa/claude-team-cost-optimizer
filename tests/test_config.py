@@ -182,6 +182,9 @@ def _without_paths(cfg: dict) -> dict:
     ("decision:\n  hysteresis_month: 3\n", "decision.hysteresis_month"),
     ('columns:\n  spend:\n    emial: ["email"]\n', "columns.spend.emial"),
     ("paths:\n  inputs: data\n", "paths.inputs"),
+    # GitHub の対応表は members-info の GitHub ID 列で持つ。専用セクションを書いた
+    # 上書きは、そこに書いた別名が効かないまま分析が完走するので止める
+    ('columns:\n  github_members:\n    email: ["email"]\n', "columns.github_members"),
 ])
 def test_unknown_key_is_rejected_with_its_path(tmp_path, text, where):
     """既定に無いキーはフルパス付きでエラーにする。
@@ -210,6 +213,14 @@ def test_value_kind_mismatch_is_rejected(tmp_path, text, where, want):
     path = _override(tmp_path, text)
     with pytest.raises(ValueError, match=f"'{where}' は{want}で指定してください"):
         load_config(path)
+
+
+def test_members_info_has_a_github_login_alias(tmp_path, monkeypatch):
+    """GitHub の login は members-info の列として既定に定義されている。"""
+    monkeypatch.chdir(tmp_path)
+    aliases = load_config()["columns"]["members_info"]["github_login"]
+
+    assert "github id" in aliases
 
 
 @pytest.mark.parametrize("section,canonical", [

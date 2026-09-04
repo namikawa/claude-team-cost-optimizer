@@ -1,22 +1,27 @@
 """GitHub 由来の入力（email → login の対応表）と、`gh` で読み取るだけの probe・repository の発見。
 
-1つ目は `input/<組織名>/github-members.csv` の loader。GitHub の PR を参考情報として集計
-するには、スペンドレポートの email と GitHub の login を突き合わせる表が要る（設計書
-§7.3）。この表は管理画面から出力できないため、人手で保守される小さな CSV を正準形式と
-して受け取る。loader はファイルを書かず、`gh` もネットワークも呼ばず、現在時刻も参照
-しないため、同じ入力からは常に同じ結果と同じ警告の並びを返す。警告にはファイル名だけを
-載せ、絶対パスは持たせない（値を実行環境に依存させないため）。
+1つ目は `input/<組織名>/members-info.csv` の `GitHub ID` 列を email → GitHub login の
+対応表として読む loader。GitHub の PR を参考情報として集計するには、スペンドレポートの
+email と GitHub の login を突き合わせる表が要る（設計書 §7.3）。この対応は GitHub の API
+から取れないため人手で保守され、メンバーごとの属性を1つの表にまとめておく。採用する
+ファイルは members-info の読み取りと同じ規則で選ぶ（`ingest.members_info_path`）ので、
+部署や追加クレジット上限と同じ行から GitHub の login を読む。loader はファイルを書かず、
+`gh` もネットワークも呼ばず、現在時刻も参照しないため、同じ入力からは常に同じ結果と同じ
+警告の並びを返す。警告にはファイル名だけを載せ、絶対パスは持たせない（値を実行環境に
+依存させないため）。
 
 対応表が無くても分析は成立する（設計書 §20.2「GitHub なしでも分析できる」）。ファイルが
-無い場合はエラーにせず「未提供」として返し、「ファイルはあるがデータ行が無い」とは区別
-できる形にする。GitHub 分析そのものを組織ごとに有効化する判断（config の
-`organizations.<組織名>.github_org`）は消費側の責務で、この loader は持たない。
+無い場合はエラーにせず「未提供」として返し、「ファイルはあるが `GitHub ID` の列が無い」
+「列はあるがデータ行が無い」とは区別できる形にする。GitHub 分析そのものを組織ごとに
+有効化する判断（config の `organizations.<組織名>.github_org`）は消費側の責務で、この
+loader は持たない。
 
 値は「不明」を保つ。login の空欄と、GitHub の login として読めない字句は None（＝未対応）に
-して警告に残す（写し間違いを、分析を止めずに気付ける形にする）。一方で取り違えそのものに
-直結するもの——必須カラムの欠落、email の欠落・重複、login の重複——は ValueError で中止
-する。login の重複は大文字小文字を区別せずに見る（GitHub の login は大小を区別しないため、
-`Foo` と `foo` は同じ1人を指す）。
+して警告に残す（写し間違いを、分析を止めずに気付ける形にする）。`なし`・`none`・`-` は
+「GitHub のアカウントを持たない」という記入で、同じく未対応だが警告しない（未記入と、
+書く値が無いことを区別する）。一方で取り違えそのものに直結するもの——必須カラムの欠落、
+email の欠落・重複、login の重複——は ValueError で中止する。login の重複は大文字小文字を
+区別せずに見る（GitHub の login は大小を区別しないため、`Foo` と `foo` は同じ1人を指す）。
 
 2つ目は `gh` を呼ぶ probe（設計書 §15.2）。認証・付与された scope・利用上限の残量・
 Organization の参照可否だけを調べ、PR も repository も取得しない。token は Python 側へ
@@ -70,10 +75,20 @@ import pandas as pd
 
 from . import ingest
 
-# 組織ディレクトリ直下に置く固定名（日付つきのバリアントは受け付けない）と、
-# ヘッダのエイリアスを引く config のセクション名
-GITHUB_MEMBERS_FILENAME = "github-members.csv"
-COLUMNS_SECTION = "github_members"
+# 対応表として読むファイル（members-info）のヘッダのエイリアスを引く config のセクション名と、
+# その中で対応表に関係する正準列。members-info には部署・備考など対応表と無関係の列も
+# 並ぶため、ヘッダの検査はこの2列に絞る（無関係な列の別名・重複で対応表の読み取りを
+# 止めない）
+COLUMNS_SECTION = "members_info"
+_MAPPING_COLUMNS = ("email", "github_login")
+
+# 対応表を別ファイルで受けていたときの固定名。置かれたままだと、そこに書いた対応が
+# 使われていないことに気付けないので、検出したら中止して移し替えを案内する
+LEGACY_GITHUB_MEMBERS_FILENAME = "github-members.csv"
+
+# GitHub のアカウントを持たないことを表す記入（前後空白を除いて比較し、`none` は
+# 大文字小文字を区別しない）。未記入と区別して、警告の対象から外す
+_NO_ACCOUNT_MARKERS = ("なし", "none", "-")
 
 # GitHub の login として受ける字句。英数字・ハイフン・アンダースコアの 1〜39 文字で、
 # 先頭と末尾は英数字、ハイフンは連続しない。アンダースコアは高々1個だけ認める
@@ -128,23 +143,32 @@ def _normalize_email(text: str) -> str:
     return text.strip().lower()
 
 
-def _parse_login(cell: object) -> tuple[str | None, str | None]:
-    """github_login セルを (値, 警告) に解釈する。
+def _parse_login(cell: object) -> tuple[str | None, bool, str | None]:
+    """GitHub ID のセルを (値, アカウントを持たないか, 警告) に解釈する。
 
     空欄と、GitHub の login として読めない字句（`_LOGIN_RE`）は None（＝未対応）にして
     警告を返す。先頭の `@` のような余分な文字は黙って取り除かない（写し間違いに気付ける
     形を優先する。取り除くと、別人の login を正しい値として通す余地が残る）。
+
+    `_NO_ACCOUNT_MARKERS` は「アカウントを持たない」と書かれた行で、値は未対応のまま
+    警告しない。未記入と同じ扱いにすると、書きようのない人の分だけ毎月同じ警告が残り、
+    本当に記入漏れの行が埋もれる。
     """
     text = _cell_text(cell)
     if text is None:
-        return None, "github_login が空欄です（未対応として扱います）"
+        return None, False, (
+            "GitHub ID が空欄です（未対応として扱います。アカウントを持たない人は"
+            "「なし」と書いてください）"
+        )
+    if text.lower() in _NO_ACCOUNT_MARKERS:
+        return None, True, None
     if not _LOGIN_RE.fullmatch(text):
-        return None, (
-            f"github_login を GitHub のログイン名として解釈できません: {text!r}"
+        return None, False, (
+            f"GitHub ID を GitHub のログイン名として解釈できません: {text!r}"
             "（英数字で始まり英数字で終わる1〜39文字。区切りに使えるのは連続しない"
             "ハイフンと、高々1個のアンダースコアだけです。未対応として扱います）"
         )
-    return text, None
+    return text, False, None
 
 
 # ------------------------------------------------------------ 値オブジェクト
@@ -157,10 +181,15 @@ class GithubMemberLink:
     email は前後空白を除いて小文字へ揃えてから保持する（突き合わせの鍵のため）。
     github_login は入力の原文（前後空白のみ除去）で、None は「未対応」を表す。
     値を持つ場合は必ず GitHub の login として読める字句（`_LOGIN_RE`）になっている。
+
+    no_account は「GitHub のアカウントを持たない」と記入された行。未対応であることは
+    同じだが、記入漏れではないので消費側が警告から外せるようにする。login を持つ行は
+    アカウントがある行なので、両立する状態は作らない。
     """
 
     email: str
     github_login: str | None
+    no_account: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.email, str):
@@ -169,8 +198,17 @@ class GithubMemberLink:
         if not email:
             raise ValueError("email は必須です")
         object.__setattr__(self, "email", email)
+        if not isinstance(self.no_account, bool):
+            raise TypeError(
+                f"no_account には真偽値が必要です: {type(self.no_account).__name__}"
+            )
         if self.github_login is None:
             return
+        if self.no_account:
+            raise ValueError(
+                "アカウントを持たない行に github_login は持たせられません: "
+                f"{self.github_login!r}"
+            )
         if not isinstance(self.github_login, str):
             raise TypeError(
                 f"github_login には文字列が必要です: {type(self.github_login).__name__}"
@@ -181,18 +219,20 @@ class GithubMemberLink:
 
 @dataclass(frozen=True)
 class GithubMembers:
-    """`github-members.csv` の読み取り結果。
+    """members-info の `GitHub ID` 列を対応表として読んだ結果。
 
     entries は入力の行順を保つ（表を直す人が行番号で辿れるようにする）。email は重複
     なしで、値を持つ github_login も大文字小文字を区別せず重複なし。
 
-    source は由来ファイルの basename で、ファイルが無い場合は None。「未提供」と
-    「ファイルはあるがデータ行が無い」を呼び出し側が区別できるようにするため、行数
-    ではなくこの項目で表す。
+    source は由来ファイルの basename で、ファイルが無い場合は None。has_column は
+    その表に `GitHub ID` の列があったか。「未提供」「列が無い」「列はあるがデータ行が
+    無い」を呼び出し側が区別できるようにするため、行数ではなくこの2項目で表す
+    （ファイルが無ければ列も無いので、source が None のとき has_column は False）。
     """
 
     entries: tuple[GithubMemberLink, ...]
     source: str | None
+    has_column: bool
     warnings: tuple[str, ...]
 
     def __post_init__(self) -> None:
@@ -214,6 +254,12 @@ class GithubMembers:
             not isinstance(self.source, str) or not self.source.strip()
         ):
             raise ValueError(f"source にはファイル名が必要です: {self.source!r}")
+        if not isinstance(self.has_column, bool):
+            raise TypeError(
+                f"has_column には真偽値が必要です: {type(self.has_column).__name__}"
+            )
+        if self.source is None and self.has_column:
+            raise ValueError("ファイルが無い結果に GitHub ID の列は持たせられません")
         if not isinstance(self.warnings, tuple) or not all(
             isinstance(warning, str) for warning in self.warnings
         ):
@@ -221,8 +267,12 @@ class GithubMembers:
 
     @property
     def provided(self) -> bool:
-        """対応表のファイルが置かれていたか（データ行の有無とは別）。"""
-        return self.source is not None
+        """対応表として読める状態か（ファイルがあり `GitHub ID` の列がある）。
+
+        データ行の有無とは別。列が無い表は、記入が1行も無い表とは違って「対応表として
+        使う準備ができていない」状態なので、ここでは未提供と同じに扱う。
+        """
+        return self.source is not None and self.has_column
 
 
 # ------------------------------------------------------------ ヘッダの突き合わせ
@@ -309,13 +359,28 @@ def _raw_header(path: Path) -> list[str]:
     raise ValueError(f"{path}: 文字コードを判別できません（utf-8 / cp932 を試行）")
 
 
+def _mapping_aliases(cfg: dict) -> dict:
+    """対応表として読む列だけのエイリアス表（email と GitHub ID）。
+
+    members-info には部署・チーム・備考など、対応表と関係のない列も並ぶ。それらの別名や
+    重複までここで見ると、GitHub と無関係な列の書き方で対応表の読み取りが止まる
+    （読まない列は結果に影響しない）。
+    """
+    aliases = cfg["columns"][COLUMNS_SECTION]
+    return {
+        canonical: aliases[canonical]
+        for canonical in _MAPPING_COLUMNS
+        if canonical in aliases
+    }
+
+
 def _read_table(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
     """対応表を1つ読み、カラム名を正準名へ写す。
 
     login の大文字小文字と email の表記をそのまま保つため文字列で読み、値の解釈は
     セル単位のパーサに任せる。
     """
-    aliases = cfg["columns"][COLUMNS_SECTION]
+    aliases = _mapping_aliases(cfg)
     _reject_overlapping_aliases(aliases)
     headers = _raw_header(path)
     if not headers:
@@ -325,7 +390,9 @@ def _read_table(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
             "書いてください）"
         )
     _reject_ambiguous_headers(path, headers, aliases)
-    df = ingest.read_csv(path, dtype=str)
+    # 書かれた字句のまま受ける（既定では "None" が読み取りの時点で欠損へ変わり、
+    # 「アカウントを持たない」という記入と空欄を区別できなくなる）
+    df = ingest.read_csv(path, dtype=str, keep_default_na=False)
     # 全データ行がヘッダより1列多い表では、読み込みが先頭の列を暗黙の行ラベルにする。
     # 残りの列が1つずつずれ、login の位置に来たメモも email の位置に来た login も字句
     # としては通るため、ずれた対応がそのまま採用されてしまう。取り違えに直結するので、
@@ -348,24 +415,50 @@ def _read_table(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
 # --------------------------------------------------------------------- 公開 API
 
 
-def load_github_members(input_dir: Path, cfg: dict) -> GithubMembers:
-    """`input_dir/github-members.csv` を読む（ファイルが無ければ未提供の結果）。
+def load_github_members(
+    input_dir: Path, cfg: dict, month: str | None = None
+) -> GithubMembers:
+    """members-info の `GitHub ID` 列を対応表として読む（ファイルが無ければ未提供の結果）。
 
-    input_dir は組織ディレクトリ（`input/<組織名>/`）。entries は入力の行順で、
-    login を持たない行（空欄・読めない字句）も email 付きで残す（対応表に書かれて
-    いる人と、そもそも書かれていない人は別の状態のため）。
+    input_dir は組織ディレクトリ（`input/<組織名>/`）。読むファイルは `load_members_info`
+    と同じ規則で選ぶ（日付つきがあれば対象月の月末以前で最新）。ファイルの選択で出る警告は
+    ここでは返さない——members-info の読み取り側が同じ警告を出すため、二重に並べない。
+
+    entries は入力の行順で、login を持たない行（空欄・読めない字句・アカウントを持たない
+    記入）も email 付きで残す（表に書かれている人と、そもそも書かれていない人は別の状態
+    のため）。
+
+    email の重複はここでは中止する。`load_members_info` は同じファイルを最後の行で畳んで
+    読むが、対応表としては「どちらの login が正か」が決まらず、取り違えたまま PR を別人へ
+    帰属させることになる。属性の上書きより厳しく見る。
     """
-    path = Path(input_dir) / GITHUB_MEMBERS_FILENAME
-    if not path.is_file():
-        return GithubMembers(entries=(), source=None, warnings=())
+    input_dir = Path(input_dir)
+    legacy = input_dir / LEGACY_GITHUB_MEMBERS_FILENAME
+    if legacy.is_file():
+        raise ValueError(
+            f"{LEGACY_GITHUB_MEMBERS_FILENAME} は読まなくなりました。GitHub ID は "
+            f"{ingest.MEMBERS_INFO_FILENAME} の GitHub ID 列に移し、このファイルを"
+            "削除してください"
+        )
+    path, _ = ingest.members_info_path(input_dir, month)
+    if path is None:
+        return GithubMembers(
+            entries=(), source=None, has_column=False, warnings=()
+        )
 
     frame, warnings = _read_table(path, cfg)
+    if "github_login" not in frame.columns:
+        return GithubMembers(
+            entries=(), source=path.name, has_column=False, warnings=()
+        )
     if frame.empty:
         warnings.append(
             f"{path.name}: データ行がありません"
             "（ヘッダだけのファイルが置かれています）"
         )
-        return GithubMembers(entries=(), source=path.name, warnings=tuple(warnings))
+        return GithubMembers(
+            entries=(), source=path.name, has_column=True, warnings=tuple(warnings)
+        )
 
     entries: list[GithubMemberLink] = []
     seen_email: dict[str, int] = {}
@@ -385,7 +478,7 @@ def load_github_members(input_dir: Path, cfg: dict) -> GithubMembers:
             )
         seen_email[email] = number
 
-        login, warning = _parse_login(row.get("github_login"))
+        login, no_account, warning = _parse_login(row.get("github_login"))
         if warning is not None:
             warnings.append(f"{path.name}: {email}: {warning}")
         if login is not None:
@@ -393,16 +486,19 @@ def load_github_members(input_dir: Path, cfg: dict) -> GithubMembers:
             if key in seen_login:
                 other_login, other_number = seen_login[key]
                 raise ValueError(
-                    f"{path}: github_login {login!r} の行が複数あります"
+                    f"{path}: GitHub ID {login!r} の行が複数あります"
                     f"（{other_number} 行目の {other_login!r} と {number} 行目）。"
                     "GitHub のログイン名は大文字小文字を区別しないため、"
                     "1アカウント1行に整理してください"
                 )
             seen_login[key] = (login, number)
-        entries.append(GithubMemberLink(email=email, github_login=login))
+        entries.append(GithubMemberLink(
+            email=email, github_login=login, no_account=no_account
+        ))
 
     return GithubMembers(
-        entries=tuple(entries), source=path.name, warnings=tuple(warnings)
+        entries=tuple(entries), source=path.name, has_column=True,
+        warnings=tuple(warnings),
     )
 
 
@@ -410,13 +506,15 @@ def unmapped_emails(members: GithubMembers, emails: Iterable[str]) -> tuple[str,
     """emails のうち GitHub login に対応づかないものを返す（正規化済み・昇順・重複なし）。
 
     login を持たない行（空欄・読めない字句）は、対応表に書かれていない人と同じく
-    「未対応」として扱う。空のメールは対象にしない。
+    「未対応」として扱う。アカウントを持たないと記入された行は、対応づけようがない人
+    なので返さない（記入で解消できる状態だけを挙げる）。空のメールは対象にしない。
 
     警告にするかどうかは呼び出し側が決める（GitHub 分析の対象でない組織では、未対応が
     いること自体が正常なため）。
     """
     mapped = {
-        entry.email for entry in members.entries if entry.github_login is not None
+        entry.email for entry in members.entries
+        if entry.github_login is not None or entry.no_account
     }
     unmapped = set()
     for value in emails:

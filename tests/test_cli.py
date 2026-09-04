@@ -982,8 +982,9 @@ def test_init_org_creates_scaffold(tmp_path):
         # BOM 付き（BOM 無しだと Windows の Excel が日本語ヘッダを化けさせる）
         info = input_dir / org / "members-info.csv"
         assert info.read_bytes().startswith(b"\xef\xbb\xbf")
-        assert info.read_text(
-            encoding="utf-8-sig") == "email,部署,チーム,職種,追加クレジット上限,備考\n"
+        assert info.read_text(encoding="utf-8-sig") == (
+            "email,部署,チーム,職種,追加クレジット上限,備考,GitHub ID\n"
+        )
     assert discover_orgs(input_dir) == ["org-x", "org-y"]
 
 
@@ -1098,8 +1099,8 @@ def _stub_gh(monkeypatch, *, authenticated: bool = True) -> list[tuple[str, ...]
 
 
 def _mapping(input_dir: Path, org: str, rows: tuple[str, ...]) -> None:
-    (input_dir / org / "github-members.csv").write_text(
-        "email,github_login\n" + "".join(f"{row}\n" for row in rows),
+    (input_dir / org / "members-info.csv").write_text(
+        "email,GitHub ID\n" + "".join(f"{row}\n" for row in rows),
         encoding="utf-8", newline="\n",
     )
 

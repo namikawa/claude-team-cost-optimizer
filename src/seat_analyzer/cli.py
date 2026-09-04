@@ -439,11 +439,12 @@ def _run_init_org(args: argparse.Namespace) -> int:
         # members-info.csv はヘッダ行のみの雛形を作る。既存（記入済みの可能性）は上書きしない。
         # 人が Excel で編集するファイルなので recommendations.csv と同じく BOM を付ける
         # （BOM 無し UTF-8 は Windows の Excel がロケール既定で開き日本語ヘッダが化ける）
-        info_path = input_dir / org / "members-info.csv"
+        info_path = input_dir / org / ingest.MEMBERS_INFO_FILENAME
         info_created = not info_path.exists()
         if info_created:
+            # GitHub ID は末尾に置く（既存のファイルへ列を足すときと並びが揃う）
             info_path.write_text(
-                "email,部署,チーム,職種,追加クレジット上限,備考\n",
+                "email,部署,チーム,職種,追加クレジット上限,備考,GitHub ID\n",
                 encoding="utf-8-sig", newline="\n",
             )
         print(f"組織 '{org}' の雛形を{'確認しました（既存）' if existed else '作成しました'}:")

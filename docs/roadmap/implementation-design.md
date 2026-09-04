@@ -227,6 +227,7 @@ src/seat_analyzer/
 - `report_v2.py`という単一モジュールは作らない。新しい出力は`report/`パッケージの中へ、出力形式ごとに足す（CSVなら`report/*_csv.py`）。以降のStepで対象として`report_v2.py`または`report.py`と書かれている箇所は、この方針に読み替える。責務ごとの実ファイル名は各Trackの着手時に個別に確定させる（着手しないTrackを先回りして書き換えない。§2.4）
 - V2判定の結線（SubjectHistoryの組み立てと判定の実行）は`decision_evidence.py`（層25）、CSVの書き出しは`report/evidence_csv.py`
 - 設定の既定は`src/seat_analyzer/default-config.yaml`が唯一の源。リポジトリ直下・ワークスペースの`config.yaml`は差分だけを書く任意の上書きファイルで、gitignore済み。以降のStepで対象として`config.yaml`と書かれている箇所は`default-config.yaml`に読み替える
+- email → GitHub loginの対応表は`members-info.csv`の`GitHub ID`列で持つ。以降のStepで`github-members.csv`と書かれている箇所は`members-info.csv`の`GitHub ID`列に読み替える
 - モジュールを増やすときは`tests/test_module_deps.py`の`LAYERS`へ層を割り当てる。パッケージ内importは自分より厳密に下の層だけを指してよく、同層どうしのimportも認めない。層に無いモジュールを足すとテストが落ちる
 
 ## 6. ディレクトリ
@@ -238,8 +239,7 @@ input/<org>/
   spend/
   members/
   code-analytics/
-  members-info.csv
-  github-members.csv
+  members-info.csv        （GitHub ID 列を含む）
   admin/
     organization-YYYY-MM-DD.csv
     users-YYYY-MM-DD.csv
@@ -349,17 +349,23 @@ OSの通常download directory
 
 ### 7.3 GitHub members
 
-`input/<org>/github-members.csv`
+`input/<org>/members-info.csv`の`GitHub ID`列
 
 ```csv
-email,github_login
-user@example.com,example-user
+email,部署,チーム,職種,追加クレジット上限,備考,GitHub ID
+user@example.com,架空推進3部,Nebula-AI,エンジニア,250,,example-user
 ```
+
+値:
+
+- 空欄 = 未記入（未対応として扱いwarning）
+- `なし` / `none` / `-` = GitHubのアカウントを持たない（未対応として扱うがwarningなし）
+- それ以外 = GitHubのlogin
 
 制約:
 
-- emailは一意
-- github_loginは組織内で一意
+- emailは一意（対応表として読むときは重複をerrorにする。属性のloaderは最後の行で畳む）
+- loginは組織内で一意（大小文字を区別しない）
 - 重複はerror
 - 未対応はwarning
 
