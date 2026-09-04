@@ -1,20 +1,20 @@
 # 変更履歴
 
-## [未リリース]
+## [1.2.0] - 2026-09-05
 
 ### 追加
 
-- `analyze --decision-version v2` で V2 判定の根拠 `decision-evidence-YYYYMM-<組織名>.csv`
-  を出力できるようにした（V1 の判定・成果物は変わらない。省略時は `decision_v2.enabled` に従い既定は v1）
 - `collect --source github` で GitHub の merged PR のメタデータを `input/<組織名>/github-cache/`
   に収集できるようにした（`organizations.<組織名>.github_org` を設定した組織だけが対象）
-- members-info の GitHub ID 列に `なし` と書くと、GitHub アカウントを持たない人として
-  未対応の警告が出ないようにした
 - `analyze` が GitHub 分析を有効にした組織で `github-summary-YYYYMM-<組織名>.csv`
   （merged PR 数と lead time の参考値）を出力するようになった（`collect --source github`
   のキャッシュがある月だけ。判定と他の成果物は変わらない）
 - `collect --source github` が repository の一覧（archived / fork / template を除いたもの）
   もキャッシュへ保存するようになった（既存のキャッシュは再実行で一覧が付く）
+- members-info の GitHub ID 列に `なし` と書くと、GitHub アカウントを持たない人として
+  未対応の警告が出ないようにした
+- `analyze --decision-version v2` で V2 判定の根拠 `decision-evidence-YYYYMM-<組織名>.csv`
+  を出力できるようにした（V1 の判定・成果物は変わらない。省略時は `decision_v2.enabled` に従い既定は v1）
 
 ### 変更
 
@@ -106,6 +106,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.2.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.2.0
 [1.1.2]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.1.2
 [1.1.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.1.1
 [1.1.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.1.0
