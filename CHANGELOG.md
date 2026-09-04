@@ -10,6 +10,11 @@
   に収集できるようにした（`organizations.<組織名>.github_org` を設定した組織だけが対象）
 - members-info の GitHub ID 列に `なし` と書くと、GitHub アカウントを持たない人として
   未対応の警告が出ないようにした
+- `analyze` が GitHub 分析を有効にした組織で `github-summary-YYYYMM-<組織名>.csv`
+  （merged PR 数と lead time の参考値）を出力するようになった（`collect --source github`
+  のキャッシュがある月だけ。判定と他の成果物は変わらない）
+- `collect --source github` が repository の一覧（archived / fork / template を除いたもの）
+  もキャッシュへ保存するようになった（既存のキャッシュは再実行で一覧が付く）
 
 ### 変更
 

@@ -70,6 +70,8 @@ RECOMMENDATIONS = Artifact("recommendations", ".csv")
 USAGE_SUMMARY = Artifact("usage-summary", ".csv")
 # V2 判定の根拠（--decision-version v2 のときだけ書く）
 DECISION_EVIDENCE = Artifact("decision-evidence", ".csv")
+# GitHub の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ書く）
+GITHUB_SUMMARY = Artifact("github-summary", ".csv")
 # 速報モードの成果物
 PREVIEW = Artifact("preview", ".md")
 PREVIEW_DASHBOARD = Artifact("preview-dashboard", ".html")

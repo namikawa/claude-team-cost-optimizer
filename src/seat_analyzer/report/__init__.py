@@ -4,6 +4,9 @@
 
 V2 判定の根拠（decision-evidence）は上の5種とは別で、`--decision-version v2` の
 ときだけ書く。write_all の成果物には含めない。
+
+GitHub の参考値（github-summary）も上の5種とは別で、GitHub 分析を有効にした組織で
+対象月のキャッシュがあるときだけ書く。同じく write_all の成果物には含めない。
 """
 
 from __future__ import annotations
@@ -18,12 +21,14 @@ from .csv_out import write_csv
 from .details import write_details
 from .document import WriteResult, discussion_body, document_body, write_discussion
 from .evidence_csv import EVIDENCE_COLUMNS, write_decision_evidence
+from .github_csv import GITHUB_SUMMARY_COLUMNS, write_github_summary
 from .html import write_html, write_preview_html
 from .markdown import write_markdown, write_org_summary, write_preview_markdown
 from .naming import (
     DASHBOARD,
     DECISION_EVIDENCE,
     DETAILS,
+    GITHUB_SUMMARY,
     PREVIEW,
     PREVIEW_DASHBOARD,
     RECOMMENDATIONS,
@@ -47,6 +52,8 @@ __all__ = [  # noqa: RUF022
     "write_usage_csv",
     "write_decision_evidence",
     "EVIDENCE_COLUMNS",
+    "write_github_summary",
+    "GITHUB_SUMMARY_COLUMNS",
     "write_org_summary",
     "write_discussion",
     "WriteResult",
@@ -59,6 +66,7 @@ __all__ = [  # noqa: RUF022
     "RECOMMENDATIONS",
     "USAGE_SUMMARY",
     "DECISION_EVIDENCE",
+    "GITHUB_SUMMARY",
     "PREVIEW",
     "PREVIEW_DASHBOARD",
 ]

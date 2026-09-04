@@ -87,6 +87,7 @@ seat-analyzer --version
 - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
 - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
 - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（`--decision-version v2` のときだけ出力。V1 の判定・成果物は変わりません）
+- `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数と lead time の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）
 - `reports/summary/YYYY-MM.md` — 複数組織を一括分析した場合の組織横断サマリ（この名前は変わりません）
 
 速報モード（`--preview`）は `preview-YYYYMM-<組織名>.md` と
