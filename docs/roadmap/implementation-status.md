@@ -1,10 +1,11 @@
 # 実装ステータス
 
-- 最終更新: 2026-09-03
+- 最終更新: 2026-09-04
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 7 の Step 35（PR検索とraw cache）。Step 19（decision-evidence.csv）は
-  完了した（2026-09-03。V2判定を分析パイプラインへ結線し、`--decision-version v2` で
-  根拠CSVを併記できるようにした）。Step 9 はV2のrecent seat change判定材料として先行実装済みで、
+- 次のタスク: Track 7 の Step 36（マージPR数）。Step 35（PR検索とraw cache）は完了した
+  （2026-09-04。`collect --source github` で merged PR のメタデータを
+  `input/<組織名>/github-cache/` へ収集できるようにした。指標計算はまだ無い）。
+  Step 9 はV2のrecent seat change判定材料として先行実装済みで、
   Track 3の残りStepは据え置き（根拠は設計書§12.7）
 - 予定タスク: admin/ の結線（κと当月消費の第一ソース化。adminのrecordがあれば採用し、
   矛盾・不明は不明へ倒し、無ければmembers-infoをfallbackにする）。sonnet-5 の単価改定は
@@ -18,11 +19,10 @@
     あった判定不変の改善、Step 17 の追加クレジット上限の字句厳格化。Step 17・18 のコードは
     同梱されるが`decision_v2.enabled: false`で不活性。Track 7 は Step 32〜34 まで
     （doctorのGitHub検査・GitHub members loader・repository列挙。Step 35 以降は継続）を含む
-  - v1.2.0（MINOR）: F4（完了。V2の経済軸を方針線`premium_justification_usd`へ差し替えた。
-    仕様は設計書§12.3が唯一の源）と Step 19（完了。`--decision-version v2`で
-    decision-evidenceを併記できるようにした）、V2判定のopt-in提供。V2は
-    `decision_v2.enabled: false`のまま出し、
-    2026-09・2026-10の分析でV1と並走比較したうえで、次の版で既定を有効へ切り替える
+  - v1.2.0（MINOR）: Track 7（Step 35〜38。Step 39 は Track 5 の Step 23 に依存するため
+    対象外）と、mainに入っているV2判定のopt-in提供（F4・Step 19）。V2は
+    `decision_v2.enabled: false`のまま出し、2026-09・2026-10の分析でV1と並走比較した
+    うえで、次の版で既定を有効へ切り替える
 
 ## 1. この文書の目的
 
@@ -97,9 +97,9 @@
 | 4 | V2判定 | 7 | 0 | 0 | 0 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
-| 7 | GitHub | 3 | 0 | 0 | 5 | 0 |
+| 7 | GitHub | 4 | 0 | 0 | 4 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| **合計** |  | **26** | **0** | **0** | **23** | **0** |
+| **合計** |  | **27** | **0** | **0** | **22** | **0** |
 
 ## 5. Step一覧
 
@@ -187,7 +187,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 32 | GitHub mapping loader | `完了` | 2026-08-29 |
 | 33 | GitHub doctor | `完了` | 2026-09-01 |
 | 34 | Repository自動発見 | `完了` | 2026-09-02 |
-| 35 | PR検索とraw cache | `未着手` |  |
+| 35 | PR検索とraw cache | `完了` | 2026-09-04 |
 | 36 | マージPR数 | `未着手` |  |
 | 37 | PR lead time | `未着手` |  |
 | 38 | github-summary.csv | `未着手` |  |
@@ -202,6 +202,80 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 42 | Dashboard統合 | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-04 — Step 35: PR検索とraw cache
+
+- merged PRのメタデータを収集して月ごとのJSONへ保存する経路を`github_collect.py`へ追加した
+  （`collect_merged_prs` / `load_pr_cache` / `month_windows` / `pr_cache_path` と、値オブジェクト
+  `DateWindow` / `CachedPr` / `PrCache` / `PrCollection`）。保存先は
+  `input/<組織名>/github-cache/prs-YYYY-MM.json`で1組織×1月。指標計算はStep 36以降
+- CLIに`collect --org <組織名> --source github --month YYYY-MM`を足した（設計書§16.2）。
+  組織の解決はdoctorと同じ経路で、`organizations.<組織名>.github_org`を設定していない組織は
+  設定の場所を示して終了コード1。`--source`の選択肢は今回`github`だけ（`browser`はStep 30）
+- APIの選択: GraphQLの`search`を`gh api -i graphql`で叩く。RESTの`search/issues`は
+  additions / deletionsを返さずPRごとの追加呼び出しが要るため不採用。検索文字列は
+  `org:<org> is:pr is:merged merged:<開始>..<終了> sort:created-asc`で、並びを
+  created-ascに固定するのはcursorで辿る間に順位が動いて取りこぼしが黙って起きるのを
+  防ぐため（既定のbest matchは不安定）
+- 窓と完了の規則: 月を1–7 / 8–14 / 15–21 / 22–28 / 29–月末の固定の窓に割る（29日が無い月は
+  4窓）。境界を月の長さで動かさないのは、同じ月を何度収集しても窓の集合が変わらないように
+  するため。窓を完了とするのは「全ページ読み切れて、かつ終端の翌日が過ぎている」場合だけで、
+  今日・昨日を含む窓は毎回取り直す（検索インデックスの反映遅れで日付境界直前のmergeを
+  取りこぼさないための1日の猶予）。まだ始まっていない窓は問い合わせない。したがって
+  対象月の全窓が揃うのは翌月2日以降
+- fail-closedの範囲: 窓の粒度でall-or-nothing。ページの失敗・非200・GraphQLの`errors`・
+  本文の解釈不能（`data.search`の欠落、`issueCount`が件数でない、`pageInfo`の型違い、
+  nodeの必須フィールド欠落や型不一致、repository名が字句として読めない、mergedAtが要求した
+  窓の外、createdAt > mergedAt）はすべてその窓のPRを採らずに中断し、それまでの窓の結果と
+  完了済みの記録だけを保存する。nodeを1つでも読めなければページ全体を捨てる（読めない要素だけ
+  飛ばすとそのPRが黙って落ちる）。再開は完了済みの窓を問い合わせずに続きから進む
+- 件数の上限: GitHubの検索は1クエリ1000件までなので、窓の`issueCount`が上限を超えたら
+  1ページ目の結果を捨てて日単位で取り直す。日単位でも超える場合は切り詰めた結果を返さず
+  `TOO_MANY_RESULTS`で中断する。ページ数の安全弁は`_MAX_SEARCH_PAGES`（=10）で、超えて
+  hasNextPageが続くのはプロトコル違反としてERROR
+- 受け入れ条件「title/body/codeを保存しない」: 禁止フィールドを問い合わせそのものに書かない
+  （`_PR_SEARCH_QUERY`に`title`・`body`・`bodyText`・`files`・`commits`・`comments`・
+  `reviews`が現れないことをテストで固定）。応答のdictを写さず明示した9項目だけを取り出し、
+  書き出したentryのキー集合が9項目と厳密に一致することも見る。読み側も未知のキーを拒否する
+  （禁止フィールドが混ざったキャッシュを黙って使わないため）
+- 受け入れ条件「repo + numberで一意」: キーは`repository#number`で、JSONの`prs`はこのキーの
+  dict（一意性を構造で保証する）。一意性の判定はrepository名の小文字比較+numberで行い、
+  表記違いで来た場合は新しい表記へ置き換える（GitHubのrepository名は大小を区別しない）。
+  同じPRが2ページに現れても、取り直しの窓で再び現れても1件
+- 受け入れ条件「partial結果を明示」: `PrCollection`が`stopped`（中断した窓）・`status`・
+  `failure`を持ち、「failureがある ⇔ stoppedがある」「completeならfailureは無い」を
+  `__post_init__`が不変条件として機械検査する。CLIは中断時にstderrへ理由と再実行の案内を
+  出して終了コード1、完了していない月はstdoutに次回取り直す旨を1行出す
+- 読み取り専用の保証: gh へ渡す引数を組み立てるのは`_AUTH_STATUS_ARGS`・`_read_args`・
+  `_graphql_args`の3つだけにした（REST は`-X`もfield系も渡さない＝`gh api`はfieldを1つでも
+  渡すと既定がPOSTになる。GraphQLはquery文書だけを渡す）。テストは全入口（probe・repository
+  発見・PR収集）の呼び出しをまとめて集め、規則を満たすことと、検査自体が書き込みを見逃さない
+  ことの両方を見る
+- 一時的な失敗の再試行: 規模の大きいOrganizationではGraphQLのsearchが散発的に5xxを返す
+  ことがあり、同じページを呼び直せば通る。1ページあたり最大3回（初回 + 再試行2回・間に
+  2秒と5秒待つ）まで同じ引数で呼び直す。対象は`_TRANSIENT_STATUSES`（502 / 503 / 504）と
+  応答待ちの打ち切り（TIMEOUT）だけで、利用上限（再試行すると上限をさらに消費する）・
+  本文の解釈不能・認証と権限の不足・ghの不在は従来どおり即座に止める。使い切ったら最後の
+  失敗の種類でその窓を中断する。待ちは`collect_merged_prs(sleep=...)`で差し替えられ、
+  テストは記録用の関数を渡して実時間を待たない
+- 決定性: 保存は`sort_keys=True`＋改行LF固定で、同一の状態から常に同じバイト列になる
+  （同じrunner・同じ日付で2回実行してバイト一致を確認）。complete_windowsの並びは窓の定義順から
+  作りsetの反復順に依らせない。書き込みは同一ディレクトリの一時ファイル経由の置換で、既存
+  ファイルの権限を引き継ぐ。キャッシュの親（組織ディレクトリ）が無ければ作らずそこで止める
+  （綴りの違う場所を渡されたときに、静かに新しい場所へ保存しないため）
+- `_RATE_RESOURCES`を`("core", "search")`から`("core", "graphql")`へ変更した。収集はGraphQLで
+  行うためRESTのsearch区分は消費しない（doctorのGH_RATE_LIMITEDが見る区分も追従）
+- 外部レビュー（codex 1巡目・受け入れ基準10点に範囲固定）: 6点は指摘なし。mid 2（読み取り
+  専用検査が `=` 結合形式のフラグを通す・schemaの比較がboolとfloatを通す）・low 5（gh終了
+  コード4がUNAUTHENTICATEDにならない・complete_windowsの数値要素・authorのNone対・
+  merged_atの月一致・referenceのコマンド例）→ 全件採用
+- 外部レビュー（Fable 2巡目・1巡目の修正7件に範囲固定）: 7件すべて解消・既存経路への影響なし。
+  low 2（自己テストの網羅: queryで始まりmutationを含む文書のケースが無い・cursor付きの11要素形
+  の実出力が読み取り専用の検査を通っていない）→ 採用（テスト追加のみ・挙動不変）
+- 1928 passed（新規238ケース: 窓の分割・値オブジェクトの不変条件・禁止フィールド・upsertと
+  一意性・完了判定・中断と再開・一時的な失敗の再試行・件数上限の分割・ページング・解釈
+  できない応答・キャッシュの厳密な読み取り・CLIの結線・読み取り専用の検査）・ruff緑・
+  golden不変（analyze / report の経路に触れていない）
 
 ### 2026-09-03 — Step 19: decision-evidence.csv
 

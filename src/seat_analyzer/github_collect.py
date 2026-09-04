@@ -31,18 +31,40 @@ Organization の参照可否だけを調べ、PR も repository も取得しな�
 返すのは全ページを読み切れた場合の完全な一覧に限り、途中で失敗した場合は名前を返さず
 理由だけを返す（部分的な一覧を完全な一覧として集計させないため）。probe と同じく、
 結果は値として返すだけで gh の生出力も token も保持しない。
+
+4つ目は merged PR のメタデータの収集とキャッシュ（設計書 §15.4・§7.6）。保存するのは
+9項目（repository・PR number・author の login と type・createdAt・mergedAt・additions・
+deletions・isDraft）だけで、title・本文・レビュー本文・files・diff・commit message・
+コードは取得も保存もしない（設計書 §20.3 の禁止フィールド）。応答からは明示した項目だけを
+取り出すので、問い合わせに無い項目が返ってきても保存物には入らない。一意キーは
+`repository + "#" + number` で、キャッシュはこのキーの dict として持つ（一意性を構造で
+保証する）。
+
+保存先は `input/<組織名>/github-cache/prs-YYYY-MM.json` の1組織×1月で、PR は mergedAt の
+UTC 月に帰属させる。月は固定の窓（1–7 / 8–14 / 15–21 / 22–28 / 29–月末）に割り、窓ごとに
+取り切れたかどうかを記録する。読み切れた窓のうち終端の翌日が過ぎたものだけを「完了」に
+するので、今日・昨日を含む窓は毎回取り直される（検索インデックスの反映遅れで、日付境界
+直前の merge を取りこぼさないための1日の猶予）。窓の取得に失敗したらそこで止め、それまでの
+窓の結果と完了済みの窓を保存して理由を返す——部分的な結果を完全なものとして集計させない
+ためで、再実行は完了済みの窓を問い合わせずに続きから進む。
 """
 
 from __future__ import annotations
 
+import calendar
+import datetime as dt
 import enum
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
+import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import pandas as pd
 
@@ -429,14 +451,26 @@ def gated_orgs(cfg: dict) -> dict[str, str]:
 GH_COMMAND = "gh"
 GH_TIMEOUT_SECONDS = 30.0
 
+# gh が「認証が必要」を表す終了コード（`gh help exit-codes`）。他の失敗と同じ 1 では
+# ないので、認証の案内を出すべき状態をこの値で見分けられる
+GH_EXIT_AUTH_REQUIRED = 4
+
 
 @enum.unique
 class GhFailure(enum.StrEnum):
-    """gh を使えなかった理由の分類。gh の生出力は持たず、この語だけを外へ出す。"""
+    """gh の呼び出しを続けられなかった理由の分類。
+
+    gh の生出力は持たず、この語だけを外へ出す。プロセスを起動できなかった理由
+    （認証・導入・応答待ち）と、応答は返ったが続けられない理由（利用上限・検索の
+    件数上限・解釈できない応答）を1つの語彙で表す。どちらも呼び出し側の次の一手は
+    「原因を除いてから再実行する」で同じなので、区別は表示の文言だけに使う。
+    """
 
     UNAUTHENTICATED = "unauthenticated"
     NOT_FOUND = "not_found"
     TIMEOUT = "timeout"
+    RATE_LIMITED = "rate_limited"
+    TOO_MANY_RESULTS = "too_many_results"
     ERROR = "error"
 
 
@@ -456,6 +490,10 @@ class GhResult:
 # gh を1回呼ぶ関数の型。テストから記録済みの応答へ差し替えられるようにする
 Runner = Callable[[Sequence[str]], GhResult]
 
+# 再試行の前に待つ関数の型。テストから記録用の関数へ差し替えられるようにする
+# （既定は `time.sleep`。待ちを直接呼ぶとテストが実時間だけ止まる）
+Sleeper = Callable[[float], None]
+
 
 def _decode(raw: bytes | None) -> str:
     """gh の出力を UTF-8 として読み、改行を LF へ揃える。
@@ -471,6 +509,10 @@ def _decode(raw: bytes | None) -> str:
 
 def run_gh(args: Sequence[str]) -> GhResult:
     """gh を1回実行する（読み取りだけを行う参照に限って使う）。
+
+    このモジュールは GitHub を読むだけで、書き込む API は呼ばない。引数を組み立てるのは
+    `_AUTH_STATUS_ARGS`・`_read_args`・`_graphql_args` の3つだけで、いずれも GET と
+    読み取り専用の GraphQL query しか作らない。
 
     token を Python 側へ取り出さない。`--show-token` を渡さず、環境変数の token も読まず、
     出力から token を取り出しもしない（認証情報の管理は gh に委ねる）。
@@ -494,11 +536,53 @@ def run_gh(args: Sequence[str]) -> GhResult:
         return GhResult(ok=False, failure=GhFailure.NOT_FOUND)
     except OSError:
         return GhResult(ok=False, failure=GhFailure.ERROR)
+    if proc.returncode == GH_EXIT_AUTH_REQUIRED:
+        # 認証が要ることを gh が終了コードで伝える場合。ここで分類しないと、応答の無い
+        # 実行として「解釈できない応答」に落ち、gh auth login の案内へたどり着けない
+        return GhResult(ok=False, failure=GhFailure.UNAUTHENTICATED)
     try:
         stdout = _decode(proc.stdout)
     except UnicodeDecodeError:
         return GhResult(ok=False, failure=GhFailure.ERROR)
     return GhResult(ok=proc.returncode == 0, stdout=stdout)
+
+
+# 認証の有無を見る唯一の呼び出し。`auth` の他のサブコマンド（login・refresh・logout）は
+# 認証情報を書き換えるため、このモジュールからは呼ばない
+_AUTH_STATUS_ARGS: tuple[str, ...] = ("auth", "status")
+
+
+def _read_args(path: str, *, headers: bool = True) -> tuple[str, ...]:
+    """REST を読むだけの引数（GET）。
+
+    `gh api` はフィールド（`-f` / `-F` / `--input` / `--raw-field` / `--field`）を1つでも
+    渡すと既定のメソッドが POST に変わる。読むだけの参照でフィールドを渡す用は無いので、
+    ここでは path だけを組み立てる。`-X` も渡さないので、送るのは常に GET になる。
+
+    headers=False は応答ヘッダを付けない形（本文だけを JSON として読む問い合わせ用）。
+    """
+    return ("api", "-i", path) if headers else ("api", path)
+
+
+def _graphql_args(search: str, after: str | None) -> tuple[str, ...]:
+    """GraphQL を読むだけの引数（`_PR_SEARCH_QUERY` だけを渡す）。
+
+    GraphQL の入口は POST だが、送るのは読み取り専用の query 文書だけで mutation は
+    持たない。渡す変数は検索文字列と件数と cursor のみ。`$first` は Int なので `-F`
+    （型付き）、文字列は `-f` を使う。
+
+    1ページ目は `after` を渡さない（変数を省くと GraphQL 側で null になる。空文字を
+    渡すと cursor として解釈されて 0 件になる）。
+    """
+    args = [
+        "api", "-i", "graphql",
+        "-f", f"query={_PR_SEARCH_QUERY}",
+        "-f", f"search={search}",
+        "-F", f"first={_SEARCH_PER_PAGE}",
+    ]
+    if after is not None:
+        args += ["-f", f"after={after}"]
+    return tuple(args)
 
 
 def _parse_response(stdout: str) -> tuple[int | None, dict[str, str], str]:
@@ -541,8 +625,9 @@ _SCOPE_ALTERNATIVES = {
     "repo": ("repo",),
 }
 
-# 残量を見る rate limit の区分（PR の検索が使うのはこの2つ）
-_RATE_RESOURCES = ("core", "search")
+# 残量を見る rate limit の区分。repository の列挙が core、PR の検索が graphql を使う
+# （検索は GraphQL の search で行うため、REST の search 区分は消費しない）
+_RATE_RESOURCES = ("core", "graphql")
 
 
 @dataclass(frozen=True)
@@ -631,7 +716,7 @@ def _probe_auth(run: Runner) -> GhAuth:
 
     出力は解釈しない。表示は gh の版で変わるうえ、伏字とはいえ token の断片を含む。
     """
-    result = run(("auth", "status"))
+    result = run(_AUTH_STATUS_ARGS)
     if result.ok:
         return GhAuth(ok=True)
     return GhAuth(ok=False, failure=result.failure or GhFailure.UNAUTHENTICATED)
@@ -645,7 +730,7 @@ def _probe_scopes(run: Runner) -> tuple[str, ...] | None:
     ことと「scope が1つも無い」ことは別なので、前者は None を返して報告させない
     （誤検出より不判定に倒す。実際に参照できるかは Organization の検査が確かめる）。
     """
-    result = run(("api", "-i", "user"))
+    result = run(_read_args("user"))
     if result.failure is not None:
         return None
     status, headers, _ = _parse_response(result.stdout)
@@ -676,7 +761,7 @@ def _probe_rate(run: Runner) -> tuple[GhRateResource, ...]:
     読めなかった場合は空を返す。この問い合わせだけが失敗する状況は通信の不調なので、
     同じ原因が Organization の参照でエラーとして出る（ここで二重に報告しない）。
     """
-    result = run(("api", "rate_limit"))
+    result = run(_read_args("rate_limit", headers=False))
     if not result.ok:
         return ()
     try:
@@ -699,7 +784,7 @@ def _probe_rate(run: Runner) -> tuple[GhRateResource, ...]:
 
 def _probe_org(run: Runner, github_org: str) -> GhOrgAccess:
     """Organization を参照できるかを HTTP のステータスで見る。"""
-    result = run(("api", "-i", f"orgs/{github_org}"))
+    result = run(_read_args(f"orgs/{github_org}"))
     if result.failure is not None:
         return GhOrgAccess(github_org=github_org, failure=result.failure)
     status, headers, _ = _parse_response(result.stdout)
@@ -835,7 +920,7 @@ def discover_repositories(
             f"orgs/{github_org}/repos"
             f"?per_page={_REPOS_PER_PAGE}&sort=full_name&page={page}"
         )
-        result = run(("api", "-i", path))
+        result = run(_read_args(path))
         if result.failure is not None:
             return RepoDiscovery(github_org=github_org, failure=result.failure)
         status, _, body = _parse_response(result.stdout)
@@ -866,3 +951,988 @@ def discover_repositories(
     # 上限までのページがすべて満杯だった場合。読み切れていない一覧を完全な一覧として
     # 返さない（この規模の Organization は想定外なので、値ではなくエラーで知らせる）
     return RepoDiscovery(github_org=github_org, failure=GhFailure.ERROR)
+
+
+# ------------------------------------------------- PR の検索と raw cache
+
+# キャッシュの置き場所（組織ディレクトリ直下）と、書き出す形式の版。
+# 版は読み側が「この形として読める」ことを確かめるためだけに使う（互換の変換はしない）
+PR_CACHE_DIRNAME = "github-cache"
+PR_CACHE_SCHEMA = 1
+
+# 対象月の形。ファイル名に入るため ASCII 数字のみ・全体一致で見る（`\d` は全角数字にも
+# 一致する）。cli の同名の検査と同じ規則で、層をまたげないため実装は共有しない
+_CACHE_MONTH_RE = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
+
+# GitHub が返す UTC の日時表記（秒まで・Z 終端）。字句のまま保存し、日時への変換は
+# 指標計算の側（Step 37）が行う
+_TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+
+# キャッシュに書く暦日の表記。`date.fromisoformat` は "20260801" のような区切りの無い
+# 形も受けるため、保存した形そのものかどうかは字句で確かめる
+_ISO_DAY_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+# author の種別（GraphQL の `__typename`）。User / Bot / Organization / Mannequin /
+# EnterpriseUserAccount のどれかだが、既知の集合には閉じない（新しい種別が増えたときに
+# 収集そのものが止まるのは割に合わない）。字句だけを確かめて写す
+_AUTHOR_TYPE_RE = re.compile(r"[A-Za-z]+")
+
+# author の login に許す長さの上限。Bot・Mannequin の login は `_LOGIN_RE` とは別の形を
+# とるため字句の規則までは課さず、長さと空白・制御文字の不在だけを見る
+_MAX_AUTHOR_LOGIN_LENGTH = 100
+
+# 1ページあたりの件数（GraphQL の search の上限）と、1クエリで辿れる件数の上限。
+# 上限は GitHub 側の仕様で、超える期間は日単位へ割って取り直す
+_SEARCH_PER_PAGE = 100
+_SEARCH_RESULT_CAP = 1000
+_MAX_SEARCH_PAGES = _SEARCH_RESULT_CAP // _SEARCH_PER_PAGE
+
+# 一時的な障害として再試行する HTTP ステータス。規模の大きい Organization では GraphQL の
+# search が散発的に 5xx を返すことがあり、同じページを呼び直せば通る
+_TRANSIENT_STATUSES = (502, 503, 504)
+
+# 再試行の前に待つ秒数（1回目の再試行の前に 2 秒、2回目の前に 5 秒）と、そこから決まる
+# 1ページあたりの試行回数。回数を待ちの数から導いて、両者が食い違わないようにする
+_RETRY_PAUSES = (2.0, 5.0)
+_MAX_ATTEMPTS = 1 + len(_RETRY_PAUSES)
+
+# 置換用の一時ファイルの接頭辞（`_write_cache`）。最終ファイル名に依らない固定長にする
+_TMP_PREFIX = ".seat-tmp-"
+
+# 検索に使う GraphQL 文書。取るのは §7.6 の9項目に対応するフィールドだけで、title・
+# 本文・files・commits・comments・reviews は問い合わせそのものに書かない（保存側で
+# 落とすのではなく、そもそも受け取らない）。
+#
+# REST の search/issues は additions / deletions を返さず PR ごとの追加呼び出しが要る
+# ため使わない。並びは `sort:created-asc` で固定する（既定の best match は cursor で
+# 辿る間に順位が動き、取りこぼしが黙って起きる）。
+_PR_SEARCH_QUERY = """\
+query($search: String!, $first: Int!, $after: String) {
+  search(query: $search, type: ISSUE, first: $first, after: $after) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      ... on PullRequest {
+        number
+        isDraft
+        createdAt
+        mergedAt
+        additions
+        deletions
+        repository { name }
+        author { login __typename }
+      }
+    }
+  }
+}
+"""
+
+
+def _month_parts(month: object) -> tuple[int, int]:
+    """対象月を (年, 月) にする（形式が外れれば ValueError）。"""
+    if not isinstance(month, str) or not _CACHE_MONTH_RE.fullmatch(month):
+        raise ValueError(f"month には YYYY-MM 形式が必要です: {month!r}")
+    return int(month[:4]), int(month[5:7])
+
+
+def pr_cache_path(cache_dir: Path, month: str) -> Path:
+    """その月の PR キャッシュのパス（`<cache_dir>/prs-YYYY-MM.json`）。
+
+    month はファイル名の一部になるため形式を厳密に検証する（検証しないと、対象月の
+    指定で別のディレクトリのファイルを読み書きできてしまう）。
+    """
+    _month_parts(month)
+    return Path(cache_dir) / f"prs-{month}.json"
+
+
+def _today() -> dt.date:
+    """現在の UTC 日付。
+
+    窓を完了とみなすかどうかだけがこの値に依る。時計への依存をこの1箇所に閉じ、
+    `collect_merged_prs` の today 引数と合わせて差し替えられるようにする。
+    """
+    return dt.datetime.now(dt.UTC).date()
+
+
+def _is_plain_date(value: object) -> bool:
+    """暦日として受ける値か（時刻を持つ datetime は含めない）。
+
+    datetime を混ぜると比較と月の判定が変わるため受けない（admin_inputs と同じ規則）。
+    """
+    return isinstance(value, dt.date) and not isinstance(value, dt.datetime)
+
+
+def _is_timestamp(value: object) -> bool:
+    """GitHub が返す UTC の日時表記として読めるか（字句と暦の両方を見る）。"""
+    if not isinstance(value, str) or not _TIMESTAMP_RE.fullmatch(value):
+        return False
+    try:
+        # 字句の後に暦と時刻の範囲まで見る（"2026-02-30T25:00:00Z" は形は通る）
+        dt.datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _utc_day(timestamp: str) -> dt.date:
+    """日時表記の UTC 日付（`_is_timestamp` を通した値にだけ使う）。"""
+    return dt.date.fromisoformat(timestamp[:10])
+
+
+def _is_author_login(value: object) -> bool:
+    """author の login として受ける字句か。
+
+    `_LOGIN_RE` は課さない。Bot は `<名前>[bot]`、Mannequin は移行元の表記を残した
+    login をとるため、人の login の規則で弾くと保存できなくなる。取り違えに直結するのは
+    空白・制御文字が混ざった値（後続の突き合わせで静かに一致しなくなる）と、想定外に
+    長い値なので、そこだけを見る。
+    """
+    return (
+        isinstance(value, str)
+        and value != ""
+        and len(value) <= _MAX_AUTHOR_LOGIN_LENGTH
+        and value.isprintable()
+        and not any(char.isspace() for char in value)
+    )
+
+
+# ------------------------------------------------------------ 値オブジェクト
+
+
+@dataclass(frozen=True)
+class DateWindow:
+    """両端を含む日付の区間（取得の単位）。"""
+
+    start: dt.date
+    end: dt.date
+
+    def __post_init__(self) -> None:
+        for name in ("start", "end"):
+            if not _is_plain_date(getattr(self, name)):
+                raise TypeError(
+                    f"{name} には datetime.date が必要です: "
+                    f"{type(getattr(self, name)).__name__}"
+                )
+        if self.start > self.end:
+            raise ValueError(
+                f"start は end 以前にしてください: {self.start} 〜 {self.end}"
+            )
+
+    def contains(self, day: dt.date) -> bool:
+        """day がこの区間に入るか（両端を含む）。"""
+        return self.start <= day <= self.end
+
+    @property
+    def days(self) -> tuple[DateWindow, ...]:
+        """1日ずつに割った区間（件数が上限を超えた窓を割り直すのに使う）。"""
+        days = (
+            self.start + dt.timedelta(days=offset)
+            for offset in range((self.end - self.start).days + 1)
+        )
+        return tuple(DateWindow(start=day, end=day) for day in days)
+
+
+@dataclass(frozen=True)
+class CachedPr:
+    """キャッシュへ保存する merged PR 1件（設計書 §7.6 の9項目だけ）。
+
+    日時は GitHub が返した UTC の字句のまま持つ（保存物を再現可能にするため。日時への
+    変換は指標計算の責務）。author_login と author_type は対で、author が null＝削除済みの
+    アカウントのときだけどちらも None になる（片方だけ不明という状態は作らない）。
+    """
+
+    repository: str
+    number: int
+    author_login: str | None
+    author_type: str | None
+    created_at: str
+    merged_at: str
+    additions: int
+    deletions: int
+    is_draft: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.repository, str) or not _REPO_NAME_RE.fullmatch(
+            self.repository
+        ):
+            raise ValueError(
+                f"repository 名として読めない値です: {self.repository!r}"
+            )
+        if not _is_count(self.number) or self.number < 1:
+            raise ValueError(f"number には1以上の整数が必要です: {self.number!r}")
+        if self.author_login is not None and not _is_author_login(self.author_login):
+            raise ValueError(
+                f"author_login として読めない値です: {self.author_login!r}"
+            )
+        if self.author_type is not None and (
+            not isinstance(self.author_type, str)
+            or not _AUTHOR_TYPE_RE.fullmatch(self.author_type)
+        ):
+            raise ValueError(f"author_type として読めない値です: {self.author_type!r}")
+        for name in ("created_at", "merged_at"):
+            if not _is_timestamp(getattr(self, name)):
+                raise ValueError(
+                    f"{name} には UTC の日時表記（YYYY-MM-DDTHH:MM:SSZ）が必要です: "
+                    f"{getattr(self, name)!r}"
+                )
+        # 字句は固定長なので文字列の比較で時系列の比較になる
+        if self.created_at > self.merged_at:
+            raise ValueError(
+                f"created_at は merged_at 以前にしてください: "
+                f"{self.created_at} 〜 {self.merged_at}"
+            )
+        for name in ("additions", "deletions"):
+            if not _is_count(getattr(self, name)):
+                raise ValueError(
+                    f"{name} には0以上の件数が必要です: {getattr(self, name)!r}"
+                )
+        # login と種別は同じ author から一緒に読む。片方だけ欠けた値を受けると、
+        # 「種別の分からない作成者」と「作成者の分からない PR」が混ざって後段で区別できない
+        if (self.author_login is None) != (self.author_type is None):
+            raise ValueError(
+                "author_login と author_type は両方に値を持たせるか、両方とも不明に"
+                f"してください: {self.author_login!r} / {self.author_type!r}"
+            )
+        if not isinstance(self.is_draft, bool):
+            raise TypeError(
+                f"is_draft には真偽値が必要です: {type(self.is_draft).__name__}"
+            )
+
+    @property
+    def key(self) -> str:
+        """一意キー（設計書 §7.6）。"""
+        return f"{self.repository}#{self.number}"
+
+    @property
+    def merged_day(self) -> dt.date:
+        """mergedAt の UTC 日付（帰属する月を決める値）。"""
+        return _utc_day(self.merged_at)
+
+
+def _pr_order(pr: CachedPr) -> tuple[str, int]:
+    """保存と比較の並び。repository は小文字で見る（GitHub は大小を区別しない）。"""
+    return (pr.repository.lower(), pr.number)
+
+
+def month_windows(month: str) -> tuple[DateWindow, ...]:
+    """対象月を固定の窓に割る（1–7 / 8–14 / 15–21 / 22–28 / 29–月末）。
+
+    窓は月をまたがない。29日以降が無い月（閏年でない2月）は4窓になる。境界を月の長さで
+    動かさないのは、同じ月を何度収集しても窓の集合が変わらないようにするため（変わると
+    完了済みの記録が意味を持たなくなる）。
+    """
+    year, mon = _month_parts(month)
+    last = calendar.monthrange(year, mon)[1]
+    return tuple(
+        DateWindow(
+            start=dt.date(year, mon, first),
+            end=dt.date(year, mon, min(first + 6, last)),
+        )
+        for first in (1, 8, 15, 22, 29)
+        if first <= last
+    )
+
+
+@dataclass(frozen=True)
+class PrCache:
+    """1組織×1月の PR キャッシュの内容。
+
+    prs は `(repository の小文字, number)` の昇順で重複なし。complete_windows は
+    「読み切れて、かつ終端の翌日が過ぎた」窓で、`month_windows(month)` の要素だけを
+    昇順・重複なしで持つ。
+    """
+
+    github_org: str
+    month: str
+    prs: tuple[CachedPr, ...] = ()
+    complete_windows: tuple[DateWindow, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not is_github_org_name(self.github_org):
+            raise ValueError(
+                f"github_org には Organization 名が必要です: {self.github_org!r}"
+            )
+        _month_parts(self.month)
+        if not isinstance(self.prs, tuple) or not all(
+            isinstance(pr, CachedPr) for pr in self.prs
+        ):
+            raise TypeError("prs には CachedPr の tuple が必要です")
+        keys = [_pr_order(pr) for pr in self.prs]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"prs の PR が重複しています: {sorted(set(keys))}")
+        if keys != sorted(keys):
+            raise ValueError(
+                "prs は repository（小文字）と number の昇順で並べてください"
+            )
+        # 1ファイル = 1組織 × 1月。収集経路では窓の内側しか採らないので起きないが、
+        # 読み側でも確かめる（別の月の PR が混ざったキャッシュを集計へ渡さないため）
+        for pr in self.prs:
+            if pr.merged_at[:7] != self.month:
+                raise ValueError(
+                    f"prs に {self.month} 以外の月に merge された PR があります: "
+                    f"{pr.key}（merged_at={pr.merged_at}）"
+                )
+        if not isinstance(self.complete_windows, tuple) or not all(
+            isinstance(window, DateWindow) for window in self.complete_windows
+        ):
+            raise TypeError("complete_windows には DateWindow の tuple が必要です")
+        known = month_windows(self.month)
+        for window in self.complete_windows:
+            if window not in known:
+                raise ValueError(
+                    f"complete_windows に {self.month} の窓でない区間があります: "
+                    f"{window.start} 〜 {window.end}"
+                )
+        starts = [window.start for window in self.complete_windows]
+        if len(set(starts)) != len(starts):
+            raise ValueError(f"complete_windows が重複しています: {starts}")
+        if starts != sorted(starts):
+            raise ValueError("complete_windows は開始日の昇順で並べてください")
+
+    @property
+    def complete(self) -> bool:
+        """対象月の全窓を読み切ったか。"""
+        return self.complete_windows == month_windows(self.month)
+
+
+@dataclass(frozen=True)
+class PrCollection:
+    """`collect_merged_prs` の結果（保存した内容の要約）。
+
+    upserted は今回追加または内容が変わった PR の件数、total は保存後の全件数。
+    stopped は取得を中断した窓で、status はそのとき最後に読んだ HTTP ステータス
+    （応答として解釈できなければ None）。中断したかどうかは failure と stopped の
+    両方で表す（片方だけが立つ状態を作らない）。
+    """
+
+    github_org: str
+    month: str
+    path: Path
+    upserted: int = 0
+    total: int = 0
+    complete: bool = False
+    stopped: DateWindow | None = None
+    status: int | None = None
+    failure: GhFailure | None = None
+
+    def __post_init__(self) -> None:
+        if not is_github_org_name(self.github_org):
+            raise ValueError(
+                f"github_org には Organization 名が必要です: {self.github_org!r}"
+            )
+        _month_parts(self.month)
+        if not isinstance(self.path, Path):
+            raise TypeError(f"path には Path が必要です: {type(self.path).__name__}")
+        for name in ("upserted", "total"):
+            if not _is_count(getattr(self, name)):
+                raise ValueError(
+                    f"{name} には0以上の件数が必要です: {getattr(self, name)!r}"
+                )
+        if self.upserted > self.total:
+            raise ValueError(
+                f"upserted は total 以下です: {self.upserted} / {self.total}"
+            )
+        if not isinstance(self.complete, bool):
+            raise TypeError(
+                f"complete には真偽値が必要です: {type(self.complete).__name__}"
+            )
+        if self.stopped is not None and not isinstance(self.stopped, DateWindow):
+            raise TypeError(
+                f"stopped には DateWindow が必要です: {type(self.stopped).__name__}"
+            )
+        if self.status is not None and not _is_count(self.status):
+            raise ValueError(f"status には HTTP ステータスが必要です: {self.status!r}")
+        if self.failure is not None and not isinstance(self.failure, GhFailure):
+            raise TypeError(
+                f"failure には GhFailure が必要です: {type(self.failure).__name__}"
+            )
+        # 中断の事実は理由と窓の両方で表す。片方だけだと、消費側が「どこから再開すれば
+        # よいか」または「なぜ止まったか」のどちらかを持たない結果を受け取ることになる
+        if (self.failure is None) != (self.stopped is None):
+            raise ValueError(
+                "中断した結果は failure と stopped の両方を持たせてください: "
+                f"failure={self.failure!r} stopped={self.stopped!r}"
+            )
+        if self.complete and self.failure is not None:
+            raise ValueError(
+                f"全窓を読み切った結果に中断の理由は付きません: {self.failure!r}"
+            )
+
+
+# ------------------------------------------------------------ キャッシュの読み書き
+
+# キャッシュの形。読み側は未知のキーを拒否する（禁止フィールドが混ざったキャッシュを
+# 黙って使わないため。手で足した項目も同じ扱いにする）
+_CACHE_KEYS = ("complete_windows", "github_org", "month", "prs", "schema")
+_PR_ENTRY_KEYS = (
+    "additions",
+    "author_login",
+    "author_type",
+    "created_at",
+    "deletions",
+    "is_draft",
+    "merged_at",
+    "number",
+    "repository",
+)
+
+
+def _pr_entry(pr: CachedPr) -> dict:
+    """PR 1件を保存する形にする（明示した9項目だけを写す）。"""
+    return {
+        "repository": pr.repository,
+        "number": pr.number,
+        "author_login": pr.author_login,
+        "author_type": pr.author_type,
+        "created_at": pr.created_at,
+        "merged_at": pr.merged_at,
+        "additions": pr.additions,
+        "deletions": pr.deletions,
+        "is_draft": pr.is_draft,
+    }
+
+
+def _cache_payload(cache: PrCache) -> dict:
+    """キャッシュを JSON へ直列化する形にする。"""
+    return {
+        "schema": PR_CACHE_SCHEMA,
+        "github_org": cache.github_org,
+        "month": cache.month,
+        "complete_windows": [
+            [window.start.isoformat(), window.end.isoformat()]
+            for window in cache.complete_windows
+        ],
+        "prs": {pr.key: _pr_entry(pr) for pr in cache.prs},
+    }
+
+
+def _default_file_mode() -> int:
+    """umask を反映した新規ファイルの権限（open の既定と同じ意味にする）。
+
+    規則は `report/document._atomic_write` と同じ（層をまたげないため実装は共有しない）。
+    os.umask に読み取り専用の API が無いため 0 を設定して即戻す。
+    """
+    current = os.umask(0)
+    os.umask(current)
+    return 0o666 & ~current
+
+
+def _write_cache(path: Path, cache: PrCache) -> None:
+    """キャッシュを書く（同一ディレクトリの一時ファイル経由で置換する）。
+
+    直接書くと、書き込みの途中で中断したときに収集済みの内容ごと失われる（次の実行が
+    完了済みの窓を知らないまま全部取り直すことになる）。置換なら失敗しても元の内容が残る。
+    一時ファイルは mkstemp 由来で 0600 になるため、既存ファイルはその権限を引き継がせ、
+    新規作成時は umask 既定を使う。
+
+    同じ内容からは常に同じバイト列になる形で書く（キーを並べ替え、改行を LF に固定する）。
+    """
+    text = json.dumps(
+        _cache_payload(cache), ensure_ascii=False, indent=2, sort_keys=True
+    ) + "\n"
+    # 作るのはキャッシュのディレクトリだけで、その親（組織ディレクトリ）が無ければ作らない
+    # （綴りの違う場所を渡されたとき、静かに新しい場所へ保存しないため）
+    path.parent.mkdir(exist_ok=True)
+    mode = (path.stat().st_mode & 0o7777) if path.exists() else _default_file_mode()
+    tmp: Path | None = None
+    try:
+        # 名前を close 後に os.replace で使うため with で開かない（直後に with f: で閉じる）
+        f = tempfile.NamedTemporaryFile(  # noqa: SIM115
+            "w", encoding="utf-8", newline="\n", dir=path.parent,
+            prefix=_TMP_PREFIX, suffix=".tmp", delete=False,
+        )
+        tmp = Path(f.name)
+        with f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+
+
+def _cache_error(path: Path, detail: str) -> ValueError:
+    """キャッシュを読めないことを表す例外（メッセージはパスと理由の組）。
+
+    型の不一致も「入力として不正」の側に寄せて ValueError にする。ファイルの内容は
+    利用者が置いたデータで、CLI は ValueError を「エラー: <理由>」と終了コード 1 に
+    写す（他の loader と同じ扱い。例外の種類を変えると表示と終了コードが変わる）。
+    """
+    return ValueError(f"{path}: {detail}")
+
+
+def _cache_window(value: object, path: Path, month: str) -> DateWindow:
+    """complete_windows の1要素を DateWindow にする。"""
+    if not isinstance(value, list) or len(value) != 2:
+        raise _cache_error(
+            path, f"complete_windows の要素は [開始日, 終了日] の2要素です: {value!r}"
+        )
+    if not all(isinstance(day, str) and _ISO_DAY_RE.fullmatch(day) for day in value):
+        raise _cache_error(
+            path,
+            "complete_windows の日付は YYYY-MM-DD の文字列で書いてください: "
+            f"{value!r}",
+        )
+    try:
+        start, end = (dt.date.fromisoformat(day) for day in value)
+        return DateWindow(start=start, end=end)
+    except (TypeError, ValueError) as exc:
+        raise _cache_error(
+            path,
+            f"complete_windows の要素を {month} の区間として読めません: "
+            f"{value!r}（{exc}）",
+        ) from exc
+
+
+def _cache_pr(key: object, value: object, path: Path) -> CachedPr:
+    """prs の1要素を CachedPr にする（キーと内容の一致まで確かめる）。"""
+    if not isinstance(value, dict):
+        raise _cache_error(path, f"prs.{key} が PR の内容ではありません: {value!r}")
+    unknown = sorted(set(value) - set(_PR_ENTRY_KEYS))
+    if unknown:
+        raise _cache_error(
+            path,
+            f"prs.{key} に未知のキーがあります: {unknown}"
+            f"（保存する項目は {', '.join(_PR_ENTRY_KEYS)} だけです）",
+        )
+    missing = sorted(set(_PR_ENTRY_KEYS) - set(value))
+    if missing:
+        raise _cache_error(path, f"prs.{key} に項目がありません: {missing}")
+    try:
+        pr = CachedPr(**value)
+    except (TypeError, ValueError) as exc:
+        raise _cache_error(path, f"prs.{key} を読めません: {exc}") from exc
+    if pr.key != key:
+        raise _cache_error(
+            path,
+            f"prs のキー {key!r} が内容の repository#number（{pr.key}）と"
+            "一致しません",
+        )
+    return pr
+
+
+def load_pr_cache(cache_dir: Path, month: str, github_org: str) -> PrCache:
+    """その月の PR キャッシュを読む（ファイルが無ければ空の内容）。
+
+    読み方は厳密にする。形式の版・組織・月の不一致、未知のキー、キーと内容の食い違い、
+    重複はすべて ValueError にして中止する。緩く読むと、別の組織のキャッシュや、手で
+    項目を足したファイルをそのまま集計へ渡すことになる（禁止フィールドが混ざった
+    キャッシュを黙って使わないための検査でもある）。
+    """
+    if not is_github_org_name(github_org):
+        raise ValueError(
+            f"github_org には Organization 名が必要です: {github_org!r}"
+        )
+    path = pr_cache_path(cache_dir, month)
+    if not path.is_file():
+        return PrCache(github_org=github_org, month=month)
+
+    # 改行は読み取りで LF へ揃える（書き込み側が LF を固定するのと合わせて1つの規約）
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise _cache_error(path, f"JSON として読めません（{exc}）") from exc
+    if not isinstance(payload, dict):
+        raise _cache_error(path, "JSON のオブジェクトではありません")
+    unknown = sorted(set(payload) - set(_CACHE_KEYS))
+    if unknown:
+        raise _cache_error(
+            path,
+            f"未知のキーがあります: {unknown}"
+            f"（書ける項目は {', '.join(_CACHE_KEYS)} だけです）",
+        )
+    missing = sorted(set(_CACHE_KEYS) - set(payload))
+    if missing:
+        raise _cache_error(path, f"項目がありません: {missing}")
+    # 真偽値と浮動小数点は版として受けない（Python では True == 1・1.0 == 1 が成り立ち、
+    # JSON の true / 1.0 が版 1 のキャッシュとして通ってしまう）
+    schema = payload["schema"]
+    if not _is_count(schema) or schema != PR_CACHE_SCHEMA:
+        raise _cache_error(
+            path,
+            f"対応していない形式です（schema={schema!r}・"
+            f"読めるのは {PR_CACHE_SCHEMA}）",
+        )
+    if payload["github_org"] != github_org:
+        raise _cache_error(
+            path,
+            f"別の Organization（{payload['github_org']!r}）のキャッシュです。"
+            f"今回の対象は {github_org!r} なので、このキャッシュを別の場所へ"
+            "移してから再実行してください",
+        )
+    if payload["month"] != month:
+        raise _cache_error(
+            path,
+            f"別の月（{payload['month']!r}）のキャッシュです。"
+            f"今回の対象は {month!r} です",
+        )
+
+    windows = payload["complete_windows"]
+    if not isinstance(windows, list):
+        raise _cache_error(path, "complete_windows が配列ではありません")
+    prs = payload["prs"]
+    if not isinstance(prs, dict):
+        raise _cache_error(path, "prs がオブジェクトではありません")
+
+    found = [_cache_pr(key, value, path) for key, value in prs.items()]
+    seen: dict[tuple[str, int], str] = {}
+    for pr in found:
+        other = seen.setdefault(_pr_order(pr), pr.key)
+        if other != pr.key:
+            raise _cache_error(
+                path,
+                f"同じ PR が2つのキーで入っています（{other} と {pr.key}）。"
+                "GitHub の repository 名は大文字小文字を区別しません",
+            )
+    try:
+        return PrCache(
+            github_org=github_org,
+            month=month,
+            prs=tuple(sorted(found, key=_pr_order)),
+            complete_windows=tuple(sorted(
+                (_cache_window(window, path, month) for window in windows),
+                key=lambda window: window.start,
+            )),
+        )
+    except (TypeError, ValueError) as exc:
+        raise _cache_error(path, f"キャッシュの内容が不正です（{exc}）") from exc
+
+
+# ------------------------------------------------------------ 検索と収集
+
+
+class _Page(NamedTuple):
+    """検索の1ページの読み取り結果。
+
+    prs が None なら「読めなかった」で、理由は status と failure が表す。読めた場合の
+    total はその検索条件でヒットした総件数（ページの件数ではない）。
+    """
+
+    prs: tuple[CachedPr, ...] | None
+    total: int = 0
+    has_next: bool = False
+    cursor: str | None = None
+    status: int | None = None
+    failure: GhFailure | None = None
+
+
+class _Collected(NamedTuple):
+    """1つの窓の収集結果（prs が None なら取り切れていない）。"""
+
+    prs: tuple[CachedPr, ...] | None
+    status: int | None = None
+    failure: GhFailure | None = None
+
+
+def _search_expression(github_org: str, window: DateWindow) -> str:
+    """検索文字列（Organization・merged の期間・並び）。期間は両端を含む UTC の日付。"""
+    return (
+        f"org:{github_org} is:pr is:merged "
+        f"merged:{window.start.isoformat()}..{window.end.isoformat()} "
+        "sort:created-asc"
+    )
+
+
+def _is_rate_limited(status: int, headers: dict[str, str]) -> bool:
+    """応答が利用上限によるものか。
+
+    GitHub は二次上限を 429 で、一次上限を 403 + `Retry-After` か
+    `X-RateLimit-Remaining: 0` で返す。権限不足の 403 と区別するため、403 は
+    ヘッダを見てから上限と判断する（区別しないと、権限の問題を「時間をおいて再実行」と
+    案内し続けることになる）。
+    """
+    if status == 429:
+        return True
+    return status == 403 and (
+        "retry-after" in headers
+        or headers.get("x-ratelimit-remaining", "").strip() == "0"
+    )
+
+
+def _pr_author(author: object) -> tuple[str | None, str | None] | None:
+    """author を (login, 種別) にする（読めなければ None）。
+
+    author 自体の null は削除済みのアカウントで、(None, None) として受ける。dict では
+    あるのに login か種別を読めない場合は、node 全体を読めなかったものとして扱う
+    （返り値の None がその合図で、(None, None) とは別の意味）。
+    """
+    if author is None:
+        return (None, None)
+    if not isinstance(author, dict):
+        return None
+    login, kind = author.get("login"), author.get("__typename")
+    if not _is_author_login(login):
+        return None
+    if not isinstance(kind, str) or not _AUTHOR_TYPE_RE.fullmatch(kind):
+        return None
+    return (login, kind)
+
+
+def _pr_node(node: object, window: DateWindow) -> CachedPr | None:
+    """検索結果の1要素を CachedPr にする（読めなければ None）。
+
+    読むのは §7.6 の9項目に対応するフィールドだけで、node に余分な項目（title 等）が
+    あっても触らない。必須フィールドの欠落・型不一致・repository 名として読めない値・
+    要求した期間の外の mergedAt・createdAt が mergedAt より後、はいずれも「読めない」に
+    倒す（期間の外が混ざると、月をまたいだ PR が別の月のキャッシュへ入る）。
+    """
+    if not isinstance(node, dict) or "author" not in node:
+        return None
+    repository = node.get("repository")
+    name = repository.get("name") if isinstance(repository, dict) else None
+    number = node.get("number")
+    created_at, merged_at = node.get("createdAt"), node.get("mergedAt")
+    additions, deletions = node.get("additions"), node.get("deletions")
+    is_draft = node.get("isDraft")
+    if not isinstance(name, str) or not _REPO_NAME_RE.fullmatch(name):
+        return None
+    if not _is_count(number) or number < 1:
+        return None
+    if not _is_timestamp(created_at) or not _is_timestamp(merged_at):
+        return None
+    if not _is_count(additions) or not _is_count(deletions):
+        return None
+    if not isinstance(is_draft, bool):
+        return None
+    if created_at > merged_at:
+        return None
+    if not window.contains(_utc_day(merged_at)):
+        return None
+    author = _pr_author(node["author"])
+    if author is None:
+        return None
+    login, kind = author
+    return CachedPr(
+        repository=name,
+        number=number,
+        author_login=login,
+        author_type=kind,
+        created_at=created_at,
+        merged_at=merged_at,
+        additions=additions,
+        deletions=deletions,
+        is_draft=is_draft,
+    )
+
+
+def _search_body(body: str, window: DateWindow, status: int) -> _Page:
+    """検索の応答本文を1ページの結果にする。
+
+    要素を1つでも解釈できなければページ全体を読めなかったものとして扱う（読めない要素
+    だけを飛ばすと、その PR が黙って集計から落ちる。応答の形が変わった兆候でもあるので
+    静かに続けない）。規則は repository の発見（`_repo_page`）と同じ。
+    """
+    unreadable = _Page(None, status=status, failure=GhFailure.ERROR)
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return unreadable
+    if not isinstance(payload, dict):
+        return unreadable
+    errors = payload.get("errors")
+    if errors is not None:
+        # GraphQL は上限も 200 + errors で返す。再実行で解消するかどうかが違うので分ける
+        rate_limited = isinstance(errors, list) and any(
+            isinstance(error, dict) and error.get("type") == "RATE_LIMITED"
+            for error in errors
+        )
+        return _Page(
+            None, status=status,
+            failure=GhFailure.RATE_LIMITED if rate_limited else GhFailure.ERROR,
+        )
+    data = payload.get("data")
+    search = data.get("search") if isinstance(data, dict) else None
+    if not isinstance(search, dict):
+        return unreadable
+    total = search.get("issueCount")
+    page_info = search.get("pageInfo")
+    nodes = search.get("nodes")
+    if not _is_count(total) or not isinstance(page_info, dict):
+        return unreadable
+    has_next, cursor = page_info.get("hasNextPage"), page_info.get("endCursor")
+    if not isinstance(has_next, bool):
+        return unreadable
+    if cursor is not None and not isinstance(cursor, str):
+        return unreadable
+    if not isinstance(nodes, list):
+        return unreadable
+    found: list[CachedPr] = []
+    for node in nodes:
+        pr = _pr_node(node, window)
+        if pr is None:
+            return unreadable
+        found.append(pr)
+    return _Page(
+        tuple(found), total=total, has_next=has_next, cursor=cursor, status=status
+    )
+
+
+def _is_transient(page: _Page) -> bool:
+    """その失敗が呼び直しで解消しうるか。
+
+    対象は上流の一時的な障害（`_TRANSIENT_STATUSES`）と応答待ちの打ち切りだけにする。
+    利用上限を呼び直すと上限をさらに消費し、本文の解釈不能・認証と権限の不足・gh の
+    不在は何度呼んでも同じ結果になるため、いずれも即座に止める側へ残す。
+    """
+    if page.prs is not None:
+        return False
+    if page.failure is GhFailure.TIMEOUT:
+        return True
+    return page.failure is GhFailure.ERROR and page.status in _TRANSIENT_STATUSES
+
+
+def _search_page(
+    run: Runner, github_org: str, window: DateWindow, cursor: str | None,
+    sleep: Sleeper,
+) -> _Page:
+    """検索を1ページ読む（一時的な失敗は少し待って数回まで呼び直す）。
+
+    呼び直すのは同じ引数の同じページなので、成功したときの結果は1回で成功した場合と
+    変わらない。試行を使い切ったら最後の失敗をそのまま返す（呼び出し側はその窓で止める）。
+    """
+    page = _search_once(run, github_org, window, cursor)
+    for pause in _RETRY_PAUSES:
+        if not _is_transient(page):
+            return page
+        sleep(pause)
+        page = _search_once(run, github_org, window, cursor)
+    return page
+
+
+def _search_once(
+    run: Runner, github_org: str, window: DateWindow, cursor: str | None
+) -> _Page:
+    """検索を1回呼んで1ページ分の結果にする。"""
+    result = run(_graphql_args(_search_expression(github_org, window), cursor))
+    if result.failure is not None:
+        return _Page(None, failure=result.failure)
+    status, headers, body = _parse_response(result.stdout)
+    if status is None:
+        return _Page(None, failure=GhFailure.ERROR)
+    if _is_rate_limited(status, headers):
+        return _Page(None, status=status, failure=GhFailure.RATE_LIMITED)
+    if status != 200:
+        return _Page(None, status=status, failure=GhFailure.ERROR)
+    return _search_body(body, window, status)
+
+
+def _collect_window(
+    run: Runner, github_org: str, window: DateWindow, *,
+    sleep: Sleeper, split: bool = True,
+) -> _Collected:
+    """1つの窓の merged PR を全ページ読む（読み切れなければ prs=None）。
+
+    ヒット数が検索の上限を超える窓は、split が真なら1日ずつに割って取り直す（上限は
+    1クエリあたりなので、期間を細かくすれば読み切れる）。割った先でも超える場合は、
+    切り詰めた結果を返さず中断する。
+    """
+    first = _search_page(run, github_org, window, None, sleep)
+    if first.prs is None:
+        return _Collected(None, first.status, first.failure)
+    if first.total > _SEARCH_RESULT_CAP:
+        if not split:
+            return _Collected(None, first.status, GhFailure.TOO_MANY_RESULTS)
+        # 1ページ目の結果は捨てる（同じ期間を日単位で取り直すため）
+        found: dict[tuple[str, int], CachedPr] = {}
+        for day in window.days:
+            collected = _collect_window(run, github_org, day, sleep=sleep, split=False)
+            if collected.prs is None:
+                return collected
+            found.update((_pr_order(pr), pr) for pr in collected.prs)
+        return _Collected(tuple(found[key] for key in sorted(found)), first.status)
+
+    found = {_pr_order(pr): pr for pr in first.prs}
+    has_next, cursor, pages = first.has_next, first.cursor, 1
+    while has_next:
+        pages += 1
+        if pages > _MAX_SEARCH_PAGES or cursor is None:
+            # 上限までページが続く（＝上限を超える件数を辿れている）のも、次があるのに
+            # cursor が無いのも、読み切れたことにしてよい状態ではない
+            return _Collected(None, first.status, GhFailure.ERROR)
+        page = _search_page(run, github_org, window, cursor, sleep)
+        if page.prs is None:
+            return _Collected(None, page.status, page.failure)
+        found.update((_pr_order(pr), pr) for pr in page.prs)
+        has_next, cursor = page.has_next, page.cursor
+    return _Collected(tuple(found[key] for key in sorted(found)), first.status)
+
+
+def collect_merged_prs(
+    github_org: str, month: str, cache_dir: Path, *,
+    runner: Runner | None = None, today: dt.date | None = None,
+    sleep: Sleeper | None = None,
+) -> PrCollection:
+    """対象月の merged PR のメタデータを収集して cache_dir へ保存する（設計書 §15.4）。
+
+    取るのは §7.6 の9項目だけで、title・本文・レビュー本文・files・diff・commit
+    message・コードは取得も保存もしない。月を固定の窓に割って順に取り、既に完了済みの
+    窓と、まだ始まっていない窓は問い合わせない。窓の取得に失敗したらそこで止め、それ
+    までの結果と完了済みの窓を保存して理由を返す（再実行は続きから進む）。
+
+    窓を完了とするのは、読み切れて、かつ終端の翌日が過ぎている場合だけ。今日・昨日を
+    含む窓は毎回取り直され、同じ PR は upsert されるので結果は変わらない。
+
+    一時的な障害（`_TRANSIENT_STATUSES`・応答待ちの打ち切り）は、同じページを少し待って
+    `_MAX_ATTEMPTS` 回まで呼び直す。それでも通らなければ従来どおりその窓で止める。
+
+    today を渡すと「今日」を、runner を渡すと gh の呼び出しを、sleep を渡すと再試行の
+    待ちを差し替えられる（いずれもテスト用。sleep の既定は `time.sleep`）。
+    """
+    if not is_github_org_name(github_org):
+        raise ValueError(
+            f"github_org には Organization 名が必要です: {github_org!r}"
+        )
+    if today is not None and not _is_plain_date(today):
+        raise TypeError(
+            f"today には datetime.date が必要です: {type(today).__name__}"
+        )
+    path = pr_cache_path(cache_dir, month)
+    # 壊れたキャッシュは読めた時点で中止する（何も書かない）。不完全な状態のうえに
+    # upsert すると、取りこぼしを抱えたまま「完了」になりうる
+    cache = load_pr_cache(cache_dir, month, github_org)
+    run = run_gh if runner is None else runner
+    pause = time.sleep if sleep is None else sleep
+    day = _today() if today is None else today
+
+    before = {_pr_order(pr): pr for pr in cache.prs}
+    entries = dict(before)
+    done = set(cache.complete_windows)
+    windows = month_windows(month)
+    stopped: DateWindow | None = None
+    status: int | None = None
+    failure: GhFailure | None = None
+    for window in windows:
+        if window in done or window.start > day:
+            # 完了済みと、まだ始まっていない窓は問い合わせない（未来の窓は完了にもしない）
+            continue
+        collected = _collect_window(run, github_org, window, sleep=pause)
+        if collected.prs is None:
+            # 取り切れなかった窓の PR は採らない（窓の粒度で all-or-nothing）
+            stopped, status, failure = window, collected.status, collected.failure
+            break
+        entries.update((_pr_order(pr), pr) for pr in collected.prs)
+        if window.end < day - dt.timedelta(days=1):
+            done.add(window)
+
+    written = PrCache(
+        github_org=github_org,
+        month=month,
+        prs=tuple(entries[key] for key in sorted(entries)),
+        # 並びは窓の定義順から作る（set の反復順に依らせない）
+        complete_windows=tuple(window for window in windows if window in done),
+    )
+    _write_cache(path, written)
+    return PrCollection(
+        github_org=github_org,
+        month=month,
+        path=path,
+        upserted=sum(1 for key, pr in entries.items() if before.get(key) != pr),
+        total=len(entries),
+        complete=written.complete,
+        stopped=stopped,
+        status=status,
+        failure=failure,
+    )

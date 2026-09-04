@@ -517,11 +517,14 @@ def _api(status: int, headers: tuple[tuple[str, str], ...] = ()) -> GhResult:
     return GhResult(ok=200 <= status < 300, stdout="\n".join(lines) + "\n\n{}\n")
 
 
-def _rate(core: int = 4999, search: int = 30) -> GhResult:
+def _rate(core: int = 4999, graphql: int = 5000) -> GhResult:
+    """`gh api rate_limit` の応答（残量を見るのは core と graphql の2区分）。"""
     payload = {
         "resources": {
             "core": {"limit": 5000, "remaining": core, "reset": 1788233103},
-            "search": {"limit": 30, "remaining": search, "reset": 1788230720},
+            "graphql": {"limit": 5000, "remaining": graphql, "reset": 1788230720},
+            # 見ない区分（PR の検索は GraphQL で行うため REST の search は消費しない）
+            "search": {"limit": 30, "remaining": 0, "reset": 1788230720},
         }
     }
     return GhResult(ok=True, stdout=json.dumps(payload))
@@ -753,11 +756,17 @@ def test_github_rate_limit_message_has_no_reset_time(tmp_path, cfg):
     assert "reset" not in issues[0].message
 
 
-def test_github_rate_limit_covers_search(tmp_path, cfg):
+def test_github_rate_limit_covers_graphql(tmp_path, cfg):
+    """PR の検索が使う graphql の残量も見る（収集が始められないため）。"""
     issues = _inspect(
-        _org_input(tmp_path), cfg, _fake_gh(rate_limit=_rate(core=0, search=0)))
+        _org_input(tmp_path), cfg, _fake_gh(rate_limit=_rate(core=0, graphql=0)))
 
-    assert list(issues[0].scope["resources"]) == ["core", "search"]
+    assert list(issues[0].scope["resources"]) == ["core", "graphql"]
+
+
+def test_github_rate_limit_ignores_the_rest_search_resource(tmp_path, cfg):
+    """REST の search は使わないので、その区分が枯れていても報告しない。"""
+    assert _inspect(_org_input(tmp_path), cfg, _fake_gh(rate_limit=_rate())) == []
 
 
 def test_github_unreadable_rate_status_is_not_reported(tmp_path, cfg):

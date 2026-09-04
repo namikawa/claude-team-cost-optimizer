@@ -1,11 +1,13 @@
 """CLI のマルチ組織対応（組織解決・--org・横断サマリ・旧レイアウトの拒否）と doctor のテスト。"""
 
 import csv
+import datetime as dt
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1078,7 +1080,7 @@ def _stub_gh(monkeypatch, *, authenticated: bool = True) -> list[tuple[str, ...]
     calls: list[tuple[str, ...]] = []
     rate = json.dumps({"resources": {
         "core": {"limit": 5000, "remaining": 4999},
-        "search": {"limit": 30, "remaining": 30},
+        "graphql": {"limit": 5000, "remaining": 5000},
     }})
 
     def _run(args):
@@ -1245,3 +1247,228 @@ def test_doctor_does_not_blame_the_config_when_the_input_is_unreadable(
 
     assert _doctor_with(config, tmp_path / "nope", "--format", "json") == 1
     assert [i["code"] for i in json.loads(capsys.readouterr().out)] == ["MISSING_SPEND"]
+
+
+# --- collect --source github（PR メタデータの収集） ---
+#
+# gh は差し替えて一度も実行しない。ここで見るのは結線（opt-in の判定・キャッシュの置き場所・
+# 表示と終了コード）で、収集そのものは tests/test_github_collect.py。
+
+COLLECT_MONTH = "2026-08"
+
+# 対象月の全窓が完了する日（月末 + 2日）。収集は「今日」を見るため固定する
+COLLECT_TODAY = dt.date(2026, 9, 2)
+
+
+def _stub_search(monkeypatch, response=None,
+                 today: dt.date = COLLECT_TODAY) -> list[tuple[str, ...]]:
+    """PR 検索の応答と「今日」を差し替える（既定は 0 件の正常応答）。
+
+    今日を固定するのは、窓の完了判定が実行日で変わらないようにするため。
+    """
+    from seat_analyzer.github_collect import GhResult
+
+    payload = json.dumps({"data": {"search": {
+        "issueCount": 0,
+        "pageInfo": {"hasNextPage": False, "endCursor": None},
+        "nodes": [],
+    }}})
+    normal = GhResult(ok=True, stdout=f"HTTP/2.0 200 OK\n\n{payload}\n")
+    calls: list[tuple[str, ...]] = []
+
+    def _run(args):
+        calls.append(tuple(args))
+        return normal if response is None else response
+
+    monkeypatch.setattr("seat_analyzer.github_collect.run_gh", _run)
+    monkeypatch.setattr("seat_analyzer.github_collect._today", lambda: today)
+    return calls
+
+
+def _collect(config: str, input_dir: Path, *extra: str) -> int:
+    return main([
+        "collect", "--source", "github", "--config", config,
+        "--input-dir", str(input_dir), "--month", COLLECT_MONTH, *extra,
+    ])
+
+
+def _cache_path(input_dir: Path, org: str = "org-a") -> Path:
+    return input_dir / org / "github-cache" / f"prs-{COLLECT_MONTH}.json"
+
+
+def test_collect_requires_the_github_opt_in(make_input, tmp_path, monkeypatch, capsys):
+    """github_org を設定していない組織では収集しない（gh を呼ばない）。"""
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-b": GH_ORG})
+    calls = _stub_search(monkeypatch)
+
+    assert _collect(config, input_dir, "--org", "org-a") == 1
+
+    err = capsys.readouterr().err
+    assert "組織 org-a は GitHub 分析が有効ではありません" in err
+    assert "organizations.org-a.github_org" in err
+    assert calls == []
+    assert not _cache_path(input_dir).exists()
+
+
+def test_collect_writes_the_cache_and_prints_one_line(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    calls = _stub_search(monkeypatch)
+
+    assert _collect(config, input_dir, "--org", "org-a") == 0
+
+    out = capsys.readouterr().out
+    path = _cache_path(input_dir)
+    assert out.splitlines() == [
+        f"org-a {COLLECT_MONTH}: merged PR 0 件（今回 0 件を更新）→ {path}"
+    ]
+    assert json.loads(path.read_text(encoding="utf-8"))["github_org"] == GH_ORG
+    # 窓の数だけ検索する（対象月は5窓）
+    assert len(calls) == 5
+    assert all(call[:3] == ("api", "-i", "graphql") for call in calls)
+
+
+def test_collect_notes_the_window_it_will_refetch(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """対象月が終わっていない期間は次回も取り直すことを伝える。"""
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_search(monkeypatch, today=dt.date(2026, 8, 10))
+
+    assert _collect(config, input_dir, "--org", "org-a") == 0
+    assert "次回の実行で再取得します" in capsys.readouterr().out
+
+
+def test_collect_reports_an_interrupted_collection(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    from seat_analyzer.github_collect import GhResult
+
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_search(monkeypatch, response=GhResult(
+        ok=False, stdout="HTTP/2.0 429 Too Many Requests\nRetry-After: 60\n\n{}\n"))
+
+    assert _collect(config, input_dir, "--org", "org-a") == 1
+
+    captured = capsys.readouterr()
+    assert "merged PR 0 件" in captured.out
+    assert "収集を中断しました: 2026-08-01〜2026-08-07 で" in captured.err
+    assert "GitHub API の利用上限に達しました" in captured.err
+    assert "再実行すると続きから収集します" in captured.err
+
+
+def test_collect_names_the_status_of_an_unreadable_response(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    from seat_analyzer.github_collect import GhResult
+
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_search(monkeypatch, response=GhResult(
+        ok=False, stdout="HTTP/2.0 500 Internal Server Error\n\n{}\n"))
+
+    assert _collect(config, input_dir, "--org", "org-a") == 1
+
+    err = capsys.readouterr().err
+    assert "GitHub API の応答を解釈できませんでした（HTTP 500）" in err
+
+
+def test_collect_does_not_show_the_raw_gh_output(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """gh の生出力・token・ヘッダの値は表示しない。"""
+    from seat_analyzer.github_collect import GhResult
+
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_search(monkeypatch, response=GhResult(
+        ok=False,
+        stdout=("HTTP/2.0 403 Forbidden\n"
+                "X-GitHub-SSO: required; url=https://example.invalid\n"
+                "\n"
+                '{"message": "gh の診断の文言"}\n'),
+    ))
+
+    assert _collect(config, input_dir, "--org", "org-a") == 1
+
+    captured = capsys.readouterr()
+    assert "診断" not in captured.out + captured.err
+    assert "example.invalid" not in captured.out + captured.err
+
+
+def test_collect_asks_for_a_login_when_gh_is_not_authenticated(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """gh は動くが未ログイン（終了コード 4）のとき、認証の案内まで届く。
+
+    ここだけ subprocess を差し替えるのは、終了コードの分類から表示までを通すため。
+    """
+    from seat_analyzer.github_collect import GH_EXIT_AUTH_REQUIRED
+
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    monkeypatch.setattr("seat_analyzer.github_collect.shutil.which", lambda _: "gh")
+    monkeypatch.setattr(
+        "seat_analyzer.github_collect.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=GH_EXIT_AUTH_REQUIRED, stdout=b""),
+    )
+    monkeypatch.setattr("seat_analyzer.github_collect._today", lambda: COLLECT_TODAY)
+
+    assert _collect(config, input_dir, "--org", "org-a") == 1
+
+    err = capsys.readouterr().err
+    assert "gh の認証がありません（gh auth login を実行してください）" in err
+    assert "収集を中断しました: 2026-08-01〜2026-08-07 で" in err
+
+
+def test_collect_rejects_an_unknown_org(make_input, tmp_path, monkeypatch, capsys):
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_search(monkeypatch)
+
+    assert _collect(config, input_dir, "--org", "org-x") == 1
+    assert "組織が見つかりません" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("month", ["2026-13", "202608", "2026-8", "../2026-08"])
+def test_collect_rejects_a_bad_month(make_input, tmp_path, monkeypatch, capsys, month):
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    calls = _stub_search(monkeypatch)
+
+    rc = main([
+        "collect", "--source", "github", "--config", config,
+        "--input-dir", str(input_dir), "--org", "org-a", "--month", month,
+    ])
+
+    assert rc == 1
+    assert "対象月の形式が不正です" in capsys.readouterr().err
+    assert calls == []
+
+
+@pytest.mark.parametrize("args", [
+    ["collect", "--org", "org-a", "--month", COLLECT_MONTH],            # --source なし
+    ["collect", "--source", "browser", "--org", "org-a",
+     "--month", COLLECT_MONTH],                                        # 未対応の収集元
+    ["collect", "--source", "github", "--month", COLLECT_MONTH],        # --org なし
+    ["collect", "--source", "github", "--org", "org-a"],                # --month なし
+])
+def test_collect_requires_its_options(args):
+    """必須オプションと収集元の選択肢は argparse が弾く。"""
+    with pytest.raises(SystemExit) as excinfo:
+        main(args)
+    assert excinfo.value.code == 2
+
+
+def test_collect_failure_text_covers_every_failure():
+    """中断の理由はどの GhFailure でも表示の文言を持つ（語彙が増えたとき引き当てで落ちない）。"""
+    from seat_analyzer.cli import _COLLECT_FAILURE_TEXT
+    from seat_analyzer.github_collect import GhFailure
+
+    assert set(_COLLECT_FAILURE_TEXT) == set(GhFailure)

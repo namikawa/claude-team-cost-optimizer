@@ -6,6 +6,8 @@
 
 - `analyze --decision-version v2` で V2 判定の根拠 `decision-evidence-YYYYMM-<組織名>.csv`
   を出力できるようにした（V1 の判定・成果物は変わらない。省略時は `decision_v2.enabled` に従い既定は v1）
+- `collect --source github` で GitHub の merged PR のメタデータを `input/<組織名>/github-cache/`
+  に収集できるようにした（`organizations.<組織名>.github_org` を設定した組織だけが対象）
 
 ### 変更
 

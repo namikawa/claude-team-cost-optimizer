@@ -304,6 +304,41 @@ repository も取得しない。
 `organizations` に書いた組織名が入力の組織ディレクトリのどれとも一致しない場合は、
 `=== 設定検査 ===` として warning を出す。綴り違いで検査が黙って全部飛ぶのを防ぐため。
 
+### github-cache（collect が作るキャッシュ）
+
+`seat-analyzer collect --org <組織名> --source github --month YYYY-MM` は、対象月に merge
+された PR のメタデータを `input/<組織名>/github-cache/prs-YYYY-MM.json` に保存する。
+1ファイル = 1組織 × 1月で、PR は merge した日時（UTC）の月に帰属する。ツールが読み書きする
+ファイルで、手で編集する前提ではない。
+
+PR 1件につき保存するのは次の9項目だけ。title・本文・レビュー本文・変更ファイル・diff・
+コミットメッセージ・コードは取得も保存もしない。
+
+| 項目 | 内容 |
+|---|---|
+| `repository` | repository 名（Organization 名は含まない） |
+| `number` | PR 番号 |
+| `author_login` | 作成者の GitHub login（削除済みのアカウントは空） |
+| `author_type` | 作成者の種別（`User`・`Bot` など。同上） |
+| `created_at` | 作成日時（UTC） |
+| `merged_at` | merge 日時（UTC） |
+| `additions` | 追加行数 |
+| `deletions` | 削除行数 |
+| `is_draft` | draft かどうか |
+
+PR を指すキーは `repository#番号`（例: `repo-a#12`）で、同じ PR を2度保存しない。
+repository 名の大文字小文字は区別せず同じ1つとして扱う。
+
+`complete_windows` は「読み切れて、かつ期間の終わりから1日が過ぎた」期間の一覧。月は
+1–7 / 8–14 / 15–21 / 22–28 / 29–月末 の固定の期間に分けて収集し、この一覧に入っていない
+期間は次回の実行で取り直す。1日の猶予を置くのは、検索の反映遅れで日付境界の PR を
+取りこぼさないため。したがって対象月の全期間が揃うのは翌月2日以降になる。
+
+読み込みは厳密で、形式の版・組織名・対象月が合わないファイル、9項目以外のキーを持つ
+ファイル、キーと内容が食い違うファイルはエラーにする（別の組織のキャッシュや、項目を
+足したファイルをそのまま集計へ渡さないため）。エラーが出た場合はそのファイルを別の場所へ
+移してから収集し直す。
+
 ## モデル単価（config.yaml > model_prices）
 
 API 換算需要は、モデル名の部分一致で引いた単価（USD per 1M tokens）で計算する。単価表は
