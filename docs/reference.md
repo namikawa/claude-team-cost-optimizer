@@ -237,6 +237,62 @@ recommendations）とは別系統の出力で、V1 の内容には影響しな�
 - 管理画面の当月消費（`input/<組織名>/admin/`）はまだ読まない。実課金はスペンドレポートの
   `net_spend` 由来で、この列を持たない旧形式のレポートでは実課金 0 として扱う
 
+## github-summary の列（GitHub の参考値）
+
+GitHub の merged PR 数とリードタイムの参考値。GitHub 分析を有効にした組織で、対象月の
+キャッシュ（`collect --source github`）があるときだけ正式分析が書く。
+
+シートの判定には一切使わない。report / details / dashboard / recommendations /
+usage-summary の内容はこのファイルの有無で変わらず、逆にこのファイルの値が判定へ入る
+こともない。PR 数もリードタイムもチームの働き方と repository の性質に強く依存するため、
+値の大小から因果（活用度が高い・低い）を断定する材料にはならない。個人行はメール
+アドレス昇順で、件数の多い順には並べない（個人のランキングを作らないため）。
+
+行は次の2種類で、`scope` 列が区別する。
+
+- `user` — `members-info.csv` の `GitHub ID` 列に login を書いた人全員。その月の PR が
+  0 件の人も行を持つ（0 件であることも参考情報のため）
+- `organization` — 末尾の1行。組織全体の値で、集計から外した分の内訳もここに入る
+
+各列の意味は次のとおり。
+
+- `scope` — 行の単位（`user` / `organization`）
+- `email` — ユーザのメールアドレス（組織全体行は空欄）
+- `github_login` — 対応表に書かれた GitHub の login（組織全体行は空欄）
+- `month` — 対象月
+- `merged_pr_count` — その月に merge された PR の件数。個人行は本人が作成した分、
+  組織全体行は対象 repository の Bot 以外の PR 全件（個人へ帰属した分 + 対応表に無い
+  作成者の分 + 削除済みアカウントの分）。対応表の記入状況で組織全体の母数は動かない
+- `lead_time_median_hours` / `lead_time_p75_hours` / `lead_time_p90_hours` —
+  `merged_at − created_at` の時間（小数1桁）。Draft だった期間も含み、日時は UTC で
+  計算する。3点はいずれも線形補間の百分位（Excel の `PERCENTILE.INC` と同じ）で、
+  PR が 0 件の行は3列とも空欄
+- `unmapped_authors` — 対応表に無い作成者の人数（組織全体行のみ）
+- `unmapped_prs` — その作成者による PR の件数（組織全体行のみ）
+- `bot_prs` — Bot が作成した PR の件数（組織全体行のみ）
+- `deleted_author_prs` — 作成者が削除済みアカウントの PR の件数（組織全体行のみ）
+- `excluded_repository_prs` — 対象外 repository の PR の件数（組織全体行のみ）
+- `total_prs` — キャッシュが持つ PR の全件数（組織全体行のみ）。個人行の
+  `merged_pr_count` の合計に `unmapped_prs`・`bot_prs`・`deleted_author_prs`・
+  `excluded_repository_prs` を足した数に一致する（組織全体行の `merged_pr_count` は
+  Bot と対象外 repository の分を含まないので、この検算には使わない）
+- `cache_complete` — 対象月の収集を読み切ったか（True / False）。False のときの件数は
+  部分的な値
+
+repository 名・GitHub の Organization 名・対応表に無い作成者の login はこのファイルに
+書かない（対象外 repository と対応表に無い作成者は件数だけを載せる）。
+
+次の場合は書かず、実行時の出力に理由と次の一手を出す。
+
+- 対象月のキャッシュが無い（`collect --source github` をその月について実行していない）
+- キャッシュに repository の一覧が無い（一覧を保存する前に作られたキャッシュ。収集を
+  もう一度実行すると一覧が付く）
+- 速報モード（`--preview`）
+
+前回の github-summary が残っている場合もツールは消さない。有効にした組織で書けなかった
+実行では、そのファイルが今回は更新されないことを伝える。`organizations` から外した組織に
+ついては、残っているファイルにも触れない。
+
 ## 追加クレジット（usage credits）の上限
 
 Team プランの各シートには利用の込み枠（レート制限型）があり、組織やユーザ設定で「追加
@@ -344,6 +400,12 @@ PR 1件につき保存するのは次の9項目だけ。title・本文・レビ�
 
 PR を指すキーは `repository#番号`（例: `repo-a#12`）で、同じ PR を2度保存しない。
 repository 名の大文字小文字は区別せず同じ1つとして扱う。
+
+`repositories` には収集した時点の repository の一覧（archived / fork / template を除いた
+名前と、除いた件数）が入る。分析はこの一覧を集計の対象として読むので、`gh` もネット
+ワークも呼ばずにキャッシュだけで参考値を出せる。一覧を保存する前に作られたキャッシュは
+そのまま読めるが github-summary の材料にはならないので、収集をもう一度実行して一覧を
+付ける。
 
 `complete_windows` は「読み切れて、かつ期間の終わりから1日が過ぎた」期間の一覧。月は
 1–7 / 8–14 / 15–21 / 22–28 / 29–月末 の固定の期間に分けて収集し、この一覧に入っていない

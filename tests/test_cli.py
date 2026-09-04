@@ -11,15 +11,21 @@ from types import SimpleNamespace
 
 import pytest
 
-from seat_analyzer import analyze, ingest, seat_changes
+from seat_analyzer import analyze, github_collect, ingest, seat_changes
 from seat_analyzer.analyze import pipeline
 from seat_analyzer.cli import main
+from seat_analyzer.github_collect import (
+    PR_CACHE_DIRNAME,
+    PR_CACHE_SCHEMA,
+    month_windows,
+)
 from seat_analyzer.ingest import discover_orgs
 from seat_analyzer.product_usage import FEATURE_COLUMNS
 from seat_analyzer.report import (
     DASHBOARD,
     DECISION_EVIDENCE,
     DETAILS,
+    GITHUB_SUMMARY,
     RECOMMENDATIONS,
     REPORT,
     USAGE_SUMMARY,
@@ -431,6 +437,242 @@ def test_v2_run_computes_features_for_every_month_and_detects_changes(
                      "--decision-version", "v2") == 0
     assert len(features) == 3     # org-a の2ヶ月 + org-b の1ヶ月
     assert len(detect) == 2       # 組織ごとに1度
+
+
+# --- github-summary（GitHub 由来の参考値） ---
+#
+# 要約そのものは tests/test_github_metrics.py が、CSV の形は tests/test_github_csv.py が
+# 固定する。ここで確かめるのは「どの実行で github-summary を書くか」「書けないときに
+# 何を伝えるか」「V1 の成果物が変わらないこと」「analyze が gh を呼ばないこと」。
+
+# GitHub 分析を有効にするときの Organization 名（doctor・collect の検査でも使う）
+GH_ORG = "example-org"
+
+# キャッシュに載せる repository の一覧（analyze はこれを集計の対象として読む）
+CACHE_REPOSITORIES = {"names": ["repo-a"], "excluded": 1}
+
+
+def _gh_config(tmp_path: Path, **entries: str) -> str:
+    """organizations だけを書いた上書き設定を作り、そのパスを返す。"""
+    lines = ["organizations:"]
+    for org, github_org in entries.items():
+        lines += [f"  {org}:", f"    github_org: {github_org}"]
+    path = tmp_path / "gh-config.yaml"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return str(path)
+
+
+def _mapping(input_dir: Path, org: str, rows: tuple[str, ...]) -> None:
+    """email → GitHub login の対応表（members-info の GitHub ID 列）。"""
+    (input_dir / org / "members-info.csv").write_text(
+        "email,GitHub ID\n" + "".join(f"{row}\n" for row in rows),
+        encoding="utf-8", newline="\n",
+    )
+
+
+def _pr_entry(number: int = 12, repository: str = "repo-a", login: str = "alice-dev",
+              author_type: str = "User", merged: str = "2026-06-03T12:00:00Z") -> dict:
+    """キャッシュに保存された merged PR 1件（9項目）。"""
+    return {
+        "repository": repository, "number": number,
+        "author_login": login, "author_type": author_type,
+        "created_at": "2026-06-01T00:00:00Z", "merged_at": merged,
+        "additions": 10, "deletions": 2, "is_draft": False,
+    }
+
+
+def _write_pr_cache(input_dir: Path, *, org: str = "org-a", month: str = "2026-06",
+                    entries: list[dict] | None = None,
+                    repositories: dict | None = CACHE_REPOSITORIES,
+                    github_org: str = GH_ORG, text: str | None = None) -> Path:
+    """collect が書いたキャッシュ相当のファイルを直接置く。
+
+    analyze は gh もネットワークも呼ばずこのファイルだけを読むので、収集の経路を
+    通さずに参考値の出力を組み立てられる。text を渡すとその字句をそのまま書く
+    （読めないキャッシュを表すため）。
+    """
+    path = input_dir / org / PR_CACHE_DIRNAME / f"prs-{month}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if text is not None:
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return path
+    found = [_pr_entry()] if entries is None else entries
+    payload = {
+        "schema": PR_CACHE_SCHEMA,
+        "github_org": github_org,
+        "month": month,
+        "complete_windows": [
+            [window.start.isoformat(), window.end.isoformat()]
+            for window in month_windows(month)
+        ],
+        "prs": {f"{e['repository']}#{e['number']}": e for e in found},
+    }
+    if repositories is not None:
+        payload["repositories"] = repositories
+    path.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+    return path
+
+
+def test_github_summary_is_written_for_a_gated_org(make_input, tmp_path, capsys):
+    """有効にした組織で対象月のキャッシュがあれば参考値を書き、出力一覧と要約を出す。"""
+    input_dir = _make_two_orgs(make_input)
+    _mapping(input_dir, "org-a", ("a@x.jp,alice-dev",))
+    _write_pr_cache(input_dir)
+    out = tmp_path / "reports"
+
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-a") == 0
+    path = out_file(out, GITHUB_SUMMARY)
+    assert path.is_file()
+    printed = capsys.readouterr().out
+    assert f"github: {path}" in printed
+    assert "GitHub（参考値）" in printed
+    assert "lead time（組織全体）" in printed
+
+
+def test_github_summary_does_not_change_the_v1_artifacts(make_input, tmp_path):
+    """参考値の併記は V1 の成果物を1バイトも変えない。"""
+    input_dir = _make_two_orgs(make_input)
+    _mapping(input_dir, "org-a", ("a@x.jp,alice-dev",))
+    _write_pr_cache(input_dir)
+    plain, gated = tmp_path / "plain", tmp_path / "gated"
+
+    assert _run_with(input_dir, plain, CONFIG, "--org", "org-a") == 0
+    assert _run_with(input_dir, gated, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-a") == 0
+    for artifact in _V1_ARTIFACTS:
+        assert out_file(gated, artifact).read_bytes() == \
+            out_file(plain, artifact).read_bytes()
+    # 増えるのは参考値の1ファイルだけ
+    assert {p.name for p in (gated / "org-a" / "2026-06").iterdir()} - \
+        {p.name for p in (plain / "org-a" / "2026-06").iterdir()} == \
+        {GITHUB_SUMMARY.name("2026-06", "org-a")}
+
+
+def test_an_org_without_the_gate_gets_no_summary_and_no_notice(
+    make_input, tmp_path, capsys
+):
+    """設定に無い組織は GitHub 関連の処理と通知の一切から外れる。"""
+    input_dir = _make_two_orgs(make_input)
+    _mapping(input_dir, "org-b", ("b@y.jp,bob-42",))
+    _write_pr_cache(input_dir, org="org-b")
+    out = tmp_path / "reports"
+
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-b") == 0
+    assert not out_file(out, GITHUB_SUMMARY, org="org-b").exists()
+    printed = capsys.readouterr().out
+    assert "github" not in printed and "GitHub" not in printed
+
+
+def test_a_gated_org_without_a_cache_says_what_to_run(make_input, tmp_path, capsys):
+    """キャッシュが無い月は書かずに次の一手を案内する（GitHub 無しでも成功する）。"""
+    input_dir = _make_two_orgs(make_input)
+    out = tmp_path / "reports"
+
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-a") == 0
+    assert not out_file(out, GITHUB_SUMMARY).exists()
+    printed = capsys.readouterr().out
+    assert "github-summary は書きません" in printed
+    assert "collect --org org-a --source github --month 2026-06" in printed
+
+
+def test_a_cache_without_a_repository_listing_says_to_collect_again(
+    make_input, tmp_path, capsys
+):
+    """一覧を持たない旧いキャッシュは材料にならない（再収集で一覧が付く）。"""
+    input_dir = _make_two_orgs(make_input)
+    _mapping(input_dir, "org-a", ("a@x.jp,alice-dev",))
+    _write_pr_cache(input_dir, repositories=None)
+    out = tmp_path / "reports"
+
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-a") == 0
+    assert not out_file(out, GITHUB_SUMMARY).exists()
+    printed = capsys.readouterr().out
+    assert "repository の一覧が無いため" in printed
+    assert "再実行すると一覧が保存されます" in printed
+
+
+def test_preview_says_the_summary_is_skipped(make_input, tmp_path, capsys):
+    """有効にした GitHub 分析を速報で黙って無視しない（組織ごとに1行知らせる）。"""
+    input_dir = _make_two_orgs(make_input)
+    _mapping(input_dir, "org-a", ("a@x.jp,alice-dev",))
+    _write_pr_cache(input_dir)
+    out = tmp_path / "reports"
+
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-a",
+                     "--preview", "--days", "10") == 0
+    assert not out_file(out, GITHUB_SUMMARY).exists()
+    assert "速報モードでは github-summary を書きません" in capsys.readouterr().out
+
+
+def test_a_broken_cache_stops_the_run(make_input, tmp_path, capsys):
+    """読めないキャッシュで黙って参考値を落とさない（エラーで止める）。"""
+    input_dir = _make_two_orgs(make_input)
+    path = _write_pr_cache(input_dir, text='{"schema":')
+    out = tmp_path / "reports"
+
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}),
+                     "--org", "org-a") == 1
+    err = capsys.readouterr().err
+    assert "JSON として読めません" in err and path.name in err
+    assert not out_file(out, GITHUB_SUMMARY).exists()
+
+
+def test_analyze_never_calls_gh(make_input, tmp_path, monkeypatch, capsys):
+    """参考値の材料はキャッシュだけ（オフラインでも同じ結果になる）。"""
+    def fail(args):
+        raise AssertionError(f"analyze が gh を呼びました: {tuple(args)}")
+
+    monkeypatch.setattr(github_collect, "run_gh", fail)
+    input_dir = _make_two_orgs(make_input)
+    _mapping(input_dir, "org-a", ("a@x.jp,alice-dev",))
+    _write_pr_cache(input_dir)
+    out = tmp_path / "reports"
+
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-a") == 0
+    assert out_file(out, GITHUB_SUMMARY).is_file()
+    assert "GitHub（参考値）" in capsys.readouterr().out
+
+
+def _with_a_leftover_summary(make_input, tmp_path, capsys) -> tuple[Path, Path, bytes]:
+    """参考値を1度書いた状態を作る（入力ディレクトリ・出力ディレクトリ・その中身）。"""
+    input_dir = _make_two_orgs(make_input)
+    _mapping(input_dir, "org-a", ("a@x.jp,alice-dev",))
+    _write_pr_cache(input_dir)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-a") == 0
+    before = out_file(out, GITHUB_SUMMARY).read_bytes()
+    capsys.readouterr()
+    return input_dir, out, before
+
+
+def test_a_leftover_summary_is_reported_when_it_cannot_be_written(
+    make_input, tmp_path, capsys
+):
+    """有効な組織で書けなかった実行では、残っている参考値の時点を知らせる（消さない）。"""
+    input_dir, out, before = _with_a_leftover_summary(make_input, tmp_path, capsys)
+    path = out_file(out, GITHUB_SUMMARY)
+    # キャッシュを取り除くと、この実行では参考値を書けない
+    (input_dir / "org-a" / PR_CACHE_DIRNAME / "prs-2026-06.json").unlink()
+
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-a") == 0
+    printed = capsys.readouterr().out
+    assert f"{path.name} は今回の実行では更新されません" in printed
+    assert path.read_bytes() == before      # 旧い成果物はツールが動かさない
+
+
+def test_a_leftover_summary_is_not_mentioned_once_the_gate_is_removed(
+    make_input, tmp_path, capsys
+):
+    """設定から外した組織では、残っている参考値にも触れない（設計書 §15.1）。
+
+    毎月同じ通知が出続けると、対処すべき警告がその中に埋もれる。
+    """
+    input_dir, out, before = _with_a_leftover_summary(make_input, tmp_path, capsys)
+    path = out_file(out, GITHUB_SUMMARY)
+
+    assert _run_with(input_dir, out, CONFIG, "--org", "org-a") == 0
+    printed = capsys.readouterr().out
+    assert path.name not in printed and "GitHub" not in printed
+    assert path.read_bytes() == before      # 触れないが消さない
 
 
 # --- doctor（既存入力の検査） ---
@@ -1061,18 +1303,6 @@ def test_init_org_rejects_reserved_and_invalid_names(tmp_path, capsys):
 # gh は差し替えて一度も実行しない。ここで見るのは結線（どの組織を対象にするか・
 # gh を何回呼ぶか・出力のどこへ出すか）で、issue の中身は tests/test_data_quality.py。
 
-GH_ORG = "example-org"
-
-
-def _gh_config(tmp_path: Path, **entries: str) -> str:
-    """organizations だけを書いた上書き設定を作り、そのパスを返す。"""
-    lines = ["organizations:"]
-    for org, github_org in entries.items():
-        lines += [f"  {org}:", f"    github_org: {github_org}"]
-    path = tmp_path / "gh-config.yaml"
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
-    return str(path)
-
 
 def _stub_gh(monkeypatch, *, authenticated: bool = True) -> list[tuple[str, ...]]:
     """gh の呼び出しを記録して固定の応答を返す（実際の gh は呼ばない）。"""
@@ -1096,13 +1326,6 @@ def _stub_gh(monkeypatch, *, authenticated: bool = True) -> list[tuple[str, ...]
 
     monkeypatch.setattr("seat_analyzer.github_collect.run_gh", _run)
     return calls
-
-
-def _mapping(input_dir: Path, org: str, rows: tuple[str, ...]) -> None:
-    (input_dir / org / "members-info.csv").write_text(
-        "email,GitHub ID\n" + "".join(f"{row}\n" for row in rows),
-        encoding="utf-8", newline="\n",
-    )
 
 
 def _doctor_with(config: str, input_dir: Path, *extra: str) -> int:
@@ -1261,9 +1484,24 @@ COLLECT_MONTH = "2026-08"
 COLLECT_TODAY = dt.date(2026, 9, 2)
 
 
-def _stub_search(monkeypatch, response=None,
-                 today: dt.date = COLLECT_TODAY) -> list[tuple[str, ...]]:
-    """PR 検索の応答と「今日」を差し替える（既定は 0 件の正常応答）。
+def _repo(name: str, archived: bool = False) -> dict:
+    """repository 一覧の1要素（発見が読む項目だけを持つ）。"""
+    return {"name": name, "archived": archived, "fork": False, "is_template": False}
+
+
+def _graphql(call: tuple[str, ...]) -> bool:
+    """その呼び出しが PR 検索（GraphQL）か。repository の発見は REST。"""
+    return call[:3] == ("api", "-i", "graphql")
+
+
+def _stub_search(monkeypatch, response=None, today: dt.date = COLLECT_TODAY,
+                 repos: list[dict] | None = None,
+                 listing_status: int = 200) -> list[tuple[str, ...]]:
+    """repository の発見と PR 検索の応答、そして「今日」を差し替える。
+
+    既定は repository 1件の一覧と 0 件の検索結果。response は PR 検索にだけ適用する
+    （発見が先に走るので両方へ適用すると検索の分岐に届かない）。発見そのものを失敗
+    させる場合は listing_status を 200 以外にする。
 
     今日を固定するのは、窓の完了判定が実行日で変わらないようにするため。
     """
@@ -1275,10 +1513,18 @@ def _stub_search(monkeypatch, response=None,
         "nodes": [],
     }}})
     normal = GhResult(ok=True, stdout=f"HTTP/2.0 200 OK\n\n{payload}\n")
+    listing = json.dumps([_repo("repo-a")] if repos is None else repos)
+    found = GhResult(
+        ok=200 <= listing_status < 300,
+        stdout=f"HTTP/2.0 {listing_status} -\n\n{listing}\n",
+    )
     calls: list[tuple[str, ...]] = []
 
     def _run(args):
-        calls.append(tuple(args))
+        args = tuple(args)
+        calls.append(args)
+        if not _graphql(args):
+            return found
         return normal if response is None else response
 
     monkeypatch.setattr("seat_analyzer.github_collect.run_gh", _run)
@@ -1324,12 +1570,13 @@ def test_collect_writes_the_cache_and_prints_one_line(
     out = capsys.readouterr().out
     path = _cache_path(input_dir)
     assert out.splitlines() == [
-        f"org-a {COLLECT_MONTH}: merged PR 0 件（今回 0 件を更新）→ {path}"
+        f"org-a {COLLECT_MONTH}: merged PR 0 件（今回 0 件を更新）→ {path}",
+        "  対象 repository 1 件（archived / fork / template を除外 0 件）",
     ]
     assert json.loads(path.read_text(encoding="utf-8"))["github_org"] == GH_ORG
-    # 窓の数だけ検索する（対象月は5窓）
-    assert len(calls) == 5
-    assert all(call[:3] == ("api", "-i", "graphql") for call in calls)
+    # 窓の数だけ検索する（対象月は5窓）。その前に repository の一覧を1回読む
+    assert len([call for call in calls if _graphql(call)]) == 5
+    assert len(calls) == 6
 
 
 def test_collect_notes_the_window_it_will_refetch(
@@ -1408,6 +1655,7 @@ def test_collect_asks_for_a_login_when_gh_is_not_authenticated(
     """gh は動くが未ログイン（終了コード 4）のとき、認証の案内まで届く。
 
     ここだけ subprocess を差し替えるのは、終了コードの分類から表示までを通すため。
+    未ログインは最初の呼び出し（repository の発見）で分かるので、そこで止まる。
     """
     from seat_analyzer.github_collect import GH_EXIT_AUTH_REQUIRED
 
@@ -1425,7 +1673,44 @@ def test_collect_asks_for_a_login_when_gh_is_not_authenticated(
 
     err = capsys.readouterr().err
     assert "gh の認証がありません（gh auth login を実行してください）" in err
-    assert "収集を中断しました: 2026-08-01〜2026-08-07 で" in err
+    assert "repository の一覧を取得できませんでした" in err
+    assert not _cache_path(input_dir).exists()
+
+
+def test_collect_saves_the_repository_listing(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """収集は PR と一緒に repository の一覧も保存し、対象と除外の件数を出す。"""
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_search(monkeypatch, repos=[_repo("repo-a"), _repo("old", archived=True)])
+
+    assert _collect(config, input_dir, "--org", "org-a") == 0
+
+    assert "対象 repository 1 件（archived / fork / template を除外 1 件）" \
+        in capsys.readouterr().out
+    payload = json.loads(_cache_path(input_dir).read_text(encoding="utf-8"))
+    assert payload["repositories"] == {"names": ["repo-a"], "excluded": 1}
+
+
+def test_collect_stops_when_the_repository_listing_fails(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """一覧を得られなければ PR の検索へ進まず、キャッシュも書かない。
+
+    部分的な一覧で集計すると、一覧に載らなかった repository の PR が「対象外」へ
+    流れて参考指標が黙って小さく出る。
+    """
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    calls = _stub_search(monkeypatch, listing_status=403)
+
+    assert _collect(config, input_dir, "--org", "org-a") == 1
+
+    err = capsys.readouterr().err
+    assert "repository の一覧を取得できませんでした（HTTP 403）" in err
+    assert not _cache_path(input_dir).exists()
+    assert not any(_graphql(call) for call in calls)
 
 
 def test_collect_rejects_an_unknown_org(make_input, tmp_path, monkeypatch, capsys):

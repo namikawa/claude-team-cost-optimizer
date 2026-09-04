@@ -46,8 +46,10 @@ deletions・isDraft）だけで、title・本文・レビュー本文・files・
 保証する）。
 
 保存先は `input/<組織名>/github-cache/prs-YYYY-MM.json` の1組織×1月で、PR は mergedAt の
-UTC 月に帰属させる。月は固定の窓（1–7 / 8–14 / 15–21 / 22–28 / 29–月末）に割り、窓ごとに
-取り切れたかどうかを記録する。読み切れた窓のうち終端の翌日が過ぎたものだけを「完了」に
+UTC 月に帰属させる。収集した時点の repository の一覧も同じファイルへ保存するので、集計の
+側は `gh` もネットワークも呼ばずにキャッシュだけで結果を出せる。月は固定の窓（1–7 /
+8–14 / 15–21 / 22–28 / 29–月末）に割り、窓ごとに取り切れたかどうかを記録する。
+読み切れた窓のうち終端の翌日が過ぎたものだけを「完了」に
 するので、今日・昨日を含む窓は毎回取り直される（検索インデックスの反映遅れで、日付境界
 直前の merge を取りこぼさないための1日の猶予）。窓の取得に失敗したらそこで止め、それまでの
 窓の結果と完了済みの窓を保存して理由を返す——部分的な結果を完全なものとして集計させない
@@ -1338,12 +1340,18 @@ class PrCache:
     prs は `(repository の小文字, number)` の昇順で重複なし。complete_windows は
     「読み切れて、かつ終端の翌日が過ぎた」窓で、`month_windows(month)` の要素だけを
     昇順・重複なしで持つ。
+
+    repositories は収集した時点の repository の一覧（`discover_repositories` の結果）で、
+    持たないキャッシュでは None。持つ場合は同じ Organization の完全な一覧に限る——
+    部分的な一覧を載せられると、集計の側がそれを完全な一覧として扱い、一覧に載らなかった
+    repository の PR が「対象外」へ流れて参考指標が黙って小さく出る。
     """
 
     github_org: str
     month: str
     prs: tuple[CachedPr, ...] = ()
     complete_windows: tuple[DateWindow, ...] = ()
+    repositories: RepoDiscovery | None = None
 
     def __post_init__(self) -> None:
         if not is_github_org_name(self.github_org):
@@ -1386,6 +1394,24 @@ class PrCache:
             raise ValueError(f"complete_windows が重複しています: {starts}")
         if starts != sorted(starts):
             raise ValueError("complete_windows は開始日の昇順で並べてください")
+        if self.repositories is None:
+            return
+        if not isinstance(self.repositories, RepoDiscovery):
+            raise TypeError(
+                "repositories には RepoDiscovery か None が必要です: "
+                f"{type(self.repositories).__name__}"
+            )
+        if self.repositories.github_org != self.github_org:
+            raise ValueError(
+                "repository の一覧とキャッシュの Organization が違います: "
+                f"{self.repositories.github_org!r} / {self.github_org!r}"
+            )
+        if not self.repositories.complete:
+            raise ValueError(
+                "完全でない repository の一覧はキャッシュに持たせられません"
+                f"（status={self.repositories.status!r} "
+                f"failure={self.repositories.failure!r}）"
+            )
 
     @property
     def complete(self) -> bool:
@@ -1401,6 +1427,9 @@ class PrCollection:
     stopped は取得を中断した窓で、status はそのとき最後に読んだ HTTP ステータス
     （応答として解釈できなければ None）。中断したかどうかは failure と stopped の
     両方で表す（片方だけが立つ状態を作らない）。
+
+    repository_count は集計の対象にした repository の数、excluded_repository_count は
+    archived / fork / template として除外した数（どちらも渡された一覧そのままの値）。
     """
 
     github_org: str
@@ -1412,6 +1441,8 @@ class PrCollection:
     stopped: DateWindow | None = None
     status: int | None = None
     failure: GhFailure | None = None
+    repository_count: int = 0
+    excluded_repository_count: int = 0
 
     def __post_init__(self) -> None:
         if not is_github_org_name(self.github_org):
@@ -1421,7 +1452,9 @@ class PrCollection:
         _month_parts(self.month)
         if not isinstance(self.path, Path):
             raise TypeError(f"path には Path が必要です: {type(self.path).__name__}")
-        for name in ("upserted", "total"):
+        for name in (
+            "upserted", "total", "repository_count", "excluded_repository_count",
+        ):
             if not _is_count(getattr(self, name)):
                 raise ValueError(
                     f"{name} には0以上の件数が必要です: {getattr(self, name)!r}"
@@ -1460,8 +1493,18 @@ class PrCollection:
 # ------------------------------------------------------------ キャッシュの読み書き
 
 # キャッシュの形。読み側は未知のキーを拒否する（禁止フィールドが混ざったキャッシュを
-# 黙って使わないため。手で足した項目も同じ扱いにする）
-_CACHE_KEYS = ("complete_windows", "github_org", "month", "prs", "schema")
+# 黙って使わないため。手で足した項目も同じ扱いにする）。
+#
+# repositories だけは任意にする。一覧を保存する前に作られたキャッシュを読めなくすると、
+# 収集済みの PR ごと取り直すことになる（一覧は収集を再実行すれば付く）。形式の版は
+# 上げない——任意のキーの追加は読み側の互換を壊さないため。
+_CACHE_REQUIRED_KEYS = ("complete_windows", "github_org", "month", "prs", "schema")
+_CACHE_OPTIONAL_KEYS = ("repositories",)
+_CACHE_KEYS = tuple(sorted(_CACHE_REQUIRED_KEYS + _CACHE_OPTIONAL_KEYS))
+
+# repository の一覧を保存する形（`RepoDiscovery` のうち、完全な一覧が持つ2項目だけ）
+_REPOSITORIES_KEYS = ("excluded", "names")
+
 _PR_ENTRY_KEYS = (
     "additions",
     "author_login",
@@ -1491,8 +1534,12 @@ def _pr_entry(pr: CachedPr) -> dict:
 
 
 def _cache_payload(cache: PrCache) -> dict:
-    """キャッシュを JSON へ直列化する形にする。"""
-    return {
+    """キャッシュを JSON へ直列化する形にする。
+
+    repository の一覧を持たないキャッシュではキーそのものを書かない（空の一覧と
+    「一覧が無い」を区別できる形にする）。
+    """
+    payload = {
         "schema": PR_CACHE_SCHEMA,
         "github_org": cache.github_org,
         "month": cache.month,
@@ -1502,6 +1549,12 @@ def _cache_payload(cache: PrCache) -> dict:
         ],
         "prs": {pr.key: _pr_entry(pr) for pr in cache.prs},
     }
+    if cache.repositories is not None:
+        payload["repositories"] = {
+            "names": list(cache.repositories.repos),
+            "excluded": cache.repositories.excluded,
+        }
+    return payload
 
 
 def _default_file_mode() -> int:
@@ -1585,6 +1638,48 @@ def _cache_window(value: object, path: Path, month: str) -> DateWindow:
         ) from exc
 
 
+def _cache_repositories(
+    value: object, path: Path, github_org: str
+) -> RepoDiscovery:
+    """repositories の内容を RepoDiscovery にする。
+
+    読み方は prs と同じ厳しさにする。名前の字句・重複・並びは値オブジェクトが見るので、
+    ここで見るのは JSON としての形（オブジェクトか・キーが2つそろっているか・names が
+    文字列の配列か・excluded が0以上の整数か）だけにする。
+    """
+    if not isinstance(value, dict):
+        raise _cache_error(
+            path, f"repositories が repository の一覧ではありません: {value!r}"
+        )
+    unknown = sorted(set(value) - set(_REPOSITORIES_KEYS))
+    if unknown:
+        raise _cache_error(
+            path,
+            f"repositories に未知のキーがあります: {unknown}"
+            f"（書ける項目は {', '.join(_REPOSITORIES_KEYS)} だけです）",
+        )
+    missing = sorted(set(_REPOSITORIES_KEYS) - set(value))
+    if missing:
+        raise _cache_error(path, f"repositories に項目がありません: {missing}")
+    names, excluded = value["names"], value["excluded"]
+    if not isinstance(names, list) or not all(
+        isinstance(name, str) for name in names
+    ):
+        raise _cache_error(
+            path, f"repositories.names が文字列の配列ではありません: {names!r}"
+        )
+    if not _is_count(excluded):
+        raise _cache_error(
+            path, f"repositories.excluded には0以上の件数が必要です: {excluded!r}"
+        )
+    try:
+        return RepoDiscovery(
+            github_org=github_org, repos=tuple(names), excluded=excluded, status=200
+        )
+    except (TypeError, ValueError) as exc:
+        raise _cache_error(path, f"repositories を読めません: {exc}") from exc
+
+
 def _cache_pr(key: object, value: object, path: Path) -> CachedPr:
     """prs の1要素を CachedPr にする（キーと内容の一致まで確かめる）。"""
     if not isinstance(value, dict):
@@ -1642,7 +1737,7 @@ def load_pr_cache(cache_dir: Path, month: str, github_org: str) -> PrCache:
             f"未知のキーがあります: {unknown}"
             f"（書ける項目は {', '.join(_CACHE_KEYS)} だけです）",
         )
-    missing = sorted(set(_CACHE_KEYS) - set(payload))
+    missing = sorted(set(_CACHE_REQUIRED_KEYS) - set(payload))
     if missing:
         raise _cache_error(path, f"項目がありません: {missing}")
     # 真偽値と浮動小数点は版として受けない（Python では True == 1・1.0 == 1 が成り立ち、
@@ -1674,6 +1769,10 @@ def load_pr_cache(cache_dir: Path, month: str, github_org: str) -> PrCache:
     prs = payload["prs"]
     if not isinstance(prs, dict):
         raise _cache_error(path, "prs がオブジェクトではありません")
+    repositories = (
+        _cache_repositories(payload["repositories"], path, github_org)
+        if "repositories" in payload else None
+    )
 
     found = [_cache_pr(key, value, path) for key, value in prs.items()]
     seen: dict[tuple[str, int], str] = {}
@@ -1694,6 +1793,7 @@ def load_pr_cache(cache_dir: Path, month: str, github_org: str) -> PrCache:
                 (_cache_window(window, path, month) for window in windows),
                 key=lambda window: window.start,
             )),
+            repositories=repositories,
         )
     except (TypeError, ValueError) as exc:
         raise _cache_error(path, f"キャッシュの内容が不正です（{exc}）") from exc
@@ -1959,7 +2059,7 @@ def _collect_window(
 
 
 def collect_merged_prs(
-    github_org: str, month: str, cache_dir: Path, *,
+    github_org: str, month: str, cache_dir: Path, *, repos: RepoDiscovery,
     runner: Runner | None = None, today: dt.date | None = None,
     sleep: Sleeper | None = None,
 ) -> PrCollection:
@@ -1973,6 +2073,12 @@ def collect_merged_prs(
     窓を完了とするのは、読み切れて、かつ終端の翌日が過ぎている場合だけ。今日・昨日を
     含む窓は毎回取り直され、同じ PR は upsert されるので結果は変わらない。
 
+    repos は `discover_repositories` で得た同じ Organization の完全な一覧で、PR と一緒に
+    キャッシュへ保存する。集計の側（`github_metrics`）はこの一覧を使うので、収集した
+    時点の一覧をキャッシュが持つことで、集計が gh もネットワークも呼ばずに済む。
+    別の Organization の一覧・完全でない一覧は何も書かずに中止する（一覧に載らなかった
+    repository の PR が「対象外」へ流れ、参考指標が黙って小さく出るため）。
+
     一時的な障害（`_TRANSIENT_STATUSES`・応答待ちの打ち切り）は、同じページを少し待って
     `_MAX_ATTEMPTS` 回まで呼び直す。それでも通らなければ従来どおりその窓で止める。
 
@@ -1982,6 +2088,21 @@ def collect_merged_prs(
     if not is_github_org_name(github_org):
         raise ValueError(
             f"github_org には Organization 名が必要です: {github_org!r}"
+        )
+    if not isinstance(repos, RepoDiscovery):
+        raise TypeError(
+            f"repos には RepoDiscovery が必要です: {type(repos).__name__}"
+        )
+    if repos.github_org != github_org:
+        raise ValueError(
+            "repository の一覧と収集の Organization が違います: "
+            f"{repos.github_org!r} / {github_org!r}"
+        )
+    if not repos.complete:
+        raise ValueError(
+            "repository の一覧が完全でないため収集できません"
+            f"（status={repos.status!r} failure={repos.failure!r}）。"
+            "一覧を取り直してから収集してください"
         )
     if today is not None and not _is_plain_date(today):
         raise TypeError(
@@ -2021,6 +2142,7 @@ def collect_merged_prs(
         prs=tuple(entries[key] for key in sorted(entries)),
         # 並びは窓の定義順から作る（set の反復順に依らせない）
         complete_windows=tuple(window for window in windows if window in done),
+        repositories=repos,
     )
     _write_cache(path, written)
     return PrCollection(
@@ -2033,4 +2155,6 @@ def collect_merged_prs(
         stopped=stopped,
         status=status,
         failure=failure,
+        repository_count=len(repos.repos),
+        excluded_repository_count=repos.excluded,
     )

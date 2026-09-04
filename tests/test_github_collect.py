@@ -1361,15 +1361,30 @@ class _Pauses:
         self.seconds.append(seconds)
 
 
+def _discovery(*names: str, excluded: int = 0,
+               github_org: str = GH_ORG) -> RepoDiscovery:
+    """完全な repository の一覧（名前は一覧の規約どおり小文字比較の昇順で持つ）。"""
+    return RepoDiscovery(
+        github_org=github_org, repos=tuple(sorted(names, key=str.lower)),
+        excluded=excluded, status=200,
+    )
+
+
+# 収集に渡す既定の一覧（node が使う repository を網羅する）。収集そのものは PR を
+# repository で絞らないので、この値はキャッシュへ保存される内容にだけ現れる
+REPOS = _discovery("repo-a", "repo-b")
+
+
 def _collect(tmp_path: Path, gh, *, today: dt.date = TODAY, month: str = MONTH,
-             org: str = GH_ORG, sleep: _Pauses | None = None) -> PrCollection:
+             org: str = GH_ORG, sleep: _Pauses | None = None,
+             repos: RepoDiscovery | None = None) -> PrCollection:
     """収集を1回実行する（キャッシュは tmp_path 配下の組織ディレクトリ相当に置く）。
 
     待ちは常に差し替える（既定の `time.sleep` を通すと、再試行するケースでテストが
     実時間だけ止まる）。
     """
     return collect_merged_prs(
-        org, month, tmp_path / PR_CACHE_DIRNAME,
+        org, month, tmp_path / PR_CACHE_DIRNAME, repos=REPOS if repos is None else repos,
         runner=gh, today=today, sleep=sleep or _Pauses(),
     )
 
@@ -1649,6 +1664,7 @@ def test_collect_writes_the_expected_shape(tmp_path):
         "github_org": GH_ORG,
         "month": MONTH,
         "complete_windows": [list(window) for window in WINDOWS],
+        "repositories": {"names": ["repo-a", "repo-b"], "excluded": 0},
         "prs": {"repo-a#12": {
             "repository": "repo-a",
             "number": 12,
@@ -2250,20 +2266,125 @@ def test_collect_drops_the_first_page_when_a_later_page_fails(tmp_path):
 @pytest.mark.parametrize("org", ["", "example/org", "example_org", None])
 def test_collect_rejects_an_unreadable_organization_name(tmp_path, org):
     with pytest.raises(ValueError, match="github_org には Organization 名が必要です"):
-        collect_merged_prs(org, MONTH, tmp_path, runner=_windows_returning({}))
+        collect_merged_prs(
+            org, MONTH, tmp_path, repos=REPOS, runner=_windows_returning({})
+        )
 
 
 def test_collect_rejects_an_unreadable_month(tmp_path):
     with pytest.raises(ValueError, match="month には YYYY-MM 形式が必要です"):
-        collect_merged_prs(GH_ORG, "2026-13", tmp_path, runner=_windows_returning({}))
+        collect_merged_prs(
+            GH_ORG, "2026-13", tmp_path, repos=REPOS, runner=_windows_returning({})
+        )
 
 
 def test_collect_rejects_a_datetime_as_today(tmp_path):
     with pytest.raises(TypeError, match="today には datetime.date が必要です"):
         collect_merged_prs(
-            GH_ORG, MONTH, tmp_path,
+            GH_ORG, MONTH, tmp_path, repos=REPOS,
             runner=_windows_returning({}), today=dt.datetime(2026, 9, 2, 12, tzinfo=dt.UTC),
         )
+
+
+# ------------------------------------------------- 収集に渡す repository の一覧
+
+
+def test_collect_requires_a_repository_listing():
+    """一覧は必須の引数（渡し忘れた収集がキャッシュを一覧なしで上書きしない）。"""
+    with pytest.raises(TypeError):
+        collect_merged_prs(GH_ORG, MONTH, Path("cache"))
+
+
+@pytest.mark.parametrize(("repos", "expected", "message"), [
+    (_discovery("repo-a", github_org="another-example"), ValueError,
+     "repository の一覧と収集の Organization が違います"),
+    (RepoDiscovery(github_org=GH_ORG, status=403), ValueError,
+     "repository の一覧が完全でないため収集できません"),
+    (RepoDiscovery(github_org=GH_ORG, failure=GhFailure.TIMEOUT), ValueError,
+     "repository の一覧が完全でないため収集できません"),
+    (("repo-a",), TypeError, "repos には RepoDiscovery が必要です"),
+    (None, TypeError, "repos には RepoDiscovery が必要です"),
+])
+def test_collect_rejects_a_listing_it_cannot_use(
+    tmp_path, repos, expected, message
+):
+    """別 org・完全でない一覧・型違いは、何も書かず gh も呼ばずに中止する。"""
+    gh = _windows_returning({1: [_node()]})
+    with pytest.raises(expected, match=message):
+        collect_merged_prs(
+            GH_ORG, MONTH, tmp_path / PR_CACHE_DIRNAME, repos=repos,
+            runner=gh, today=TODAY, sleep=_Pauses(),
+        )
+    assert not (tmp_path / PR_CACHE_DIRNAME).exists()
+    assert gh.calls == []
+
+
+def test_collect_reports_the_repository_counts(tmp_path):
+    """件数は渡された一覧そのままの値（CLI の表示に使う）。"""
+    result = _collect(tmp_path, _windows_returning({}),
+                      repos=_discovery("repo-a", "repo-b", excluded=4))
+
+    assert (result.repository_count, result.excluded_repository_count) == (2, 4)
+
+
+def test_collect_saves_the_repository_listing(tmp_path):
+    """一覧は PR と同じファイルへ保存する（集計が gh を呼ばずに済むようにするため）。"""
+    _collect(tmp_path, _windows_returning({1: [_node()]}),
+             repos=_discovery("repo-b", "repo-a", excluded=2))
+
+    assert _payload(tmp_path)["repositories"] == {
+        "names": ["repo-a", "repo-b"], "excluded": 2,
+    }
+
+
+def test_collect_saves_the_listing_even_without_new_prs(tmp_path):
+    """全窓が完了済みで PR を問い合わせない実行でも、一覧は更新して保存する。"""
+    _collect(tmp_path, _windows_returning({1: [_node()]}), repos=_discovery("repo-a"))
+    gh = _FakeSearch({})   # 問い合わせが起きれば KeyError で落ちる
+    result = _collect(tmp_path, gh, repos=_discovery("repo-a", "repo-b", excluded=1))
+
+    assert gh.calls == []
+    assert result.upserted == 0     # 件数は PR の話で、一覧の更新では動かない
+    assert _payload(tmp_path)["repositories"] == {
+        "names": ["repo-a", "repo-b"], "excluded": 1,
+    }
+
+
+def test_the_saved_listing_round_trips(tmp_path):
+    """書いた一覧は、読み直すと同じ RepoDiscovery になる。"""
+    repos = _discovery("Repo-B", "repo-a", excluded=3)
+    _collect(tmp_path, _windows_returning({1: [_node()]}), repos=repos)
+    cache = load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+
+    assert cache.repositories == repos
+
+
+def test_collecting_twice_with_the_same_listing_writes_the_same_bytes(tmp_path):
+    repos = _discovery("repo-a", "repo-b", excluded=1)
+    _collect(tmp_path, _windows_returning({1: [_node()]}), repos=repos)
+    first = _cache_file(tmp_path).read_bytes()
+    _collect(tmp_path, _windows_returning({1: [_node()]}), repos=repos)
+
+    assert _cache_file(tmp_path).read_bytes() == first
+
+
+@pytest.mark.parametrize(("kwargs", "expected", "message"), [
+    ({"repositories": _discovery("repo-a", github_org="another-example")}, ValueError,
+     "repository の一覧とキャッシュの Organization が違います"),
+    ({"repositories": RepoDiscovery(github_org=GH_ORG, status=403)}, ValueError,
+     "完全でない repository の一覧はキャッシュに持たせられません"),
+    ({"repositories": ("repo-a",)}, TypeError,
+     "repositories には RepoDiscovery か None が必要です"),
+])
+def test_pr_cache_validates_the_repository_listing(kwargs, expected, message):
+    """完全でない一覧を持ったキャッシュそのものを作れなくする。"""
+    with pytest.raises(expected, match=message):
+        PrCache(github_org=GH_ORG, month=MONTH, **kwargs)
+
+
+def test_pr_cache_without_a_listing_is_allowed():
+    """一覧を持たないキャッシュは有効（保存する前に作られたキャッシュを読めるため）。"""
+    assert PrCache(github_org=GH_ORG, month=MONTH).repositories is None
 
 
 # ------------------------------------------------------------ キャッシュの読み取り
@@ -2429,6 +2550,54 @@ def test_load_pr_cache_rejects_an_unreadable_organization_name(tmp_path, org):
         load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, org)
 
 
+def test_load_pr_cache_reads_a_file_without_a_repository_listing(tmp_path):
+    """一覧を保存する前に作られたキャッシュはそのまま読める（PR を取り直させない）。"""
+    _write_payload(tmp_path, _valid_payload())
+    cache = load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+
+    assert cache.repositories is None
+    assert [pr.key for pr in cache.prs] == ["repo-a#12"]
+
+
+def test_load_pr_cache_reads_the_repository_listing(tmp_path):
+    _write_payload(tmp_path, _valid_payload(
+        repositories={"names": ["repo-a", "repo-b"], "excluded": 5}))
+    cache = load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+
+    assert cache.repositories == _discovery("repo-a", "repo-b", excluded=5)
+
+
+@pytest.mark.parametrize(("repositories", "message"), [
+    (["repo-a"], "repository の一覧ではありません"),
+    ("repo-a", "repository の一覧ではありません"),
+    (None, "repository の一覧ではありません"),
+    ({"names": ["repo-a"]}, "repositories に項目がありません"),
+    ({"excluded": 0}, "repositories に項目がありません"),
+    ({"names": ["repo-a"], "excluded": 0, "owner": "example-org"},
+     "repositories に未知のキーがあります"),
+    ({"names": "repo-a", "excluded": 0}, "names が文字列の配列ではありません"),
+    ({"names": {"repo-a": True}, "excluded": 0}, "names が文字列の配列ではありません"),
+    ({"names": [12], "excluded": 0}, "names が文字列の配列ではありません"),
+    ({"names": [None], "excluded": 0}, "names が文字列の配列ではありません"),
+    ({"names": ["repo-a"], "excluded": -1}, "excluded には0以上の件数が必要です"),
+    ({"names": ["repo-a"], "excluded": True}, "excluded には0以上の件数が必要です"),
+    ({"names": ["repo-a"], "excluded": "0"}, "excluded には0以上の件数が必要です"),
+    ({"names": ["repo-a"], "excluded": 1.0}, "excluded には0以上の件数が必要です"),
+    ({"names": ["owner/repo-a"], "excluded": 0}, "repositories を読めません"),
+    ({"names": [".."], "excluded": 0}, "repositories を読めません"),
+    ({"names": ["repo-a", "Repo-A"], "excluded": 0}, "repositories を読めません"),
+    ({"names": ["repo-b", "repo-a"], "excluded": 0}, "repositories を読めません"),
+])
+def test_load_pr_cache_rejects_a_repository_listing_it_cannot_read(
+    tmp_path, repositories, message
+):
+    """一覧の字句・重複・並びの検査は値オブジェクトへ委ね、読めない内容は中止する。"""
+    path = _write_payload(tmp_path, _valid_payload(repositories=repositories))
+    with pytest.raises(ValueError, match=message) as excinfo:
+        load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+    assert str(path) in str(excinfo.value)
+
+
 def test_collect_writes_nothing_when_the_cache_is_broken(tmp_path):
     """壊れたキャッシュの上に upsert しない（取りこぼしを抱えて「完了」になりうる）。"""
     path = _write_payload(tmp_path, _valid_payload(schema=2))
@@ -2473,7 +2642,8 @@ def test_collect_does_not_create_a_missing_parent_directory(tmp_path):
     missing = tmp_path / "no-such-org" / PR_CACHE_DIRNAME
     with pytest.raises(FileNotFoundError):
         collect_merged_prs(
-            GH_ORG, MONTH, missing, runner=_windows_returning({}), today=TODAY
+            GH_ORG, MONTH, missing, repos=REPOS,
+            runner=_windows_returning({}), today=TODAY,
         )
     assert not (tmp_path / "no-such-org").exists()
 

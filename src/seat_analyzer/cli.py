@@ -16,6 +16,7 @@ from . import (
     decision_evidence,
     discussion,
     github_collect,
+    github_metrics,
     ingest,
     public_text,
     report,
@@ -672,6 +673,10 @@ def _run_analyze(args: argparse.Namespace) -> int:
         "v2" if cfg["decision_v2"]["enabled"] else "v1"
     )
 
+    # GitHub の参考値は config で有効にした組織だけ。書かれていない組織は GitHub 関連の
+    # 処理と通知の一切から外れる（設計書 §15.1）
+    gated = github_collect.gated_orgs(cfg)
+
     targets = _resolve_targets(input_dir, output_dir, args.org)
     # 使い方の誤りは分析を走らせる前に落とす（3組織の分析を完走してから失敗させない）
     if args.with_discussion:
@@ -699,6 +704,12 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 print(
                     f"{org}: 速報モードでは V2 判定を行いません"
                     "（decision_v2.enabled は正式分析にだけ適用）"
+                )
+            if org in gated:
+                # 有効にした GitHub 分析を速報で黙って無視しない
+                print(
+                    f"{org}: 速報モードでは github-summary を書きません"
+                    "（参考値は正式分析でだけ出力）"
                 )
             days = args.days
             if days is None:
@@ -729,9 +740,19 @@ def _run_analyze(args: argparse.Namespace) -> int:
             )
         else:
             notices = _stale_evidence_notices(result, org_output)
+        metrics: github_metrics.GithubMetrics | None = None
+        if org in gated:
+            metrics, github_notices = _write_github_summary(
+                org, org_input, org_output, month, cfg, gated[org], paths
+            )
+            notices += github_notices
+            if metrics is None:
+                # 書けなかった実行だけ、残っている成果物の時点が食い違うことを伝える。
+                # 設定に無い組織では通知もしない（設計書 §15.1）
+                notices += _stale_github_notices(org_output, month, org)
         results.append(result)
         written.append((org, org_output))
-        _print_result(result, paths, evidence, notices)
+        _print_result(result, paths, evidence, notices, metrics)
 
     if skipped:
         print(f"\n! {month} のスペンドレポートが無いためスキップした組織: {', '.join(skipped)}")
@@ -793,11 +814,26 @@ _COLLECT_FAILURE_TEXT = {
 }
 
 
+def _discovery_reason(repos: github_collect.RepoDiscovery) -> str:
+    """repository の一覧を得られなかった理由の表示語。
+
+    出すのは分類（`GhFailure`）の文言と HTTP ステータスのうち、結果が持っているものだけで、
+    gh の生出力は出さない。
+    """
+    parts = []
+    if repos.failure is not None:
+        parts.append(_COLLECT_FAILURE_TEXT[repos.failure])
+    if repos.status is not None:
+        parts.append(f"HTTP {repos.status}")
+    return "・".join(parts)
+
+
 def _run_collect(args: argparse.Namespace) -> int:
     """外部データを収集してローカルのキャッシュへ保存する（設計書 §16.2）。
 
     対象は GitHub 分析を有効にした組織だけで、保存するのは merged PR のメタデータ
-    （設計書 §7.6 の9項目）。レポートは書かず、判定にも影響しない。
+    （設計書 §7.6 の9項目）と、そのとき参照できた repository の一覧。レポートは書かず、
+    判定にも影響しない。
     """
     cfg = load_config(args.config)
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
@@ -813,12 +849,28 @@ def _run_collect(args: argparse.Namespace) -> int:
             " GitHub の Organization 名を設定してください）"
         )
 
+    # 一覧は PR と一緒にキャッシュへ保存する（集計が gh を呼ばずに済むようにするため）。
+    # 完全な一覧を得られなければ PR の検索へ進まない——一覧に載らなかった repository の
+    # PR が後段で「対象外」へ流れ、参考指標が黙って小さく出るため
+    repos = github_collect.discover_repositories(enabled[org])
+    if not repos.complete:
+        print(
+            f"{org} {month}: repository の一覧を取得できませんでした"
+            f"（{_discovery_reason(repos)}）。原因を除いてから再実行してください",
+            file=sys.stderr,
+        )
+        return 1
+
     collected = github_collect.collect_merged_prs(
-        enabled[org], month, org_input / github_collect.PR_CACHE_DIRNAME
+        enabled[org], month, org_input / github_collect.PR_CACHE_DIRNAME, repos=repos
     )
     print(
         f"{org} {month}: merged PR {collected.total} 件"
         f"（今回 {collected.upserted} 件を更新）→ {collected.path}"
+    )
+    print(
+        f"  対象 repository {collected.repository_count} 件"
+        f"（archived / fork / template を除外 {collected.excluded_repository_count} 件）"
     )
     if collected.failure is not None:
         reason = _COLLECT_FAILURE_TEXT[collected.failure]
@@ -1124,6 +1176,76 @@ def _stale_evidence_notices(
     ]
 
 
+def _write_github_summary(
+    org: str,
+    org_input: Path,
+    org_output: Path,
+    month: str,
+    cfg: dict,
+    github_org: str,
+    paths: dict[str, Path],
+) -> tuple[github_metrics.GithubMetrics | None, list[str]]:
+    """GitHub の参考値を書き、出力一覧へ加える（V1 の成果物には触れない）。
+
+    材料は collect が保存したキャッシュだけで、gh もネットワークも呼ばない（同じ
+    キャッシュからは常に同じ内容になり、オフラインでも分析が完走する）。書けない場合は
+    何も書かず、理由と次の一手を通知で返す。壊れたキャッシュは `load_pr_cache` の
+    ValueError がそのまま伝わり、実行がエラーで止まる（黙って参考値を落とさない）。
+    """
+    cache_dir = org_input / github_collect.PR_CACHE_DIRNAME
+    command = f"collect --org {org} --source github --month {month}"
+    if not github_collect.pr_cache_path(cache_dir, month).is_file():
+        return None, [
+            (f"github-summary は書きません（github-cache に {month} のキャッシュが"
+             f"無いため。`{command}` を実行してください）")
+        ]
+    cache = github_collect.load_pr_cache(cache_dir, month, github_org)
+    if cache.repositories is None:
+        return None, [
+            ("github-summary は書きません（キャッシュに repository の一覧が無いため。"
+             f"`{command}` を再実行すると一覧が保存されます）")
+        ]
+
+    members = github_collect.load_github_members(org_input, cfg, month)
+    metrics = github_metrics.pr_metrics(cache, members, cache.repositories)
+    path = report.GITHUB_SUMMARY.path(org_output, month, org)
+    report.write_github_summary(metrics, path)
+    paths["github"] = path
+    return metrics, list(metrics.warnings)
+
+
+def _stale_github_notices(org_output: Path, month: str, org: str) -> list[str]:
+    """GitHub の参考値を書かなかった実行で、前回の成果物が残っている場合の通知。
+
+    扱いは `_stale_evidence_notices` と同じ（残っているファイルは消さず、今回の実行で
+    更新されないことだけを伝える）。
+    """
+    path = report.GITHUB_SUMMARY.path(org_output, month, org)
+    if not path.exists():
+        return []
+    return [
+        (f"{path.name} は今回の実行では更新されません"
+         "（GitHub の参考値を書かなかったため）")
+    ]
+
+
+def _print_github_metrics(metrics: github_metrics.GithubMetrics) -> None:
+    """GitHub の参考値の要約（シートの判定には使わない値であることを見出しで示す）。"""
+    active = sum(1 for user in metrics.users if user.merged_pr_count)
+    print(
+        f"GitHub（参考値）: 個人へ帰属 {metrics.mapped_prs} 件"
+        f"（PR あり {active} 名 / 対応表 {len(metrics.users)} 名）・"
+        f"組織全体 {metrics.human_prs} 件"
+    )
+    lead = metrics.lead_time
+    if lead is not None:
+        print(
+            f"  lead time（組織全体）: median {lead.median_hours:.1f}h / "
+            f"P75 {lead.p75_hours:.1f}h / P90 {lead.p90_hours:.1f}h"
+            f"（{lead.count} 件）"
+        )
+
+
 # V2 判定の内訳の見出し（人数の集計順）。StrEnum は値が等しければ語彙をまたいで
 # 等値になるため、seat action・結論・credit action を1つの表へ混ぜない（§12.1）
 _V2_SEAT_LABELS = {
@@ -1176,6 +1298,7 @@ def _print_result(
     paths: dict[str, Path],
     evidence: tuple[decision_evidence.EvidenceRow, ...] | None = None,
     notices: Sequence[str] = (),
+    metrics: github_metrics.GithubMetrics | None = None,
 ) -> None:
     s = result.summary
     print(f"\n=== {result.org} {result.month} 分析結果 ===")
@@ -1189,6 +1312,8 @@ def _print_result(
     print(f"使用データ: {', '.join(s['months_used'])}")
     if evidence is not None:
         _print_decision_evidence(evidence)
+    if metrics is not None:
+        _print_github_metrics(metrics)
 
     prohibited = _prohibited_warnings(result)
     if result.warnings or prohibited or notices:

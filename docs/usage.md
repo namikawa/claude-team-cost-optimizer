@@ -146,6 +146,7 @@ seat-analyzer init-org <組織名>
    - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
    - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
    - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（`--decision-version v2` のときだけ）
+   - `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数と lead time の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）
 
    以下では種別名（report / details / dashboard …）で呼ぶ。
 
@@ -187,6 +188,9 @@ seat-analyzer collect --org <組織名> --source github --month YYYY-MM
 - 保存するのは repository 名・PR 番号・作成者・作成日時・merge 日時・追加行数・
   削除行数・draft かどうかだけ。title・本文・レビュー本文・変更ファイル・diff・
   コミットメッセージ・コードは取得も保存もしない
+- PR と一緒に、そのとき参照できた repository の一覧（archived / fork / template を
+  除いた名前と、除いた件数）も保存する。分析はこの一覧を読むので、`analyze` は `gh` も
+  ネットワークも呼ばない
 - GitHub 側の情報は参照するだけで変更しない（読み取りの API しか呼ばない）
 - 認証は GitHub CLI（`gh`）に委ねる。事前に `seat-analyzer doctor` で認証・権限・
   利用上限を確認できる
@@ -196,8 +200,8 @@ seat-analyzer collect --org <組織名> --source github --month YYYY-MM
 - 対象月がまだ終わっていない場合、期間の終わりから1日が過ぎていない部分は次回の実行でも
   取り直す（検索の反映遅れで日付境界の PR を取りこぼさないため）。同じ PR は何度取っても
   1件にまとまる
-- 収集したキャッシュは GitHub 由来の参考値の材料で、`analyze` の判定・成果物には
-  影響しない
+- 収集したキャッシュは `analyze` の判定と V1 の成果物には影響しない。参考値の成果物
+  `github-summary` の材料になる（列の意味は [reference.md](./reference.md)）
 
 ## 速報モード（部分月データでの一次判断）
 

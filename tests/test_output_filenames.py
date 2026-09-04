@@ -295,6 +295,7 @@ def test_previous_month_discussion_is_read_from_the_old_name(two_orgs, tmp_path)
     (report.RECOMMENDATIONS, "recommendations-202607-acme.csv"),
     (report.USAGE_SUMMARY, "usage-summary-202607-acme.csv"),
     (report.DECISION_EVIDENCE, "decision-evidence-202607-acme.csv"),
+    (report.GITHUB_SUMMARY, "github-summary-202607-acme.csv"),
     (report.PREVIEW, "preview-202607-acme.md"),
     (report.PREVIEW_DASHBOARD, "preview-dashboard-202607-acme.html"),
 ])
