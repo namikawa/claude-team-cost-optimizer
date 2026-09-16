@@ -1758,3 +1758,230 @@ def test_collect_failure_text_covers_every_failure():
     from seat_analyzer.github_collect import GhFailure
 
     assert set(_COLLECT_FAILURE_TEXT) == set(GhFailure)
+
+
+# --- 複数 workspace のレイアウト（Step 43 では入力層だけ。分析はまだ行わない） ---
+
+
+def _nested_org(make_input, org: str = "org-x") -> Path:
+    """main / second の2 workspace を持つ組織（members は main にだけ置く）。"""
+    input_dir = make_input(
+        {"2026-05": [spend_row("a@x.jp", 8.0)], "2026-06": [spend_row("a@x.jp", 10.0)]},
+        members=["a@x.jp,Premium"], org=org, workspace="main")
+    make_input(
+        {"2026-05": [spend_row("a@x.jp", 18.0)], "2026-06": [spend_row("a@x.jp", 20.0)]},
+        org=org, workspace="second")
+    return input_dir
+
+
+def _workspace_config(tmp_path: Path, text: str) -> str:
+    path = tmp_path / "workspaces.yaml"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return str(path)
+
+
+def test_init_org_creates_nested_scaffold(tmp_path, capsys):
+    input_dir, output_dir = tmp_path / "input", tmp_path / "reports"
+    rc = main([
+        "init-org", "org-x", "--workspaces", "main, second",
+        "--input-dir", str(input_dir), "--output-dir", str(output_dir),
+    ])
+    assert rc == 0
+    for workspace in ("main", "second"):
+        for sub in ("spend", "members", "code-analytics"):
+            assert (input_dir / "org-x" / workspace / sub).is_dir()
+    # 直下に spend/ を作らない（作ると混在レイアウトになる）
+    assert not (input_dir / "org-x" / "spend").exists()
+    # members-info は人単位なので組織直下に1つだけ
+    assert (input_dir / "org-x" / "members-info.csv").is_file()
+    assert ingest.discover_workspaces(input_dir / "org-x") == ["main", "second"]
+    assert discover_orgs(input_dir) == ["org-x"]
+
+    out = capsys.readouterr().out
+    assert "organizations.<組織名>.workspaces" in out
+    assert "primary: true" in out
+    assert "main, second" in out
+
+
+def test_init_org_rejects_workspaces_for_existing_flat_data(make_input, capsys):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x")
+    rc = main(["init-org", "org-x", "--workspaces", "main",
+               "--input-dir", str(input_dir), "--output-dir", str(input_dir.parent / "r")])
+    assert rc == 1
+    assert "spend/" in capsys.readouterr().err
+    assert not (input_dir / "org-x" / "main").exists()
+
+
+@pytest.mark.parametrize("value", ["", "  ", "a/b", ".hidden", "main,summary"])
+def test_init_org_rejects_invalid_workspace_names(tmp_path, capsys, value):
+    input_dir = tmp_path / "input"
+    rc = main(["init-org", "org-x", "--workspaces", value,
+               "--input-dir", str(input_dir), "--output-dir", str(tmp_path / "reports")])
+    assert rc == 1
+    assert capsys.readouterr().err
+    assert not input_dir.exists()   # 1つでも不正なら1つも作らない
+
+
+def test_analyze_rejects_nested_layout(make_input, tmp_path, capsys):
+    input_dir = _nested_org(make_input)
+    rc = main(["analyze", "--config", CONFIG, "--input-dir", str(input_dir),
+               "--output-dir", str(tmp_path / "reports"), "--month", "2026-06"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "org-x" in err and "複数 workspace" in err
+    assert str(tmp_path) not in err.split("\n")[0]
+    assert not (tmp_path / "reports" / "org-x").exists()
+
+
+def test_analyze_rejects_mixed_layout(make_input, tmp_path, capsys):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x")
+    make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x", workspace="second")
+    rc = main(["analyze", "--config", CONFIG, "--input-dir", str(input_dir),
+               "--output-dir", str(tmp_path / "reports"), "--month", "2026-06"])
+    assert rc == 1
+    assert "混在" in capsys.readouterr().err
+
+
+def test_collect_rejects_nested_layout(make_input, capsys):
+    input_dir = _nested_org(make_input)
+    rc = main(["collect", "--config", CONFIG, "--input-dir", str(input_dir),
+               "--org", "org-x", "--source", "github", "--month", "2026-06"])
+    assert rc == 1
+    assert "複数 workspace" in capsys.readouterr().err
+
+
+def test_doctor_inspects_each_workspace_of_a_nested_org(make_input, tmp_path, capsys):
+    input_dir = _nested_org(make_input)
+    config_path = _workspace_config(tmp_path, (
+        "organizations:\n"
+        "  org-x:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "      second: {}\n"
+    ))
+    rc = main(["doctor", "--config", config_path, "--input-dir", str(input_dir),
+               "--month", "2026-06", "--format", "json"])
+    assert rc == 1
+    issues = json.loads(capsys.readouterr().out)
+    # 構造は整合しているので、残るのは workspace ごとの入力の検査だけ
+    assert [i["code"] for i in issues] == ["MISSING_MEMBERS"]
+    assert issues[0]["scope"]["workspace"] == "second"
+    assert issues[0]["scope"]["org"] == "org-x"
+
+
+def test_doctor_reports_nested_layout_without_config(make_input, capsys):
+    input_dir = _nested_org(make_input)
+    assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 1
+    issues = json.loads(capsys.readouterr().out)
+    codes = [i["code"] for i in issues]
+    assert codes.count("WORKSPACE_CONFIG_MISMATCH") == 1
+    # 構造の問題を報告しても、workspace ごとの入力の検査は続ける
+    assert "MISSING_MEMBERS" in codes
+
+
+def test_doctor_text_output_names_the_workspace(make_input, capsys):
+    """workspace ごとに同じ文言が並ぶので、どのスペースの話かを読めるようにする。"""
+    input_dir = _nested_org(make_input)
+    _doctor(input_dir, "--month", "2026-06")
+    assert "MISSING_MEMBERS（second）" in capsys.readouterr().out
+
+
+def test_doctor_text_output_is_unchanged_for_a_single_workspace_org(
+    make_input, capsys
+):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x")
+    _doctor(input_dir, "--month", "2026-06")
+    assert "[error] MISSING_MEMBERS: " in capsys.readouterr().out
+
+
+def test_doctor_reports_mixed_layout(make_input, capsys):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x")
+    make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x", workspace="second")
+
+    assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 1
+    issues = json.loads(capsys.readouterr().out)
+    # レイアウトが確定しないので、中身の検査は行わず構造だけを報告する
+    assert [i["code"] for i in issues] == ["WORKSPACE_LAYOUT_MIXED"]
+
+
+def test_doctor_uses_the_latest_month_across_workspaces(make_input, capsys):
+    input_dir = make_input({"2026-05": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x", workspace="main")
+    make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+               members=["a@x.jp,Premium"], org="org-x", workspace="second")
+    _doctor(input_dir, "--format", "json")
+    assert "最新月を使用: 2026-06" in capsys.readouterr().err
+
+
+def test_discuss_rejects_nested_layout(make_input, tmp_path, capsys):
+    input_dir = _nested_org(make_input)
+    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(input_dir),
+               "--output-dir", str(tmp_path / "reports"), "--month", "2026-06"])
+    assert rc == 1
+    assert "複数 workspace" in capsys.readouterr().err
+
+
+def test_doctor_reports_configured_workspaces_without_an_org_directory(
+    make_input, tmp_path, capsys
+):
+    """組織ディレクトリごと無い設定を黙って無視しない（config と実体の突き合わせ）。"""
+    input_dir = _clean_org(make_input)
+    config_path = _workspace_config(tmp_path, (
+        "organizations:\n"
+        "  org-missing:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+    ))
+    rc = main(["doctor", "--config", config_path, "--input-dir", str(input_dir),
+               "--month", "2026-06", "--format", "json"])
+    assert rc == 1
+    issues = json.loads(capsys.readouterr().out)
+    assert [i["code"] for i in issues] == ["WORKSPACE_CONFIG_MISMATCH"]
+    assert issues[0]["scope"]["config_org"] == "org-missing"
+
+
+def test_doctor_prints_workspace_config_issues_in_the_settings_section(
+    make_input, tmp_path, capsys
+):
+    input_dir = _clean_org(make_input)
+    config_path = _workspace_config(tmp_path, (
+        "organizations:\n"
+        "  org-missing:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+    ))
+    assert main(["doctor", "--config", config_path, "--input-dir", str(input_dir),
+                 "--month", "2026-06"]) == 1
+    out = capsys.readouterr().out
+    assert "=== 設定検査 ===" in out
+    assert "org-missing" in out
+    assert "エラー 1 件" in out
+
+
+def test_init_org_without_workspaces_refuses_a_nested_org(tmp_path, capsys):
+    """入れ子レイアウトの組織へ再実行しても、組織直下に雛形を作って混在にしない。"""
+    input_dir, output_dir = tmp_path / "input", tmp_path / "reports"
+    args = ["--input-dir", str(input_dir), "--output-dir", str(output_dir)]
+    assert main(["init-org", "org-x", "--workspaces", "main,second", *args]) == 0
+    before = sorted(p.relative_to(input_dir).as_posix() for p in input_dir.rglob("*"))
+
+    assert main(["init-org", "org-x", *args]) == 1
+
+    err = capsys.readouterr().err
+    assert "org-x" in err and "main/second" in err and "--workspaces" in err
+    assert sorted(
+        p.relative_to(input_dir).as_posix() for p in input_dir.rglob("*")) == before
+
+
+def test_init_org_without_workspaces_refuses_a_mixed_org(make_input, capsys):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x")
+    make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x", workspace="second")
+    assert main(["init-org", "org-x", "--input-dir", str(input_dir),
+                 "--output-dir", str(input_dir.parent / "reports")]) == 1
+    assert "second" in capsys.readouterr().err

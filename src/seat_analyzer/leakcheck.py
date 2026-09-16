@@ -114,6 +114,13 @@ def _scandir(path: Path) -> list[os.DirEntry]:
         ) from exc
 
 
+def _has_input_subdir(path: Path) -> bool:
+    """既知の入力サブディレクトリを直接持つか。"""
+    return any(
+        e.is_dir() and e.name in ingest.INPUT_SUBDIRS for e in _scandir(path)
+    )
+
+
 def _is_org_input_dir(path: Path) -> bool:
     """入力側の組織ディレクトリか。既知の入力サブディレクトリを持つかで構造的に判定する。
 
@@ -121,13 +128,19 @@ def _is_org_input_dir(path: Path) -> bool:
     入力サブディレクトリと同名の組織が実在した場合にその組織の禁止語が丸ごと抜ける。
     組織名の検証（ingest.validate_org_name）はこれらの名前を許すため、構造で判定する。
     CSV を直接置いただけの `input/spend/` は入力サブディレクトリを持たず除外される。
+
+    入力サブディレクトリを子ディレクトリ（workspace）の下に持つ入れ子レイアウトの組織も
+    組織とみなす。拾えないとその組織の禁止語が丸ごと抜ける。
     """
+    children: list[Path] = []
     for entry in _scandir(path):
         if entry.is_dir() and entry.name in ingest.INPUT_SUBDIRS:
             return True
         if entry.is_file() and entry.name == "members-info.csv":
             return True
-    return False
+        if entry.is_dir():
+            children.append(Path(entry.path))
+    return any(_has_input_subdir(child) for child in children)
 
 
 def _is_org_output_dir(path: Path) -> bool:

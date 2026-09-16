@@ -294,3 +294,25 @@ def test_input_subdirs_are_not_treated_as_orgs(make_input, tmp_path):
         input_dir=input_dir, output_dir=tmp_path / "reports",
         target_org="org-a", cfg=load_config(CONFIG))
     assert terms == ()
+
+
+def test_forbidden_terms_collects_from_nested_layout_org(make_input, tmp_path):
+    """入れ子レイアウト（workspace ごとの spend/）の他組織も組織として拾う。
+
+    組織ディレクトリの判定を直下の入力サブディレクトリだけで行うと、この形の組織の
+    禁止語が丸ごと抜ける。workspace 名は一般名を使う前提なので禁止語に加えない。
+    """
+    input_dir = make_input({"2026-06": [spend_row("alice.morgan@x.jp", 10.0)]},
+                           members=["alice.morgan@x.jp,Premium"], org="org-a")
+    make_input({"2026-06": [spend_row("bernard.holloway@y.jp", 10.0)]},
+               members=["bernard.holloway@y.jp,Premium"], org="org-b", workspace="main")
+    make_input({"2026-06": [spend_row("cecily.ravenwood@y.jp", 10.0)]},
+               members=["cecily.ravenwood@y.jp,Standard"], org="org-b", workspace="second")
+
+    texts = _texts(leakcheck.forbidden_terms(
+        input_dir=input_dir, output_dir=tmp_path / "reports",
+        target_org="org-a", cfg=load_config(CONFIG)))
+
+    assert "org-b" in texts
+    assert {"bernard", "holloway", "cecily", "ravenwood"} <= texts
+    assert "main" not in texts and "second" not in texts

@@ -533,14 +533,17 @@ def gated_orgs(cfg: dict) -> dict[str, str]:
     """GitHub 分析を有効にした組織 → その GitHub Organization 名（設定の記述順）。
 
     キーは入力ディレクトリ直下の組織名、値は GitHub の Organization 名で、両者は一致
-    しない前提の対応表として扱う。ここに書かれていない組織は GitHub 関連の処理と警告の
-    一切から除外される（設計書 §15.1）。値の字句は設定のロード時に検証済み。
+    しない前提の対応表として扱う。有効なのは `github_org` を書いた組織だけで、それ以外は
+    （組織ごとの設定そのものはあっても）GitHub 関連の処理と警告の一切から除外される
+    （設計書 §15.1）。値の字句は設定のロード時に検証済み。
     """
     organizations = cfg["organizations"]
     return {
         str(org): entry["github_org"]
         for org, entry in organizations.items()
-        if isinstance(entry, dict) and isinstance(entry.get("github_org"), str)
+        if isinstance(entry, dict)
+        and isinstance(entry.get("github_org"), str)
+        and entry["github_org"].strip()
     }
 
 

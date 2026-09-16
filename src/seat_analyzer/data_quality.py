@@ -4,6 +4,11 @@
 だけの純粋な関数（出力整形と終了コードは cli が担当）。同じ入力からは常にバイト
 一致の出力を得られるよう、messageには絶対パス・時刻・乱数を入れない。
 
+`workspace_issues` は複数のTeamスペースを運用する組織のための構造の検査で、入力
+ディレクトリの形と設定の `organizations.<組織名>.workspaces` を突き合わせる。対象月に
+依存しないので、読むのはディレクトリの並びと設定だけ。組織ディレクトリごと無い設定は
+この検査に現れないので、`workspace_config_issues` が設定側から突き合わせる。
+
 `inspect_github` と `github_config_issues` は GitHub 分析を有効にした組織のための検査で、
 gh の実行結果（`github_collect.probe_github` が返す値）と対応表を issue へ写す。gh を
 呼ぶのは probe 側だけなので、この2つも同じ入力から常に同じ出力を返す。
@@ -21,6 +26,7 @@ gh の実行結果（`github_collect.probe_github` が返す値）と対応表�
 from __future__ import annotations
 
 import calendar
+import dataclasses
 import json
 import os
 from collections.abc import Iterable
@@ -128,19 +134,25 @@ def _issue(
     message: str,
     org: str | None,
     month: str | None = None,
+    *,
+    workspace: str | None = None,
     **scope: ScopeValue,
 ) -> QualityIssue:
-    """org・monthを先頭に置いたscopeでissueを作る。Noneのキーは省く。
+    """org・month・workspaceを先頭に置いたscopeでissueを作る。Noneのキーは省く。
 
     org=Noneは、どの組織にも属さないissueに限る（対象組織を解決する前の失敗＝
-    input_unavailable_issues と、設定だけの問題＝github_config_issues）。
-    組織単位の検査は常にorgを持つ。
+    input_unavailable_issues と、設定だけの問題＝github_config_issues /
+    workspace_config_issues）。
+    組織単位の検査は常にorgを持つ。workspaceは複数のTeamスペースを運用する組織
+    （入れ子レイアウト）でだけ付く。
     """
     base: dict[str, ScopeValue] = {}
     if org is not None:
         base["org"] = org
     if month is not None:
         base["month"] = month
+    if workspace is not None:
+        base["workspace"] = workspace
     base.update(scope)
     return QualityIssue(severity=severity, code=code, message=message, scope=base)
 
@@ -455,8 +467,89 @@ def _no_spend_month_issues(
     return sort_issues(issues)
 
 
+# --- 複数workspaceの構造（設計書§26.8） ---
+#
+# 対象月に依存しない構造の検査なので、scopeにmonthは持たせない。ディレクトリの名前は
+# 入力の配置そのものなので、列挙は常に昇順（ingest.discover_workspaces が整列済みで返す）。
+
+
+def _configured_primary(workspaces: dict[str, dict]) -> str | None:
+    """primary: true がちょうど1つならその名前。
+
+    0個・2個以上は設定のロードが止めるため、ここでは主が決まらなかったこととして
+    Noneを返す（同じ条件を二重に報告しない）。
+    """
+    primaries = sorted(
+        str(name) for name, settings in workspaces.items()
+        if isinstance(settings, dict) and settings.get("primary") is True
+    )
+    return primaries[0] if len(primaries) == 1 else None
+
+
+def workspace_issues(
+    org_input: Path | str, cfg: dict, org: str
+) -> list[QualityIssue]:
+    """組織の入力レイアウトと、configのworkspacesとの整合を検査する（整列済み）。
+
+    ディレクトリと設定が食い違う場合は黙って片方を採らずに報告する。置き忘れや綴りの
+    違いを無視すると、そのworkspaceの利用がまるごと集計から抜けたまま完走するため。
+    """
+    org_input = Path(org_input)
+    layout, found = ingest.detect_workspace_layout(org_input)
+    if layout == ingest.WORKSPACE_LAYOUT_MIXED:
+        # レイアウトが確定しないので、configとの突き合わせもworkspace別の検査も行わない
+        return [_issue(
+            Severity.ERROR, IssueCode.WORKSPACE_LAYOUT_MIXED,
+            "入力レイアウトが混在しています（組織直下の spend/ と、spend/ を持つ"
+            f"子ディレクトリ {'/'.join(found)} の両方があります）。"
+            "どちらか一方に寄せてください",
+            org, workspaces=found,
+        )]
+
+    settings = ingest.workspace_settings(cfg, org)
+    configured = sorted(settings)
+    issues: list[QualityIssue] = []
+    if layout == ingest.WORKSPACE_LAYOUT_NESTED and not configured:
+        issues.append(_issue(
+            Severity.ERROR, IssueCode.WORKSPACE_CONFIG_MISMATCH,
+            f"workspace ごとの spend/ がありますが、config.yaml > organizations.{org}"
+            f".workspaces がありません（見つかった workspace: {'/'.join(found)}）。"
+            "各 workspace を書き、primary: true をちょうど1つ付けてください",
+            org, found=found,
+        ))
+        return sort_issues(issues)
+
+    missing = [name for name in configured if name not in set(found)]
+    unexpected = [name for name in found if name not in set(configured)]
+    if missing or unexpected:
+        detail = "、".join(part for part in (
+            f"config にあるがディレクトリが無い: {'/'.join(missing)}" if missing else "",
+            f"ディレクトリがあるが config に無い: {'/'.join(unexpected)}" if unexpected
+            else "",
+        ) if part)
+        issues.append(_issue(
+            Severity.ERROR, IssueCode.WORKSPACE_CONFIG_MISMATCH,
+            f"config.yaml > organizations.{org}.workspaces と入力ディレクトリが"
+            f"一致しません（{detail}）。どちらかを直してください",
+            org, configured=configured, found=found,
+            missing=missing, unexpected=unexpected,
+        ))
+
+    primary = _configured_primary(settings)
+    if configured and primary is not None and primary not in set(found):
+        issues.append(_issue(
+            Severity.ERROR, IssueCode.WORKSPACE_PRIMARY_INVALID,
+            f"主 workspace に指定された {primary} のディレクトリがありません"
+            f"（見つかった workspace: {'/'.join(found) if found else 'なし'}）。"
+            "primary: true は実在する workspace に付けてください",
+            org, primary=primary, found=found,
+        ))
+    return sort_issues(issues)
+
+
 def inspect_input(
-    input_dir: Path | str, month: str | None, cfg: dict, org: str
+    input_dir: Path | str, month: str | None, cfg: dict, org: str,
+    workspace: str | None = None,
 ) -> list[QualityIssue]:
     """1組織分の Spend / Members を検査し、整列済みのissueを返す。
 
@@ -465,8 +558,25 @@ def inspect_input(
     確定できない場合だけ月単位の検査を省く。code-analytics・members-info・GitHub・
     browser・admin設定はこのStepでは検査しない。
     判定や既存レポートには一切影響しない読み取り専用の検査。
+
+    入れ子レイアウトの組織では、workspaceのディレクトリを input_dir に、その名前を
+    workspace に渡してworkspaceごとに呼ぶ。検査の中身は同じで、どのスペースのissueかを
+    scopeに足すだけなので、名前の付与は検査本体ではなくここに閉じる（workspaceを渡さ
+    ない従来レイアウトの出力は変わらない）。
     """
-    input_dir = Path(input_dir)
+    issues = _input_issues(Path(input_dir), month, cfg, org)
+    if workspace is None:
+        return issues
+    return sort_issues([
+        dataclasses.replace(issue, scope={**issue.scope, "workspace": workspace})
+        for issue in issues
+    ])
+
+
+def _input_issues(
+    input_dir: Path, month: str | None, cfg: dict, org: str
+) -> list[QualityIssue]:
+    """inspect_input の検査本体（1つの入力ディレクトリを対象に整列済みのissueを返す）。"""
     issues: list[QualityIssue] = []
     spend_df: pd.DataFrame | None = None
     spend_months: list[str] | None = None
@@ -772,6 +882,41 @@ def inspect_github(
         issues.extend(_github_rate_issues(probes.rate, org, github_org))
         issues.extend(_github_org_issues(probes.org(github_org), org, github_org))
     issues.extend(_github_mapping_issues(input_dir, month, cfg, org, github_org))
+    return sort_issues(issues)
+
+
+def workspace_config_issues(cfg: dict, orgs: Iterable[str]) -> list[QualityIssue]:
+    """configのworkspacesのうち、入力に組織ディレクトリが無いものを報告する。
+
+    組織ごとの構造検査（workspace_issues）は発見した組織だけを回るため、ディレクトリ
+    ごと無い組織に書いた設定はどの検査にも現れない。綴り違いや置き場所の誤りを黙って
+    無視しないよう、設定だけの問題としてここで報告する（GitHubの有効化とは独立）。
+    どの組織にも属さないissueなのでscopeにorgは持たせず、書かれたキーをconfig_orgと
+    して持つ（github_config_issues と同じ扱い）。
+
+    orgsは`--org`の選択ではなく、入力ディレクトリで見つかった組織すべて。
+    """
+    known = sorted(orgs)
+    found = set(known)
+    listed = "/".join(known) if known else "なし"
+    organizations = cfg.get("organizations")
+    names = sorted(
+        name for name in organizations if isinstance(name, str)
+    ) if isinstance(organizations, dict) else []
+
+    issues: list[QualityIssue] = []
+    for name in names:
+        configured = sorted(ingest.workspace_settings(cfg, name))
+        if not configured or name in found:
+            continue
+        issues.append(_issue(
+            Severity.ERROR, IssueCode.WORKSPACE_CONFIG_MISMATCH,
+            f"config.yaml > organizations の '{name}' に workspaces"
+            f"（{'/'.join(configured)}）が書かれていますが、一致する組織ディレクトリが"
+            f"ありません（存在する組織: {listed}）。組織名の綴りと入力ディレクトリの"
+            "配置を確認してください",
+            None, config_org=name, workspaces=configured, known_orgs=known,
+        ))
     return sort_issues(issues)
 
 

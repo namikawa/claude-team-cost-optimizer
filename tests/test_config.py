@@ -19,6 +19,7 @@ import yaml
 from seat_analyzer import config
 from seat_analyzer.cli import WORKSPACE_CONFIG_TEMPLATE, main
 from seat_analyzer.config import PACKAGE_CONFIG_PATH, _is_ambiguous_path, load_config
+from seat_analyzer.github_collect import gated_orgs
 from seat_analyzer.report import REPORT
 
 from .conftest import SPEND_HEADER, out_file, requires_symlink, spend_row
@@ -1034,9 +1035,18 @@ def test_organizations_accepts_names_that_are_not_in_the_default(tmp_path):
         "    github_org: Another-Example-1\n"
     ))
 
+    # 書かなかったキーは雛形の既定（未指定を表す値）で埋まる
     assert load_config(path)["organizations"] == {
-        "example": {"github_org": "example-org"},
-        "another-example": {"github_org": "Another-Example-1"},
+        "example": {
+            "github_org": "example-org",
+            "workspaces": {},
+            "secondary_breakeven_usd": None,
+        },
+        "another-example": {
+            "github_org": "Another-Example-1",
+            "workspaces": {},
+            "secondary_breakeven_usd": None,
+        },
     }
 
 
@@ -1093,3 +1103,277 @@ def test_unreadable_github_org_name_is_rejected(tmp_path, value):
         ValueError, match="organizations.example.github_org は GitHub の Organization 名"
     ):
         load_config(path)
+
+
+def test_github_org_can_be_omitted(tmp_path):
+    """github_org は任意。書かない組織は GitHub 分析の対象にならない。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+    ))
+    cfg = load_config(path)
+    assert cfg["organizations"]["example"]["github_org"] == ""
+    assert gated_orgs(cfg) == {}
+
+
+def test_github_org_enables_only_organizations_that_declare_it(tmp_path):
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    github_org: example-org\n"
+        "  another-example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+    ))
+    assert gated_orgs(load_config(path)) == {"example": "example-org"}
+
+
+# ------------------------------------------------- 複数 workspace（organizations.workspaces）
+
+
+def test_workspaces_accepts_one_entry(tmp_path):
+    """1つだけ書くのも許す（従来レイアウトからの移行を検証する手段）。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+    ))
+    assert load_config(path)["organizations"]["example"]["workspaces"] == {
+        "main": {
+            "primary": True,
+            "label": "",
+            "fixed_seat": "",
+            "credit_limit_default_usd": None,
+            "evaluation_months": None,
+        },
+    }
+
+
+def test_workspaces_accepts_two_entries_with_all_keys(tmp_path):
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    secondary_breakeven_usd: 125.0\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "        label: 主スペース\n"
+        "      second:\n"
+        "        label: 副スペース\n"
+        "        fixed_seat: premium\n"
+        "        credit_limit_default_usd: 0\n"
+        "        evaluation_months: 2\n"
+    ))
+    entry = load_config(path)["organizations"]["example"]
+    assert entry["secondary_breakeven_usd"] == 125.0
+    assert entry["workspaces"]["main"]["primary"] is True
+    assert entry["workspaces"]["main"]["label"] == "主スペース"
+    assert entry["workspaces"]["second"]["primary"] is False
+    assert entry["workspaces"]["second"]["fixed_seat"] == "premium"
+    assert entry["workspaces"]["second"]["credit_limit_default_usd"] == 0
+    assert entry["workspaces"]["second"]["evaluation_months"] == 2
+
+
+@pytest.mark.parametrize("text,where", [
+    ("organizations:\n  example:\n    workspaces:\n      main:\n        primaly: true\n",
+     "organizations.example.workspaces.main.primaly"),
+    (("organizations:\n  example:\n    workspaces:\n      main:\n"
+      "        primary: true\n        note: x\n"),
+     "organizations.example.workspaces.main.note"),
+])
+def test_unknown_key_inside_a_workspace_is_rejected(tmp_path, text, where):
+    """動的なのは組織名と workspace 名だけで、その中身は従来どおり閉じた集合。"""
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=f"'{where}' は既定に存在しないキー"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("text,where,want", [
+    ("organizations:\n  example:\n    workspaces: main\n",
+     "organizations.example.workspaces", "辞書"),
+    ("organizations:\n  example:\n    workspaces:\n      main: true\n",
+     "organizations.example.workspaces.main", "辞書"),
+    ("organizations:\n  example:\n    workspaces:\n      main:\n        label: [a]\n",
+     "organizations.example.workspaces.main.label", "値"),
+])
+def test_workspace_entry_kind_mismatch_is_rejected(tmp_path, text, where, want):
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=f"'{where}' は{want}で指定してください"):
+        load_config(path)
+
+
+def test_empty_workspace_value_is_rejected(tmp_path):
+    path = _override(tmp_path, (
+        "organizations:\n  example:\n    workspaces:\n      main:\n        primary:\n"
+    ))
+    with pytest.raises(
+        ValueError, match="'organizations.example.workspaces.main.primary' の値が空です"
+    ):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", ["standard", "premium"])
+def test_fixed_seat_accepts_seat_types(tmp_path, value):
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        f"        fixed_seat: {value}\n"
+    ))
+    assert (
+        load_config(path)["organizations"]["example"]["workspaces"]["main"]["fixed_seat"]
+        == value
+    )
+
+
+@pytest.mark.parametrize("value", ["Premium", "pro", "1"])
+def test_fixed_seat_rejects_other_values(tmp_path, value):
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        f"        fixed_seat: {value}\n"
+    ))
+    with pytest.raises(
+        ValueError,
+        match="organizations.example.workspaces.main.fixed_seat は standard / premium",
+    ):
+        load_config(path)
+
+
+def test_missing_primary_workspace_is_rejected(tmp_path):
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        label: 主スペース\n"
+        "      second: {}\n"
+    ))
+    with pytest.raises(ValueError, match="primary: true の workspace がありません"):
+        load_config(path)
+
+
+def test_duplicated_primary_workspace_is_rejected(tmp_path):
+    """0個と2個以上は原因が違うので別の文言にする。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "      second:\n"
+        "        primary: true\n"
+    ))
+    with pytest.raises(ValueError, match="primary: true が複数あります（main / second）"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value,ok", [("0.01", True), ("0", False), ("-1", False),
+                                      (".inf", False)])
+def test_secondary_breakeven_usd_boundary(tmp_path, value, ok):
+    path = _override(tmp_path, f"organizations:\n  example:\n"
+                               f"    secondary_breakeven_usd: {value}\n")
+    if ok:
+        assert load_config(path)["organizations"]["example"][
+            "secondary_breakeven_usd"] == 0.01
+        return
+    with pytest.raises(
+        ValueError,
+        match="organizations.example.secondary_breakeven_usd は 0 より大きい有限な数値",
+    ):
+        load_config(path)
+
+
+@pytest.mark.parametrize("key,value,message", [
+    ("credit_limit_default_usd", "-1", "は 0 以上の有限な数値が必要です"),
+    ("credit_limit_default_usd", ".nan", "は 0 以上の有限な数値が必要です"),
+    ("evaluation_months", "0", "は 1 以上の整数が必要です"),
+    ("evaluation_months", "1.5", "は 1 以上の整数が必要です"),
+    ("evaluation_months", "true", "は 1 以上の整数が必要です"),
+])
+def test_workspace_numeric_settings_are_validated(tmp_path, key, value, message):
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        f"        {key}: {value}\n"
+    ))
+    with pytest.raises(
+        ValueError, match=f"organizations.example.workspaces.main.{key} {message}"
+    ):
+        load_config(path)
+
+
+def test_primary_must_be_boolean(tmp_path):
+    path = _override(tmp_path, (
+        "organizations:\n  example:\n    workspaces:\n      main:\n        primary: 1\n"
+    ))
+    with pytest.raises(
+        ValueError, match="organizations.example.workspaces.main.primary は真偽値"
+    ):
+        load_config(path)
+
+
+@pytest.mark.parametrize("workspace,fragment", [
+    ("a/b", "使えない文字"),
+    ('"/tmp/workspace-demo"', "使えない文字"),
+    ("summary", "予約"),
+    ("spend", "予約"),
+    (".hidden", "不正"),
+    ("NUL", "予約デバイス名"),
+])
+def test_workspace_name_follows_the_org_name_rules(tmp_path, workspace, fragment):
+    """workspace 名はディレクトリ名になるため、規則は組織名と同じ。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        f"      {workspace}:\n"
+        "        primary: true\n"
+    ))
+    with pytest.raises(ValueError) as excinfo:
+        load_config(path)
+    message = str(excinfo.value)
+    assert "workspaces" in message and fragment in message
+
+
+def test_workspace_names_that_collide_are_rejected(tmp_path):
+    """大文字小文字だけが違う名前は、同じディレクトリを指す環境がある。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "      Main: {}\n"
+    ))
+    with pytest.raises(
+        ValueError, match="organizations.example.workspaces の名前が衝突しています"
+    ):
+        load_config(path)
+
+
+def test_valid_workspace_names_are_accepted(tmp_path):
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "      副スペース: {}\n"
+    ))
+    assert sorted(
+        load_config(path)["organizations"]["example"]["workspaces"]) == ["main", "副スペース"]

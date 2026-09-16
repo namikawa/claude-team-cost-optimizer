@@ -73,15 +73,36 @@ decision_v2:
   # 昇格候補にする（USD/月）。Premium 側の課金は観測できないので差額との比較に閉じる。
   observed_billing_margin_usd: 20.0
 
-# GitHub 分析を有効にする組織（組織ごとの opt-in）。キーは入力ディレクトリ直下の組織名、
-# 値はその組織の GitHub Organization 名で、両者は一致しない前提の対応表として書く。
-# ここに書いた組織だけが doctor の GitHub 検査と GitHub 由来の集計の対象になり、
-# 書かない組織は GitHub 関連の処理と警告から一切除外される。
-# organizations の直下だけは既定に無いキー（組織名）を書ける。その中身は従来どおり
-# 厳格で、書けるのは github_org だけ。
+# 組織ごとの設定。キーは入力ディレクトリ直下の組織名で、organizations の直下と
+# workspaces の直下だけは既定に無いキー（利用者が決める名前）を書ける。その中身は
+# 従来どおり厳格で、書けるのは github_org / workspaces / secondary_breakeven_usd の3つ。
+#
+# github_org は GitHub 分析を有効にする組織だけに書く（組織ごとの opt-in）。値はその組織の
+# GitHub Organization 名で、入力ディレクトリの組織名とは一致しない前提の対応表として書く。
+# 書いた組織だけが doctor の GitHub 検査と GitHub 由来の集計の対象になり、書かない組織は
+# GitHub 関連の処理と警告から一切除外される。
+#
+# workspaces は複数の Team スペースを運用する組織だけに書く（入力は
+# input/<組織名>/<workspace名>/spend/ の入れ子レイアウトになる）。発見した workspace が
+# すべて書かれていること・主がちょうど1つ決まることを doctor が検査する。
+# 各 workspace に書けるキー:
+#   primary                   主 workspace。ちょうど1つを true にする
+#   label                     レポートの表示名（省略時はディレクトリ名）
+#   fixed_seat                払い出すシート種別が運用方針で固定なら standard / premium
+#   credit_limit_default_usd  そのスペースの追加クレジット上限の既定（USD。省略時は不明）
+#   evaluation_months         判定に必要な連続月数（省略時は decision.hysteresis_months）
+# secondary_breakeven_usd は副スペースの損益分岐（USD/月。省略時は副の fixed_seat の価格）。
 #   organizations:
 #     example:
 #       github_org: example-org
+#       secondary_breakeven_usd: 125.0
+#       workspaces:
+#         main:
+#           primary: true
+#           label: 主スペース
+#         second:
+#           label: 副スペース
+#           fixed_seat: premium
 organizations: {}
 
 # モデル単価（USD per 1M tokens）。model 名の部分一致（小文字）で判定、上から順に評価

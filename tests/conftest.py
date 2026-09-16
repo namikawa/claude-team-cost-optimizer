@@ -63,12 +63,17 @@ def make_input(tmp_path: Path):
     org を省略すると input/ 直下に生成する。これは analyze・ingest へ「組織の入力
     ディレクトリ」を直接渡すモジュール単体テスト用の形で、CLI の --input-dir は
     組織ディレクトリのある形しか受け付けない。
+
+    workspace を指定すると input/<org>/<workspace>/spend 配下に生成する（複数の Team
+    スペースを運用する組織の入れ子レイアウト）。
     """
 
     def _make(spend_by_month: dict[str, list[str]], members: list[str] | None = None,
-              members_month: str = "2026-06", org: str | None = None) -> Path:
+              members_month: str = "2026-06", org: str | None = None,
+              workspace: str | None = None) -> Path:
         input_dir = tmp_path / "input"
         base = input_dir / org if org else input_dir
+        base = base / workspace if workspace else base
         for month, rows in spend_by_month.items():
             p = base / "spend" / f"spend_{month}.csv"
             p.parent.mkdir(parents=True, exist_ok=True)
