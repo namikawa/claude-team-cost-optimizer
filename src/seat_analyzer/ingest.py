@@ -419,13 +419,105 @@ def spend_file_period(input_dir: Path, month: str) -> FilePeriod | None:
     return file_period(files[month]) if month in files else None
 
 
+# 入力レイアウトの種別。single は従来（組織直下に spend/）、nested は workspace ごとの
+# 入れ子（1組織が複数の Team スペースを運用する形）、mixed は両方が同時にある状態で、
+# どちらのレイアウトとしても読めない。
+WORKSPACE_LAYOUT_SINGLE = "single"
+WORKSPACE_LAYOUT_NESTED = "nested"
+WORKSPACE_LAYOUT_MIXED = "mixed"
+
+
+def _readable_dir(path: Path) -> bool:
+    """読めるディレクトリか。読めない場合は False（候補から外す）。
+
+    組織ディレクトリの中に読めない子があっても、そこだけを候補から外して他の組織の
+    処理を続けられるようにする。取りこぼした workspace は config との突き合わせ
+    （doctor の構造検査）と「spend/ が無い」検査が止めるため、黙って数字が小さく出る
+    ことはない。禁止語の収集だけは取りこぼしが検出漏れになるので、leakcheck 側が
+    独自の fail-closed な列挙（_scandir）を使う。
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def discover_workspaces(org_input: Path) -> list[str]:
+    """組織ディレクトリの子のうち workspace であるものの一覧（昇順）。
+
+    workspace は「spend/ を持つ子ディレクトリ」という構造で判定する（組織の発見と
+    同じ理由で名前では判定しない）。github-cache/・members/・admin/ のように spend/ を
+    持たない子は workspace ではない。従来レイアウトの組織では空になる。
+    """
+    org_input = Path(org_input)
+    if not _readable_dir(org_input):
+        return []
+    try:
+        children = list(org_input.iterdir())
+    except OSError:
+        return []
+    return sorted(
+        p.name for p in children if _readable_dir(p) and _readable_dir(p / "spend")
+    )
+
+
+def detect_workspace_layout(org_input: Path) -> tuple[str, list[str]]:
+    """組織の入力レイアウトの種別と、発見した workspace 名（昇順）。
+
+    混在も種別の1つとして返すため例外を投げない。構造そのものを検査する doctor は
+    こちらを使い、分析の経路は workspace_layout で読めないレイアウトを止める。
+    """
+    org_input = Path(org_input)
+    found = discover_workspaces(org_input)
+    if _readable_dir(org_input / "spend"):
+        return (WORKSPACE_LAYOUT_MIXED if found else WORKSPACE_LAYOUT_SINGLE), found
+    return (WORKSPACE_LAYOUT_NESTED if found else WORKSPACE_LAYOUT_SINGLE), found
+
+
+def workspace_layout(org_input: Path, org: str | None = None) -> str:
+    """組織の入力レイアウトの種別（single / nested）。混在は ValueError。
+
+    組織直下の spend/ と、spend/ を持つ子ディレクトリが同時にある状態は、どちらの
+    レイアウトとしても読めない。黙って片方を採ると、置いたはずのデータが集計から
+    丸ごと抜けたまま完走するため止める。
+    """
+    layout, found = detect_workspace_layout(org_input)
+    if layout == WORKSPACE_LAYOUT_MIXED:
+        name = org if org is not None else Path(org_input).name
+        raise ValueError(
+            f"組織 {name} は入力レイアウトが混在しています（直下の spend/ と、"
+            f"spend/ を持つ子ディレクトリ {'/'.join(found)} の両方があります）。"
+            "どちらか一方に寄せてください"
+        )
+    return layout
+
+
+def workspace_settings(cfg: dict, org: str) -> dict[str, dict]:
+    """config の organizations.<組織名>.workspaces（書かれていなければ空）。
+
+    値そのものの検査は設定のロードが済ませている。ここは「どこに書かれているか」を
+    1箇所に閉じるための読み取り口で、構造の検査と分析の双方から使う。
+    """
+    organizations = cfg.get("organizations")
+    entry = organizations.get(org) if isinstance(organizations, dict) else None
+    workspaces = entry.get("workspaces") if isinstance(entry, dict) else None
+    if not isinstance(workspaces, dict):
+        return {}
+    return {str(name): settings for name, settings in workspaces.items()}
+
+
 def discover_orgs(input_dir: Path) -> list[str]:
-    """input_dir 直下の組織サブディレクトリ（spend/ を持つもの）の一覧（昇順）。"""
+    """input_dir 直下の組織サブディレクトリの一覧（昇順）。
+
+    従来レイアウト（直下に spend/ を持つ）に加えて、入れ子レイアウト（spend/ を持つ
+    子ディレクトリ＝workspace がある）のディレクトリも組織として返す。
+    """
     input_dir = Path(input_dir)
     if not input_dir.is_dir():
         return []
     return sorted(
-        p.name for p in input_dir.iterdir() if p.is_dir() and (p / "spend").is_dir()
+        p.name for p in input_dir.iterdir()
+        if p.is_dir() and ((p / "spend").is_dir() or discover_workspaces(p))
     )
 
 

@@ -269,6 +269,12 @@ def main(argv: list[str] | None = None) -> int:
     pi = sub.add_parser("init-org", help="新しい組織の入力/出力ディレクトリの雛形を作成")
     pi.add_argument("orgs", nargs="+", metavar="組織名",
                     help="作成する組織名（input/ 直下のディレクトリ名になる）。複数指定可")
+    pi.add_argument(
+        "--workspaces", metavar="名前,名前",
+        help="複数の Team スペースを運用する組織の workspace 名（カンマ区切り）。"
+             "指定すると input/<組織名>/<workspace名>/ の下に入力サブディレクトリを作る"
+             "（名前の規則は組織名と同じ）",
+    )
     pi.add_argument("--config", default=None, help=_CONFIG_HELP)
     _add_dir_options(pi)
     pi.set_defaults(func=_run_init_org)
@@ -424,6 +430,23 @@ def _run_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_workspaces(value: str | None) -> list[str]:
+    """--workspaces の指定を workspace 名の一覧にする。
+
+    名前の規則は組織名と同じ（ディレクトリ名になり、レポートの表示にも使うため）。
+    1つでも不正・衝突があれば1つも作らない。
+    """
+    if value is None:
+        return []
+    if not value.strip():
+        raise ValueError(
+            "--workspaces には workspace 名をカンマ区切りで指定してください（例: main,second）"
+        )
+    names = [name.strip() for name in value.split(",")]
+    ingest.validate_org_names(names)
+    return list(dict.fromkeys(names))
+
+
 def _run_init_org(args: argparse.Namespace) -> int:
     # 設定を読むのは入出力先を決めるため（分析と同じ場所に雛形を作る）
     cfg = load_config(args.config)
@@ -431,11 +454,25 @@ def _run_init_org(args: argparse.Namespace) -> int:
     output_dir = _resolve_dir(args.output_dir, cfg, "output")
     # 1つでも不正・衝突があれば1つも作らない（途中まで作ると片付けが要る）
     ingest.validate_org_names(args.orgs)
+    workspaces = _parse_workspaces(args.workspaces)
+    if workspaces:
+        # 従来レイアウトのデータがある組織へ workspace を足すと、直下と子の両方に
+        # spend/ がある混在レイアウトになり、分析も検査もできなくなる。作る前に止める
+        mixed = [org for org in args.orgs if (input_dir / org / "spend").is_dir()]
+        if mixed:
+            raise ValueError(
+                f"組織 {'/'.join(mixed)} には直下に spend/ があるため --workspaces で"
+                "雛形を作れません（直下と子ディレクトリの両方に spend/ がある形は"
+                "分析できません）。先に既存のデータを workspace のディレクトリへ"
+                "移動してください"
+            )
 
     for org in args.orgs:
         existed = (input_dir / org).is_dir()
-        for subdir in INPUT_SUBDIRS:
-            (input_dir / org / subdir).mkdir(parents=True, exist_ok=True)
+        bases = [input_dir / org / ws for ws in workspaces] or [input_dir / org]
+        for base in bases:
+            for subdir in INPUT_SUBDIRS:
+                (base / subdir).mkdir(parents=True, exist_ok=True)
         (output_dir / org).mkdir(parents=True, exist_ok=True)
         # members-info.csv はヘッダ行のみの雛形を作る。既存（記入済みの可能性）は上書きしない。
         # 人が Excel で編集するファイルなので recommendations.csv と同じく BOM を付ける
@@ -449,12 +486,21 @@ def _run_init_org(args: argparse.Namespace) -> int:
                 encoding="utf-8-sig", newline="\n",
             )
         print(f"組織 '{org}' の雛形を{'確認しました（既存）' if existed else '作成しました'}:")
-        print(f"  {input_dir / org / 'spend'}/           ← spend_YYYY-MM.csv（必須）")
-        print(f"  {input_dir / org / 'members'}/         ← members_YYYY-MM.csv（必須。最低限 email,seat_type の2列）")
-        print(f"  {input_dir / org / 'code-analytics'}/  ← cc_YYYY-MM.csv（任意）")
+        for base in bases:
+            print(f"  {base / 'spend'}/           ← spend_YYYY-MM.csv（必須）")
+            print(f"  {base / 'members'}/         ← members_YYYY-MM.csv（必須。最低限 email,seat_type の2列）")
+            print(f"  {base / 'code-analytics'}/  ← cc_YYYY-MM.csv（任意）")
+        # members-info は人単位の任意入力なので、workspace を分けても組織直下に1つだけ置く
         print(f"  {info_path}  ← 部署・チーム・職種・備考の任意マッピング（{'ヘッダ雛形を作成' if info_created else '既存を保持'}）")
         print(f"  {output_dir / org}/")
 
+    if workspaces:
+        print(
+            f"\n{WORKSPACE_CONFIG_NAME} の organizations.<組織名>.workspaces に各"
+            f" workspace（{', '.join(workspaces)}）を書き、主 workspace に"
+            " primary: true をちょうど1つ付けてください"
+            "（設定が無い・ディレクトリと食い違う状態は doctor がエラーにします）"
+        )
     if (input_dir / "spend").is_dir():
         print(
             f"\n! 旧レイアウトのデータが {input_dir}/spend/ にあります。この形では分析"
@@ -518,12 +564,28 @@ def _resolve_targets(
     return [(org, input_dir / org, output_dir / org) for org in selected]
 
 
+def _reject_nested_layout(targets: Sequence[tuple]) -> None:
+    """複数 workspace のレイアウトの組織を、分析を始める前に明示的に止める。
+
+    分析本体は workspace ごとに回す必要があるが、その結線はまだ無い。素通しすると
+    「spend/ にスペンドレポートがありません」という無関係な失敗になるため、レイアウトを
+    名指しして止める（構造の検査は doctor が行う）。混在レイアウトもここで止まる。
+    """
+    for org, org_input, *_ in targets:
+        if ingest.workspace_layout(org_input, org) == ingest.WORKSPACE_LAYOUT_NESTED:
+            raise ValueError(
+                f"組織 {org} は複数 workspace のレイアウトのため、まだ分析できません"
+                "（構造の検査は seat-analyzer doctor で行えます）"
+            )
+
+
 def _discover_inspect_orgs(input_dir: Path) -> list[str]:
     """検査対象の組織候補（昇順）。
 
-    分析用の discover_orgs は spend/ を持つディレクトリだけを組織とするが、doctor は
-    spend/ が欠けていること自体を検査するため、入力ディレクトリらしさ（既知の入力
-    サブディレクトリか members-info.csv を持つ）で判定する。
+    分析用の discover_orgs は spend/ を持つディレクトリ（入れ子レイアウトでは
+    spend/ を持つ子を持つディレクトリ）を組織とするが、doctor は spend/ が欠けている
+    こと自体を検査するため、入力ディレクトリらしさ（既知の入力サブディレクトリか
+    members-info.csv を持つ）でも判定する。
     """
     if not input_dir.is_dir():
         return []
@@ -534,7 +596,7 @@ def _discover_inspect_orgs(input_dir: Path) -> list[str]:
         # 先頭ドット等の不正名も候補に含め、analyze と同じ validate_org_name で拒否する
         if any((path / sub).is_dir() for sub in INPUT_SUBDIRS) or (
             path / "members-info.csv"
-        ).exists():
+        ).exists() or ingest.discover_workspaces(path):
             orgs.append(path.name)
     return orgs
 
@@ -559,12 +621,41 @@ def _resolve_input_targets(
 
 
 def _latest_month(org_input: Path) -> str | None:
-    """対象組織のスペンドの最新月。ファイル名を解決できない場合は None（doctor が検査する）。"""
+    """対象組織のスペンドの最新月。ファイル名を解決できない場合は None（doctor が検査する）。
+
+    入れ子レイアウトでは全 workspace のうち最も新しい月を採る（組織単位の検査なので、
+    対象月も組織単位で決める）。
+    """
     try:
-        months = ingest.discover_months(org_input)
+        layout, workspaces = ingest.detect_workspace_layout(org_input)
+        directories = (
+            [org_input / name for name in workspaces]
+            if layout == ingest.WORKSPACE_LAYOUT_NESTED else [org_input]
+        )
+        months = [m for d in directories for m in ingest.discover_months(d)]
     except (OSError, ValueError):
         return None
-    return months[-1] if months else None
+    return max(months) if months else None
+
+
+def _inspect_org(
+    org_input: Path, month: str | None, cfg: dict, org: str
+) -> list[QualityIssue]:
+    """1組織分の入力検査（構造 + 入力の中身）。
+
+    入れ子レイアウトでは workspace ごとに同じ検査を回し、どのスペースの issue かを
+    scope に持たせる。混在レイアウトはどちらとしても読めないため構造の報告だけに留める
+    （どの入力を検査したのかが読み手に決まらない状態で中身の issue を並べない）。
+    """
+    issues = data_quality.workspace_issues(org_input, cfg, org)
+    layout, workspaces = ingest.detect_workspace_layout(org_input)
+    if layout == ingest.WORKSPACE_LAYOUT_NESTED:
+        for workspace in workspaces:
+            issues.extend(data_quality.inspect_input(
+                org_input / workspace, month, cfg, org=org, workspace=workspace))
+    elif layout == ingest.WORKSPACE_LAYOUT_SINGLE:
+        issues.extend(data_quality.inspect_input(org_input, month, cfg, org=org))
+    return data_quality.sort_issues(issues)
 
 
 def _notice(message: str, as_json: bool) -> None:
@@ -607,7 +698,7 @@ def _run_doctor(args: argparse.Namespace) -> int:
     probes = github_collect.probe_github(gated.values()) if gated else None
 
     for org, org_input in targets:
-        issues = data_quality.inspect_input(org_input, month, cfg, org=org)
+        issues = _inspect_org(org_input, month, cfg, org)
         if org in gated:
             # 組織ごとのレポートが自己完結するよう、GitHub の issue もその組織へ合流させる
             github = data_quality.inspect_github(
@@ -651,7 +742,11 @@ def _print_issues(org: str | None, month: str | None, issues: list[QualityIssue]
 
 def _print_issue_lines(issues: list[QualityIssue]) -> None:
     for issue in issues:
-        print(f"  [{issue.severity.value}] {issue.code.value}: {issue.message}")
+        # 複数 workspace の組織では、同じ検査が workspace ごとに走って同じ文言が並ぶ。
+        # どのスペースの話かを読めるよう名前を添える（単一 workspace では付かない）
+        workspace = issue.scope.get("workspace")
+        where = f"（{workspace}）" if workspace else ""
+        print(f"  [{issue.severity.value}] {issue.code.value}{where}: {issue.message}")
 
 
 def _run_analyze(args: argparse.Namespace) -> int:
@@ -678,6 +773,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
     gated = github_collect.gated_orgs(cfg)
 
     targets = _resolve_targets(input_dir, output_dir, args.org)
+    _reject_nested_layout(targets)
     # 使い方の誤りは分析を走らせる前に落とす（3組織の分析を完走してから失敗させない）
     if args.with_discussion:
         _check_allow_scope(tuple(args.allow_term or ()), len(targets))
@@ -840,6 +936,7 @@ def _run_collect(args: argparse.Namespace) -> int:
     month = _validate_month(args.month)
     # 組織の存在は doctor と同じ経路で確かめる（このコマンドだけが受理する形を作らない）
     org, org_input = _resolve_input_targets(input_dir, [args.org])[0]
+    _reject_nested_layout([(org, org_input)])
 
     enabled = github_collect.gated_orgs(cfg)
     if org not in enabled:
@@ -986,6 +1083,7 @@ def _run_discuss(args: argparse.Namespace) -> int:
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
     output_dir = _resolve_dir(args.output_dir, cfg, "output")
     targets = _resolve_targets(input_dir, output_dir, args.org)
+    _reject_nested_layout(targets)
     month = _resolve_month(targets, args.month)
     return _run_discussions(
         [(org, org_output) for org, _, org_output in targets],

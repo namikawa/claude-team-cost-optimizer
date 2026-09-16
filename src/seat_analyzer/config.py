@@ -242,12 +242,52 @@ def _kind(value) -> str:
     return "値"
 
 
-# 既定に列挙できないキー（利用者ごとの組織名）を書けるセクションと、その各エントリの
-# 雛形。ここに載るのは1階層だけで、エントリの中身は雛形との突き合わせで従来どおり厳格に
-# 検査する（書けるキー・値の種別・空値の扱いが既定のセクションと同じになる）。
-_DYNAMIC_ENTRIES: dict[tuple[str, ...], dict] = {
-    ("organizations",): {"github_org": ""},
+# 利用者が名前を決めるキー（組織名・workspace 名）の位置を表す記号。この位置だけは
+# どんな名前とも一致し、他の階層のキーは既定との突き合わせで従来どおり閉じたままにする。
+_ANY_NAME = "*"
+
+# organizations.<組織名> に書けるキーと、未指定を表す既定値。
+# github_org は任意で、空のままなら GitHub 分析は無効（設定を書いた組織だけが対象）。
+# secondary_breakeven_usd は副 workspace の損益分岐で、未指定は None で表す。
+_ORGANIZATION_ENTRY = {
+    "github_org": "",
+    "workspaces": {},
+    "secondary_breakeven_usd": None,
 }
+
+# organizations.<組織名>.workspaces.<workspace名> に書けるキーと、未指定を表す既定値。
+# 読む側が「書かれていない」を区別できるよう、空文字と None を未指定の印にする
+# （上書き側に null を書くのは従来どおり拒否する）。
+_WORKSPACE_ENTRY = {
+    "primary": False,
+    "label": "",
+    "fixed_seat": "",
+    "credit_limit_default_usd": None,
+    "evaluation_months": None,
+}
+
+# 既定に列挙できないキー（利用者ごとの組織名・workspace 名）を書けるセクションと、その
+# 各エントリの雛形。エントリの中身は雛形との突き合わせで従来どおり厳格に検査する
+# （書けるキー・値の種別・空値の扱いが既定のセクションと同じになる）。
+_DYNAMIC_ENTRIES: dict[tuple[str, ...], dict] = {
+    ("organizations",): _ORGANIZATION_ENTRY,
+    ("organizations", _ANY_NAME, "workspaces"): _WORKSPACE_ENTRY,
+}
+
+
+def _dynamic_entry(path: tuple[str, ...]) -> dict | None:
+    """path の直下が利用者の決める名前を受けるなら、その各エントリの雛形。
+
+    組織名は設定に書かれるまで分からないため、workspaces の位置は組織名を
+    _ANY_NAME で伏せた形で照合する（静的なタプルでは一致しない）。
+    """
+    for pattern, template in _DYNAMIC_ENTRIES.items():
+        if len(pattern) == len(path) and all(
+            expected in (_ANY_NAME, actual)
+            for expected, actual in zip(pattern, path)
+        ):
+            return template
+    return None
 
 
 def _merge_override(base: dict, override: dict, *, label: str, path: tuple[str, ...] = ()) -> dict:
@@ -265,7 +305,7 @@ def _merge_override(base: dict, override: dict, *, label: str, path: tuple[str, 
     for key, value in override.items():
         where = ".".join((*path, str(key)))
         if key not in base:
-            template = _DYNAMIC_ENTRIES.get(path)
+            template = _dynamic_entry(path)
             if template is None:
                 raise ValueError(
                     f"{label} の '{where}' は既定に存在しないキーです（綴りを確認してください）")
@@ -442,14 +482,87 @@ def _validate_usage_credits(cfg: dict, errors: list[str]) -> None:
             errors.append(f"usage_credits.{key} は 0 以上の有限な数値が必要です")
 
 
+# fixed_seat に書けるシート種別（空文字は「固定なし」）
+_FIXED_SEATS = ("standard", "premium")
+
+
+def _validate_workspaces(name: str, entry: dict, errors: list[str]) -> None:
+    """組織の workspaces と、それに付随する損益分岐の設定を検査する。
+
+    workspaces を書いた組織は主 workspace がちょうど1つに決まる必要がある。主が
+    決まらないと、どのシートと設定を「その人の主アカウント」として読むかが決まらず、
+    判定そのものが成立しない。0個と2個以上は原因が違うので別の文言で報告する。
+    """
+    breakeven = entry.get("secondary_breakeven_usd")
+    if breakeven is not None and (not _is_finite(breakeven) or breakeven <= 0):
+        errors.append(
+            f"organizations.{name}.secondary_breakeven_usd は 0 より大きい有限な数値が"
+            "必要です"
+        )
+    workspaces = entry.get("workspaces", {})
+    if not isinstance(workspaces, dict):
+        errors.append(f"organizations.{name}.workspaces は辞書が必要です")
+        return
+
+    primaries: list[str] = []
+    for workspace, settings in workspaces.items():
+        where = f"organizations.{name}.workspaces.{workspace}"
+        if not _is_text(workspace):
+            errors.append(
+                f"organizations.{name}.workspaces のキーには workspace 名が必要です: "
+                f"{workspace!r}"
+            )
+            continue
+        if not isinstance(settings, dict):
+            errors.append(f"{where} は辞書が必要です")
+            continue
+        primary = settings.get("primary", False)
+        if not isinstance(primary, bool):
+            errors.append(f"{where}.primary は真偽値が必要です")
+        elif primary:
+            primaries.append(str(workspace))
+        if not isinstance(settings.get("label", ""), str):
+            errors.append(f"{where}.label は文字列が必要です")
+        seat = settings.get("fixed_seat", "")
+        if not (isinstance(seat, str) and (not seat or seat in _FIXED_SEATS)):
+            errors.append(
+                f"{where}.fixed_seat は {' / '.join(_FIXED_SEATS)} のいずれかが必要です"
+                "（省略するとシート種別を固定しません）"
+            )
+        limit = settings.get("credit_limit_default_usd")
+        if limit is not None and (not _is_finite(limit) or limit < 0):
+            errors.append(
+                f"{where}.credit_limit_default_usd は 0 以上の有限な数値が必要です"
+            )
+        months = settings.get("evaluation_months")
+        if months is not None and (not _is_integer(months) or months < 1):
+            errors.append(f"{where}.evaluation_months は 1 以上の整数が必要です")
+
+    if not workspaces:
+        return
+    if not primaries:
+        errors.append(
+            f"organizations.{name}.workspaces に primary: true の workspace が"
+            "ありません（主 workspace をちょうど1つ決めてください）"
+        )
+    elif len(primaries) > 1:
+        errors.append(
+            f"organizations.{name}.workspaces の primary: true が複数あります"
+            f"（{' / '.join(sorted(primaries))}）。主 workspace は1つだけにしてください"
+        )
+
+
 def _validate_organizations(cfg: dict, errors: list[str]) -> None:
-    """GitHub 分析を有効にする組織の対応表を検査する。
+    """組織ごとの設定（GitHub の対応表・複数 workspace）を検査する。
 
     キーの綴り違いは「一致する組織ディレクトリが無い」形になるため、ここでは止めずに
-    doctor が GITHUB_CONFIG_UNMATCHED として報告する（入力の配置はロード時に分からない）。
-    値の側は GitHub の Organization 名として読める字句かをここで確かめる。読めない値を
-    通すと、そのままリクエストのパスへ入って「参照できません」とだけ報告することになり、
-    設定の書き間違いだと分からなくなる。
+    doctor が報告する（入力の配置はロード時に分からない）。値の側は、GitHub の
+    Organization 名として読める字句かをここで確かめる。読めない値を通すと、そのまま
+    リクエストのパスへ入って「参照できません」とだけ報告することになり、設定の書き
+    間違いだと分からなくなる。
+
+    github_org は任意で、空のままなら GitHub 分析は無効（workspaces だけを書く組織が
+    あるため、エントリの存在ではなく github_org の有無で有効・無効が決まる）。
     """
     organizations = cfg["organizations"]
     if not isinstance(organizations, dict):
@@ -462,12 +575,14 @@ def _validate_organizations(cfg: dict, errors: list[str]) -> None:
         if not isinstance(entry, dict):
             errors.append(f"organizations.{name} は辞書が必要です")
             continue
-        if not is_github_org_name(entry.get("github_org")):
+        github_org = entry.get("github_org", "")
+        if github_org != "" and not is_github_org_name(github_org):
             errors.append(
                 f"organizations.{name}.github_org は GitHub の Organization 名が"
                 "必要です（英数字とハイフンの1〜39文字。先頭と末尾は英数字で、"
                 "ハイフンは連続しません）"
             )
+        _validate_workspaces(name, entry, errors)
 
 
 def _validate_cost_basis(cfg: dict, errors: list[str]) -> None:

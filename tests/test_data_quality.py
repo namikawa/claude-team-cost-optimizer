@@ -9,15 +9,17 @@ from seat_analyzer.data_quality import (
     _reason,
     github_config_issues,
     inspect_github,
+    inspect_input,
     issue_to_dict,
     issues_to_canonical_json,
     issues_to_json,
     sort_issues,
+    workspace_issues,
 )
 from seat_analyzer.domain import IssueCode, QualityIssue, Severity
 from seat_analyzer.github_collect import GhFailure, GhResult, probe_github
 
-from .conftest import requires_symlink
+from .conftest import requires_symlink, spend_row
 
 EXPECTED_CODES = {
     # 入力
@@ -28,6 +30,10 @@ EXPECTED_CODES = {
     "UNKNOWN_MODEL",
     "NUMERIC_PARSE_FAILED",
     "MEMBER_ROW_MISSING",
+    # Workspace
+    "WORKSPACE_LAYOUT_MIXED",
+    "WORKSPACE_CONFIG_MISMATCH",
+    "WORKSPACE_PRIMARY_INVALID",
     # Identity
     "IDENTITY_EMAIL_FALLBACK",
     "IDENTITY_CONFLICT",
@@ -62,8 +68,8 @@ def test_issue_code_vocabulary_is_fixed():
     # __members__はaliasも列挙するため、別名の紛れ込みも検出できる
     members = IssueCode.__members__
     assert set(members) == EXPECTED_CODES
-    assert len(members) == 29
-    assert len(EXPECTED_CODES) == 29
+    assert len(members) == 32
+    assert len(EXPECTED_CODES) == 32
 
 
 def test_issue_code_value_equals_name():
@@ -924,3 +930,123 @@ def test_config_key_that_matches_an_org_is_silent(cfg):
 
 def test_config_without_organizations_is_silent(cfg):
     assert github_config_issues(cfg, ["org-a"]) == []
+
+
+# --- 複数 workspace の構造（レイアウト・config との突き合わせ）
+
+
+def _cfg_with_workspaces(cfg: dict, org: str, workspaces: dict) -> dict:
+    return {**cfg, "organizations": {org: {"workspaces": workspaces}}}
+
+
+def test_workspace_issues_are_silent_for_traditional_layout(make_input, cfg):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x")
+    assert workspace_issues(input_dir / "org-x", cfg, "org-x") == []
+
+
+def test_workspace_issues_report_mixed_layout(make_input, cfg, tmp_path):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x")
+    make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x", workspace="second")
+
+    issues = workspace_issues(input_dir / "org-x", cfg, "org-x")
+
+    assert _codes(issues) == ["WORKSPACE_LAYOUT_MIXED"]
+    assert issues[0].severity is Severity.ERROR
+    assert "second" in issues[0].message
+    assert str(tmp_path) not in issues[0].message   # 絶対パスを持ち込まない
+    assert issues[0].scope["workspaces"] == ("second",)
+    assert "month" not in issues[0].scope
+
+
+def test_workspace_issues_report_nested_layout_without_config(make_input, cfg):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           org="org-x", workspace="main")
+    make_input({"2026-06": [spend_row("b@x.jp", 10.0)]}, org="org-x", workspace="second")
+
+    issues = workspace_issues(input_dir / "org-x", cfg, "org-x")
+
+    assert _codes(issues) == ["WORKSPACE_CONFIG_MISMATCH"]
+    assert "organizations.org-x.workspaces" in issues[0].message
+    assert "main/second" in issues[0].message
+    assert issues[0].scope["found"] == ("main", "second")
+
+
+def test_workspace_issues_accept_matching_config(make_input, cfg):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           org="org-x", workspace="main")
+    make_input({"2026-06": [spend_row("b@x.jp", 10.0)]}, org="org-x", workspace="second")
+    configured = _cfg_with_workspaces(
+        cfg, "org-x", {"main": {"primary": True}, "second": {}})
+
+    assert workspace_issues(input_dir / "org-x", configured, "org-x") == []
+
+
+def test_workspace_issues_report_directory_missing_for_configured_name(make_input, cfg):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           org="org-x", workspace="main")
+    configured = _cfg_with_workspaces(
+        cfg, "org-x", {"main": {"primary": True}, "second": {}})
+
+    issues = workspace_issues(input_dir / "org-x", configured, "org-x")
+
+    assert _codes(issues) == ["WORKSPACE_CONFIG_MISMATCH"]
+    assert "config にあるがディレクトリが無い: second" in issues[0].message
+    assert "ディレクトリがあるが config に無い" not in issues[0].message
+    assert issues[0].scope["missing"] == ("second",)
+    assert issues[0].scope["unexpected"] == ()
+
+
+def test_workspace_issues_report_directory_absent_from_config(make_input, cfg):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           org="org-x", workspace="main")
+    make_input({"2026-06": [spend_row("b@x.jp", 10.0)]}, org="org-x", workspace="second")
+    configured = _cfg_with_workspaces(cfg, "org-x", {"main": {"primary": True}})
+
+    issues = workspace_issues(input_dir / "org-x", configured, "org-x")
+
+    assert _codes(issues) == ["WORKSPACE_CONFIG_MISMATCH"]
+    assert "ディレクトリがあるが config に無い: second" in issues[0].message
+    assert "config にあるがディレクトリが無い" not in issues[0].message
+    assert issues[0].scope["unexpected"] == ("second",)
+
+
+def test_workspace_issues_report_primary_without_a_directory(make_input, cfg):
+    """主が実在しないと、どのシート・設定を主として読むかが決まらない。"""
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           org="org-x", workspace="second")
+    configured = _cfg_with_workspaces(
+        cfg, "org-x", {"main": {"primary": True}, "second": {}})
+
+    issues = workspace_issues(input_dir / "org-x", configured, "org-x")
+
+    assert _codes(issues) == ["WORKSPACE_CONFIG_MISMATCH", "WORKSPACE_PRIMARY_INVALID"]
+    primary = issues[1]
+    assert primary.severity is Severity.ERROR
+    assert "main" in primary.message
+    assert primary.scope["primary"] == "main"
+    assert primary.scope["found"] == ("second",)
+
+
+def test_inspect_input_adds_workspace_to_scope(make_input, cfg):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           org="org-x", workspace="main")
+
+    issues = inspect_input(
+        input_dir / "org-x" / "main", "2026-06", cfg, org="org-x", workspace="main")
+
+    assert "MISSING_MEMBERS" in _codes(issues)
+    for issue in issues:
+        assert issue.scope["workspace"] == "main"
+        assert issue.scope["org"] == "org-x"
+
+
+def test_inspect_input_without_workspace_keeps_scope_unchanged(make_input, cfg):
+    """従来レイアウトの出力は変わらない（workspace のキーが増えない）。"""
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x")
+
+    issues = inspect_input(input_dir / "org-x", "2026-06", cfg, org="org-x")
+
+    assert "MISSING_MEMBERS" in _codes(issues)
+    for issue in issues:
+        assert "workspace" not in issue.scope

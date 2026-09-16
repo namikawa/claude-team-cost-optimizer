@@ -1,5 +1,22 @@
 # 変更履歴
 
+## [未リリース]
+
+### 追加
+
+- `input/<組織名>/<workspace名>/spend/` の入れ子レイアウト（1 つの組織が複数の Team
+  スペースを運用する形）を組織として認識するようにした
+- `doctor` に複数 workspace の構造検査（レイアウトの混在・config との不一致・主 workspace）を
+  追加し、入れ子レイアウトの組織では workspace ごとに入力を検査するようにした
+- `organizations.<組織名>.workspaces` に workspace ごとの設定（`primary` / `label` /
+  `fixed_seat` / `credit_limit_default_usd` / `evaluation_months`）と、組織直下の
+  `secondary_breakeven_usd` を書けるようにした
+- `init-org --workspaces main,second` で入れ子レイアウトの雛形を作れるようにした
+
+### 変更
+
+- `organizations.<組織名>.github_org` を任意にした（書かない組織は GitHub 分析が無効になる）
+
 ## [1.2.0] - 2026-09-05
 
 ### 追加

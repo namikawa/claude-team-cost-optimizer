@@ -256,3 +256,71 @@ def test_members_fallback_to_earlier_month(cfg, make_input):
     result = ingest.load_members(input_dir, "2026-06", cfg)
     assert any("フォールバック" in w or "使用" in w for w in result.warnings)
     assert result.df["seat_type"].iloc[0] == "premium"
+
+
+# --- 複数 workspace のレイアウト（1組織が複数の Team スペースを運用する形） ---
+
+
+def test_discover_workspaces_lists_children_with_spend(make_input):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           org="org-x", workspace="second")
+    make_input({"2026-06": [spend_row("a@x.jp", 12.0)]}, org="org-x", workspace="main")
+    assert ingest.discover_workspaces(input_dir / "org-x") == ["main", "second"]
+
+
+def test_discover_workspaces_ignores_children_without_spend(make_input):
+    """workspace の判定は構造（spend/ を持つか）。名前では判定しない。"""
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x", workspace="main")
+    org_input = input_dir / "org-x"
+    for name in ("github-cache", "members", "admin", "code-analytics"):
+        (org_input / name).mkdir(parents=True, exist_ok=True)
+    (org_input / "members-info.csv").write_text("email\n", encoding="utf-8")
+    assert ingest.discover_workspaces(org_input) == ["main"]
+
+
+def test_discover_workspaces_is_empty_for_traditional_layout(make_input):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x")
+    assert ingest.discover_workspaces(input_dir / "org-x") == []
+
+
+def test_workspace_layout_single_and_nested(make_input):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x")
+    make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-y", workspace="main")
+    assert ingest.workspace_layout(input_dir / "org-x") == "single"
+    assert ingest.workspace_layout(input_dir / "org-y") == "nested"
+    # 入力がまだ何も無い組織は従来レイアウト扱い（spend/ が無いことは doctor が検査する）
+    (input_dir / "org-z").mkdir()
+    assert ingest.workspace_layout(input_dir / "org-z") == "single"
+
+
+def test_workspace_layout_rejects_mixed_layout(make_input, tmp_path):
+    """直下と子ディレクトリの両方に spend/ がある形は、どちらとしても読めないので止める。"""
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x")
+    make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x", workspace="second")
+
+    with pytest.raises(ValueError) as excinfo:
+        ingest.workspace_layout(input_dir / "org-x", "org-x")
+    message = str(excinfo.value)
+    assert "org-x" in message and "second" in message
+    assert str(tmp_path) not in message      # 絶対パスを含めない
+
+    # 例外を投げない検査用の経路は、混在も種別の1つとして返す
+    assert ingest.detect_workspace_layout(input_dir / "org-x") == ("mixed", ["second"])
+
+
+def test_discover_orgs_includes_nested_layout_orgs(make_input):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-a")
+    make_input({"2026-06": [spend_row("b@x.jp", 10.0)]}, org="org-b", workspace="main")
+    (input_dir / "not-an-org").mkdir()
+    assert ingest.discover_orgs(input_dir) == ["org-a", "org-b"]
+
+
+def test_workspace_settings_reads_config(cfg):
+    assert ingest.workspace_settings(cfg, "org-x") == {}
+    configured = {
+        "organizations": {"org-x": {"workspaces": {"main": {"primary": True}}}},
+    }
+    assert ingest.workspace_settings(configured, "org-x") == {"main": {"primary": True}}
+    assert ingest.workspace_settings(configured, "org-y") == {}
