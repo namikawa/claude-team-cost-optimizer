@@ -2851,6 +2851,196 @@ dashboardで読めるようにする。
 - 横スクロールなし
 - 任意入力なしでも崩れない
 
+### Track 9: 複数workspace
+
+仕様は§26。Phase 1（Step 43〜48）で運用に必要な全部を出し、Phase 2（Step 49）は
+週次スナップショットが両workspaceで揃ってから着手する。
+
+#### Step 43: workspaceの発見と設定
+
+依存:
+
+- なし（既存レイアウトに対する追加）
+
+対象:
+
+- `src/seat_analyzer/ingest.py`（`discover_workspaces`・混在レイアウトの検出）
+- `src/seat_analyzer/config.py`（`organizations.<組織>.workspaces`の検証）
+- `src/seat_analyzer/leakcheck.py`（入れ子レイアウトを組織ディレクトリとみなす構造判定）
+- `src/seat_analyzer/cli.py`（`init-org --workspaces`・doctorの構造検査の結線）
+- `src/seat_analyzer/data_quality.py`（§26.8の構造検査）
+- `tests/test_ingest.py`・`tests/test_config.py`・`tests/test_leakcheck.py`・`tests/test_data_quality.py`
+
+実装:
+
+- 組織ディレクトリの子で`spend/`を持つものをworkspaceとして列挙する。名前の規則は
+  `validate_org_name`と同じ
+- 従来レイアウト（組織直下に`spend/`）との混在はエラー
+- configの`workspaces`と列挙結果の不一致・主の不在・主の重複はそれぞれ別のメッセージで
+  エラー（黙って片方を採らない）
+- 混入チェックの組織判定は入れ子レイアウトも組織とみなす。禁止語の収集は再帰なので変えない。
+  workspace名は禁止語に加えない
+- `init-org <組織名> --workspaces main,second`で入れ子の雛形を作る
+
+受け入れ条件:
+
+- 従来レイアウトの組織の挙動が不変（全既存テスト成功）
+- 混在・不一致・主の不在がそれぞれ止まる
+- 検査のmessageに絶対パスを含めない
+
+#### Step 44: workspace別の分析と結合
+
+依存:
+
+- Step 43
+
+対象:
+
+- `src/seat_analyzer/analyze/workspaces.py`（新設。analyzeパッケージ内なので層は変えない）
+- `src/seat_analyzer/analyze/__init__.py`・`src/seat_analyzer/analyze/pipeline.py`
+- `src/seat_analyzer/cli.py`（`--allow-missing-workspace`）
+- `tests/test_analyze.py`・`tests/test_cli.py`
+
+実装:
+
+- workspaceごとに`analyze()`を呼び、組織単位の容れ物（workspace→`AnalysisResult`・主の名前・
+  configのlabel）へ束ねる。単一workspaceの組織は今の`AnalysisResult`がそのまま流れる
+- κの解決を「アカウント→κ」の1関数に閉じる（主はmembers-infoの列、副はworkspaceの既定値。
+  §26.3）
+- `fixed_seat`を書いたworkspaceのアカウントはV1判定の対象外ステータスにする
+- 対象月にデータが無いworkspaceの扱い（§26.6）
+
+受け入れ条件:
+
+- 従来レイアウトと、`workspaces`を1つだけ書いた組織の成果物がバイト一致
+- 2 workspaceの各アカウント行の集計値（需要・実課金・トークン・product構成）が、その
+  workspaceを単独の組織として実行した結果と一致（判定の合算はStep 45で入れる）
+- 副が始まる前の月の再生成が止まらない。始まった後の欠月はフラグなしで止まる
+
+#### Step 45: 人の層と判定（合算・払い出し・継続）
+
+依存:
+
+- Step 44
+
+対象:
+
+- `src/seat_analyzer/analyze/persons.py`（新設・純粋関数）
+- `src/seat_analyzer/report/stats.py`（部署別・チーム別を人単位で数える）
+- `tests/test_analyze.py`・`tests/test_stats.py`
+
+実装:
+
+- §26.4の人の行
+- 複数アカウント保有者の主の行を合算需要で判定し直す（§26.4の両軸の規則。履歴の各月も合算）
+- §26.5の払い出し判定・継続判定・複数アカウント保有者の実課金
+- 部署別・チーム別サマリを人の層から計算する（アカウント数を人数として数えない）
+
+受け入れ条件:
+
+- 主が$100・副が$300の合成データで、主の行の推奨が合算$400で決まる（単独$100なら降格に
+  なる例）
+- 各判定が定義どおり（合成データで閾値の境界・上限到達の1か月成立・払い出し月の除外・
+  「データ蓄積待ち」・κ無効の「判断材料なし」を含む）
+- 同じ入力から常に同じ行順（emailをタイブレークにする）
+- 単一workspaceの部署別・チーム別が不変
+
+#### Step 46: V2の合算（decision-evidence）
+
+依存:
+
+- Step 45
+
+対象:
+
+- `src/seat_analyzer/decision_evidence.py`
+- `src/seat_analyzer/report/evidence_csv.py`
+- `tests/test_decision_evidence.py`
+
+実装:
+
+- §26.9。複数アカウント保有者の`SubjectHistory`を月別合算で組み、主の行1本にする。副の行は
+  作らない
+- Identity解決はworkspaceごと（§26.4）。合算はemailで結ぶ
+- `workspace`列に主の名前を書く
+
+受け入れ条件:
+
+- 主$300・副$300の合成データで、evidenceの行が1本で需要$600になる
+- 副が始まる前の月は主だけの値で、合算の月と暦で連続する
+- 単一workspaceのdecision-evidenceがバイト一致
+- 語彙（`SeatAction`・`ReasonCode`）を増やさない
+
+#### Step 47: 複数workspaceの出力
+
+依存:
+
+- Step 46
+
+対象:
+
+- `src/seat_analyzer/report/`（markdown・details・html・csv_out・usage_csv・evidence_csv・text）
+- `src/seat_analyzer/templates/`
+- `examples/`（2 workspaceの合成組織を追加）
+- `tests/golden/`・`tests/test_golden.py`・`tests/test_report_split.py`
+
+実装:
+
+- §26.7
+
+受け入れ条件:
+
+- 単一workspaceのgoldenが不変
+- 2 workspaceの合成組織のgoldenを追加し、7種の成果物と横断サマリを固定する
+- dashboardの3不変条件（メールはローカル部のみ・$100以上は整数・外部通信なし）
+- 追加した文言は`check-text`を通す
+
+#### Step 48: 速報・doctorの人の検査・docs（v1.3.0）
+
+依存:
+
+- Step 47
+
+対象:
+
+- `src/seat_analyzer/analyze/preview.py`
+- `src/seat_analyzer/data_quality.py`（§26.8の人の検査）
+- `docs/usage.md`・`docs/reference.md`・`README.md`・`CHANGELOG.md`
+
+実装:
+
+- 速報をworkspaceごとに出し、人の需要合計を表に足す
+- 副にだけアカウントがある人の警告、members-infoの未登録を全workspaceのメールで見る
+- 入力レイアウト・config・レポートの節・CSVの列・移行手順（既存の3ディレクトリを主workspaceへ
+  移す。`members-info.csv`と`github-cache/`は動かさない）を文書化する
+
+受け入れ条件:
+
+- 単一workspaceの速報が不変
+- 移行手順どおりに動かした組織の出力が移行前とバイト一致（`workspaces`が1つのとき）
+
+#### Step 49: 切替の観測（Phase 2）
+
+依存:
+
+- Step 48
+- 両workspaceの週次エクスポートが同じ日に揃っていること
+
+対象:
+
+- `src/seat_analyzer/analyze/midmonth.py`
+- `src/seat_analyzer/report/markdown.py`・`src/seat_analyzer/report/details.py`
+
+実装:
+
+- 両workspaceの月初開始スナップショットで終端日が一致する区間について、2アカウント保有者の
+  需要増分を主・副で並べる。主が横ばいで副が伸びる区間が切替の観測になる
+
+受け入れ条件:
+
+- 終端日が一致しない区間は出さない（近い日付で無理に合わせない）
+- 単一workspaceの出力が不変
+
 ## 19. Milestone
 
 ### Milestone A: Core data
@@ -2900,6 +3090,16 @@ Step 40〜42
 - 購入席
 - 割当との分離
 - Dashboard
+
+### Milestone F: Multi-workspace
+
+Step 43〜49
+
+- workspaceの入れ子レイアウト
+- アカウント層と人の層の2層集計（利活用は合算・副の活用は分けて見る）
+- 副の払い出し判定・継続判定・複数アカウント保有者の実課金
+- V2の合算
+- 切替の観測（Phase 2）
 
 ### Future
 
@@ -2955,6 +3155,17 @@ uv run pytest
 organizations:
   example:
     github_org: example-org
+    # 複数のTeamスペースを運用する組織だけ書く（§26.3）
+    workspaces:
+      main:
+        primary: true
+        label: 主スペース
+      second:
+        label: 副スペース
+        fixed_seat: premium
+        credit_limit_default_usd: 0
+        evaluation_months: 2
+    secondary_breakeven_usd: 125.0
 
 product_policy:
   primary: ["Claude Code"]
@@ -3057,6 +3268,14 @@ V1のallowanceモデルに依存する出力（込み枠推定の3scenario、⚠
 - metadataだけを保存
 - rate limit時に部分結果を明示
 
+### Multi-workspace release（v1.3.0）
+
+- Step 43〜48完了
+- 単一workspaceの全goldenが不変
+- `workspaces`を1つだけ書いた組織が従来レイアウトとバイト一致
+- 2 workspaceの合成組織で`init-org` → `analyze` → `doctor`が通る
+- 実データで主workspaceの各アカウント行が単独実行と一致
+
 ## 24. 実装依頼テンプレート
 
 各実装は次の形式で依頼する。
@@ -3110,3 +3329,180 @@ docs/roadmap/implementation-design.md の「Step N: <名称>」だけを実装�
 ### Enterprise
 
 Teamの公式CSV・管理画面で不足が明確になった場合にのみ検討する。
+
+## 26. 複数workspace
+
+同一の組織が複数のTeamスペース（claude.ai上では別のorganization）を運用する場合の仕様。
+実装順はTrack 9（§18）。
+
+### 26.1 背景と前提
+
+- 運用: 同じ人が各スペースに1アカウントずつ持ち、片方の利用上限（5時間・1週）に当たったら
+  もう片方を使う。追加クレジットを積極的に使う代わりに、副スペースのシートを部長の裁量で
+  払い出す
+- 公式の前提: 1つのClaudeアカウント（同じメール）は複数のTeam組織に所属でき、利用上限は
+  メンバー単位でorganizationごとに持つ。利用量はStandardがProの1.25倍、Premiumが6.25倍で、
+  容量あたりの単価は両シートで同じ。したがってこの運用の経済的な意味は「容量を$125刻みで
+  買い足す手段を得ること」で、追加クレジットと比べると上限κで打ち切られず、消費した分の
+  課金でもない固定費になる
+- 用語: 組織（org）は`input/<組織名>/`＝レポート1セットの単位。workspaceはTeamスペース1つ。
+  従来は両者が一致していた。レポートの読者は組織の担当者で変わらないので、組織分離の
+  規則（他組織の情報を書かない）はそのまま
+- 対象外: PremiumをStandard×2へ置き換える推奨は出さない。副スペースのシート種別は運用方針で
+  決まる（`fixed_seat`）
+
+### 26.2 入力レイアウト
+
+```
+input/<組織名>/
+  members-info.csv          人単位（全workspace共通）。追加クレジット上限の列は主workspaceの設定
+  github-cache/             組織単位（GitHubは人に紐づくので動かさない）
+  <workspace名>/
+    spend/
+    members/
+    code-analytics/
+    admin/                  管理画面の写しはworkspaceごと
+```
+
+- 従来レイアウト（組織直下に`spend/`）は「workspaceが1つの組織」として今までどおり読む
+- 2形式の混在（組織直下に`spend/`があり、子ディレクトリにも`spend/`がある）はエラー
+- workspaceの発見は構造判定（`spend/`を持つ子ディレクトリ）。名前の規則は組織名と同じ
+- configの`organizations.<組織>.workspaces`に発見した名前が全部書かれ、主が1つに決まること。
+  食い違い（configにあるがディレクトリが無い・ディレクトリがあるがconfigに無い・主が0または
+  2以上）はエラーにする。ディレクトリの置き忘れや綴りの違いを黙って無視しない
+- `workspaces`に1つだけ書いた組織の出力は従来レイアウトとバイト一致させる。移行の検証手段に
+  する
+
+### 26.3 Config
+
+`organizations.<組織>.workspaces.<名前>`の下に書けるキー:
+
+- `primary`: 主workspace。ちょうど1つを`true`にする
+- `label`: レポートの表示名。省略時はディレクトリ名
+- `fixed_seat`: このworkspaceで払い出すシート種別が運用方針として固定されている場合に書く
+  （`standard` / `premium`）。書いたworkspaceのアカウントはV1のシート損益分岐判定の対象外
+  （ステータス「対象外（固定シート）」）になり、人の層の継続判定（§26.5）だけが働く。
+  書かなければ従来どおりV1判定
+- `credit_limit_default_usd`: そのworkspaceのアカウントの追加クレジット上限κの既定。主は
+  従来どおりmembers-infoの列を読み、既定値は列が空欄のときだけ使う。副は列を読まず既定値を
+  使う（列は主の設定だから）。無ければ不明
+- `evaluation_months`: §26.5の判定に必要な連続月数。省略時は`decision.hysteresis_months`
+
+`organizations.<組織>`直下に`secondary_breakeven_usd`（§26.5の損益分岐。払い出し判定の
+実課金閾値と継続判定の需要閾値の両方）を置ける。省略時は副の`fixed_seat`の価格（無ければ
+Premiumの価格）。
+
+κの解決は「アカウント→κ」の1関数に閉じる。副スペースでも人ごとに上限が違う運用になったら、
+`<workspace>/members-info.csv`（emailと追加クレジット上限の列だけ）で上書きできるようにする。
+この拡張で呼び出し側が変わらない形にしておくが、今回は実装しない。
+
+### 26.4 集計の2層
+
+- アカウント層＝(email, workspace)。V1の集計・判定・ヒステリシス・上限フラグ・κ・E分布・
+  月中差分・前月比・メンバー変動・Claude Code活動をworkspaceごとに従来どおり計算する。
+  ヒステリシスの月はそのworkspaceにspendがある月だけを数える（副が始まる前の月を需要0として
+  数えない）
+- 人の層＝email。全workspaceのアカウント行を束ねる。members-infoの部署・チーム・職種・備考は
+  人の属性なので全アカウントに同じ値を付ける。部署別・チーム別サマリは人の層で数える
+  （アカウント数を人数として数えない）
+- 人の行が持つ値: 保有シート（workspace→シート種別）・シート費合計・需要合計・実課金合計・
+  現状費用合計・主と副それぞれの需要と実課金・副の需要比率
+- 判定に入れる需要の規則（両軸）: どのくらい利活用しているかは人の合算で見る。副を活用して
+  いるかは主と副を分けて見る
+  - 複数アカウント保有者の主の行は、V1判定（推奨・ヒステリシス・確度・上限フラグ・付与候補の
+    方向）の需要を全workspaceの合算に置き換えて判定する。履歴の各月も合算する。実課金・κ・
+    現シート・シート変更eventは主のもの（主シートの費用と設定だから）。推奨表の需要列は
+    合算値で、主のみの需要は人の表と details に出す
+  - 副の行は`fixed_seat`があれば対象外。無ければ従来どおり副単独の需要で判定する
+  - E分布・上限到達・月中差分・メンバー変動・Claude Code活動・実課金の整合性警告は
+    アカウント固有の量なのでアカウントごと
+  - 1アカウントの人は合算＝単独なので、単一workspaceの組織は何も変わらない
+- Identity解決（stable ID）はworkspaceごとに行う。spendの`user_id`はorganizationごとに
+  振られうるので、workspaceをまたいで比較すると同一人物がconflictになる。workspace間の
+  同一人物の結合はemailで行う（同じアカウントを両スペースへ招待する運用が前提）
+- 実装形: 既存の`analyze()`をworkspaceごとに呼び、組織単位の容れ物へ束ねる。単一workspaceの
+  組織は今の`AnalysisResult`がそのまま流れ、出力はバイト一致
+
+### 26.5 人の層の判定
+
+参考セクションとして出し、V1の主判定（変更推奨）は変えない。判断したい仮説は2つ。
+
+- (1) 副を持たない人に副を払い出すべきか（主のシートを使い切っていて、副を足せばさらに
+  仕事が進むか）
+- (2) 副を持つ人が副を十分に活用しておらず、1アカウント運用へ戻すべきか
+
+共通の物差し: 追加クレジットはAPI等価単価で課金される（実課金行がtokens×単価と一致する
+ことは確認済み）。したがって副アカウントの需要（API換算USD）は、同じ利用を副なしで追加
+クレジットで賄った場合の課金額に等しい。副のシート料との比較がそのまま損益分岐になり、
+両方向の判定に同じ閾値`secondary_breakeven_usd`（既定＝副の`fixed_seat`の価格）を使う。
+Premiumシートの込み容量は非公開で「容量の何%を使ったか」は測れないので、活用の度合いは
+この金額で測る。
+
+1. 払い出し判定（副を持たない人。主のシートが副の`fixed_seat`と同じ種別で、主のκが有効な
+   場合）
+   - 候補: 対象月に主の追加クレジット上限へ到達している（容量不足が確定しているので1か月で
+     足りる）、または主の実課金がbreakeven以上の月が`evaluation_months`連続（副の固定費より
+     多くをクレジットに払っている）
+   - 観察: 主の実課金が0より大きくbreakeven未満（枠は使い切るが、クレジットのほうが安い）
+   - 不要: 主の実課金が0（込み枠で足りている。需要の大小は問わない）
+   - 判断材料なし: 主のκが無効・不明（実課金が上限到達を語らない）。主がStandardの人はV1の
+     昇格判定が先
+   - 併記する材料: 月別の実課金・上限到達の有無・需要・Code比率・LoC（あれば）。「さらに
+     仕事が進むか」は、上限到達（作業が止まった事実）とCode主体の利用で読む
+2. 継続判定（副にシートを持つ人）
+   - 継続: 副の需要がbreakeven以上（クレジットで賄うより安い）。副の需要が主のκを超える月は
+     「クレジットでは賄えなかった量」として明示する
+   - 戻す候補: 副の需要がbreakeven未満の完全月が`evaluation_months`連続。削減見込み＝副の
+     シート料−副の需要（戻した場合にクレジットへ回る分を差し引く）。副の需要が
+     `trend.idle_usd`未満なら「遊休」と併記する
+   - データ蓄積待ち: 副を持ってからの完全月が`evaluation_months`に満たない（払い出した月は
+     不完全月として数えない）
+3. 複数アカウント保有者の実課金（事実の一覧）: 副を持ちながら主で実課金が発生した人。副に
+   切り替えずクレジットを使っている運用の逸脱か、両方の枠を使い切っている（さらに容量が要る）
+   かのどちらかで、月別の副の需要と並べて読む
+
+判定は人ごとに月次で行い、ステータス（候補 / 観察 / 不要 / 判断材料なし / 継続 / 戻す候補 /
+データ蓄積待ち）と連続月数を出す。閾値をそのworkspaceのシート料から導くので、副が
+Standardの運用でも同じ規則で動く。
+
+### 26.6 対象月にworkspaceのデータが無いとき
+
+- まだ始まっていないworkspace（対象月以前にspendが1つも無い）は警告して飛ばす。過去月の
+  再生成で止まらないようにする
+- 始まっているのに対象月のspendが無いworkspaceはエラー。`analyze --allow-missing-workspace <名前>`
+  を付けると需要0として続行し、その旨をレポートの警告に残す（利用が無くエクスポートしなかった
+  月のための逃げ道）。membersは従来の「月末に最も近いスナップショット」で解決する
+
+### 26.7 出力
+
+組織ごとに1セットのまま。複数workspaceの組織だけ形が変わる。
+
+- report: サマリにworkspace別（人数・シート内訳・シート費・実課金）と組織合計、人数と
+  アカウント数の両方。推奨表にworkspace列。「複数スペースの利用」節を新設し、人の表・
+  払い出し判定・継続判定・複数アカウント保有者の実課金（§26.5）を置く。前月からの変化・月中の推移・メンバー変動・Claude Code活動はworkspaceごとに
+  小見出しで並べる（主が先）
+- details / dashboard: workspace列と人の表（dashboardはタブ）
+- recommendations / usage-summary / decision-evidence: `workspace`列をemailの次に足す
+- 横断サマリ（`reports/summary/`）: 人数とアカウント数
+- 速報: workspaceごとに従来の一次判断を出し、人の需要合計を表に足す
+- workspace名は他組織の禁止語に加えない（一般名を推奨する。Teamの表示名を使うなら`label`に書く）
+
+### 26.8 doctor
+
+- 構造: 混在レイアウト・configとの不一致・主の不在と重複
+- 対象月: workspace別のspend/membersの有無（§26.6の規則でerror/warning）
+- 人: 副にだけアカウントがある人（主に居ない）を警告する。許容するが、主の払い出し漏れか
+  メールの相違の可能性がある。members-infoの未登録は全workspaceのメールで見る
+
+### 26.9 V2との関係
+
+V2（decision-evidence）も§26.4の両軸に従う。複数アカウント保有者は主の行1本にし、
+`SubjectHistory`の需要（全product・Code・補助の判定）を全workspaceの月別合算で組む。
+現シート・κ・実課金・シート変更event・加入の判定は主のもの。副の行はV2に持たない（副を
+どうするかは§26.5の継続判定が担う）。V2の昇格・降格は主シートに対する結論と読む約束に
+するので、語彙（`SeatAction`・`ReasonCode`）は増やさない。`workspace`列は主の名前を書く。
+
+### 26.10 段階
+
+- Phase 1（Step 43〜48）: §26.2〜§26.9の全部。v1.3.0として出す
+- Phase 2（Step 49）: 切替の観測。両workspaceの週次エクスポートが同じ日に揃うことが前提
