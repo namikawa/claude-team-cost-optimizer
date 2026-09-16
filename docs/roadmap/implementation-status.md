@@ -2,7 +2,8 @@
 
 - 最終更新: 2026-09-17
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 9（複数workspace・設計書§26）の Step 43 から。同一の組織が複数の Team
+- 次のタスク: Track 9（複数workspace・設計書§26）の Step 44（workspace別の分析と結合）。
+  Step 43（workspaceの発見と設定）は完了した（2026-09-17）。同一の組織が複数の Team
   スペースを運用し、同じ人が各スペースに1アカウントずつ持って使い分ける運用を、組織1セットの
   レポートで集計・分析できるようにする。Phase 1（Step 43〜48）を v1.3.0 として出し、
   2026-09 の分析（10月初旬）に間に合わせることを目標にする（間に合わなければ 2026-10 の
@@ -109,8 +110,8 @@
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 7 | 0 | 0 | 1 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| 9 | 複数workspace | 0 | 0 | 0 | 7 | 0 |
-| **合計** |  | **30** | **0** | **0** | **26** | **0** |
+| 9 | 複数workspace | 1 | 0 | 0 | 6 | 0 |
+| **合計** |  | **31** | **0** | **0** | **25** | **0** |
 
 ## 5. Step一覧
 
@@ -216,7 +217,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 
 | Step | タスク | ステータス | 完了日 |
 |---|---|---|---|
-| 43 | workspaceの発見と設定 | `未着手` |  |
+| 43 | workspaceの発見と設定 | `完了` | 2026-09-17 |
 | 44 | workspace別の分析と結合 | `未着手` |  |
 | 45 | 人の層と判定（合算・払い出し・継続） | `未着手` |  |
 | 46 | V2の合算（decision-evidence） | `未着手` |  |
@@ -225,6 +226,43 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 49 | 切替の観測（Phase 2） | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-17 — Step 43: workspaceの発見と設定
+
+- 入れ子レイアウト`input/<組織名>/<workspace名>/spend/`を構造判定（`spend/`を持つ子
+  ディレクトリ）で発見する`ingest.discover_workspaces` / `detect_workspace_layout` /
+  `workspace_layout`を追加した。従来レイアウトは「workspace が1つの組織」としてそのまま
+  読み、直下と子の両方に`spend/`がある混在はどちらとしても読まずに止める。`discover_orgs`
+  は入れ子レイアウトの組織も返す
+- config の`organizations.<組織名>.workspaces.<名前>`（`primary` / `label` / `fixed_seat` /
+  `credit_limit_default_usd` / `evaluation_months`）と組織直下の`secondary_breakeven_usd`を
+  追加した。`_DYNAMIC_ENTRIES`は利用者が名前を決めるキーの位置をワイルドカードで伏せて
+  照合する形に一般化し、他のセクションの厳格さ（未知キー・型・null の拒否）は変えていない。
+  `primary: true`はちょうど1つ、workspace 名は組織名と同じ規則で検証する。`github_org`は
+  任意になり、GitHub 分析の有効化は`github_collect.gated_orgs`の「非空」の1条件に揃えた
+- doctor に構造検査（`WORKSPACE_LAYOUT_MIXED` / `WORKSPACE_CONFIG_MISMATCH` /
+  `WORKSPACE_PRIMARY_INVALID`）を追加した。入れ子レイアウトの組織では`inspect_input`を
+  workspace ごとに回し、issue の scope に`workspace`を足す（検査本体には引数を通さず後処理で
+  足すので、従来レイアウトの出力はバイト単位で不変）。config にだけ書かれた組織は設定検査
+  （`workspace_config_issues`）が GitHub の有効化とは独立に報告する
+- 混入チェックの組織判定（`leakcheck._is_org_input_dir`）は入れ子レイアウトも組織とみなす。
+  列挙は`_scandir`の fail-closed のまま。workspace 名は禁止語に加えない
+- `init-org --workspaces main,second`で入れ子の雛形を作る。従来レイアウトのデータがある組織への
+  指定と、入れ子レイアウトの組織へのフラグ無しの再実行は、混在を作らないよう1つも作らずに止める
+- 入れ子レイアウトの組織への`analyze` / `collect` / `discuss`は、Step 44 で workspace ごとの
+  分析を結線するまで明示的なメッセージで止める（無関係な「spend/ がありません」で失敗させない）
+- テスト: 2190 passed（+77件）、ruff 緑、`check-text --diff`は0件。CI は3 OS の test と
+  package の4ジョブ緑。実データの3組織（従来レイアウト）で doctor の出力に差分なし
+- 外部レビュー（codex 2巡・受け入れ基準8点に範囲固定）: 1巡目の mid 3件（config だけの組織を
+  doctor が報告しない・入れ子の組織への`init-org`再実行が混在を作る・workspace 名の未検証）を
+  採用して修正した。2巡目の mid 1件（入力に組織が0件のとき設定検査が走らない。既存の GitHub の
+  設定検査と同じ挙動で、その場合も入力不在の issue で終了コード1になる）と low 1件（組織名の
+  キーに書かれた文字列がそのまま message に載る）は、現実の運用で踏まないため不採用とした
+- Step 44 への申し送り: `ingest.detect_workspace_layout` / `workspace_layout` /
+  `workspace_settings(cfg, org)`が土台。`cli._reject_nested_layout`を workspace ごとの
+  `analyze()`の結線へ置き換える。κ・`fixed_seat`・`evaluation_months`・
+  `secondary_breakeven_usd`は config から読めるがまだどこからも参照していない。発見した
+  workspace 名の妥当性検証は分析経路で掛けるかを判断する
 
 ### 2026-09-04 — Step 38: github-summary.csv
 
