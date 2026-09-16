@@ -14,6 +14,7 @@ from seat_analyzer.data_quality import (
     issues_to_canonical_json,
     issues_to_json,
     sort_issues,
+    workspace_config_issues,
     workspace_issues,
 )
 from seat_analyzer.domain import IssueCode, QualityIssue, Severity
@@ -1050,3 +1051,43 @@ def test_inspect_input_without_workspace_keeps_scope_unchanged(make_input, cfg):
     assert "MISSING_MEMBERS" in _codes(issues)
     for issue in issues:
         assert "workspace" not in issue.scope
+
+
+def test_workspace_config_issues_report_an_org_without_a_directory(cfg):
+    """組織ディレクトリごと無い設定は、組織ごとの検査に現れないのでここで報告する。"""
+    configured = _cfg_with_workspaces(
+        cfg, "org-missing", {"main": {"primary": True}, "second": {}})
+
+    issues = workspace_config_issues(configured, ["org-a", "org-b"])
+
+    assert _codes(issues) == ["WORKSPACE_CONFIG_MISMATCH"]
+    assert issues[0].severity is Severity.ERROR
+    assert "org-missing" in issues[0].message
+    assert "main/second" in issues[0].message
+    assert "org-a/org-b" in issues[0].message
+    assert issues[0].scope["config_org"] == "org-missing"
+    assert issues[0].scope["workspaces"] == ("main", "second")
+    assert "org" not in issues[0].scope and "month" not in issues[0].scope
+
+
+def test_workspace_config_issues_are_silent_when_the_org_exists(cfg):
+    configured = _cfg_with_workspaces(cfg, "org-a", {"main": {"primary": True}})
+    assert workspace_config_issues(configured, ["org-a"]) == []
+
+
+def test_workspace_config_issues_ignore_organizations_without_workspaces(cfg):
+    """workspaces を書いていない組織は GitHub 側の検査（有効なら）の担当。"""
+    configured = {**cfg, "organizations": {"org-missing": {"github_org": "example-org"}}}
+    assert workspace_config_issues(configured, ["org-a"]) == []
+    assert workspace_config_issues(cfg, ["org-a"]) == []
+
+
+def test_workspace_config_issues_are_ordered_by_name(cfg):
+    configured = {**cfg, "organizations": {
+        "org-z": {"workspaces": {"main": {"primary": True}}},
+        "org-m": {"workspaces": {"main": {"primary": True}}},
+    }}
+    issues = workspace_config_issues(configured, [])
+
+    assert [i.scope["config_org"] for i in issues] == ["org-m", "org-z"]
+    assert "存在する組織: なし" in issues[0].message

@@ -1923,3 +1923,65 @@ def test_discuss_rejects_nested_layout(make_input, tmp_path, capsys):
                "--output-dir", str(tmp_path / "reports"), "--month", "2026-06"])
     assert rc == 1
     assert "複数 workspace" in capsys.readouterr().err
+
+
+def test_doctor_reports_configured_workspaces_without_an_org_directory(
+    make_input, tmp_path, capsys
+):
+    """組織ディレクトリごと無い設定を黙って無視しない（config と実体の突き合わせ）。"""
+    input_dir = _clean_org(make_input)
+    config_path = _workspace_config(tmp_path, (
+        "organizations:\n"
+        "  org-missing:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+    ))
+    rc = main(["doctor", "--config", config_path, "--input-dir", str(input_dir),
+               "--month", "2026-06", "--format", "json"])
+    assert rc == 1
+    issues = json.loads(capsys.readouterr().out)
+    assert [i["code"] for i in issues] == ["WORKSPACE_CONFIG_MISMATCH"]
+    assert issues[0]["scope"]["config_org"] == "org-missing"
+
+
+def test_doctor_prints_workspace_config_issues_in_the_settings_section(
+    make_input, tmp_path, capsys
+):
+    input_dir = _clean_org(make_input)
+    config_path = _workspace_config(tmp_path, (
+        "organizations:\n"
+        "  org-missing:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+    ))
+    assert main(["doctor", "--config", config_path, "--input-dir", str(input_dir),
+                 "--month", "2026-06"]) == 1
+    out = capsys.readouterr().out
+    assert "=== 設定検査 ===" in out
+    assert "org-missing" in out
+    assert "エラー 1 件" in out
+
+
+def test_init_org_without_workspaces_refuses_a_nested_org(tmp_path, capsys):
+    """入れ子レイアウトの組織へ再実行しても、組織直下に雛形を作って混在にしない。"""
+    input_dir, output_dir = tmp_path / "input", tmp_path / "reports"
+    args = ["--input-dir", str(input_dir), "--output-dir", str(output_dir)]
+    assert main(["init-org", "org-x", "--workspaces", "main,second", *args]) == 0
+    before = sorted(p.relative_to(input_dir).as_posix() for p in input_dir.rglob("*"))
+
+    assert main(["init-org", "org-x", *args]) == 1
+
+    err = capsys.readouterr().err
+    assert "org-x" in err and "main/second" in err and "--workspaces" in err
+    assert sorted(
+        p.relative_to(input_dir).as_posix() for p in input_dir.rglob("*")) == before
+
+
+def test_init_org_without_workspaces_refuses_a_mixed_org(make_input, capsys):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x")
+    make_input({"2026-06": [spend_row("a@x.jp", 10.0)]}, org="org-x", workspace="second")
+    assert main(["init-org", "org-x", "--input-dir", str(input_dir),
+                 "--output-dir", str(input_dir.parent / "reports")]) == 1
+    assert "second" in capsys.readouterr().err

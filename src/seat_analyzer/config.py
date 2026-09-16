@@ -15,7 +15,13 @@ import yaml
 
 from .admin_inputs import ORGANIZATION_OPTIONAL_COLUMNS, USERS_OPTIONAL_COLUMNS
 from .github_collect import is_github_org_name
-from .ingest import MEMBERS_OPTIONAL_COLUMNS, REQUIRED_COLUMNS, SPEND_OPTIONAL_COLUMNS
+from .ingest import (
+    MEMBERS_OPTIONAL_COLUMNS,
+    REQUIRED_COLUMNS,
+    SPEND_OPTIONAL_COLUMNS,
+    check_org_name_collisions,
+    validate_org_name,
+)
 from .product_usage import normalize_product_name
 
 # 入力の正準化で参照する任意列（セクション → 正準名）。入力CSV上では省略できるが、
@@ -505,6 +511,7 @@ def _validate_workspaces(name: str, entry: dict, errors: list[str]) -> None:
         return
 
     primaries: list[str] = []
+    named: list[str] = []
     for workspace, settings in workspaces.items():
         where = f"organizations.{name}.workspaces.{workspace}"
         if not _is_text(workspace):
@@ -513,6 +520,15 @@ def _validate_workspaces(name: str, entry: dict, errors: list[str]) -> None:
                 f"{workspace!r}"
             )
             continue
+        # 名前の規則は組織名と同じ（ディレクトリ名になり、レポートの表示にも使う）。
+        # 検証しないと、パス区切りや予約名を書いた設定がロードを通り、ディレクトリと
+        # 突き合わせる検査のメッセージにそのまま載る
+        try:
+            validate_org_name(str(workspace))
+        except ValueError as exc:
+            errors.append(f"{where} は workspace 名として使えません: {exc}")
+        else:
+            named.append(str(workspace))
         if not isinstance(settings, dict):
             errors.append(f"{where} は辞書が必要です")
             continue
@@ -537,6 +553,13 @@ def _validate_workspaces(name: str, entry: dict, errors: list[str]) -> None:
         months = settings.get("evaluation_months")
         if months is not None and (not _is_integer(months) or months < 1):
             errors.append(f"{where}.evaluation_months は 1 以上の整数が必要です")
+
+    # 同じ入力ディレクトリを指しうる名前の組み合わせ（大文字小文字・文字の合成の違い）
+    # は、どちらの workspace の設定なのかが環境によって変わるため拒否する
+    try:
+        check_org_name_collisions(named)
+    except ValueError as exc:
+        errors.append(f"organizations.{name}.workspaces の名前が衝突しています: {exc}")
 
     if not workspaces:
         return

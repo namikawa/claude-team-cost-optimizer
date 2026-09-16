@@ -455,16 +455,30 @@ def _run_init_org(args: argparse.Namespace) -> int:
     # 1つでも不正・衝突があれば1つも作らない（途中まで作ると片付けが要る）
     ingest.validate_org_names(args.orgs)
     workspaces = _parse_workspaces(args.workspaces)
+    # 混在レイアウトを作らないよう、既存の配置と指定の組み合わせを書き込む前に確かめる
+    # （直下と子ディレクトリの両方に spend/ がある形は分析も検査もできない）
     if workspaces:
-        # 従来レイアウトのデータがある組織へ workspace を足すと、直下と子の両方に
-        # spend/ がある混在レイアウトになり、分析も検査もできなくなる。作る前に止める
-        mixed = [org for org in args.orgs if (input_dir / org / "spend").is_dir()]
-        if mixed:
+        conflicting = [org for org in args.orgs if (input_dir / org / "spend").is_dir()]
+        if conflicting:
             raise ValueError(
-                f"組織 {'/'.join(mixed)} には直下に spend/ があるため --workspaces で"
+                f"組織 {'/'.join(conflicting)} には直下に spend/ があるため --workspaces で"
                 "雛形を作れません（直下と子ディレクトリの両方に spend/ がある形は"
                 "分析できません）。先に既存のデータを workspace のディレクトリへ"
                 "移動してください"
+            )
+    else:
+        # 入れ子レイアウトの組織へ直下の雛形を作ると混在になる。再実行で黙って壊さない
+        nested = []
+        for org in args.orgs:
+            layout, found = ingest.detect_workspace_layout(input_dir / org)
+            if layout != ingest.WORKSPACE_LAYOUT_SINGLE:
+                nested.append(f"{org}（{'/'.join(found)}）")
+        if nested:
+            raise ValueError(
+                f"組織 {'、'.join(nested)}には workspace ごとの spend/ があるため、"
+                "組織直下に雛形を作れません（直下と子ディレクトリの両方に spend/ が"
+                "ある形は分析できません）。"
+                "--workspaces <名前,名前> を付けて実行してください"
             )
 
     for org in args.orgs:
@@ -712,9 +726,10 @@ def _run_doctor(args: argparse.Namespace) -> int:
 
     # どの組織にも属さない設定の問題は、組織別のセクションの後に独立して出す
     # （JSON は従来どおり全 issue を正準順序で連結する）
-    config_issues = (
-        [] if known_orgs is None else data_quality.github_config_issues(cfg, known_orgs)
-    )
+    config_issues = [] if known_orgs is None else data_quality.sort_issues([
+        *data_quality.github_config_issues(cfg, known_orgs),
+        *data_quality.workspace_config_issues(cfg, known_orgs),
+    ])
     all_issues.extend(config_issues)
     if config_issues and not as_json:
         print("\n=== 設定検査 ===")

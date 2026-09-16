@@ -1325,3 +1325,55 @@ def test_primary_must_be_boolean(tmp_path):
         ValueError, match="organizations.example.workspaces.main.primary は真偽値"
     ):
         load_config(path)
+
+
+@pytest.mark.parametrize("workspace,fragment", [
+    ("a/b", "使えない文字"),
+    ('"/tmp/workspace-demo"', "使えない文字"),
+    ("summary", "予約"),
+    ("spend", "予約"),
+    (".hidden", "不正"),
+    ("NUL", "予約デバイス名"),
+])
+def test_workspace_name_follows_the_org_name_rules(tmp_path, workspace, fragment):
+    """workspace 名はディレクトリ名になるため、規則は組織名と同じ。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        f"      {workspace}:\n"
+        "        primary: true\n"
+    ))
+    with pytest.raises(ValueError) as excinfo:
+        load_config(path)
+    message = str(excinfo.value)
+    assert "workspaces" in message and fragment in message
+
+
+def test_workspace_names_that_collide_are_rejected(tmp_path):
+    """大文字小文字だけが違う名前は、同じディレクトリを指す環境がある。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "      Main: {}\n"
+    ))
+    with pytest.raises(
+        ValueError, match="organizations.example.workspaces の名前が衝突しています"
+    ):
+        load_config(path)
+
+
+def test_valid_workspace_names_are_accepted(tmp_path):
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "      副スペース: {}\n"
+    ))
+    assert sorted(
+        load_config(path)["organizations"]["example"]["workspaces"]) == ["main", "副スペース"]
