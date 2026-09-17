@@ -519,8 +519,7 @@ def workspace_issues(
         ))
         return sort_issues(issues)
 
-    missing = [name for name in configured if name not in set(found)]
-    unexpected = [name for name in found if name not in set(configured)]
+    missing, unexpected = ingest.compare_workspaces(found, configured)
     if missing or unexpected:
         detail = "、".join(part for part in (
             f"config にあるがディレクトリが無い: {'/'.join(missing)}" if missing else "",

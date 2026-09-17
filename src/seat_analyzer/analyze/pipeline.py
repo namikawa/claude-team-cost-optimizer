@@ -6,6 +6,7 @@ import calendar
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -26,6 +27,9 @@ from .credits import (
     _usage_credits_cfg,
 )
 from .midmonth import _compute_trend, _diff_active, _midmonth_diffs
+
+if TYPE_CHECKING:  # 実行時の import は循環する（workspaces が analyze を呼ぶため）
+    from .workspaces import WorkspaceContext
 
 # モデル名を表示用に短縮する（claude-opus-4-8 → Opus 4.8, claude-fable-5 → Fable 5）
 _MODEL_SHORT_RE = re.compile(r"(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?", re.IGNORECASE)
@@ -50,6 +54,9 @@ STATUS_WATCH = "要観察"
 STATUS_WATCH_WAIT = "要観察（データ蓄積待ち）"
 STATUS_KEEP = "現状維持"
 STATUS_UNKNOWN = "シート不明"
+# 運用方針でシート種別が決まっている workspace（config の fixed_seat）のアカウント。
+# 損益分岐で選び直す対象ではないので、未割当と同じく判定の対象外に置く
+STATUS_FIXED_SEAT = "対象外（固定シート）"
 STATUS_EXCLUDED = "対象外（シート未割当）"
 
 # 速報モードの一次判断ラベル（report パッケージの表示順・バッジ分岐と結合。値は変更しないこと）。
@@ -67,6 +74,10 @@ PREVIEW_IDLE_OBS_USD = 1.0
 # Identity 証拠として取り出す列。spend・members のどちらも ingest が任意列を NA で
 # 補完するため、入力 CSV に列が無くても常に存在する
 _IDENTITY_COLUMNS = ("email", "account_uuid", "user_id")
+
+# 対象月の spend を読まずに需要 0 として分析したとき、sources["spend"] に残す印。
+# 採用ファイルのパスが入る位置なので、パスと取り違えない固定の文言にする
+NO_USAGE_SOURCE = "(利用なしとして扱う)"
 
 
 @dataclass(frozen=True)
@@ -114,6 +125,10 @@ class AnalysisResult:
     product_usage: ProductUsage | None = None
     # V2 判定の材料（decision_context=True で分析したときだけ入る）
     decision_context: DecisionContext | None = None
+    # 月 → ユーザ×月集計（aggregate_month の結果）。この分析で読んだ履歴そのもので、
+    # 複数 workspace の組織で人ごとに月別の需要を束ね直す側が読む（V1 の判定・出力は
+    # users と summary だけを見るので、ここを読んでも成果物は変わらない）
+    monthly: dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 def _seat_cost(api_cost: float, seat: str, scenario: str, cfg: dict) -> float:
@@ -168,6 +183,14 @@ def aggregate_month(spend_df: pd.DataFrame) -> pd.DataFrame:
         "billed": ("billed_usd", "sum"),
     }
     grouped = spend_df.groupby("email").agg(**agg_spec)
+    if grouped.empty:
+        # 行が1つも無い明細（利用が無かった月）。groupby().apply() はグループが1つも
+        # 無いと空の DataFrame を返し、構成比の列へ代入できないため、列の形だけを揃える。
+        # 列の有無の規則は行がある場合と同じにする（product 列が無ければ作らない）
+        if "product" in spend_df.columns:
+            grouped["product_breakdown"] = pd.Series([], index=grouped.index, dtype="object")
+        grouped["model_breakdown"] = pd.Series([], index=grouped.index, dtype="object")
+        return grouped.reset_index()
 
     if "product" in spend_df.columns:
         # product 構成比は「利用回数（リクエスト数）」基準。Cowork/Chat は API コストが
@@ -244,17 +267,31 @@ def _load_spend_history(
     *,
     snapshot_active: bool,
     decision_context: bool = False,
+    assume_no_usage: bool = False,
 ) -> _SpendHistory:
     """対象月までのスペンドを読み、全月へ同じ需要基準を適用する。
 
     decision_context=True のときだけ、V2 判定の材料（全月の product 特徴量と対象月の
     Identity 証拠行）も併せて組み立てる。
+
+    assume_no_usage=True は対象月のファイルを読まず、空の明細（＝需要 0 の観測）で
+    代替する。過去月は従来どおりファイルから読む。
     """
     warnings: list[str] = []
     raw: dict[str, pd.DataFrame] = {}
     sources: dict[str, str] = {}
     complete: dict[str, bool] = {}
     for current_month in months_used:
+        if assume_no_usage and current_month == month:
+            raw[current_month] = pricing.add_computed_cost(ingest.empty_spend(), cfg)
+            sources[current_month] = NO_USAGE_SOURCE
+            # 利用が無かった月そのものなので、部分月ではなく全月の観測として扱う
+            complete[current_month] = True
+            warnings.append(
+                f"{current_month} のスペンドレポートが無いため、需要 0（利用なし）として"
+                "分析しています"
+            )
+            continue
         result = ingest.load_spend(
             input_dir,
             current_month,
@@ -285,7 +322,17 @@ def _load_spend_history(
     )
 
     target_user_rows = raw[month][raw[month]["email"].str.contains("@", na=False)]
-    basis, basis_notes = pricing.resolve_cost_basis(target_user_rows, cfg)
+    # 需要基準は全月へ同じものを適用するため、行のある月から決める。対象月を需要 0 と
+    # して扱う場合に空の明細から決めると、過去月の spend 列の意味まで取り違えたまま
+    # 全月に適用されるので、直近の行がある月へ遡る
+    basis_rows = target_user_rows
+    if assume_no_usage:
+        for past_month in reversed([m for m in months_used if m != month]):
+            past_rows = raw[past_month][raw[past_month]["email"].str.contains("@", na=False)]
+            if not past_rows.empty:
+                basis_rows = past_rows
+                break
+    basis, basis_notes = pricing.resolve_cost_basis(basis_rows, cfg)
     warnings.extend(basis_notes)
 
     monthly: dict[str, pd.DataFrame] = {}
@@ -294,7 +341,8 @@ def _load_spend_history(
     monthly_product_usage: dict[str, ProductUsage] = {}
     for current_month, raw_df in raw.items():
         df = pricing.apply_cost_basis(raw_df, basis)
-        if current_month == month and basis == "net_spend":
+        # 行が無い月に突合を掛けると「spend 列が無い」と同じ結果になるため対象外にする
+        if current_month == month and basis == "net_spend" and not df.empty:
             warnings.extend(pricing.validate_spend(df, cfg))
 
         # ユーザ非帰属の組織利用（例: "(org service usage)" の Code Review 等）は
@@ -363,20 +411,47 @@ def _min_saving(cfg: dict) -> float:
     return float(cfg["decision"]["buffer_ratio"]) * seat_diff
 
 
+def credit_limit_for(column_value: float | None,
+                     workspace: WorkspaceContext | None) -> float:
+    """アカウントの追加クレジット上限 κ を解決する（不明は NaN）。
+
+    主 workspace（単一 workspace の組織を含む）は members-info の列を読み、未記入の
+    ときだけ workspace の既定値を使う。副 workspace は列を読まず既定値を使う（列は
+    主の設定で、副のアカウントの上限ではないため）。
+
+    「アカウント → κ」の解決はこの1関数に閉じる。副でも人ごとに上限が違う運用に
+    なったときの上書き（<workspace>/members-info.csv）は、この関数の引数の中で解決
+    できる形にしておく（呼び出し側は変えない）。
+    """
+    default = (
+        float("nan") if workspace is None or workspace.credit_limit_default_usd is None
+        else float(workspace.credit_limit_default_usd)
+    )
+    if workspace is not None and not workspace.primary:
+        return default
+    if column_value is None or pd.isna(column_value):
+        return default
+    return float(column_value)
+
+
 def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict,
-                        sources: dict, month: str | None = None) -> list[str]:
+                        sources: dict, month: str | None = None,
+                        workspace: WorkspaceContext | None = None) -> list[str]:
     """任意ファイル members-info の department/team/role/note/credit_limit_usd を users に付与する。
 
-    未登録メンバーは空文字列（credit_limit_usd は NaN）。members-info にだけ居るメールは
-    行を追加しない。ファイルが読めた場合のみ sources["members_info"] にパスを記録し、
-    ロード時の警告（スナップショット解決・不正な上限値）と未登録ユーザの警告を返す。
+    未登録メンバーは空文字列（credit_limit_usd は κ の既定値、無ければ NaN）。
+    members-info にだけ居るメールは行を追加しない。ファイルが読めた場合のみ
+    sources["members_info"] にパスを記録し、ロード時の警告（スナップショット解決・
+    不正な上限値）と未登録ユーザの警告を返す。
     未登録の警告はファイルが読めた場合のみ（任意ファイルのため未使用の組織では出さない）。
+
+    input_dir は members-info を置くディレクトリ（複数 workspace の組織では組織直下）。
     """
     info_result = ingest.load_members_info(input_dir, cfg, month=month)
     if info_result is None:
         for col in ("department", "team", "role", "note"):
             users[col] = ""
-        users["credit_limit_usd"] = float("nan")
+        users["credit_limit_usd"] = credit_limit_for(None, workspace)
         return []
     sources["members_info"] = str(info_result.source)
     info = info_result.df.set_index("email")
@@ -385,10 +460,12 @@ def _merge_members_info(users: pd.DataFrame, input_dir: Path, cfg: dict,
     # 部署・チームは兼務（複数所属）を正規化した表示文字列で保持する（集計時に再分割）
     for col in ("department", "team"):
         users[col] = users[col].map(ingest.normalize_affiliations)
-    if "credit_limit_usd" in info.columns:
-        users["credit_limit_usd"] = users["email"].map(info["credit_limit_usd"]).astype(float)
-    else:
-        users["credit_limit_usd"] = float("nan")
+    column = (
+        users["email"].map(info["credit_limit_usd"]).astype(float)
+        if "credit_limit_usd" in info.columns
+        else pd.Series(float("nan"), index=users.index)
+    )
+    users["credit_limit_usd"] = column.map(lambda v: credit_limit_for(v, workspace))
     # 管理画面へのメンバー追加に members-info の追記が追従していないと部署別サマリの
     # 人数が実態とズレるため、分析対象なのに members-info に行が無いユーザを通知する
     unregistered = sorted(set(users["email"]) - set(info.index))
@@ -446,7 +523,11 @@ def _detail_columns(row) -> dict:
 
 @dataclass(frozen=True)
 class _AnalysisContext:
-    """ユーザごとの正式判定で共有する、前処理済みの設定と月次表。"""
+    """ユーザごとの正式判定で共有する、前処理済みの設定と月次表。
+
+    fixed_seat は、その workspace のシート種別が運用方針で固定されている場合の種別
+    （config の fixed_seat。単一 workspace の組織では常に None）。
+    """
 
     cfg: dict
     months_used: tuple[str, ...]
@@ -455,6 +536,7 @@ class _AnalysisContext:
     censoring_margin: float
     min_saving: float
     standard_allowance_mid: float
+    fixed_seat: str | None = None
 
 
 def _hysteresis_status(
@@ -512,6 +594,17 @@ def _analysis_row(
         rec_low = rec_high = "unassigned"
         current_cost, saving = nan, nan
         status, confidence = STATUS_EXCLUDED, "—"
+        censored = False
+    elif context.fixed_seat is not None and seat in ("standard", "premium"):
+        # シート種別が運用方針で決まっている workspace のアカウント。選び直す対象では
+        # ないので推奨・削減額・上限フラグを出さない。現状費用（シート料＋実課金）は
+        # 組織のシート費として数えるため残す
+        nan = float("nan")
+        recommendation, cost_std, cost_prem = seat, nan, nan
+        rec_low = rec_high = seat
+        current_cost = float(context.cfg["seats"][seat]["price_usd"]) + billed
+        saving = nan
+        status, confidence = STATUS_FIXED_SEAT, "—"
         censored = False
     else:
         recommendations = {
@@ -573,8 +666,13 @@ def _build_analysis_users(
     emails: list[str],
     seat_by_email: dict[str, str],
     cfg: dict,
+    fixed_seat: str | None = None,
 ) -> tuple[pd.DataFrame, int]:
-    """月次表を索引化し、正式分析の全ユーザ行を構築する。"""
+    """月次表を索引化し、正式分析の全ユーザ行を構築する。
+
+    monthly は月 → aggregate_month の結果。判定に使う需要をこの表が決めるので、
+    月別に束ね直した表を渡せば、その値で判定し直せる。
+    """
     decision_cfg = cfg["decision"]
     hysteresis_months = int(decision_cfg["hysteresis_months"])
     monthly_by_email = {
@@ -591,6 +689,7 @@ def _build_analysis_users(
         standard_allowance_mid=float(
             cfg["seats"]["standard"]["allowance_usd"]["mid"]
         ),
+        fixed_seat=fixed_seat,
     )
     target = monthly_by_email[months_used[-1]]
     rows = [
@@ -612,12 +711,23 @@ def analyze(
     org: str,
     *,
     decision_context: bool = False,
+    workspace: WorkspaceContext | None = None,
+    members_info_dir: str | Path | None = None,
+    assume_no_usage: bool = False,
 ) -> AnalysisResult:
-    """1組織分の分析。input_dir はその組織の入力ディレクトリ（spend/ 等を直下に持つ）。
+    """1 workspace 分の分析。input_dir はその入力ディレクトリ（spend/ 等を直下に持つ）。
+
+    単一 workspace の組織では入力ディレクトリ＝組織ディレクトリで、workspace を
+    渡さない従来どおりの呼び出しになる（任意引数はいずれも既定で従来と同じ挙動）。
 
     decision_context=True のとき、V2 判定の材料（DecisionContext）も組んで結果に載せる。
     既定では組まない（V1 の実行に過去月の product 特徴量という新しい計算経路を足さない
     ため）。V1 の users・summary・warnings はどちらでも同じ。
+
+    workspace はその workspace の運用設定（κ の既定値・固定シート）。
+    members_info_dir は members-info を置くディレクトリ（既定は input_dir。複数
+    workspace の組織では組織直下＝人単位の情報を workspace で分けない）。
+    assume_no_usage=True は対象月の spend が無くても需要 0 として分析する。
     """
     input_dir = Path(input_dir)
 
@@ -625,9 +735,12 @@ def analyze(
     available = ingest.discover_months(input_dir)
     months_used = [m for m in available if m <= month]
     if month not in available:
-        raise FileNotFoundError(
-            f"{month} のスペンドレポートがありません。存在する月: {available or 'なし'}"
-        )
+        if not assume_no_usage:
+            raise FileNotFoundError(
+                f"{month} のスペンドレポートがありません。存在する月: {available or 'なし'}"
+            )
+        # 対象月を需要 0 の観測として履歴の末尾に足す（過去月は従来どおり読む）
+        months_used = [*months_used, month]
 
     # 対象月に時点の違う入力が2つ以上あるなら月中差分を発動する。主データの採用は
     # 現行どおり（期間の広い方）で、重複警告の文言だけ差し替える。
@@ -639,6 +752,7 @@ def analyze(
         cfg,
         snapshot_active=active.spend,
         decision_context=decision_context,
+        assume_no_usage=assume_no_usage,
     )
     warnings = history.warnings
     monthly = history.monthly
@@ -667,11 +781,15 @@ def analyze(
     warnings.extend(diff_warns)
 
     users, n_hyst = _build_analysis_users(
-        monthly, months_used, emails, seat_by_email, cfg
+        monthly, months_used, emails, seat_by_email, cfg,
+        fixed_seat=workspace.fixed_seat if workspace is not None else None,
     )
 
     # 部署・職種・備考・追加クレジット上限（任意ファイル members-info）の結合
-    warnings.extend(_merge_members_info(users, input_dir, cfg, sources, month))
+    info_dir = Path(members_info_dir) if members_info_dir is not None else input_dir
+    warnings.extend(
+        _merge_members_info(users, info_dir, cfg, sources, month, workspace=workspace)
+    )
 
     # 追加クレジットのモード導出（当月までに実課金が観測されたユーザは enabled と自動確定）
     billed_ever = set()
@@ -710,7 +828,11 @@ def analyze(
     # 付与候補の昇格方向は「実課金で拘束する前の純モデル判定」で見る（無効ユーザは billed=0 で
     # 拘束後は常に Standard 推奨になり本命対象が漏れるため）
     upgrade = users["api_cost_usd"].map(lambda a: _recommend(float(a), "mid", cfg)[0] == "premium")
-    grant_candidates = _grant_candidates(users, upgrade, cfg)
+    # 固定シートの workspace のアカウントはシート種別が運用方針で決まっているので、
+    # 課金実測でその判断を変える対象にしない（付与候補にも挙げない）
+    grant_candidates = _grant_candidates(
+        users, upgrade & (users["status"] != STATUS_FIXED_SEAT), cfg
+    )
     users = _drop_unused_credit_columns(users, summary)
     return AnalysisResult(
         month=month, users=users, summary=summary, org=org,
@@ -722,6 +844,7 @@ def analyze(
             _decision_context(history, months_used, members_result.df)
             if decision_context else None
         ),
+        monthly=monthly,
     )
 
 

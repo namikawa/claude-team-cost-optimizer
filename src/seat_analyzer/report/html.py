@@ -19,6 +19,7 @@ from ..analyze import (
     SEAT_LABELS,
     STATUS_CHANGE,
     STATUS_EXCLUDED,
+    STATUS_FIXED_SEAT,
     STATUS_KEEP,
     STATUS_UNKNOWN,
     STATUS_WATCH,
@@ -64,6 +65,7 @@ _STATUS_BADGE_CLASS = {
     STATUS_WATCH_WAIT: "b-watch",
     STATUS_UNKNOWN: "b-unknown",
     STATUS_KEEP: "b-keep",
+    STATUS_FIXED_SEAT: "b-keep",
     STATUS_EXCLUDED: "b-keep",
 }
 
