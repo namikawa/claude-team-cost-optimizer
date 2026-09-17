@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -705,6 +706,73 @@ def _build_analysis_users(
     return users, hysteresis_months
 
 
+def _add_demand(
+    monthly: dict[str, pd.DataFrame],
+    months_used: list[str],
+    extra_demand: Sequence[Mapping[str, pd.DataFrame]],
+) -> dict[str, pd.DataFrame]:
+    """主の月次表に、他 workspace の同じ月の需要（api_cost）を email ごとに足す。
+
+    足すのは需要だけで、実課金・トークン・構成比は主のアカウントの値のまま残す
+    （そのシートの費用と設定は主のものなので、合算してよいのは需要だけ）。主の表に
+    行が無い月・email は需要だけを持つ行として足し、主の月に無い月は無視する。
+    入力の表は変更せず、行は email 昇順で返す。
+    """
+    merged: dict[str, pd.DataFrame] = {}
+    for current_month in months_used:
+        frame = monthly[current_month]
+        added: dict[str, float] = {}
+        for extra in extra_demand:
+            other = extra.get(current_month)
+            if other is None or other.empty:
+                continue
+            for email, api_cost in zip(other["email"], other["api_cost"], strict=False):
+                added[str(email)] = added.get(str(email), 0.0) + float(api_cost)
+        if not added:
+            merged[current_month] = frame
+            continue
+        df = frame.copy()
+        df["api_cost"] = df["api_cost"] + df["email"].map(added).fillna(0.0)
+        new_emails = sorted(set(added) - set(df["email"].astype(str)))
+        if new_emails:
+            df = pd.concat(
+                [df, pd.DataFrame([_demand_only_row(email, added[email], frame.columns)
+                                   for email in new_emails])],
+                ignore_index=True,
+            )
+        merged[current_month] = df.sort_values("email").reset_index(drop=True)
+    return merged
+
+
+def _demand_only_row(email: str, api_cost: float, columns) -> dict:
+    """需要だけを持つ月次行（他 workspace にしか利用が無い月の埋め合わせ）。
+
+    実課金とトークンは主のアカウントで観測されていないので 0、構成比は主の明細から
+    導けないので空にする。列の有無は主の表に合わせる。
+    """
+    row = {"email": email, "api_cost": api_cost, "billed": 0.0,
+           "prompt_tokens": 0, "completion_tokens": 0}
+    for col in ("product_breakdown", "model_breakdown"):
+        if col in columns:
+            row[col] = ""
+    return {col: row[col] for col in columns if col in row}
+
+
+def _own_demand_users(users: pd.DataFrame, month_agg: pd.DataFrame) -> pd.DataFrame:
+    """需要列をそのアカウント自身の観測へ差し替えた users の複製。
+
+    合算需要で判定した users から、アカウント固有の量（シートが吸収した量 E・
+    未割当なのに利用があるという不整合）を見るために使う。
+    """
+    own = month_agg.set_index("email")["api_cost"]
+    copy = users.copy()
+    copy["api_cost_usd"] = [
+        round(float(own[email]), 2) if email in own.index else 0.0
+        for email in copy["email"]
+    ]
+    return copy
+
+
 def _empty_analysis_users(context: _AnalysisContext) -> pd.DataFrame:
     """ユーザが1人も居ないときの users（列・並び・型を通常の行と揃えた0行の表）。
 
@@ -727,6 +795,7 @@ def analyze(
     workspace: WorkspaceContext | None = None,
     members_info_dir: str | Path | None = None,
     assume_no_usage: bool = False,
+    extra_demand: Sequence[Mapping[str, pd.DataFrame]] = (),
 ) -> AnalysisResult:
     """1 workspace 分の分析。input_dir はその入力ディレクトリ（spend/ 等を直下に持つ）。
 
@@ -741,6 +810,10 @@ def analyze(
     members_info_dir は members-info を置くディレクトリ（既定は input_dir。複数
     workspace の組織では組織直下＝人単位の情報を workspace で分けない）。
     assume_no_usage=True は対象月の spend が無くても需要 0 として分析する。
+
+    extra_demand は他 workspace の月次表（AnalysisResult.monthly）で、同じ人（email）の
+    需要を月ごとに合算してからシート判定を行う（複数アカウント保有者の利活用は人の
+    合算で見る・設計書 §26.4）。既定の空では合算の計算経路を通らない。
     """
     input_dir = Path(input_dir)
 
@@ -799,8 +872,14 @@ def analyze(
     )
     warnings.extend(diff_warns)
 
+    # 判定に使う需要（合算は複数アカウント保有者の主 workspace でのみ入る）。
+    # 実課金・トークン・構成比は主のアカウントの観測のままなので、合算が影響するのは
+    # 需要で決まる推奨・ヒステリシス・上限フラグ・付与候補の方向に限られる
+    judged_monthly = (
+        _add_demand(monthly, months_used, extra_demand) if extra_demand else monthly
+    )
     users, n_hyst = _build_analysis_users(
-        monthly, months_used, emails, seat_by_email, cfg,
+        judged_monthly, months_used, emails, seat_by_email, cfg,
         fixed_seat=workspace.fixed_seat if workspace is not None else None,
     )
 
@@ -823,9 +902,12 @@ def analyze(
         ["status", "monthly_saving_usd"], ascending=[True, False]
     ).reset_index(drop=True)
 
+    # アカウント固有の量（E 分布・未割当の不整合）は、合算前のこの workspace の需要で見る
+    own_users = _own_demand_users(users, monthly[month]) if extra_demand else users
+
     # spend にいるが members にいないユーザ
     warnings.extend(_warn_orphan_users(users))
-    warnings.extend(_warn_active_unassigned(users, "api_cost_usd"))
+    warnings.extend(_warn_active_unassigned(own_users, "api_cost_usd"))
 
     # 追加クレジットの整合性・上限到達の警告（表示専用・判定には影響しない）
     reached = _credit_reached_emails(users, cfg, "billed_extra_usd")
@@ -841,7 +923,7 @@ def analyze(
     summary["org_service_by_product"] = history.org_usage.get("by_product", {})
     # E 分布は cost_basis=computed のときのみ（net_spend 基準では需要=課金で E が無意味）
     e_distribution = (
-        _compute_e_distribution(users) if history.basis == "computed" else None
+        _compute_e_distribution(own_users) if history.basis == "computed" else None
     )
     # 付与候補の昇格方向は「実課金で拘束する前の純モデル判定」で見る（無効ユーザは billed=0 で
     # 拘束後は常に Standard 推奨になり本命対象が漏れるため）

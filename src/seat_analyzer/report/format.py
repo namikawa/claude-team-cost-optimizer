@@ -62,17 +62,23 @@ def _group_summary_rows(users: pd.DataFrame, summary: dict, col: str,
     include_unset=False のとき「（未設定）」行を除外する（例: チーム別サマリでは、
     チーム未設定のユーザは部署も異なる異質な集合のためまとめても意味がない）。
     この場合、縦合計は全体と一致しなくなる（当該軸に所属を持つユーザのみの集計になる）。
+
+    シート費は、行が seat_cost_usd を持つならその値（人の行は複数アカウントの
+    シート料の合計）、無ければ現シートの価格を使う。人の表を渡せば、複数 workspace の
+    組織でも人数がアカウント数ではなく人数として数えられる。
     """
     if not _has_values(users, col):
         return []
     has_loc = "loc_with_cc" in users.columns
+    has_seat_cost = "seat_cost_usd" in users.columns
     # グループ名 → 集計値の accumulator（初期化順は問わない。最後に並べ替える）
     acc: dict[str, dict] = {}
     for _, r in users.iterrows():
         groups = parse_affiliations(r.get(col)) or ["（未設定）"]
         w = 1.0 / len(groups)
         is_change = r["status"] == STATUS_CHANGE
-        seat_price = _seat_price(r["current_seat"], summary)
+        seat_price = (float(r["seat_cost_usd"]) if has_seat_cost
+                      else _seat_price(r["current_seat"], summary))
         api = float(r["api_cost_usd"]) if not pd.isna(r["api_cost_usd"]) else 0.0
         billed = float(r["billed_extra_usd"] or 0.0) if not pd.isna(r["billed_extra_usd"]) else 0.0
         saving = float(r["monthly_saving_usd"] or 0.0) if is_change and not pd.isna(r["monthly_saving_usd"]) else 0.0

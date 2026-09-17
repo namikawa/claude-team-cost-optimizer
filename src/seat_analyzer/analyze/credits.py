@@ -185,22 +185,27 @@ def _credit_integrity_warnings(users: pd.DataFrame, cfg: dict, billed_col: str) 
     return warnings
 
 
+def credit_reached(kappa, billed: float, tolerance: float) -> bool:
+    """追加クレジットの上限到達か（κ が有限かつ >0・billed > 0・billed ≥ κ − tolerance）。
+
+    到達には課金の発生が論理的に必要なので、κ ≤ tolerance の設定でも実課金ゼロを
+    到達と判定しない（_credit_reach_preview と同じガード）。上限到達の規則は
+    この1関数に閉じる（人の層の判定も同じ述語を使う）。
+    """
+    if kappa is None or pd.isna(kappa) or math.isinf(kappa) or kappa <= 0.0:
+        return False
+    return billed > 0.0 and billed >= kappa - tolerance
+
+
 def _credit_reached_emails(users: pd.DataFrame, cfg: dict, billed_col: str) -> list[str]:
     """上限到達（billed > 0 かつ billed ≥ κ − tolerance）の enabled・有限 κ ユーザの一覧。"""
     if "credit_limit_usd" not in users.columns:
         return []
     tol = _usage_credits_cfg(cfg)["cap_tolerance_usd"]
-    reached = []
-    for _, r in users.iterrows():
-        kappa = r["credit_limit_usd"]
-        if pd.isna(kappa) or math.isinf(kappa) or kappa <= 0.0:
-            continue
-        billed = float(r[billed_col] or 0.0)
-        # 到達には課金の発生が論理的に必要。κ ≤ tolerance の設定でも実課金ゼロを到達と誤判定しない
-        # （_credit_reach_preview と同じガード）
-        if billed > 0.0 and billed >= kappa - tol:
-            reached.append(r["email"])
-    return reached
+    return [
+        r["email"] for _, r in users.iterrows()
+        if credit_reached(r["credit_limit_usd"], float(r[billed_col] or 0.0), tol)
+    ]
 
 
 @dataclass(frozen=True)
