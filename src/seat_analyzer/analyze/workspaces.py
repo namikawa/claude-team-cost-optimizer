@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .. import ingest
+from .persons import PersonLayer, build_person_layer
 from .pipeline import AnalysisResult, analyze
 
 
@@ -46,6 +47,7 @@ class OrgAnalysisResult:
     contexts は config に書かれた全 workspace の運用設定（飛ばしたものも含む）で、
     skipped はまだ始まっていないため飛ばした workspace の名前（昇順）。
     warnings は組織単位の警告で、workspace ごとの警告は各 AnalysisResult が持つ。
+    persons は全 workspace のアカウントを email で束ねた人の層（§26.4〜§26.5）。
     """
 
     org: str
@@ -55,6 +57,7 @@ class OrgAnalysisResult:
     contexts: dict[str, WorkspaceContext]
     skipped: tuple[str, ...] = ()
     warnings: list[str] = field(default_factory=list)
+    persons: PersonLayer | None = None
 
 
 def _context(name: str, settings: dict) -> WorkspaceContext:
@@ -138,10 +141,14 @@ def analyze_org(
         result = analyze(
             org_input, month, cfg, org, decision_context=decision_context
         )
-        return OrgAnalysisResult(
+        single = OrgAnalysisResult(
             org=org, month=month, primary=org,
             workspaces={org: result}, contexts={org: _single_context(org)},
         )
+        # 人の層は組織の結果そのものから組むので、容れ物を作ってから載せる
+        # （workspace が1つなら人とアカウントは1対1で、§26.5 の判定は行わない）
+        single.persons = build_person_layer(single, cfg)
+        return single
 
     found = ingest.discover_workspaces(org_input)
     # 名前はディレクトリ名として発見したものなので、組織名と同じ規則で検証する
@@ -169,10 +176,10 @@ def analyze_org(
 
     contexts = {name: _context(name, settings[name]) for name in _ordered(configured, primary)}
     allowed = set(allow_missing)
-    results: dict[str, AnalysisResult] = {}
+    analyzed: dict[str, bool] = {}  # 分析する workspace → 対象月を需要 0 として扱うか
     skipped: list[str] = []
     warnings: list[str] = []
-    for name, context in contexts.items():
+    for name in contexts:
         workspace_dir = org_input / name
         months = ingest.discover_months(workspace_dir)
         if not [m for m in months if m <= month]:
@@ -190,20 +197,75 @@ def analyze_org(
                 f"（存在する月: {months}）。利用が無くエクスポートしなかった月なら "
                 f"--allow-missing-workspace {name} を付けると需要 0 として続行できます"
             )
-        results[name] = analyze(
-            workspace_dir, month, cfg, org,
-            decision_context=decision_context,
-            workspace=context,
-            # members-info は人単位の任意入力なので組織直下の1つを全 workspace で読む
-            members_info_dir=org_input,
-            assume_no_usage=no_usage,
-        )
+        analyzed[name] = no_usage
         if no_usage:
             warnings.append(
                 f"workspace {name} は {month} のスペンドレポートが無いため需要 0 として"
                 "分析しました（--allow-missing-workspace の指定による）"
             )
-    return OrgAnalysisResult(
-        org=org, month=month, primary=primary, workspaces=results,
+
+    def run(name: str, extra_demand: list[dict] | None = None) -> AnalysisResult:
+        return analyze(
+            org_input / name, month, cfg, org,
+            decision_context=decision_context,
+            workspace=contexts[name],
+            # members-info は人単位の任意入力なので組織直下の1つを全 workspace で読む
+            members_info_dir=org_input,
+            assume_no_usage=analyzed[name],
+            extra_demand=extra_demand or (),
+        )
+
+    # 副を先に分析し、その需要を主の判定へ渡す（複数アカウント保有者の主の行は
+    # 全 workspace の合算需要で判定する・§26.4）。結果と警告の並びは contexts の順のまま
+    secondaries = [name for name in analyzed if name != primary]
+    results = {name: run(name) for name in secondaries}
+    if primary in analyzed:
+        results[primary] = run(primary, [results[name].monthly for name in secondaries])
+    result = OrgAnalysisResult(
+        org=org, month=month, primary=primary,
+        workspaces={name: results[name] for name in contexts if name in results},
         contexts=contexts, skipped=tuple(sorted(skipped)), warnings=warnings,
     )
+    result.persons = build_person_layer(
+        result, cfg,
+        {name: _first_seen(org_input / name, results[name], cfg) for name in secondaries},
+    )
+    return result
+
+
+def _members_evidence_applies(source: Path, month: str) -> bool:
+    """その月の在籍の証拠として、採用された members ファイルを使ってよいか。
+
+    load_members は対象月末に最も近いスナップショットを返すので、その月のファイルが
+    無ければ後の月のものが返る。それを在籍の証拠にすると払い出した月が実際より早まり、
+    完全月を多く数えてシートを外す側（戻す候補）へ倒れるため、末日以前のファイルと、
+    月末直後の通常運用の範囲に入るファイルだけを証拠にする（日数の条件は
+    ingest.is_near_month_end に閉じる）。ファイル名から期間を解釈できないファイルは
+    時点が決まらないので従来どおり証拠として使う。
+
+    ファイルの期間は月をまたがない（またぐ命名は ingest が読んだ時点で止まる）ので、
+    末日以前かはそのファイルの月と対象月の比較で決まる。
+    """
+    period = ingest.file_period(source)
+    if period is None:
+        return True
+    return period.month <= month or ingest.is_near_month_end(source, month)
+
+
+def _first_seen(workspace_dir: Path, result: AnalysisResult,
+                cfg: dict) -> dict[str, str]:
+    """その workspace で各 email が最初に現れた月（email → 月）。
+
+    spend に行がある月と、その月の在籍として使える members スナップショットに載って
+    いる月の早い方を「払い出した月」とする（利用が無いまま在籍した月も払い出し済みと
+    して数える）。ロード時の警告は捨てる（対象月のぶんは分析本体が既に出している）。
+    """
+    seen: dict[str, str] = {}
+    for current_month in result.months_used:
+        emails = set(result.monthly[current_month]["email"])
+        members = ingest.load_members(workspace_dir, current_month, cfg)
+        if _members_evidence_applies(members.source, current_month):
+            emails |= set(members.df["email"])
+        for email in sorted(emails):
+            seen.setdefault(str(email), current_month)
+    return seen

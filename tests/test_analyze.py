@@ -12,6 +12,7 @@ net=<額> で「実課金あり」を表現する（net 省略時は net == API�
 import math
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import yaml
 from pandas.testing import assert_frame_equal
@@ -23,7 +24,7 @@ from seat_analyzer.analyze import (
     analyze,
     analyze_org,
 )
-from seat_analyzer.analyze.pipeline import credit_limit_for
+from seat_analyzer.analyze.pipeline import _add_demand, credit_limit_for
 from seat_analyzer.config import load_config
 from tests.conftest import spend_row
 
@@ -295,7 +296,8 @@ def test_nested_single_workspace_matches_flat_layout(tmp_path, make_input):
 
 
 def test_two_workspaces_match_standalone_runs(tmp_path, make_input):
-    # 各 workspace の集計値は、その workspace を単独の組織として実行した結果と一致する
+    # 各 workspace のアカウント層の集計値は、その workspace を単独の組織として
+    # 実行した結果と一致する（人の層の合算は主の users の需要列にだけ入る）
     input_dir = make_input(
         {
             "2026-05": [spend_row("alice@example.com", 100.0, net=0.0)],
@@ -321,9 +323,19 @@ def test_two_workspaces_match_standalone_runs(tmp_path, make_input):
     for name in ("main", "second"):
         standalone = analyze(input_dir / ORG / name, "2026-06", cfg, ORG)
         assert_frame_equal(
-            result.workspaces[name].users[COLUMNS_FROM_SPEND],
-            standalone.users[COLUMNS_FROM_SPEND],
+            result.workspaces[name].monthly["2026-06"],
+            standalone.monthly["2026-06"],
         )
+    # 副にアカウントを持たない人の行は合算の影響を受けない
+    second_standalone = analyze(input_dir / ORG / "second", "2026-06", cfg, ORG)
+    assert_frame_equal(
+        result.workspaces["second"].users[COLUMNS_FROM_SPEND],
+        second_standalone.users[COLUMNS_FROM_SPEND],
+    )
+    main_users = result.workspaces["main"].users.set_index("email")
+    # 主の行の需要は全 workspace の合算（120 + 40）、副にだけ居ない人はそのまま
+    assert main_users.loc["alice@example.com", "api_cost_usd"] == 160.0
+    assert main_users.loc["bob@example.com", "api_cost_usd"] == 30.0
     # members-info は人単位なので、組織直下の1つを全 workspace のアカウントが読む
     main_dept = result.workspaces["main"].users.set_index("email")["department"]
     second_dept = result.workspaces["second"].users.set_index("email")["department"]
@@ -774,3 +786,158 @@ def test_monthly_history_is_per_workspace(tmp_path, make_input):
     assert set(result.workspaces["second"].monthly) == {"2026-06"}
     second = result.workspaces["second"].monthly["2026-06"].set_index("email")
     assert round(float(second.loc["alice@example.com", "api_cost"]), 2) == 8.0
+
+
+# --- 複数アカウント保有者の合算需要（設計書 §26.4）--------------------------
+#
+# 主の行の V1 判定だけが全 workspace の合算需要を見る。実課金・トークン・構成比は
+# 主のアカウントの観測のままなので、アカウント固有の量（E 分布・未割当の不整合・
+# 組織の需要合計・前月からの変化）は合算前の値で計算する。
+
+MONTHLY_COLUMNS = ["email", "api_cost", "prompt_tokens", "completion_tokens",
+                   "billed", "product_breakdown", "model_breakdown"]
+
+
+def _monthly(rows: list[tuple]) -> pd.DataFrame:
+    """月次表（aggregate_month の結果と同じ列構成）を組む。"""
+    return pd.DataFrame(
+        [dict(zip(MONTHLY_COLUMNS, row, strict=True)) for row in rows],
+        columns=MONTHLY_COLUMNS,
+    )
+
+
+def test_add_demand_adds_only_demand():
+    # 足すのは需要だけ。実課金・トークン・構成比は主のアカウントの値のまま残る
+    main = {"2026-06": _monthly([
+        ("alice@example.com", 10.0, 100, 10, 5.0, "Claude Code 100%", "Sonnet 4.6 100%"),
+    ])}
+    extra = {"2026-06": _monthly([
+        ("alice@example.com", 7.0, 999, 99, 3.0, "Claude Chat 100%", "Opus 4.8 100%"),
+    ])}
+    merged = _add_demand(main, ["2026-06"], [extra])["2026-06"].set_index("email")
+    row = merged.loc["alice@example.com"]
+    assert row["api_cost"] == 17.0
+    assert row["billed"] == 5.0
+    assert (row["prompt_tokens"], row["completion_tokens"]) == (100, 10)
+    assert row["product_breakdown"] == "Claude Code 100%"
+    assert row["model_breakdown"] == "Sonnet 4.6 100%"
+
+
+def test_add_demand_creates_rows_for_missing_emails():
+    # 主に行が無い人は需要だけを持つ行になる（実課金とトークンは 0・構成比は空）
+    main = {"2026-06": _monthly([
+        ("alice@example.com", 10.0, 100, 10, 5.0, "Claude Code 100%", "Sonnet 4.6 100%"),
+    ])}
+    extra = {"2026-06": _monthly([
+        ("bob@example.com", 4.0, 50, 5, 1.0, "Claude Chat 100%", "Opus 4.8 100%"),
+    ])}
+    merged = _add_demand(main, ["2026-06"], [extra])["2026-06"]
+    assert merged["email"].tolist() == ["alice@example.com", "bob@example.com"]
+    bob = merged.set_index("email").loc["bob@example.com"]
+    assert bob["api_cost"] == 4.0
+    assert bob["billed"] == 0.0
+    assert (bob["prompt_tokens"], bob["completion_tokens"]) == (0, 0)
+    assert (bob["product_breakdown"], bob["model_breakdown"]) == ("", "")
+
+
+def test_add_demand_ignores_months_outside_history():
+    # 主の履歴に無い月は無視する（副が先に始まっていても主の月だけで判定する）
+    main = {"2026-06": _monthly([
+        ("alice@example.com", 10.0, 100, 10, 0.0, "", ""),
+    ])}
+    extra = {
+        "2026-05": _monthly([("alice@example.com", 99.0, 1, 1, 0.0, "", "")]),
+        "2026-06": _monthly([("alice@example.com", 7.0, 1, 1, 0.0, "", "")]),
+    }
+    merged = _add_demand(main, ["2026-06"], [extra])
+    assert set(merged) == {"2026-06"}
+    assert merged["2026-06"]["api_cost"].tolist() == [17.0]
+
+
+def test_add_demand_does_not_modify_inputs():
+    main = {"2026-06": _monthly([("alice@example.com", 10.0, 100, 10, 5.0, "", "")])}
+    extra = {"2026-06": _monthly([("alice@example.com", 7.0, 1, 1, 1.0, "", "")])}
+    before_main = main["2026-06"].copy()
+    before_extra = extra["2026-06"].copy()
+
+    _add_demand(main, ["2026-06"], [extra])
+    assert_frame_equal(main["2026-06"], before_main)
+    assert_frame_equal(extra["2026-06"], before_extra)
+
+
+def test_add_demand_row_order_is_deterministic():
+    # 同じ入力からは常に同じ行順（email 昇順）
+    main = {"2026-06": _monthly([("zoe@example.com", 1.0, 1, 1, 0.0, "", "")])}
+    extra = {"2026-06": _monthly([
+        ("bob@example.com", 2.0, 1, 1, 0.0, "", ""),
+        ("alice@example.com", 3.0, 1, 1, 0.0, "", ""),
+    ])}
+    merged = _add_demand(main, ["2026-06"], [extra])["2026-06"]
+    assert merged["email"].tolist() == [
+        "alice@example.com", "bob@example.com", "zoe@example.com"]
+
+
+def _combined_demand_input(make_input) -> Path:
+    """主 $100・副 $300 を2か月とも持つ、同じ人の2アカウント構成。"""
+    rows = {
+        "2026-05": [spend_row("alice@example.com", 100.0, net=0.0)],
+        "2026-06": [spend_row("alice@example.com", 100.0, net=0.0)],
+    }
+    input_dir = make_input(rows, members=["alice@example.com,premium"],
+                           org=ORG, workspace="main")
+    make_input(
+        {
+            "2026-05": [spend_row("alice@example.com", 300.0, net=0.0)],
+            "2026-06": [spend_row("alice@example.com", 300.0, net=0.0)],
+        },
+        members=["alice@example.com,premium"], org=ORG, workspace="second",
+    )
+    return input_dir
+
+
+def test_primary_row_is_judged_on_combined_demand(tmp_path, make_input):
+    # 主 $100 単独なら Standard へ降格推奨。合算 $400 では Premium が妥当になる
+    input_dir = _combined_demand_input(make_input)
+    cfg = _workspace_cfg(tmp_path, {
+        "main": {"primary": True}, "second": {"fixed_seat": "premium"},
+    })
+
+    alone = analyze(input_dir / ORG / "main", "2026-06", cfg, ORG)
+    assert alone.users.set_index("email").loc["alice@example.com", "status"] == "変更推奨"
+
+    main = analyze_org(input_dir / ORG, "2026-06", cfg, ORG).workspaces["main"]
+    alice = main.users.set_index("email").loc["alice@example.com"]
+    assert alice["api_cost_usd"] == 400.0
+    assert alice["recommended_seat"] == "premium"
+    assert alice["status"] == "現状維持"
+
+
+def test_combined_demand_keeps_account_level_values(tmp_path, make_input):
+    # 合算が入っても、需要合計・E 分布・未割当の警告・前月からの変化は主自身の需要で見る
+    rows = {
+        "2026-05": [spend_row("alice@example.com", 300.0, net=50.0),
+                    spend_row("ghost@example.com", 10.0, net=0.0)],
+        "2026-06": [spend_row("alice@example.com", 300.0, net=50.0),
+                    spend_row("ghost@example.com", 10.0, net=0.0)],
+    }
+    members = ["alice@example.com,premium", "ghost@example.com,unassigned"]
+    input_dir = make_input(rows, members=members, org=ORG, workspace="main")
+    make_input(
+        {"2026-05": [spend_row("alice@example.com", 400.0, net=0.0)],
+         "2026-06": [spend_row("alice@example.com", 400.0, net=0.0)]},
+        members=["alice@example.com,premium"], org=ORG, workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {
+        "main": {"primary": True}, "second": {"fixed_seat": "premium"},
+    })
+
+    main = analyze_org(input_dir / ORG, "2026-06", cfg, ORG).workspaces["main"]
+    alone = analyze(input_dir / ORG / "main", "2026-06", cfg, ORG)
+
+    assert main.users.set_index("email").loc["alice@example.com", "api_cost_usd"] == 700.0
+    assert main.summary["total_api_cost_usd"] == 310.0
+    assert main.summary["total_api_cost_usd"] == alone.summary["total_api_cost_usd"]
+    assert main.e_distribution == alone.e_distribution
+    assert [r["e"] for g in main.e_distribution["groups"] for r in g["rows"]] == [250.0]
+    assert main.trend == alone.trend
+    assert sum("シート未割当なのに利用実績" in w for w in main.warnings) == 1
