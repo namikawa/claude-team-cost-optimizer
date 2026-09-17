@@ -17,6 +17,7 @@ import math
 import numbers
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -506,6 +507,19 @@ def workspace_settings(cfg: dict, org: str) -> dict[str, dict]:
     return {str(name): settings for name, settings in workspaces.items()}
 
 
+def compare_workspaces(
+    found: Iterable[str], configured: Iterable[str]
+) -> tuple[list[str], list[str]]:
+    """発見した workspace と config に書かれた workspace の食い違い（どちらも昇順）。
+
+    戻り値は (missing, unexpected)。missing は config にあるがディレクトリが無い名前、
+    unexpected はディレクトリがあるが config に無い名前。構造の検査（doctor）と分析の
+    経路が同じ規則で突き合わせるための純粋関数で、片方だけが黙って通ることを防ぐ。
+    """
+    found_names, configured_names = set(found), set(configured)
+    return sorted(configured_names - found_names), sorted(found_names - configured_names)
+
+
 def discover_orgs(input_dir: Path) -> list[str]:
     """input_dir 直下の組織サブディレクトリの一覧（昇順）。
 
@@ -686,6 +700,35 @@ def load_spend(
     if month in file_warns:
         warnings.append(file_warns[month])
     return LoadResult(df=df, source=path, warnings=warnings)
+
+
+# 「利用が無かった月」を需要 0 の観測として扱うときに作る空の明細の列。列の有無で経路が
+# 変わる処理（product 構成比・利用特徴量・Identity 証拠・実課金）があるため、それらが
+# 読む正準カラムを揃える。キャッシュ内訳の列は持たない（行が無ければ、内訳のある経路でも
+# prompt_tokens の経路でも計算結果は空になる）。
+_EMPTY_SPEND_TEXT_COLUMNS = ("email", "account_uuid", "user_id", "product", "model")
+_EMPTY_SPEND_NUMERIC_COLUMNS = (
+    "requests", "prompt_tokens", "completion_tokens",
+    "gross_spend", "net_spend", "web_search_count",
+)
+
+
+def empty_spend() -> pd.DataFrame:
+    """行が1つも無いスペンド明細（利用が無かった月を需要 0 として扱う用）。
+
+    エクスポートしなかった月と「利用が無かった月」はファイルの有無では区別できない。
+    区別は呼び出し側（どの workspace を需要 0 として続行してよいか）が決め、ここは
+    その月の明細が空であることだけを表す。
+    """
+    columns: dict[str, pd.Series] = {
+        name: pd.Series(dtype="object") for name in _EMPTY_SPEND_TEXT_COLUMNS
+    }
+    columns.update(
+        {name: pd.Series(dtype="float64") for name in _EMPTY_SPEND_NUMERIC_COLUMNS}
+    )
+    df = pd.DataFrame(columns)
+    df["month"] = pd.Series(dtype="object")
+    return df
 
 
 def load_spend_file(path: Path, month: str, cfg: dict) -> pd.DataFrame:

@@ -2898,17 +2898,21 @@ dashboardで読めるようにする。
 
 - `src/seat_analyzer/analyze/workspaces.py`（新設。analyzeパッケージ内なので層は変えない）
 - `src/seat_analyzer/analyze/__init__.py`・`src/seat_analyzer/analyze/pipeline.py`
-- `src/seat_analyzer/cli.py`（`--allow-missing-workspace`）
-- `tests/test_analyze.py`・`tests/test_cli.py`
+- `src/seat_analyzer/ingest.py`（発見名とconfigの突き合わせの純粋関数。doctorと共用）
+- `tests/test_analyze.py`
 
 実装:
 
 - workspaceごとに`analyze()`を呼び、組織単位の容れ物（workspace→`AnalysisResult`・主の名前・
-  configのlabel）へ束ねる。単一workspaceの組織は今の`AnalysisResult`がそのまま流れる
+  configのlabel・飛ばしたworkspace）へ束ねる。単一workspaceの組織は今の`AnalysisResult`が
+  そのまま流れる。CLIの結線と`--allow-missing-workspace`はStep 47（出力が揃ってから開く）
+- 入れ子レイアウトでは`members-info.csv`を組織直下から読む（workspaceのディレクトリではない）
 - κの解決を「アカウント→κ」の1関数に閉じる（主はmembers-infoの列、副はworkspaceの既定値。
   §26.3）
 - `fixed_seat`を書いたworkspaceのアカウントはV1判定の対象外ステータスにする
-- 対象月にデータが無いworkspaceの扱い（§26.6）
+- 対象月にデータが無いworkspaceの扱い（§26.6。まだ始まっていないworkspaceは飛ばす。始まって
+  いるのに無ければエラー。許可されたworkspaceは需要0として分析する）
+- configと発見名の不一致・主の不在は分析の経路でもエラーにする（doctorだけに頼らない）
 
 受け入れ条件:
 
@@ -2981,12 +2985,15 @@ dashboardで読めるようにする。
 
 - `src/seat_analyzer/report/`（markdown・details・html・csv_out・usage_csv・evidence_csv・text）
 - `src/seat_analyzer/templates/`
+- `src/seat_analyzer/cli.py`（入れ子レイアウトの結線・`--allow-missing-workspace`）
 - `examples/`（2 workspaceの合成組織を追加）
-- `tests/golden/`・`tests/test_golden.py`・`tests/test_report_split.py`
+- `tests/golden/`・`tests/test_golden.py`・`tests/test_report_split.py`・`tests/test_cli.py`
 
 実装:
 
 - §26.7
+- `cli._reject_nested_layout`を、workspaceごとの分析（Step 44）と組織単位の出力への結線に
+  置き換える
 
 受け入れ条件:
 

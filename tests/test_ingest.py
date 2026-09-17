@@ -324,3 +324,22 @@ def test_workspace_settings_reads_config(cfg):
     }
     assert ingest.workspace_settings(configured, "org-x") == {"main": {"primary": True}}
     assert ingest.workspace_settings(configured, "org-y") == {}
+
+
+def test_compare_workspaces_reports_both_directions():
+    """config と入力ディレクトリの食い違いは、向きを分けて昇順で返す。"""
+    assert ingest.compare_workspaces(["main", "second"], ["main", "second"]) == ([], [])
+    assert ingest.compare_workspaces(["main"], ["main", "second"]) == (["second"], [])
+    assert ingest.compare_workspaces(["main", "second"], ["main"]) == ([], ["second"])
+    assert ingest.compare_workspaces(["b", "a"], ["c"]) == (["c"], ["a", "b"])
+    # 従来レイアウト（発見ゼロ）に設定だけがある場合は、すべて「ディレクトリが無い」側
+    assert ingest.compare_workspaces([], ["main", "second"]) == (["main", "second"], [])
+
+
+def test_empty_spend_has_the_canonical_columns():
+    """利用が無かった月の明細は、行が無いだけで列の構成は実データと同じ。"""
+    empty = ingest.empty_spend()
+    assert empty.empty
+    for column in (*ingest.REQUIRED_COLUMNS["spend"], "product", "requests",
+                   "net_spend", "account_uuid", "user_id", "month"):
+        assert column in empty.columns

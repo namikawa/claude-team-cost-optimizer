@@ -191,12 +191,18 @@ def _compute_snapshot_diff(input_dir: Path, month: str, cfg: dict,
     return snapshot, warnings
 
 
-def _compute_credit_changes(input_dir: Path, month: str, cfg: dict) -> tuple[list[dict], list[dict]]:
+def _compute_credit_changes(
+    credit_limit_dir: Path | None, month: str, cfg: dict
+) -> tuple[list[dict], list[dict]]:
     """対象月の members-info 日付スナップショット（2つ以上）の隣接差分から κ 変更を検出する。
 
-    戻り値は (credit_changes, credit_snaps)。1つ以下なら ([], []) を返す。
+    credit_limit_dir は κ を決める members-info の置き場所。None は「そのアカウントの
+    κ を members-info が決めない」意味で、検出せず ([], []) を返す。
+    戻り値は (credit_changes, credit_snaps)。スナップショットが1つ以下でも ([], [])。
     """
-    entries = ingest.member_info_snapshots(input_dir, month)
+    if credit_limit_dir is None:
+        return [], []
+    entries = ingest.member_info_snapshots(credit_limit_dir, month)
     if len(entries) < 2:
         return [], []
     snaps = []
@@ -230,11 +236,15 @@ def _unique_emails(changes: list[dict]) -> list[str]:
     return list(dict.fromkeys(c["email"] for c in changes))
 
 
-def _compute_member_changes(input_dir: Path, month: str, cfg: dict) -> tuple[dict | None, list[str]]:
+def _compute_member_changes(
+    input_dir: Path, month: str, cfg: dict, credit_limit_dir: Path | None
+) -> tuple[dict | None, list[str]]:
     """対象月の単日スナップショット members（2つ以上）の隣接差分から月中の変動を検出する。
 
     シート変更・追加・削除を時系列順に列挙し、members-info の日付スナップショットが2つ以上
-    あれば追加クレジット上限 κ の変更も併記する。変動が1件も無くてもセクションは出す
+    あれば追加クレジット上限 κ の変更も併記する。members は workspace ごとの入力なので
+    input_dir から、κ は members-info の設定なので credit_limit_dir から読む。
+    変動が1件も無くてもセクションは出す
     （スナップショットを取って変動が無かったこと自体に情報価値があるため）。members・members-info
     のどちらのスナップショットも1つ以下なら (None, []) を返す（既存出力と同一）。
 
@@ -242,7 +252,7 @@ def _compute_member_changes(input_dir: Path, month: str, cfg: dict) -> tuple[dic
     あれば、当月判定は最新スナップショット時点のシートで行う旨の参考警告を返す。
     """
     entries = ingest.member_snapshots(input_dir, month)
-    credit_changes, credit_snaps = _compute_credit_changes(input_dir, month, cfg)
+    credit_changes, credit_snaps = _compute_credit_changes(credit_limit_dir, month, cfg)
     if len(entries) < 2 and not credit_snaps:
         return None, []
 
@@ -395,7 +405,8 @@ def _diff_active(input_dir: Path, month: str) -> _DiffActive:
 
 
 def _midmonth_diffs(
-    input_dir: Path, month: str, cfg: dict, seat_by_email: dict
+    input_dir: Path, month: str, cfg: dict, seat_by_email: dict,
+    *, credit_limit_dir: Path | None,
 ) -> tuple[dict | None, dict | None, dict | None, list[str]]:
     """月中差分（利用推移・Claude Code 活動・メンバー変動）をまとめて計算する。
 
@@ -403,9 +414,16 @@ def _midmonth_diffs(
     傍証/食い違いを注記する）を踏むため1箇所に集約する。差分の種類を増やすときも
     ここだけを直せば両方に反映される。各差分はスナップショットが1つ以下なら None。
     戻り値は (snapshot, code_diff, member_changes, warnings)。
+
+    spend・members・code-analytics は input_dir（workspace ごとの入力）から読む。
+    credit_limit_dir は κ を決める members-info の置き場所で、単一 workspace の組織と
+    主 workspace では members-info のあるディレクトリ、副 workspace では None
+    （κ は主の設定なので、副のアカウントの上限の変更としては読まない）。
     """
     snapshot, snap_warns = _compute_snapshot_diff(input_dir, month, cfg, seat_by_email)
     code_diff, code_warns = _compute_code_diff(input_dir, month, cfg)
-    member_changes, member_warns = _compute_member_changes(input_dir, month, cfg)
+    member_changes, member_warns = _compute_member_changes(
+        input_dir, month, cfg, credit_limit_dir
+    )
     _attach_loc_corroboration(snapshot, code_diff)
     return snapshot, code_diff, member_changes, [*snap_warns, *code_warns, *member_warns]

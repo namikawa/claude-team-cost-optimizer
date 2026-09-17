@@ -23,6 +23,7 @@ from .pipeline import (
     SEAT_LABELS as SEAT_LABELS,
     STATUS_CHANGE as STATUS_CHANGE,
     STATUS_EXCLUDED as STATUS_EXCLUDED,
+    STATUS_FIXED_SEAT as STATUS_FIXED_SEAT,
     STATUS_KEEP as STATUS_KEEP,
     STATUS_UNKNOWN as STATUS_UNKNOWN,
     STATUS_WATCH as STATUS_WATCH,
@@ -34,6 +35,11 @@ from .pipeline import (
     analyze as analyze,
 )
 from .preview import PreviewResult as PreviewResult, preview as preview
+from .workspaces import (
+    OrgAnalysisResult as OrgAnalysisResult,
+    WorkspaceContext as WorkspaceContext,
+    analyze_org as analyze_org,
+)
 
 __all__ = [
     "CREDIT_DISABLED",
@@ -51,15 +57,19 @@ __all__ = [
     "SEAT_LABELS",
     "STATUS_CHANGE",
     "STATUS_EXCLUDED",
+    "STATUS_FIXED_SEAT",
     "STATUS_KEEP",
     "STATUS_UNKNOWN",
     "STATUS_WATCH",
     "STATUS_WATCH_WAIT",
     "AnalysisResult",
     "DecisionContext",
+    "OrgAnalysisResult",
     "PreviewResult",
+    "WorkspaceContext",
     "aggregate_month",
     "analyze",
+    "analyze_org",
     "credits_mode",
     "preview",
 ]
