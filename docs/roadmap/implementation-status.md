@@ -1,10 +1,10 @@
 # 実装ステータス
 
-- 最終更新: 2026-09-17
+- 最終更新: 2026-09-18
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 9（複数workspace・設計書§26）の Step 45（人の層と判定）。
-  Step 43（workspaceの発見と設定）と Step 44（workspace別の分析と結合）は完了した
-  （2026-09-17）。同一の組織が複数の Team
+- 次のタスク: Track 9（複数workspace・設計書§26）の Step 46（V2の合算・decision-evidence）。
+  Step 43（workspaceの発見と設定）・Step 44（workspace別の分析と結合）・Step 45（人の層と
+  判定）は完了した（45 は 2026-09-18）。同一の組織が複数の Team
   スペースを運用し、同じ人が各スペースに1アカウントずつ持って使い分ける運用を、組織1セットの
   レポートで集計・分析できるようにする。Phase 1（Step 43〜48）を v1.3.0 として出し、
   2026-09 の分析（10月初旬）に間に合わせることを目標にする（間に合わなければ 2026-10 の
@@ -220,13 +220,51 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 |---|---|---|---|
 | 43 | workspaceの発見と設定 | `完了` | 2026-09-17 |
 | 44 | workspace別の分析と結合 | `完了` | 2026-09-17 |
-| 45 | 人の層と判定（合算・払い出し・継続） | `進行中` |  |
+| 45 | 人の層と判定（合算・払い出し・継続） | `完了` | 2026-09-18 |
 | 46 | V2の合算（decision-evidence） | `未着手` |  |
 | 47 | 複数workspaceの出力 | `未着手` |  |
 | 48 | 速報・doctorの人の検査・docs（v1.3.0） | `未着手` |  |
 | 49 | 切替の観測（Phase 2） | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-18 — Step 45: 人の層と判定（合算・払い出し・継続）
+
+- `analyze()`に`extra_demand`を追加し、複数アカウント保有者の主の行を全workspaceの合算需要で
+  判定するようにした。`_add_demand`が主の月次表へ他workspaceの同じ月・同じemailの`api_cost`
+  だけを足す（実課金・トークン・構成比は主のアカウントの観測のまま。主に行が無い月・emailは
+  需要だけを持つ行として足し、主の履歴に無い月は無視する）。合算を見るのは
+  `_build_analysis_users`と付与候補の昇格方向だけで、E分布・未割当の警告・需要合計・
+  前月からの変化は主自身の需要で計算する（`_own_demand_users`）。既定の空では合算の計算経路を
+  通らないので、単一workspaceの判定と成果物はバイト一致のまま
+- `analyze_org()`は副を先に分析し、その月次表を主へ渡す。結果と警告の並びはconfigの
+  workspace順（主が先）のまま
+- `analyze/persons.py`を新設し、人（email）の層を置いた。`Account`・`Person`・`person_frame`と
+  §26.5の払い出し判定・継続判定・複数アカウント保有者の実課金を`PersonLayer`にまとめ、
+  `OrgAnalysisResult.persons`へ載せる（従来レイアウトを含む全経路で埋める。副workspaceが
+  無ければ判定は空）。I/Oを持たない純粋関数だけで構成する
+- 払い出した月（継続判定の完全月の起点）は、spendに行がある月とmembersスナップショットに
+  載った月の早い方。`load_members`は対象月末に最も近いファイルを返すため、月末から離れた
+  スナップショットは在籍の証拠にしない（`_members_evidence_applies`。日数の条件は
+  `ingest.is_near_month_end`に閉じる）。判断に迷う入力では完全月を少なく数える側＝
+  「データ蓄積待ち」側に倒す
+- 追加クレジットのモードは人の層で`credits_mode()`から導出し直す。誰も上限を記入していない
+  workspaceではusersからcredit列ごと落ちるため、列を読むと実課金の観測から有効と確定する人
+  まで不明に倒れ、払い出し判定が「判断材料なし」になる
+- 上限到達の述語を`credits.credit_reached`に切り出し、`_credit_reached_emails`と人の層が
+  同じ規則を共有するようにした（挙動は不変）
+- 部署別・チーム別を人単位で数えるための変更は`report/stats.py`ではなく
+  `report/format._group_summary_rows`の1箇所にした（行に`seat_cost_usd`があればそれを
+  シート費に使う）。usersにこの列は無いので従来の出力は不変。設計書のStep 45の対象も直した
+- テスト: 2244 passed（+26件）、ruff 緑、`check-text --diff`は0件。CI は3 OSのtestと
+  packageの4ジョブ緑
+- 外部レビュー（codex 2巡・受け入れ基準6点に範囲固定）: 1巡目のmid 1件（追加クレジットの
+  モードをusersの列から読むため、誰も上限を記入していない組織で払い出し候補が消える）を
+  採用して修正した。low 1件（人の表を`_group_summary_rows`に渡したときの同額グループの
+  並びがusers経路と違う）は、その結線自体がStep 47の担当なので不採用とした。2巡目は指摘なし
+- Step 46 への申し送り: `OrgAnalysisResult.persons`に人の行と§26.5の判定が載っている。
+  V2の`SubjectHistory`を月別合算で組むときは`AnalysisResult.monthly`と`_add_demand`の
+  合算規則（`api_cost`だけ足す）を再利用できる。Identity解決はworkspaceごと・結合はemail
 
 ### 2026-09-17 — Step 44: workspace別の分析と結合
 

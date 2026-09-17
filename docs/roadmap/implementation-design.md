@@ -2930,15 +2930,20 @@ dashboardで読めるようにする。
 対象:
 
 - `src/seat_analyzer/analyze/persons.py`（新設・純粋関数）
-- `src/seat_analyzer/report/stats.py`（部署別・チーム別を人単位で数える）
-- `tests/test_analyze.py`・`tests/test_stats.py`
+- `src/seat_analyzer/analyze/pipeline.py`・`src/seat_analyzer/analyze/workspaces.py`
+  （合算需要の結線と、払い出した月の解決）
+- `src/seat_analyzer/analyze/credits.py`（上限到達の述語）
+- `src/seat_analyzer/report/format.py`（部署別・チーム別を人単位で数える）
+- `tests/test_analyze.py`・`tests/test_persons.py`
 
 実装:
 
 - §26.4の人の行
 - 複数アカウント保有者の主の行を合算需要で判定し直す（§26.4の両軸の規則。履歴の各月も合算）
 - §26.5の払い出し判定・継続判定・複数アカウント保有者の実課金
-- 部署別・チーム別サマリを人の層から計算する（アカウント数を人数として数えない）
+- 部署別・チーム別サマリを人の層から計算する（アカウント数を人数として数えない）。集計の実体は
+  `report/format._group_summary_rows`で、人の表を渡せば人単位になる（`report/stats.py`の
+  分布はアカウント単位の指標なので触らない）
 
 受け入れ条件:
 
@@ -3464,6 +3469,11 @@ Premiumシートの込み容量は非公開で「容量の何%を使ったか」
      `trend.idle_usd`未満なら「遊休」と併記する
    - データ蓄積待ち: 副を持ってからの完全月が`evaluation_months`に満たない（払い出した月は
      不完全月として数えない）
+   - 観察: 上のどれにも当たらない（直近の月が損益分岐未満でも、未満の完全月が
+     `evaluation_months`連続していない）
+   - 払い出した月は、その workspaceでspendに行がある月とmembersスナップショットに載った月の
+     早い方とする。membersは対象月末に最も近いファイルが採用されるので、月末から離れた
+     スナップショットは在籍の証拠にしない（完全月を少なく数える側に倒す）
 3. 複数アカウント保有者の実課金（事実の一覧）: 副を持ちながら主で実課金が発生した人。副に
    切り替えずクレジットを使っている運用の逸脱か、両方の枠を使い切っている（さらに容量が要る）
    かのどちらかで、月別の副の需要と並べて読む
