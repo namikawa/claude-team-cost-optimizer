@@ -630,3 +630,147 @@ def test_mixed_layout_is_error(cfg, make_input):
     with pytest.raises(ValueError) as exc:
         analyze_org(input_dir / ORG, "2026-06", cfg, ORG)
     assert "混在" in str(exc.value)
+
+
+def _write_kappa_snapshot(base: Path, date: str, rows: list[str]) -> None:
+    """日付つき members-info（追加クレジット上限 κ のスナップショット）を置く。"""
+    (base / f"members-info-snap-{date}.csv").write_text(
+        "email,追加クレジット上限\n" + "\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_kappa_changes_are_detected_for_primary_workspace_only(tmp_path, make_input):
+    # κ は組織直下の members-info の設定。主はその月中変更を検出し、副は検出しない
+    rows = {"2026-07": [spend_row("alice@example.com", 10.0, net=0.0)]}
+    members = ["alice@example.com,Standard"]
+    input_dir = make_input(rows, members=members, members_month="2026-07",
+                           org=ORG, workspace="main")
+    make_input(rows, members=members, members_month="2026-07",
+               org=ORG, workspace="second")
+    make_input(rows, members=members, members_month="2026-07", org="org-flat")
+    for base in (input_dir / ORG, input_dir / "org-flat"):
+        _write_kappa_snapshot(base, "2026-07-05", ["alice@example.com,50"])
+        _write_kappa_snapshot(base, "2026-07-20", ["alice@example.com,250"])
+    cfg = _workspace_cfg(tmp_path, {
+        "main": {"primary": True}, "second": {"credit_limit_default_usd": 100},
+    })
+
+    result = analyze_org(input_dir / ORG, "2026-07", cfg, ORG)
+    flat = analyze(input_dir / "org-flat", "2026-07", cfg, "org-flat")
+    main = result.workspaces["main"]
+    # 主の検出内容は、同じファイルを従来レイアウトに置いた場合と同じ
+    assert main.member_changes["credit_changes"] == flat.member_changes["credit_changes"]
+    assert [(c["from"], c["to"]) for c in main.member_changes["credit_changes"]] == [
+        ("$50.00", "$250")]
+    assert sum("追加クレジット上限の変更を検出" in w for w in main.warnings) == 1
+    assert main.users.set_index("email").loc["alice@example.com", "credit_limit_usd"] == 250.0
+
+    # 副のアカウントの κ は workspace の既定値なので、この変更としては読まない
+    second = result.workspaces["second"]
+    assert second.member_changes is None
+    assert not any("追加クレジット上限の変更を検出" in w for w in second.warnings)
+    assert second.users.set_index("email").loc["alice@example.com", "credit_limit_usd"] == 100.0
+
+
+def test_allow_missing_workspace_without_members_rows(tmp_path, make_input):
+    # 需要 0 の代替かつ members が0行でも、人数・費用 0 の結果として完走する
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 10.0, net=0.0)],
+         "2026-06": [spend_row("alice@example.com", 12.0, net=0.0)]},
+        members=["alice@example.com,standard"], org=ORG, workspace="main",
+    )
+    make_input(
+        {"2026-05": [spend_row("alice@example.com", 10.0, net=0.0)]},
+        members=[], org=ORG, workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+
+    result = analyze_org(input_dir / ORG, "2026-06", cfg, ORG,
+                         allow_missing={"second"})
+    second = result.workspaces["second"]
+    assert len(second.users) == 0
+    # 列と並びは通常の結果と同じ（後段が列を前提にしているため）
+    assert list(second.users.columns) == list(result.workspaces["main"].users.columns)
+    assert second.summary["n_members"] == 0
+    assert second.summary["n_standard"] == 0 and second.summary["n_premium"] == 0
+    assert second.summary["seat_cost_now_usd"] == 0.0
+    assert second.summary["total_api_cost_usd"] == 0.0
+    assert second.summary["n_change_recommended"] == 0
+    assert second.summary["n_cap_suspected"] == 0
+    assert second.e_distribution is None
+    assert second.grant_candidates == []
+
+
+def _auto_basis_cfg(tmp_path: Path) -> dict:
+    """需要基準の自動判定（cost_basis: auto）を有効にした設定。"""
+    path = tmp_path / "config-auto-basis.yaml"
+    path.write_text("cost_basis: auto\n", encoding="utf-8")
+    return load_config(str(path))
+
+
+def test_zero_usage_month_keeps_cost_basis_of_past_months(tmp_path, make_input):
+    # 空の明細から基準を決めると、過去月の需要指標まで取り違えたまま全月へ適用される
+    cfg = _auto_basis_cfg(tmp_path)
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 100.0, net=80.0)]},
+        members=["alice@example.com,premium"],
+    )
+    result = analyze(input_dir, "2026-06", cfg, "org-x", assume_no_usage=True)
+    # net_spend 基準（80）が全月に適用される。computed 基準に倒れると 100 になる
+    assert result.monthly["2026-05"]["api_cost"].tolist() == [80.0]
+    assert not any("spend列" in w for w in result.warnings)
+
+
+def test_zero_usage_month_counts_as_a_month_of_no_demand(cfg, make_input):
+    # 欠月は「需要 0・実課金 0 の月」として数える（データ蓄積待ちにはならない）
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 20.0, net=0.0)]},
+        members=["alice@example.com,premium"],
+    )
+    result = analyze(input_dir, "2026-06", cfg, "org-x", assume_no_usage=True)
+    user = result.users.set_index("email").loc["alice@example.com"]
+    assert result.months_used == ["2026-05", "2026-06"]
+    assert user["api_cost_usd"] == 0.0
+    assert user["billed_extra_usd"] == 0.0
+    assert user["status"] == "変更推奨"
+    assert user["monthly_saving_usd"] == 100.0
+
+
+def test_monthly_history_is_on_the_result(cfg, make_input):
+    # 月次の履歴（判定に使った表そのもの）を結果から読める
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 20.0, net=0.0)],
+         "2026-06": [spend_row("alice@example.com", 22.0, net=0.0),
+                     spend_row("bob@example.com", 5.0, net=0.0)]},
+        members=["alice@example.com,premium", "bob@example.com,standard"],
+    )
+    result = analyze(input_dir, "2026-06", cfg, "org-x")
+    assert set(result.monthly) == {"2026-05", "2026-06"}
+    assert list(result.monthly["2026-06"].columns) == [
+        "email", "api_cost", "prompt_tokens", "completion_tokens", "billed",
+        "product_breakdown", "model_breakdown",
+    ]
+    latest = result.monthly["2026-06"].set_index("email")["api_cost"]
+    assert round(float(latest["alice@example.com"]), 2) == 22.0
+    assert round(float(latest["bob@example.com"]), 2) == 5.0
+    assert result.users.set_index("email").loc[
+        "alice@example.com", "api_cost_usd"] == 22.0
+
+
+def test_monthly_history_is_per_workspace(tmp_path, make_input):
+    # ヒステリシスの履歴は workspace ごと（副が始まる前の月を需要 0 として数えない）
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 20.0, net=0.0)],
+         "2026-06": [spend_row("alice@example.com", 22.0, net=0.0)]},
+        members=["alice@example.com,premium"], org=ORG, workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 8.0, net=0.0)]},
+        members=["alice@example.com,standard"], org=ORG, workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+
+    result = analyze_org(input_dir / ORG, "2026-06", cfg, ORG)
+    assert set(result.workspaces["main"].monthly) == {"2026-05", "2026-06"}
+    assert set(result.workspaces["second"].monthly) == {"2026-06"}
+    second = result.workspaces["second"].monthly["2026-06"].set_index("email")
+    assert round(float(second.loc["alice@example.com", "api_cost"]), 2) == 8.0

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import calendar
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -701,7 +701,20 @@ def _build_analysis_users(
         )
         for email in emails
     ]
-    return pd.DataFrame(rows), hysteresis_months
+    users = pd.DataFrame(rows) if rows else _empty_analysis_users(context)
+    return users, hysteresis_months
+
+
+def _empty_analysis_users(context: _AnalysisContext) -> pd.DataFrame:
+    """ユーザが1人も居ないときの users（列・並び・型を通常の行と揃えた0行の表）。
+
+    行から作る DataFrame は行が無いと列も持たず、members-info の結合・サマリ・分布が
+    列を前提にしているため落ちる。列名をここへ書き写すと _analysis_row との二重管理に
+    なるので、捨てる雛形行を1つ作ってその形だけを借りる。固定シートの分岐は列の型が
+    変わる（コスト列が欠損になる）ので、雛形は常に通常の判定の形で作る。
+    """
+    template = _analysis_row("", "standard", None, replace(context, fixed_seat=None))
+    return pd.DataFrame([template]).iloc[:0]
 
 
 def analyze(
@@ -772,11 +785,17 @@ def analyze(
     emails = sorted(set(members["email"]) | set(monthly[month]["email"]))
     seat_by_email = members.set_index("email")["seat_type"].to_dict()
 
+    # 部署・職種・備考・追加クレジット上限（任意ファイル members-info）の置き場所。
+    # κ の月中変更もこのファイルから読むので、そのアカウントの κ を members-info が
+    # 決める workspace（単一 workspace の組織と主）だけを検出の対象にする
+    info_dir = Path(members_info_dir) if members_info_dir is not None else input_dir
+    credit_limit_dir = info_dir if workspace is None or workspace.primary else None
+
     # 前月からの変化・月次推移（ロード済み monthly から毎回計算・初月は None）
     trend = _compute_trend(monthly, months_used, set(members["email"]), cfg)
     # 月中差分（利用推移・Claude Code 活動・メンバー変動。1つ以下なら None）
     snapshot, code_diff, member_changes, diff_warns = _midmonth_diffs(
-        input_dir, month, cfg, seat_by_email
+        input_dir, month, cfg, seat_by_email, credit_limit_dir=credit_limit_dir
     )
     warnings.extend(diff_warns)
 
@@ -786,7 +805,6 @@ def analyze(
     )
 
     # 部署・職種・備考・追加クレジット上限（任意ファイル members-info）の結合
-    info_dir = Path(members_info_dir) if members_info_dir is not None else input_dir
     warnings.extend(
         _merge_members_info(users, info_dir, cfg, sources, month, workspace=workspace)
     )

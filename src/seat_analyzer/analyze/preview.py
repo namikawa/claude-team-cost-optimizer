@@ -197,7 +197,8 @@ def preview(
         code_asof = _code_asof(code_result.source)
 
     snapshot, code_diff, member_changes, diff_warnings = _midmonth_diffs(
-        input_dir, month, cfg, seat_by_email
+        # 速報は単一 workspace の組織だけを扱うため、κ は同じディレクトリの members-info
+        input_dir, month, cfg, seat_by_email, credit_limit_dir=input_dir
     )
     warnings.extend(diff_warnings)
 
