@@ -2,8 +2,9 @@
 
 - 最終更新: 2026-09-17
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 9（複数workspace・設計書§26）の Step 44（workspace別の分析と結合）。
-  Step 43（workspaceの発見と設定）は完了した（2026-09-17）。同一の組織が複数の Team
+- 次のタスク: Track 9（複数workspace・設計書§26）の Step 45（人の層と判定）。
+  Step 43（workspaceの発見と設定）と Step 44（workspace別の分析と結合）は完了した
+  （2026-09-17）。同一の組織が複数の Team
   スペースを運用し、同じ人が各スペースに1アカウントずつ持って使い分ける運用を、組織1セットの
   レポートで集計・分析できるようにする。Phase 1（Step 43〜48）を v1.3.0 として出し、
   2026-09 の分析（10月初旬）に間に合わせることを目標にする（間に合わなければ 2026-10 の
@@ -218,14 +219,46 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | Step | タスク | ステータス | 完了日 |
 |---|---|---|---|
 | 43 | workspaceの発見と設定 | `完了` | 2026-09-17 |
-| 44 | workspace別の分析と結合 | `未着手` |  |
-| 45 | 人の層と判定（合算・払い出し・継続） | `未着手` |  |
+| 44 | workspace別の分析と結合 | `完了` | 2026-09-17 |
+| 45 | 人の層と判定（合算・払い出し・継続） | `進行中` |  |
 | 46 | V2の合算（decision-evidence） | `未着手` |  |
 | 47 | 複数workspaceの出力 | `未着手` |  |
 | 48 | 速報・doctorの人の検査・docs（v1.3.0） | `未着手` |  |
 | 49 | 切替の観測（Phase 2） | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-17 — Step 44: workspace別の分析と結合
+
+- `analyze/workspaces.py`を新設し、1組織分の分析を`analyze_org()`に束ねた。従来レイアウトは
+  workspace が1つの容れ物になり、中身は`analyze()`の戻りと完全に同じ。入れ子レイアウトは
+  config の`workspaces`と発見した名前を突き合わせてから workspace ごとに`analyze()`を呼ぶ。
+  食い違い・主の不在・名前の不正は分析の経路でも止める（doctor だけに頼らない）
+- `analyze()`に任意引数（`workspace` / `members_info_dir` / `assume_no_usage`）を足した。
+  いずれも既定は従来の挙動で、単一 workspace の成果物はバイト一致のまま。members-info は
+  組織直下の1つを全 workspace で読む
+- κの解決は`credit_limit_for`（pipeline.py）の1関数に閉じた。主は members-info の列
+  （空欄なら workspace の既定値）、副は列を読まず workspace の既定値。月中のκ変更の検出も、
+  そのアカウントのκを members-info が決める workspace（単一 workspace の組織と主）だけを
+  対象にする
+- `fixed_seat`を書いた workspace のアカウントはステータス「対象外（固定シート）」
+  （`STATUS_FIXED_SEAT`）になり、推奨・削減額・上限フラグ・付与候補から外れる。シート内訳と
+  シート費は費用の実態なので数える
+- 対象月にデータが無い workspace は§26.6のとおり。まだ始まっていない workspace は警告して
+  飛ばし、始まっているのに無ければエラー、許可された workspace は需要0（空の明細）として
+  分析する。空の明細でも完走するよう`aggregate_month`の0行、需要基準の解決（直近の行がある
+  月へ遡る）、`validate_spend`のスキップ、users が0行のときの列の形を揃えた
+- `AnalysisResult.monthly`（月→ユーザ×月集計）を足した。複数 workspace の組織で人ごとに
+  月別の需要を束ね直す側（Step 45）が読む。V1 の判定・出力はこれを読まない
+- CLI の結線と`--allow-missing-workspace`は Step 47（出力が揃ってから開く）へ移した
+- テスト: 全件成功、ruff 緑、`check-text --diff`は0件。CI は4ジョブ緑
+- 外部レビュー（codex 2巡・受け入れ基準に範囲固定）: 1巡目の mid 2件（入れ子レイアウトで主の
+  κ月中変更が検出されない・`allow_missing`で members が0行のとき KeyError）と low 1件
+  （欠月経路のテスト不足）を採用して修正した。2巡目は指摘なし
+- Step 45 への申し送り: 主の行の合算判定は`_build_analysis_users`に束ね直した monthly を渡せば
+  推奨・ヒステリシス・確度・上限フラグまで合算値で決まる。材料は`AnalysisResult.monthly`と
+  `OrgAnalysisResult.contexts`。`secondary_breakeven_usd`はまだ未参照。固定シートと異なる
+  種別のアカウント（fixed premium の workspace に Standard）は警告候補（Step 47 で検討）
 
 ### 2026-09-17 — Step 43: workspaceの発見と設定
 
