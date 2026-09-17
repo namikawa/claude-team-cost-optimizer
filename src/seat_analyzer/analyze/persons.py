@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from .credits import CREDIT_DISABLED, CREDIT_ENABLED, CREDIT_UNKNOWN, credit_reached
+from .credits import CREDIT_DISABLED, CREDIT_ENABLED, credit_reached, credits_mode
 from .pipeline import SEAT_LABELS, STATUS_CHANGE, AnalysisResult
 
 if TYPE_CHECKING:  # 実行時の import は循環する（workspaces がこのモジュールを呼ぶため）
@@ -335,8 +335,16 @@ def _seat_prices(org: OrgAnalysisResult) -> dict[str, float]:
     }
 
 
-def _account(workspace: str, row: pd.Series, api_cost_usd: float) -> Account:
-    """users の1行からアカウントを組む（列が無い任意項目は不明として扱う）。"""
+def _account(workspace: str, row: pd.Series, api_cost_usd: float,
+             billed_ever: bool) -> Account:
+    """users の1行からアカウントを組む。
+
+    追加クレジットのモードは users の列を読まずに導出し直す。誰も上限を記入して
+    いない workspace では users から credit 列ごと落ちるため、列を読むと「実課金の
+    観測から enabled と確定する人」まで不明に倒れる。導出は analyze() と同じ
+    （上限は列があればその値・無ければ NaN、実課金の観測はその workspace の全月）。
+    """
+    credit_limit_usd = _number(row.get("credit_limit_usd"), float("nan"))
     return Account(
         workspace=workspace,
         seat=str(row["current_seat"]),
@@ -345,13 +353,22 @@ def _account(workspace: str, row: pd.Series, api_cost_usd: float) -> Account:
         cost_current_usd=_optional_number(row.get("cost_current_usd")),
         status=str(row["status"]),
         monthly_saving_usd=_optional_number(row.get("monthly_saving_usd")),
-        credit_limit_usd=_number(row.get("credit_limit_usd"), float("nan")),
-        credits_mode=str(row.get("credits_mode") or CREDIT_UNKNOWN),
+        credit_limit_usd=credit_limit_usd,
+        credits_mode=credits_mode(credit_limit_usd, billed_ever),
         loc_with_cc=(
             int(row["loc_with_cc"])
             if "loc_with_cc" in row.index and not pd.isna(row["loc_with_cc"]) else None
         ),
     )
+
+
+def _billed_ever(result: AnalysisResult) -> set[str]:
+    """その workspace で当月までに実課金が観測された email（analyze() と同じ定義）。"""
+    seen: set[str] = set()
+    for month in result.months_used:
+        frame = result.monthly[month]
+        seen |= {str(email) for email in frame.loc[frame["billed"] > 0.0, "email"]}
+    return seen
 
 
 def _own_demand(result: AnalysisResult) -> pd.Series:
@@ -378,10 +395,12 @@ def build_persons(org: OrgAnalysisResult) -> tuple[Person, ...]:
     attributes: dict[str, tuple[str, str, str, str]] = {}
     for name, result in org.workspaces.items():
         own = _own_demand(result)
+        billed_ever = _billed_ever(result)
         for _, row in result.users.iterrows():
             email = str(row["email"])
             demand = round(float(own[email]), 2) if email in own.index else 0.0
-            accounts.setdefault(email, []).append(_account(name, row, demand))
+            accounts.setdefault(email, []).append(
+                _account(name, row, demand, email in billed_ever))
             attributes.setdefault(email, tuple(
                 _text(row.get(col)) for col in ("department", "team", "role", "note")
             ))

@@ -191,6 +191,55 @@ def _write_member_snapshot(base: Path, date: str, members: list[str]) -> None:
         "Email,Seat Type\n" + "\n".join(members) + "\n", encoding="utf-8")
 
 
+def _billed_without_cap(make_input, tmp_path, members_info: str | None):
+    """主の実課金が2ヶ月続く構成（上限の記入だけを変えて結果を比べる）。"""
+    rows = [spend_row("alice@example.com", 300.0, net=125.0),
+            spend_row("bob@example.com", 10.0, net=0.0)]
+    input_dir = make_input(
+        {"2026-05": rows, "2026-06": rows},
+        members=["alice@example.com,premium", "bob@example.com,premium"],
+        org=ORG, workspace="main",
+    )
+    make_input(
+        {"2026-05": [spend_row("zoe@example.com", 200.0, net=0.0)],
+         "2026-06": [spend_row("zoe@example.com", 200.0, net=0.0)]},
+        members=["zoe@example.com,premium"], org=ORG, workspace="second",
+    )
+    if members_info is not None:
+        _write_members_info(input_dir, members_info)
+    cfg = _cfg(tmp_path, {
+        "main": {"primary": True}, "second": {"fixed_seat": "premium"},
+    })
+    return analyze_org(input_dir / ORG, "2026-06", cfg, ORG)
+
+
+def test_payout_uses_billed_history_when_cap_is_unset(make_input, tmp_path):
+    # 誰も上限を記入していない workspace では users から credit 列が落ちるが、
+    # 実課金の観測があれば追加クレジットは有効と確定する（列の有無で判定を変えない）
+    result = _billed_without_cap(make_input, tmp_path, None)
+    assert "credits_mode" not in result.workspaces["main"].users.columns
+    alice = {j.email: j for j in result.persons.payout}["alice@example.com"]
+    assert alice.status == PAYOUT_CANDIDATE
+    assert alice.reason == ""
+    assert alice.streak_months == 2
+    assert alice.cap_reached is False  # 上限が不明なので到達は語れない
+
+
+def test_payout_is_the_same_when_another_user_has_a_cap(make_input, tmp_path):
+    # 別人が上限を記入して列が現れても結果は同じ（モードは users の列に依らない）
+    result = _billed_without_cap(
+        make_input, tmp_path, "email,追加クレジット上限\nbob@example.com,250\n")
+    alice = {j.email: j for j in result.persons.payout}["alice@example.com"]
+    assert alice.status == PAYOUT_CANDIDATE
+    assert alice.reason == ""
+    assert alice.streak_months == 2
+    # 列があるときは users の値と一致する（再導出が analyze() と同じ定義であること）
+    modes = result.workspaces["main"].users.set_index("email")["credits_mode"]
+    for person in result.persons.persons:
+        if person.primary is not None:
+            assert person.primary.credits_mode == modes[person.email]
+
+
 def _second_members(*emails: str) -> list[str]:
     return [f"{email}@example.com,premium" for email in emails]
 
