@@ -12,6 +12,8 @@
   `fixed_seat` / `credit_limit_default_usd` / `evaluation_months`）と、組織直下の
   `secondary_breakeven_usd` を書けるようにした
 - `init-org --workspaces main,second` で入れ子レイアウトの雛形を作れるようにした
+- 複数 workspace の組織の decision-evidence で、複数アカウントを持つ人を主 workspace の行1本に
+  まとめ（需要は全 workspace の合算）、`workspace` 列を付けるようにした
 
 ### 変更
 

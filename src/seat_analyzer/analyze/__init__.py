@@ -50,6 +50,7 @@ from .pipeline import (
     AnalysisResult as AnalysisResult,
     DecisionContext as DecisionContext,
     _short_model as _short_model,
+    add_demand as add_demand,
     aggregate_month as aggregate_month,
     analyze as analyze,
 )
@@ -100,6 +101,7 @@ __all__ = [
     "PersonLayer",
     "PreviewResult",
     "WorkspaceContext",
+    "add_demand",
     "aggregate_month",
     "analyze",
     "analyze_org",

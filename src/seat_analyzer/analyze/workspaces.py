@@ -48,6 +48,7 @@ class OrgAnalysisResult:
     skipped はまだ始まっていないため飛ばした workspace の名前（昇順）。
     warnings は組織単位の警告で、workspace ごとの警告は各 AnalysisResult が持つ。
     persons は全 workspace のアカウントを email で束ねた人の層（§26.4〜§26.5）。
+    first_seen は副 workspace → email → 払い出した月で、人の層と V2 の人ごとの履歴が読む。
     """
 
     org: str
@@ -58,6 +59,12 @@ class OrgAnalysisResult:
     skipped: tuple[str, ...] = ()
     warnings: list[str] = field(default_factory=list)
     persons: PersonLayer | None = None
+    first_seen: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    @property
+    def has_multiple_workspaces(self) -> bool:
+        """分析を飛ばした workspace も含め、複数 workspace の設定を持つか。"""
+        return len(self.contexts) >= 2
 
 
 def _context(name: str, settings: dict) -> WorkspaceContext:
@@ -226,10 +233,10 @@ def analyze_org(
         workspaces={name: results[name] for name in contexts if name in results},
         contexts=contexts, skipped=tuple(sorted(skipped)), warnings=warnings,
     )
-    result.persons = build_person_layer(
-        result, cfg,
-        {name: _first_seen(org_input / name, results[name], cfg) for name in secondaries},
-    )
+    result.first_seen = {
+        name: _first_seen(org_input / name, results[name], cfg) for name in secondaries
+    }
+    result.persons = build_person_layer(result, cfg, result.first_seen)
     return result
 
 

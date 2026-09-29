@@ -24,7 +24,7 @@ from seat_analyzer.analyze import (
     analyze,
     analyze_org,
 )
-from seat_analyzer.analyze.pipeline import _add_demand, credit_limit_for
+from seat_analyzer.analyze.pipeline import add_demand, credit_limit_for
 from seat_analyzer.config import load_config
 from tests.conftest import spend_row
 
@@ -814,7 +814,7 @@ def test_add_demand_adds_only_demand():
     extra = {"2026-06": _monthly([
         ("alice@example.com", 7.0, 999, 99, 3.0, "Claude Chat 100%", "Opus 4.8 100%"),
     ])}
-    merged = _add_demand(main, ["2026-06"], [extra])["2026-06"].set_index("email")
+    merged = add_demand(main, ["2026-06"], [extra])["2026-06"].set_index("email")
     row = merged.loc["alice@example.com"]
     assert row["api_cost"] == 17.0
     assert row["billed"] == 5.0
@@ -831,7 +831,7 @@ def test_add_demand_creates_rows_for_missing_emails():
     extra = {"2026-06": _monthly([
         ("bob@example.com", 4.0, 50, 5, 1.0, "Claude Chat 100%", "Opus 4.8 100%"),
     ])}
-    merged = _add_demand(main, ["2026-06"], [extra])["2026-06"]
+    merged = add_demand(main, ["2026-06"], [extra])["2026-06"]
     assert merged["email"].tolist() == ["alice@example.com", "bob@example.com"]
     bob = merged.set_index("email").loc["bob@example.com"]
     assert bob["api_cost"] == 4.0
@@ -849,7 +849,7 @@ def test_add_demand_ignores_months_outside_history():
         "2026-05": _monthly([("alice@example.com", 99.0, 1, 1, 0.0, "", "")]),
         "2026-06": _monthly([("alice@example.com", 7.0, 1, 1, 0.0, "", "")]),
     }
-    merged = _add_demand(main, ["2026-06"], [extra])
+    merged = add_demand(main, ["2026-06"], [extra])
     assert set(merged) == {"2026-06"}
     assert merged["2026-06"]["api_cost"].tolist() == [17.0]
 
@@ -860,7 +860,7 @@ def test_add_demand_does_not_modify_inputs():
     before_main = main["2026-06"].copy()
     before_extra = extra["2026-06"].copy()
 
-    _add_demand(main, ["2026-06"], [extra])
+    add_demand(main, ["2026-06"], [extra])
     assert_frame_equal(main["2026-06"], before_main)
     assert_frame_equal(extra["2026-06"], before_extra)
 
@@ -872,7 +872,7 @@ def test_add_demand_row_order_is_deterministic():
         ("bob@example.com", 2.0, 1, 1, 0.0, "", ""),
         ("alice@example.com", 3.0, 1, 1, 0.0, "", ""),
     ])}
-    merged = _add_demand(main, ["2026-06"], [extra])["2026-06"]
+    merged = add_demand(main, ["2026-06"], [extra])["2026-06"]
     assert merged["email"].tolist() == [
         "alice@example.com", "bob@example.com", "zoe@example.com"]
 

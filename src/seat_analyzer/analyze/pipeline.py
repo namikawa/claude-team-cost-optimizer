@@ -91,7 +91,7 @@ class DecisionContext:
     months は months_used（昇順・最後が対象月）、complete は月 → その月の spend が
     全月データか、aggregates は月 → aggregate_month の結果、product_usage は月 →
     product 特徴量、identity_rows は対象月の Identity 証拠行（email・account_uuid・
-    user_id の3列）。
+    user_id の3列）。user_rows は月 → 価格適用済みのユーザ明細。
     """
 
     months: tuple[str, ...]
@@ -99,6 +99,7 @@ class DecisionContext:
     aggregates: dict[str, pd.DataFrame]
     product_usage: dict[str, ProductUsage]
     identity_rows: pd.DataFrame
+    user_rows: dict[str, pd.DataFrame]
 
 
 @dataclass
@@ -245,7 +246,7 @@ class _SpendHistory:
     complete は月 → その月の spend が全月データか（ファイル名の期間が暦日数に届いて
     いれば全月。期間の無い命名は従来どおり全月として扱う）。
 
-    monthly_product_usage と identity_rows は V2 判定の材料で、要求されたときだけ
+    monthly_product_usage・identity_rows・user_rows は V2 判定の材料で、要求されたときだけ
     埋まる（V1 の実行に過去月の product 特徴量という新しい計算経路を足さないため）。
     """
 
@@ -258,6 +259,7 @@ class _SpendHistory:
     complete: dict[str, bool]
     monthly_product_usage: dict[str, ProductUsage]
     identity_rows: pd.DataFrame | None
+    user_rows: dict[str, pd.DataFrame]
 
 
 def _load_spend_history(
@@ -340,6 +342,7 @@ def _load_spend_history(
     org_usage: dict = {}
     product_usage: ProductUsage | None = None
     monthly_product_usage: dict[str, ProductUsage] = {}
+    user_rows: dict[str, pd.DataFrame] = {}
     for current_month, raw_df in raw.items():
         df = pricing.apply_cost_basis(raw_df, basis)
         # 行が無い月に突合を掛けると「spend 列が無い」と同じ結果になるため対象外にする
@@ -350,6 +353,8 @@ def _load_spend_history(
         # シート判定の対象外として分離し、別枠で計上する
         is_user = df["email"].str.contains("@", na=False)
         org_df = df[~is_user]
+        if decision_context:
+            user_rows[current_month] = df[is_user]
         if current_month == month and not org_df.empty:
             org_usage = {
                 "cost_usd": round(float(org_df["billed_usd"].sum()), 2),
@@ -402,6 +407,7 @@ def _load_spend_history(
         identity_rows=(
             target_user_rows[list(_IDENTITY_COLUMNS)] if decision_context else None
         ),
+        user_rows=user_rows,
     )
 
 
@@ -706,7 +712,7 @@ def _build_analysis_users(
     return users, hysteresis_months
 
 
-def _add_demand(
+def add_demand(
     monthly: dict[str, pd.DataFrame],
     months_used: list[str],
     extra_demand: Sequence[Mapping[str, pd.DataFrame]],
@@ -876,7 +882,7 @@ def analyze(
     # 実課金・トークン・構成比は主のアカウントの観測のままなので、合算が影響するのは
     # 需要で決まる推奨・ヒステリシス・上限フラグ・付与候補の方向に限られる
     judged_monthly = (
-        _add_demand(monthly, months_used, extra_demand) if extra_demand else monthly
+        add_demand(monthly, months_used, extra_demand) if extra_demand else monthly
     )
     users, n_hyst = _build_analysis_users(
         judged_monthly, months_used, emails, seat_by_email, cfg,
@@ -969,6 +975,7 @@ def _decision_context(
         aggregates=dict(history.monthly),
         product_usage=dict(history.monthly_product_usage),
         identity_rows=identity_rows,
+        user_rows=dict(history.user_rows),
     )
 
 

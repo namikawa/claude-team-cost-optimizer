@@ -40,6 +40,16 @@ EVIDENCE_COLUMNS = (
     "policy_stability",
     "suggested_credit_cap_usd",
 )
+# 複数 workspace の組織でだけ email の次に入る列
+_WORKSPACE_COLUMN = "workspace"
+
+
+def _columns(workspace_column: bool) -> tuple[str, ...]:
+    """複数 workspace のときだけ email の次へ workspace を置く。"""
+    return (
+        (EVIDENCE_COLUMNS[0], _WORKSPACE_COLUMN, *EVIDENCE_COLUMNS[1:])
+        if workspace_column else EVIDENCE_COLUMNS
+    )
 
 # 複数値を1セルに収める区切り（reason_codes・complete_months）。カンマは CSV の
 # 区切りと重なって引用符が必要になるため使わない
@@ -86,6 +96,7 @@ def _cells(row: EvidenceRow) -> dict[str, str]:
     decision = row.decision
     return {
         "email": _text(row.email),
+        _WORKSPACE_COLUMN: _text(row.workspace),
         "subject_id": _text(row.subject_id),
         "identity_quality": _text(row.identity_quality),
         "current_seat": _text(row.current_seat),
@@ -107,9 +118,11 @@ def _cells(row: EvidenceRow) -> dict[str, str]:
     }
 
 
-def write_decision_evidence(rows: Sequence[EvidenceRow], path: Path) -> None:
+def write_decision_evidence(
+    rows: Sequence[EvidenceRow], path: Path, *, workspace_column: bool = False
+) -> None:
     """decision-evidence.csv を書く（行が0件でもヘッダだけ書く）。"""
     table = pd.DataFrame(
-        [_cells(row) for row in rows], columns=list(EVIDENCE_COLUMNS)
+        [_cells(row) for row in rows], columns=list(_columns(workspace_column))
     )
     table.to_csv(path, index=False, encoding="utf-8-sig", lineterminator="\n")

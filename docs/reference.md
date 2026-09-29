@@ -197,8 +197,14 @@ recommendations）とは別系統の出力で、V1 の内容には影響しな�
 行は members ∪ 対象月のスペンドのユーザ（メールアドレス昇順）で、recommendations と同じ対象。
 
 - `email` — ユーザのメールアドレス
+- `workspace` — 複数 workspace の組織（config の `workspaces` が2つ以上）でだけ `email` の
+  次に出る列で、主 workspace の名前。複数アカウントを持つ人は主 workspace の行1本にまとめ、
+  需要（全 product・Code・補助）は全 workspace の合算、実課金・κ・現シート・シート変更は
+  主 workspace の値を使う。副 workspace にだけアカウントがある人の行は無い
 - `subject_id` — 解決した stable ID（`account:` / `user:` / `email:` の接頭辞つき。確定できなければ空欄）
 - `identity_quality` — `stable` / `email_consistent` / `email_fallback` / `conflict` / `unresolved`
+  （複数 workspace の組織では、副 workspace でその email の Identity が衝突した場合も
+  `conflict` になるが、`subject_id` は主 workspace の解決結果のまま）
 - `current_seat` — 対象月末時点のシート（`standard` / `premium` / `unassigned` / `unknown`）
 - `month` — 対象月
 - `complete` — 対象月のスペンドが全月ぶんか（True / False）
@@ -209,7 +215,9 @@ recommendations）とは別系統の出力で、V1 の内容には影響しな�
 - `billed_extra_usd` — 対象月の実課金
 - `credit_limit_usd` — 追加クレジット上限 κ（空欄は不明・`0.00` は無効・`inf` は上限なし）
 - `premium_justification_usd` — 判定に使った方針線（`decision_v2.premium_justification_usd`）
-- `status` — 結論（`recommended` / `observe` / `no_decision` / `keep` / `excluded`）
+- `status` — 結論（`recommended` / `observe` / `no_decision` / `keep` / `excluded`）。
+  `excluded` はシート未割当のほか、主 workspace に `fixed_seat` を設定した組織の
+  Standard / Premium のアカウントにも付く
 - `seat_action` — シートへの推奨（`upgrade_to_premium` / `downgrade_to_standard` /
   `review_assignment` / `keep` / `none`）
 - `credit_action` — 追加クレジットへの推奨（`enable_with_cap` / `review` / `keep` / `none`）
@@ -224,6 +232,9 @@ recommendations）とは別系統の出力で、V1 の内容には影響しな�
 履歴（判定が見る月の並び）は次のように組む。
 
 - 対象月から古い方へ遡り、暦で連続する月だけを採る（間に欠月があればそこで打ち切る）
+- 複数 workspace の組織では、副 workspace にもアカウントがある人について、副の部分月を
+  不完全月に数え、副を使い始めた後に副のスペンドが無い月（欠月）があればその月以前を
+  履歴から外す。副にアカウントの無い人の履歴は主 workspace のまま
 - スペンドに明細が無い月は需要ゼロの観測として入れる（利用ゼロは観測であって欠損ではない）
 - シート変更 event から加入が読み取れる場合は、加入より前の月を履歴から外し、加入がまたがる
   月を完全月に数えない（在籍が月全体に及んでいない月を完全月として扱わないため）
