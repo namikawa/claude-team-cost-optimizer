@@ -4,7 +4,7 @@
 （decision_v2）が要求する SubjectHistory の間を埋める層。判定の規則そのものは持たず、
 規則が要る形へ材料を組み替えて呼ぶだけにする。
 
-ここが担う組み替えは4つある。
+ここが担う組み替えは5つある。
 
 - 履歴の切り出し: 対象月から古い方へ遡り、暦で連続する月だけを履歴にする。判定エンジンは
   渡された並びの隣接を「連続」と数えるので、暦の隣接は組み立て側が保証する
@@ -20,6 +20,18 @@
   組織では seat_changes の subject_id が email 由来になり、spend から解いた account_uuid
   由来の subject_id と一致しないため、email しか手が無い）。subject を確定できない未分類
   観測は、関係する email を持つ対象ユーザ全員へ帰属させて保留側へ倒す
+- 複数 workspace の合算: 複数アカウントを持つ人は主 workspace の行1本にまとめる。
+  需要は add_demand で api_cost だけを足し、Code・補助の特徴量は連結した明細に
+  product_usage.compute を掛け直して作る（supplementary_high は閾値判定なので真偽値では
+  合算できない）。実課金・κ・現シート・シート変更 event・Identity の subject_id は
+  主 workspace のものを使う。履歴と完全性は人ごとに決め、副に払い出した月（first_seen）が
+  ある人だけ、副の部分月を不完全月とし、副を使い始めた後の副の欠月で履歴を打ち切る。
+  欠月を不完全月にすると、降格の評価窓が完全月だけを末尾から採るため、欠けた月を飛ばして
+  古い月で補い、主で実課金があった月が窓から外れて降格が成立しうる。欠月は主の欠月と同じく
+  打ち切りに揃え、副にアカウントの無い人は主の履歴のままにする。Identity は workspace ごとに
+  解き、副でその email が衝突していれば衝突として扱う（workspace 間で ID が違うこと自体は
+  衝突にしない）。主が飛ばされた月は行を作らず、主 workspace に fixed_seat があれば
+  Standard / Premium のアカウントを判定対象外（excluded）にする
 
 Identity は対象月の証拠だけで解く。全期間を一括で解くと、退職者の email が再割当された
 場合に時間を隔てた別人どうしが1人へ結合する（seat_changes が隣接ペアで解決するのと同じ
@@ -34,12 +46,12 @@ from __future__ import annotations
 import calendar
 import datetime as dt
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 import pandas as pd
 
 from . import identity
-from .analyze import AnalysisResult, DecisionContext
+from .analyze import AnalysisResult, DecisionContext, OrgAnalysisResult, add_demand
 from .decision_v2 import (
     DecisionV2,
     MonthObservation,
@@ -50,6 +62,7 @@ from .decision_v2 import (
 )
 from .domain import CreditAction, DecisionStatus, ReasonCode, SeatAction
 from .identity import IdentityEvidence, ResolvedIdentity
+from .product_usage import ProductUsage, compute as compute_product_usage
 from .seat_changes import SeatChangeEvent, SeatChanges, UnclassifiedObservation
 
 # 判定を振り分ける現シートの値（ingest が正規化した seat_type）
@@ -67,6 +80,8 @@ _SUPPLEMENTARY_HIGH = "supplementary_high"
 
 # Identity を解決できなかったユーザの品質（identity.IdentityQuality の1つ）
 _UNRESOLVED = "unresolved"
+# Identity が衝突したユーザの品質（identity.IdentityQuality の1つ）
+_CONFLICT = "conflict"
 
 
 @dataclass(frozen=True)
@@ -97,6 +112,7 @@ class EvidenceRow:
     suggested_credit_cap_usd: float | None
     decision: DecisionV2
     policy_stability: int | None
+    workspace: str | None = None
 
 
 def evaluate(
@@ -111,7 +127,147 @@ def evaluate(
     decision_context を持たない分析結果（既定の analyze）は判定の材料が無いので
     ValueError にする。
     """
-    shared = _shared(result, changes, cfg)
+    return _evaluate(result, changes, cfg)
+
+
+def evaluate_org(
+    org: OrgAnalysisResult, changes: SeatChanges, cfg: Mapping
+) -> tuple[EvidenceRow, ...]:
+    """主 workspace の users だけを email 昇順で返し、workspace に主の名前を付ける。
+
+    副が1つも分析されていなければ合算せず、evaluate と同じ計算に fixed_seat の扱いだけを
+    加える。主が飛ばされた月は空タプルを返し、それ以外で分析済み workspace の判定材料が
+    無ければ ValueError にする。合算と履歴の組み立てはモジュール docstring の規則に従う。
+    """
+    if org.primary not in org.workspaces:
+        return ()
+    primary = org.workspaces[org.primary]
+    fixed_seat = org.contexts[org.primary].fixed_seat
+    secondaries = [
+        (name, result) for name, result in org.workspaces.items()
+        if name != org.primary
+    ]
+    if not secondaries:
+        rows = _evaluate(primary, changes, cfg, fixed_seat=fixed_seat)
+    else:
+        context = primary.decision_context
+        if context is None or any(
+            result.decision_context is None for _, result in secondaries
+        ):
+            raise ValueError(
+                "V2 判定の材料がありません（analyze(..., decision_context=True) の結果が必要です）"
+            )
+        combined = replace(
+            context,
+            aggregates=add_demand(
+                context.aggregates, list(context.months),
+                [result.decision_context.aggregates for _, result in secondaries],
+            ),
+            product_usage=_combined_product_usage(context, secondaries, cfg),
+        )
+        overrides = _person_overrides(primary, org, secondaries)
+        rows = _evaluate(
+            replace(primary, decision_context=combined), changes, cfg,
+            persons=overrides, fixed_seat=fixed_seat,
+        )
+    return tuple(replace(row, workspace=org.primary) for row in rows)
+
+
+def _combined_product_usage(
+    primary: DecisionContext,
+    secondaries: list[tuple[str, AnalysisResult]],
+    cfg: Mapping,
+) -> dict[str, ProductUsage]:
+    """副に明細がある月だけ、価格適用済みの明細から特徴量を計算し直す。"""
+    features = dict(primary.product_usage)
+    for month in primary.months:
+        extra_rows = [
+            result.decision_context.user_rows[month]
+            for _, result in secondaries
+            if month in result.decision_context.user_rows
+            and not result.decision_context.user_rows[month].empty
+        ]
+        if extra_rows:
+            joined = pd.concat(
+                [rows for rows in [primary.user_rows[month], *extra_rows] if not rows.empty],
+                ignore_index=True,
+            )
+            features[month] = compute_product_usage(joined, cfg["product_policy"])
+    return features
+
+
+@dataclass(frozen=True)
+class _PersonOverride:
+    """その人だけに適用する連続履歴、完全性と副 Identity の衝突。"""
+
+    months: tuple[str, ...]
+    complete: dict[str, bool]
+    identity_conflict: bool
+
+
+def _person_overrides(
+    primary: AnalysisResult,
+    org: OrgAnalysisResult,
+    secondaries: list[tuple[str, AnalysisResult]],
+) -> dict[str, _PersonOverride]:
+    """副に関与する人だけ履歴を調整し、副の欠月以前を判定へ渡さない。"""
+    context = primary.decision_context
+    history = _contiguous_months(context.months, primary.month)
+    resolved = {
+        name: _resolved_by_email(result.decision_context.identity_rows)
+        for name, result in secondaries
+    }
+    first_seen = {
+        name: {
+            key: month
+            for email, month in org.first_seen.get(name, {}).items()
+            if (key := _email_key(email)) is not None
+        }
+        for name, _ in secondaries
+    }
+    overrides = {}
+    for email in primary.users["email"]:
+        key = _email_key(email)
+        if key is None:
+            continue
+        involved = [
+            (name, result, first_seen[name][key])
+            for name, result in secondaries if key in first_seen[name]
+        ]
+        if not involved:
+            continue
+        missing = [
+            month for _, result, start in involved
+            for month in history
+            if start < month < primary.month
+            and month not in result.decision_context.months
+        ]
+        months = tuple(
+            month for month in history if not missing or month > max(missing)
+        )
+        complete = {
+            month: bool(context.complete[month]) and all(
+                bool(result.decision_context.complete[month])
+                for _, result, start in involved
+                if start <= month and month in result.decision_context.months
+            )
+            for month in months
+        }
+        conflict = any(
+            (subject := resolved[name].get(key)) is not None and subject.conflict
+            for name, _, _ in involved
+        )
+        overrides[key] = _PersonOverride(months, complete, conflict)
+    return overrides
+
+
+def _evaluate(
+    result: AnalysisResult, changes: SeatChanges, cfg: Mapping,
+    *, persons: Mapping[str, _PersonOverride] | None = None,
+    fixed_seat: str | None = None,
+) -> tuple[EvidenceRow, ...]:
+    """共有材料と必要な人別上書きから判定行を組む。"""
+    shared = _shared(result, changes, cfg, persons=persons, fixed_seat=fixed_seat)
     rows = [
         _row(str(email), str(seat), _credit_limit(limit), shared)
         for email, seat, limit in _user_rows(result)
@@ -120,7 +276,9 @@ def evaluate(
 
 
 def _shared(
-    result: AnalysisResult, changes: SeatChanges, cfg: Mapping
+    result: AnalysisResult, changes: SeatChanges, cfg: Mapping,
+    *, persons: Mapping[str, _PersonOverride] | None = None,
+    fixed_seat: str | None = None,
 ) -> _Evaluation:
     """全ユーザに共通の材料を1度だけ組む（ユーザごとの判定はこれを読むだけにする）。"""
     context = result.decision_context
@@ -152,6 +310,8 @@ def _shared(
         ),
         justification=float(cfg["decision_v2"]["premium_justification_usd"]),
         suggested_cap=float(cfg["usage_credits"]["grant_suggested_cap_usd"]),
+        persons=persons or {},
+        fixed_seat=fixed_seat,
     )
 
 
@@ -189,6 +349,8 @@ class _Evaluation:
     user_subject_ids: frozenset[str]
     justification: float
     suggested_cap: float
+    persons: Mapping[str, _PersonOverride] = field(default_factory=dict)
+    fixed_seat: str | None = None
 
 
 def _row(
@@ -199,23 +361,28 @@ def _row(
 ) -> EvidenceRow:
     """ユーザ1人ぶんの判定と、その材料の行。"""
     subject = shared.subjects.get(_email_key(email))
+    person = shared.persons.get(_email_key(email))
     subject_id = subject.subject_id if subject is not None else None
     events, unclassified = _attributed(shared, _email_key(email), subject_id)
     history = SubjectHistory(
         email=email,
         current_seat=current_seat,
         credit_limit_usd=credit_limit_usd,
-        identity_conflict=subject.conflict if subject is not None else False,
+        identity_conflict=(subject.conflict if subject is not None else False)
+        or (person.identity_conflict if person is not None else False),
         months=_observations(email, shared, events),
         seat_events=events,
         unclassified=unclassified,
     )
-    decision, stability = _decide(history, shared.cfg)
+    decision, stability = _decide(history, shared.cfg, shared.fixed_seat)
     target = history.target
     return EvidenceRow(
         email=email,
         subject_id=subject_id,
-        identity_quality=subject.quality if subject is not None else _UNRESOLVED,
+        identity_quality=(
+            _CONFLICT if person is not None and person.identity_conflict
+            else subject.quality if subject is not None else _UNRESOLVED
+        ),
         current_seat=current_seat,
         month=target.month,
         complete=target.complete,
@@ -239,21 +406,21 @@ def _row(
 
 
 def _decide(
-    history: SubjectHistory, cfg: Mapping
+    history: SubjectHistory, cfg: Mapping, fixed_seat: str | None = None
 ) -> tuple[DecisionV2, int | None]:
     """現シートに応じた判定と方針感度。
 
     方針感度は経済軸を持つ判定（Standard・Premium）でだけ意味を持つので、それ以外は
     None にする。判定できない現シートの扱いをここで決めるのは、decide_* が Standard・
     Premium 以外を ValueError にしているため（振り分けは呼び出し側の責務）。
+    fixed_seat があれば Standard・Premium を判定対象外にし、方針感度も None にする。
     """
     seat = history.current_seat
-    if seat == _STANDARD:
-        return decide_upgrade(history, cfg), policy_stability(history, cfg)
-    if seat == _PREMIUM:
-        return decide_downgrade(history, cfg), policy_stability(history, cfg)
-    if seat == _UNASSIGNED:
-        # 意図的な未割当（別組織でアサイン済み・管理者等）はシート判定の対象外
+    # 意図的な未割当（別組織でアサイン済み・管理者等）はシート判定の対象外。
+    # 運用方針でシート種別が決まっている workspace のアカウントも、V1 と同じく選び直す対象にしない
+    if seat == _UNASSIGNED or (
+        fixed_seat is not None and seat in (_STANDARD, _PREMIUM)
+    ):
         return (
             DecisionV2(
                 status=DecisionStatus.EXCLUDED,
@@ -263,6 +430,10 @@ def _decide(
             ),
             None,
         )
+    if seat == _STANDARD:
+        return decide_upgrade(history, cfg), policy_stability(history, cfg)
+    if seat == _PREMIUM:
+        return decide_downgrade(history, cfg), policy_stability(history, cfg)
     if seat == _UNKNOWN:
         # members に行が無い利用者。現シートが分からないので判定しない（§12.7 の
         # hard blocker）。黙って除外すると、その人が判定から漏れたことが出力に残らない
@@ -286,11 +457,16 @@ def _observations(
     spend に行の無い月は需要ゼロの観測にする。加入 event があれば、加入前の月を除き、
     加入がまたがる月を不完全月にする。
     """
-    target = shared.history_months[-1]
+    person = shared.persons.get(_email_key(email))
+    months = person.months if person is not None else shared.history_months
+    target = months[-1]
     joined = _joined_event(events)
     observations = []
-    for month in shared.history_months:
-        complete = bool(shared.context.complete[month])
+    for month in months:
+        complete = (
+            person.complete[month] if person is not None
+            else bool(shared.context.complete[month])
+        )
         if joined is not None and month != target:
             # 対象月には適用しない（対象月の加入は recent 窓が拾う。complete は
             # spend の完全性だけを表す）

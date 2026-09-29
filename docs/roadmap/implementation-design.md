@@ -2962,21 +2962,25 @@ dashboardで読めるようにする。
 
 対象:
 
-- `src/seat_analyzer/decision_evidence.py`
+- `src/seat_analyzer/decision_evidence.py`（`evaluate_org`・人ごとの履歴と完全性）
+- `src/seat_analyzer/analyze/pipeline.py`（V2の材料に明細を持たせる・`add_demand`の公開）
+- `src/seat_analyzer/analyze/workspaces.py`（払い出した月の保持・`has_multiple_workspaces`）
 - `src/seat_analyzer/report/evidence_csv.py`
-- `tests/test_decision_evidence.py`
+- `tests/test_decision_evidence.py`・`tests/test_analyze.py`
 
 実装:
 
 - §26.9。複数アカウント保有者の`SubjectHistory`を月別合算で組み、主の行1本にする。副の行は
   作らない
 - Identity解決はworkspaceごと（§26.4）。合算はemailで結ぶ
-- `workspace`列に主の名前を書く
+- 履歴と完全性は人ごと（副の部分月は不完全月・副の欠月は打ち切り）
+- `workspace`列に主の名前を書く（configの`workspaces`が2つ以上の組織だけ）
 
 受け入れ条件:
 
 - 主$300・副$300の合成データで、evidenceの行が1本で需要$600になる
 - 副が始まる前の月は主だけの値で、合算の月と暦で連続する
+- 副の欠月で降格の評価窓がずれない。副にアカウントの無い人は副の部分月・欠月の影響を受けない
 - 単一workspaceのdecision-evidenceがバイト一致
 - 語彙（`SeatAction`・`ReasonCode`）を増やさない
 
@@ -3499,7 +3503,9 @@ Standardの運用でも同じ規則で動く。
   払い出し判定・継続判定・複数アカウント保有者の実課金（§26.5）を置く。前月からの変化・月中の推移・メンバー変動・Claude Code活動はworkspaceごとに
   小見出しで並べる（主が先）
 - details / dashboard: workspace列と人の表（dashboardはタブ）
-- recommendations / usage-summary / decision-evidence: `workspace`列をemailの次に足す
+- recommendations / usage-summary / decision-evidence: `workspace`列をemailの次に足す。列を
+  足すのはconfigの`workspaces`が2つ以上の組織（まだ始まっていないworkspaceがある月も同じ形に
+  して、月をまたいだ突き合わせで列の形が変わらないようにする）
 - 横断サマリ（`reports/summary/`）: 人数とアカウント数
 - 速報: workspaceごとに従来の一次判断を出し、人の需要合計を表に足す
 - workspace名は他組織の禁止語に加えない（一般名を推奨する。Teamの表示名を使うなら`label`に書く）
@@ -3518,6 +3524,17 @@ V2（decision-evidence）も§26.4の両軸に従う。複数アカウント保�
 現シート・κ・実課金・シート変更event・加入の判定は主のもの。副の行はV2に持たない（副を
 どうするかは§26.5の継続判定が担う）。V2の昇格・降格は主シートに対する結論と読む約束に
 するので、語彙（`SeatAction`・`ReasonCode`）は増やさない。`workspace`列は主の名前を書く。
+
+- Code・補助の判定は閾値を含むので、workspaceごとの判定結果を足し合わせず、明細を連結して
+  計算し直す
+- 履歴と完全性は人ごとに決める。副に払い出した月（§26.5）以降、副の部分月はその月を不完全月に
+  し、副のspendが無い月（欠月）はその月以前を履歴から外す（主の欠月と同じ打ち切り。不完全月と
+  して飛ばすと、降格の評価窓が古い月で補われて判定が変わる）。副にアカウントの無い人は主の
+  履歴のまま
+- Identityはworkspaceごとに解き、副でそのemailが衝突していれば`IDENTITY_CONFLICT`にする
+  （workspace間でIDが違うこと自体は衝突にしない）
+- 主が飛ばされた月（§26.6）は行を作らない。主に`fixed_seat`を書いた組織では、主のアカウントを
+  V1と同じく判定しない（`excluded`）
 
 ### 26.10 段階
 

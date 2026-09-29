@@ -9,17 +9,19 @@
 
 import csv
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from seat_analyzer import decision_evidence, seat_changes
-from seat_analyzer.analyze import analyze
+from seat_analyzer.analyze import analyze, analyze_org
 from seat_analyzer.decision_v2 import DecisionV2
 from seat_analyzer.domain import CreditAction, DecisionStatus, ReasonCode, SeatAction
 from seat_analyzer.report.evidence_csv import EVIDENCE_COLUMNS, write_decision_evidence
 
-from .conftest import spend_row
+from .conftest import SPEND_HEADER, spend_row
+from .test_persons import _cfg as _workspace_cfg
 
 # 追加クレジット上限を書く members-info のヘッダ（init-org が作る列構成と同じ）
 _INFO_HEADER = "email,部署,チーム,職種,追加クレジット上限,備考"
@@ -693,3 +695,319 @@ def test_csv_with_no_rows_still_has_the_header(tmp_path):
     assert _cells(path) == []
     with path.open(encoding="utf-8-sig", newline="") as handle:
         assert next(csv.reader(handle)) == list(EVIDENCE_COLUMNS)
+
+
+# ------------------------------------------------------------------ 複数 workspace
+
+
+def _org_rows(input_dir, month, cfg, *, allow_missing=()):
+    """主の members から event を読み、組織単位の V2 判定へ渡す。"""
+    org = analyze_org(
+        input_dir / "org-x", month, cfg, "org-x", decision_context=True,
+        allow_missing=allow_missing,
+    )
+    changes = seat_changes.detect_from_input(input_dir / "org-x" / "main", cfg)
+    return org, decision_evidence.evaluate_org(org, changes, cfg)
+
+
+def test_org_combines_demand_but_keeps_primary_billing(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 300.0, net=25.0)]},
+        members=["alice@example.com,Standard"], org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 300.0, net=30.0),
+                     spend_row("zoe@example.com", 80.0)]},
+        members=["alice@example.com,Premium", "zoe@example.com,Premium"],
+        org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    org, rows = _org_rows(input_dir, "2026-06", cfg)
+    assert org.has_multiple_workspaces
+    assert [row.email for row in rows] == ["alice@example.com"]
+    assert rows[0].total_demand_usd == pytest.approx(600.0, abs=0.01)
+    assert rows[0].billed_extra_usd == 25.0
+    assert rows[0].workspace == "main"
+
+
+def test_secondary_start_preserves_older_primary_month(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 600.0)],
+         "2026-06": [spend_row("alice@example.com", 100.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 80.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    org, rows = _org_rows(input_dir, "2026-06", cfg)
+    assert org.first_seen["second"]["alice@example.com"] == "2026-06"
+    assert rows[0].complete_months == ("2026-05", "2026-06")
+    assert rows[0].total_demand_usd == pytest.approx(180.0, abs=0.01)
+    assert rows[0].decision.seat_action is SeatAction.KEEP
+    assert org.workspaces["main"].decision_context.aggregates["2026-05"].iloc[0][
+        "api_cost"] == pytest.approx(600.0, abs=0.01)
+
+
+def test_single_workspace_org_keeps_evaluate_bytes(make_input, tmp_path, cfg):
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 100.0, net=0.0)]},
+        members=["alice@example.com,Premium"], org="org-x",
+    )
+    legacy = analyze_org(input_dir / "org-x", "2026-06", cfg, "org-x",
+                         decision_context=True)
+    changes = seat_changes.detect_from_input(input_dir / "org-x", cfg)
+    direct = decision_evidence.evaluate(legacy.workspaces["org-x"], changes, cfg)
+    legacy_rows = decision_evidence.evaluate_org(legacy, changes, cfg)
+    assert [row.workspace for row in direct] == [None]
+    assert [row.workspace for row in legacy_rows] == ["org-x"]
+    assert [row.__dict__ | {"workspace": None} for row in legacy_rows] == [
+        row.__dict__ for row in direct
+    ]
+    legacy_path = tmp_path / "legacy.csv"
+    write_decision_evidence(legacy_rows, legacy_path)
+    baseline = legacy_path.read_bytes()
+    write_decision_evidence(direct, tmp_path / "direct.csv")
+    assert (tmp_path / "direct.csv").read_bytes() == baseline
+
+    # 合成入力を同じ組織名の入れ子レイアウトへ移す。
+    base = input_dir / "org-x"
+    main = base / "main"
+    main.mkdir()
+    for name in ("spend", "members"):
+        (base / name).rename(main / name)
+    nested_cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}})
+    nested, nested_rows = _org_rows(input_dir, "2026-06", nested_cfg)
+    assert not nested.has_multiple_workspaces
+    assert [row.__dict__ | {"workspace": None} for row in nested_rows] == [
+        row.__dict__ for row in direct
+    ]
+    write_decision_evidence(nested_rows, tmp_path / "nested.csv")
+    assert (tmp_path / "nested.csv").read_bytes() == baseline
+
+
+def test_org_recomputes_product_features_from_joined_rows(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 60.0, product="Cowork"),
+                     spend_row("alice@example.com", 40.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 60.0, product="Cowork"),
+                     spend_row("alice@example.com", 30.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    _, rows = _org_rows(input_dir, "2026-06", cfg)
+    assert rows[0].supplementary_high is True
+    assert rows[0].code_demand_usd == pytest.approx(70.0, abs=0.01)
+
+
+def test_unknown_secondary_product_propagates_unknown_code(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 40.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="main",
+    )
+    unknown = spend_row("alice@example.com", 20.0).replace(",Claude Code,", ",,")
+    make_input(
+        {"2026-06": [unknown]}, members=["alice@example.com,Premium"],
+        org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    _, rows = _org_rows(input_dir, "2026-06", cfg)
+    assert rows[0].code_demand_usd is None
+    write_decision_evidence(rows, tmp_path / "unknown.csv", workspace_column=True)
+    assert _cells(tmp_path / "unknown.csv")[0]["code_demand_usd"] == ""
+
+
+def test_secondary_partial_month_affects_only_involved_person(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 30.0),
+                     spend_row("bob@example.com", 30.0)]},
+        members=["alice@example.com,Premium", "bob@example.com,Premium"],
+        org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 20.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="second",
+    )
+    spend_dir = input_dir / "org-x" / "second" / "spend"
+    (spend_dir / "spend_2026-06.csv").rename(
+        spend_dir / "spend-report-uuid-2026-06-01-to-2026-06-15.csv"
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    _, rows = _org_rows(input_dir, "2026-06", cfg)
+    by_email = {row.email: row for row in rows}
+    assert by_email["alice@example.com"].complete is False
+    assert by_email["alice@example.com"].decision.reason_codes == (
+        ReasonCode.PARTIAL_MONTH,
+    )
+    assert by_email["bob@example.com"].complete is True
+    assert ReasonCode.PARTIAL_MONTH not in by_email["bob@example.com"].decision.reason_codes
+
+
+def test_secondary_gap_cuts_history_before_downgrade_window(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 100.0, net=0.0)],
+         "2026-06": [spend_row("alice@example.com", 600.0, net=50.0)],
+         "2026-07": [spend_row("alice@example.com", 100.0, net=0.0)]},
+        members=["alice@example.com,Premium"], members_month="2026-07",
+        org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-05": [spend_row("alice@example.com", 0.0, net=0.0)],
+         "2026-07": [spend_row("alice@example.com", 0.0, net=0.0)]},
+        members=["alice@example.com,Premium"], members_month="2026-07",
+        org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    _, rows = _org_rows(input_dir, "2026-07", cfg)
+    assert rows[0].complete_months == ("2026-07",)
+    assert rows[0].decision.reason_codes == (ReasonCode.INSUFFICIENT_HISTORY,)
+    assert rows[0].decision.seat_action is SeatAction.NONE
+
+
+def test_assumed_zero_secondary_month_keeps_primary_completeness(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 30.0)],
+         "2026-06": [spend_row("alice@example.com", 40.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-05": [spend_row("alice@example.com", 20.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    _, rows = _org_rows(input_dir, "2026-06", cfg, allow_missing=["second"])
+    assert rows[0].complete_months == ("2026-05", "2026-06")
+    assert rows[0].complete is True
+    assert rows[0].total_demand_usd == pytest.approx(40.0, abs=0.01)
+
+
+def test_assumed_zero_primary_month_uses_secondary_product_rows(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 100.0, net=0.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 30.0, net=0.0),
+                     spend_row("alice@example.com", 60.0, product="Cowork", net=0.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    org, rows = _org_rows(input_dir, "2026-06", cfg, allow_missing=["main"])
+    assert org.workspaces["main"].decision_context.user_rows["2026-06"].empty
+    assert len(rows) == 1
+    assert rows[0].total_demand_usd == pytest.approx(90.0, abs=0.01)
+    assert rows[0].code_demand_usd == pytest.approx(30.0, abs=0.01)
+    assert rows[0].supplementary_high is False
+    assert rows[0].billed_extra_usd == 0.0
+
+
+def test_skipped_primary_returns_no_rows(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 20.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    (input_dir / "org-x" / "main" / "spend").mkdir(parents=True)
+    org = analyze_org(input_dir / "org-x", "2026-06", cfg, "org-x",
+                      decision_context=True)
+    assert org.has_multiple_workspaces
+    assert decision_evidence.evaluate_org(org, _NO_CHANGES, cfg) == ()
+
+
+def test_primary_fixed_seat_excludes_both_seat_types(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 50.0),
+                     spend_row("bob@example.com", 50.0)]},
+        members=["alice@example.com,Standard", "bob@example.com,Premium"],
+        org="org-x", workspace="main",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True, "fixed_seat": "premium"}})
+    _, rows = _org_rows(input_dir, "2026-06", cfg)
+    assert len(rows) == 2
+    for row in rows:
+        assert row.decision.status is DecisionStatus.EXCLUDED
+        assert row.decision.seat_action is SeatAction.NONE
+        assert row.decision.credit_action is CreditAction.NONE
+        assert row.decision.reason_codes == ()
+        assert row.policy_stability is None
+
+
+def test_secondary_identity_conflict_blocks_primary_decision(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 30.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 10.0),
+                     spend_row("alice@example.com", 10.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="second",
+    )
+    spend_path = input_dir / "org-x" / "second" / "spend" / "spend_2026-06.csv"
+    spend_path.write_text(
+        SPEND_HEADER.replace("Account UUID,", "Account UUID,User ID,") + "\n"
+        + "\n".join(
+            spend_row("alice@example.com", 10.0).replace(
+                "uuid-x,", f"uuid-x,user-{suffix},", 1
+            )
+            for suffix in ("a", "b")
+        ) + "\n",
+        encoding="utf-8",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    _, rows = _org_rows(input_dir, "2026-06", cfg)
+    assert rows[0].subject_id == "account:uuid-x"
+    assert rows[0].identity_quality == "conflict"
+    assert rows[0].decision.reason_codes == (ReasonCode.IDENTITY_CONFLICT,)
+
+
+@pytest.mark.parametrize("missing", ["main", "second"])
+def test_org_requires_each_analyzed_context(make_input, tmp_path, missing):
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 20.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 10.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    org = analyze_org(input_dir / "org-x", "2026-06", cfg, "org-x",
+                      decision_context=True)
+    org.workspaces[missing] = replace(org.workspaces[missing], decision_context=None)
+    with pytest.raises(ValueError, match="V2 判定の材料がありません"):
+        decision_evidence.evaluate_org(org, _NO_CHANGES, cfg)
+
+
+def test_org_rows_and_workspace_csv_are_deterministic(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("bob@example.com", 30.0),
+                     spend_row("alice@example.com", 20.0)]},
+        members=["bob@example.com,Premium", "alice@example.com,Standard"],
+        org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 10.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    _, first = _org_rows(input_dir, "2026-06", cfg)
+    _, second = _org_rows(input_dir, "2026-06", cfg)
+    assert first == second
+    assert [row.email for row in first] == ["alice@example.com", "bob@example.com"]
+    write_decision_evidence(first, tmp_path / "first.csv", workspace_column=True)
+    write_decision_evidence(second, tmp_path / "second.csv", workspace_column=True)
+    assert (tmp_path / "first.csv").read_bytes() == (tmp_path / "second.csv").read_bytes()
+    assert list(_cells(tmp_path / "first.csv")[0]) == [
+        "email", "workspace", *EVIDENCE_COLUMNS[1:],
+    ]
+
+
+def test_empty_workspace_csv_has_workspace_header(tmp_path):
+    path = tmp_path / "empty.csv"
+    write_decision_evidence([], path, workspace_column=True)
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        assert next(csv.reader(handle)) == ["email", "workspace", *EVIDENCE_COLUMNS[1:]]

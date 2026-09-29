@@ -1,10 +1,10 @@
 # 実装ステータス
 
-- 最終更新: 2026-09-18
+- 最終更新: 2026-09-30
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 9（複数workspace・設計書§26）の Step 46（V2の合算・decision-evidence）。
+- 次のタスク: Track 9（複数workspace・設計書§26）の Step 47（複数workspaceの出力）。
   Step 43（workspaceの発見と設定）・Step 44（workspace別の分析と結合）・Step 45（人の層と
-  判定）は完了した（45 は 2026-09-18）。同一の組織が複数の Team
+  判定）・Step 46（V2の合算）は完了した（46 は 2026-09-30）。同一の組織が複数の Team
   スペースを運用し、同じ人が各スペースに1アカウントずつ持って使い分ける運用を、組織1セットの
   レポートで集計・分析できるようにする。Phase 1（Step 43〜48）を v1.3.0 として出し、
   2026-09 の分析（10月初旬）に間に合わせることを目標にする（間に合わなければ 2026-10 の
@@ -111,8 +111,8 @@
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 7 | 0 | 0 | 1 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| 9 | 複数workspace | 1 | 0 | 0 | 6 | 0 |
-| **合計** |  | **31** | **0** | **0** | **25** | **0** |
+| 9 | 複数workspace | 4 | 0 | 0 | 3 | 0 |
+| **合計** |  | **34** | **0** | **0** | **22** | **0** |
 
 ## 5. Step一覧
 
@@ -221,12 +221,46 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 43 | workspaceの発見と設定 | `完了` | 2026-09-17 |
 | 44 | workspace別の分析と結合 | `完了` | 2026-09-17 |
 | 45 | 人の層と判定（合算・払い出し・継続） | `完了` | 2026-09-18 |
-| 46 | V2の合算（decision-evidence） | `未着手` |  |
+| 46 | V2の合算（decision-evidence） | `完了` | 2026-09-30 |
 | 47 | 複数workspaceの出力 | `未着手` |  |
 | 48 | 速報・doctorの人の検査・docs（v1.3.0） | `未着手` |  |
 | 49 | 切替の観測（Phase 2） | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-09-30 — Step 46: V2の合算（decision-evidence）
+
+- `decision_evidence.evaluate_org()`を追加し、複数workspaceの組織のV2判定を主workspaceの行1本に
+  まとめた。需要は`add_demand`（`_add_demand`を公開名に改め、V1と同じ合算規則を共有する）で
+  全workspaceの月別合算にし、Code・補助の特徴量は価格適用済みの明細（`DecisionContext.user_rows`。
+  V2の材料を組むときだけ持つ）を連結して`product_usage.compute`で計算し直す。補助の判定は閾値
+  判定なので、workspaceごとの真偽値からは合算できない。実課金・κ・現シート・シート変更event・
+  `subject_id`は主のもの。副にだけアカウントがある人の行は作らない
+- 履歴と完全性は人ごとに決める。副に払い出した月（`OrgAnalysisResult.first_seen`。Step 45 の
+  払い出した月を結果に載せた）以降、副の部分月は不完全月、副の欠月はその月以前の打ち切りにする。
+  欠月を不完全月にすると、降格の評価窓（完全月を新しい順に採る）が欠けた月を飛ばして古い月で
+  補い、主で実課金があった月が窓から外れて降格が成立するため、主の欠月と同じ打ち切りに揃えた。
+  副にアカウントの無い人は主の履歴のまま（副の部分月で判定が止まらない）
+- Identityはworkspaceごとに解き、副でそのemailが衝突していれば`IDENTITY_CONFLICT`にする
+  （`subject_id`は主の解決結果のまま）
+- 主が飛ばされた月は行を作らない。主に`fixed_seat`を書いた組織は`excluded`（V1の
+  「対象外（固定シート）」と同じ扱い）。語彙（`SeatAction`・`ReasonCode`）は増やしていない
+- `write_decision_evidence(..., workspace_column=)`で`email`の次に`workspace`列を足せるように
+  した。列を出すかは`OrgAnalysisResult.has_multiple_workspaces`（configの`workspaces`が2つ以上）で
+  決め、Step 47 の他のCSVも同じ述語を使う。副がまだ始まっていない月も同じ形になるので、月を
+  またいだ突き合わせで列の形が変わらない
+- 副が1つも分析されていない組織（従来レイアウト・`workspaces`が1つ）は合算の経路を通らず
+  `evaluate()`と同じ計算になる。単一workspaceのdecision-evidenceとV1の成果物はバイト一致のまま
+  （golden 不変）
+- テスト: 2260 passed（+16件）、ruff 緑、`check-text --diff`は0件
+- 外部レビュー（codex）: 設計段階で1巡（設計案全体）。high 1件（副の欠月を不完全月にすると降格の
+  評価窓がずれて降格が成立する）と mid 2件（副の完全性を全員の論理積にすると副を持たない人まで
+  副の部分月で判定が止まる・副のIdentity衝突を見ずに副の需要を使う）を採用して設計を直した。
+  実装後の受け入れ確認（基準7点に範囲固定）は指摘なし
+- Step 47 への申し送り: 入れ子レイアウトのCLIは`analyze_org(..., decision_context=v2,
+  allow_missing=...)`→`seat_changes.detect_from_input(<組織>/<主workspace>, cfg)`→`evaluate_org`→
+  `write_decision_evidence(rows, path, workspace_column=org.has_multiple_workspaces)`の順につなぐ。
+  従来レイアウトも`evaluate_org`を通して同じ結果になる
 
 ### 2026-09-18 — Step 45: 人の層と判定（合算・払い出し・継続）
 
