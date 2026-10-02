@@ -868,6 +868,73 @@ def test_secondary_gap_cuts_history_before_downgrade_window(make_input, tmp_path
     assert rows[0].decision.seat_action is SeatAction.NONE
 
 
+def test_secondary_partial_month_skips_an_unassigned_account(make_input, tmp_path):
+    # 副で未割当だけの人（管理者）は副に関与しない扱いで、副の部分月が掛からない。
+    # 副でシートのある人には従来どおり掛かる
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 30.0),
+                     spend_row("bob@example.com", 30.0)]},
+        members=["alice@example.com,Premium", "bob@example.com,Premium"],
+        org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("alice@example.com", 0.2),
+                     spend_row("bob@example.com", 20.0)]},
+        members=["alice@example.com,Unassigned", "bob@example.com,Premium"],
+        org="org-x", workspace="second",
+    )
+    spend_dir = input_dir / "org-x" / "second" / "spend"
+    (spend_dir / "spend_2026-06.csv").rename(
+        spend_dir / "spend-report-uuid-2026-06-01-to-2026-06-15.csv"
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    _, rows = _org_rows(input_dir, "2026-06", cfg)
+    by_email = {row.email: row for row in rows}
+    alice = by_email["alice@example.com"]
+    assert alice.complete is True
+    assert ReasonCode.PARTIAL_MONTH not in alice.decision.reason_codes
+    # 需要の合算は未割当のアカウントも含める
+    assert alice.total_demand_usd == pytest.approx(30.2, abs=0.01)
+    bob = by_email["bob@example.com"]
+    assert bob.complete is False
+    assert bob.decision.reason_codes == (ReasonCode.PARTIAL_MONTH,)
+
+
+def test_secondary_gap_skips_an_unassigned_account(make_input, tmp_path):
+    # 副の欠月による履歴の打ち切りも、副にシートのある人にだけ掛ける
+    main_months = {
+        "2026-05": [spend_row("alice@example.com", 100.0, net=0.0),
+                    spend_row("bob@example.com", 100.0, net=0.0)],
+        "2026-06": [spend_row("alice@example.com", 600.0, net=50.0),
+                    spend_row("bob@example.com", 600.0, net=50.0)],
+        "2026-07": [spend_row("alice@example.com", 100.0, net=0.0),
+                    spend_row("bob@example.com", 100.0, net=0.0)],
+    }
+    input_dir = make_input(
+        main_months,
+        members=["alice@example.com,Premium", "bob@example.com,Premium"],
+        members_month="2026-07", org="org-x", workspace="main",
+    )
+    second_rows = [spend_row("alice@example.com", 0.2, net=0.0),
+                   spend_row("bob@example.com", 0.0, net=0.0)]
+    make_input(
+        {"2026-05": second_rows, "2026-07": second_rows},
+        members=["alice@example.com,Unassigned", "bob@example.com,Premium"],
+        members_month="2026-07", org="org-x", workspace="second",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    org, rows = _org_rows(input_dir, "2026-07", cfg)
+    assert org.first_seen["second"]["alice@example.com"] == "2026-05"
+    by_email = {row.email: row for row in rows}
+    assert by_email["alice@example.com"].complete_months == (
+        "2026-05", "2026-06", "2026-07")
+    assert (ReasonCode.INSUFFICIENT_HISTORY
+            not in by_email["alice@example.com"].decision.reason_codes)
+    bob = by_email["bob@example.com"]
+    assert bob.complete_months == ("2026-07",)
+    assert bob.decision.reason_codes == (ReasonCode.INSUFFICIENT_HISTORY,)
+
+
 def test_assumed_zero_secondary_month_keeps_primary_completeness(make_input, tmp_path):
     input_dir = make_input(
         {"2026-05": [spend_row("alice@example.com", 30.0)],
@@ -960,6 +1027,31 @@ def test_secondary_identity_conflict_blocks_primary_decision(make_input, tmp_pat
     cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
     _, rows = _org_rows(input_dir, "2026-06", cfg)
     assert rows[0].subject_id == "account:uuid-x"
+    assert rows[0].identity_quality == "conflict"
+    assert rows[0].decision.reason_codes == (ReasonCode.IDENTITY_CONFLICT,)
+
+
+def test_unassigned_secondary_identity_conflict_still_blocks(make_input, tmp_path):
+    # 未割当のアカウントの需要も合算に入るので、Identity の衝突はシートの有無によらず見る
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@example.com", 30.0)]},
+        members=["alice@example.com,Premium"], org="org-x", workspace="main",
+    )
+    make_input({}, members=["alice@example.com,Unassigned"], org="org-x", workspace="second")
+    spend_path = input_dir / "org-x" / "second" / "spend" / "spend_2026-06.csv"
+    spend_path.parent.mkdir(parents=True)
+    spend_path.write_text(
+        SPEND_HEADER.replace("Account UUID,", "Account UUID,User ID,") + "\n"
+        + "\n".join(
+            spend_row("alice@example.com", 0.1).replace(
+                "uuid-x,", f"uuid-x,user-{suffix},", 1
+            )
+            for suffix in ("a", "b")
+        ) + "\n",
+        encoding="utf-8",
+    )
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    _, rows = _org_rows(input_dir, "2026-06", cfg)
     assert rows[0].identity_quality == "conflict"
     assert rows[0].decision.reason_codes == (ReasonCode.IDENTITY_CONFLICT,)
 

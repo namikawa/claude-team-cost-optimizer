@@ -26,6 +26,7 @@ from seat_analyzer.analyze import (
     PAYOUT_WATCH,
     RETURN_CANDIDATE,
     STATUS_CHANGE,
+    STATUS_EXCLUDED,
     STATUS_FIXED_SEAT,
     WAITING,
     analyze,
@@ -135,9 +136,31 @@ def test_sample_judgments_match_the_expected_spread(org_c):
     # 主が Standard で副が Premium の人: 主の行は合算 $380 で判定して現状維持
     assert main_users.loc["kubota@example.co.jp", "api_cost_usd"] == 380.0
     assert main_users.loc["takagi@example.co.jp", "confidence"] == "中"
-    second = org_c.workspaces["second"].users
-    assert set(second["status"]) == {STATUS_FIXED_SEAT}
-    assert len(second) == 5
+    second = org_c.workspaces["second"].users.set_index("email")
+    # 副で未割当の管理者（nishi）は固定シートではなく未割当の対象外
+    assert second.loc["nishi@example.co.jp", "status"] == STATUS_EXCLUDED
+    assert set(second.drop(index="nishi@example.co.jp")["status"]) == {STATUS_FIXED_SEAT}
+    assert len(second) == 6
+
+
+def test_unassigned_secondary_does_not_count_as_holding_one(org_c):
+    """副で未割当だけの人は副を持たない扱い。
+
+    払い出し判定に残り、継続判定と「副を持ちながら主で実課金が発生した人」には出ない。
+    """
+    layer = org_c.persons
+    nishi = next(p for p in layer.persons if p.email == "nishi@example.co.jp")
+    assert [(a.workspace, a.seat) for a in nishi.accounts] == [
+        ("main", "premium"), ("second", "unassigned")]
+    assert nishi.has_secondary is False
+    assert {j.email: j.status for j in layer.payout}["nishi@example.co.jp"] == PAYOUT_WATCH
+    assert "nishi@example.co.jp" not in {j.email for j in layer.continuation}
+    assert len(layer.continuation) == 5
+    assert [r.email for r in layer.billed_with_secondary] == ["fujii@example.co.jp"]
+    # 需要の合計は未割当のアカウントも含める
+    frame = layer.frame.set_index("email")
+    assert frame.loc["nishi@example.co.jp", "api_cost_usd"] == 420.2
+    assert frame.loc["nishi@example.co.jp", "secondary_api_cost_usd"] == 0.2
 
 
 def test_person_rows_hold_both_accounts(org_c):
@@ -155,7 +178,7 @@ def test_person_rows_hold_both_accounts(org_c):
 
 def test_summarize_org_counts_people_and_accounts(org_c):
     summary = summarize_org(org_c)
-    assert (summary["n_persons"], summary["n_accounts"]) == (11, 15)
+    assert (summary["n_persons"], summary["n_accounts"]) == (11, 16)
     assert [row["name"] for row in summary["workspaces"]] == ["main", "second"]
     main_row, second_row = summary["workspaces"]
     assert main_row["primary"] is True and second_row["fixed_seat"] == "premium"
@@ -294,7 +317,7 @@ def test_report_sections_per_workspace(outputs):
         "考察",
     ]
     assert "### スペース別" in outputs["report"]
-    assert "| 対象メンバー数 | 11 名（アカウント 15） |" in outputs["report"]
+    assert "| 対象メンバー数 | 11 名（アカウント 16） |" in outputs["report"]
     assert "| 追加クレジット（主スペース） |" in outputs["report"]
     assert ("| 判定に使用した月 | 主スペース: 2026-07, 2026-08 / 副スペース: 2026-07, 2026-08"
             in outputs["report"])
@@ -387,6 +410,35 @@ def test_person_table_order_and_held_seats(outputs):
     ratio = cells["fujii"].index("33%")
     assert cells["kimura"][ratio] == "—"
     assert cells["ueda"][ratio] == "0%"
+    # 副で未割当だけの人も副を持たない扱いで —（保有シートには未割当をそのまま出す）
+    assert cells["nishi"][ratio] == "—"
+    nishi = next(line for line in lines if line.startswith("| nishi@"))
+    assert "| 主スペース: Premium / 副スペース: 未割当 |" in nishi
+
+
+def test_person_table_has_token_totals_before_loc(outputs):
+    """人別の利用の input / output は全アカウントの合計で、行数(CC) の直前に置く。"""
+    section = _section(outputs["details"], "人別の利用")
+    lines = section.split("\n")
+    header = [c.strip() for c in lines[2].strip("|").split("|")]
+    assert header[-3:] == ["input", "output", "行数(CC)"]
+    rows = {
+        line.split("|")[1].strip().split("@")[0]:
+            [cell.strip() for cell in line.strip("|").split("|")]
+        for line in lines[4:] if line.startswith("| ")
+    }
+    # fujii は主と副の合計（主 80M + 副 40M / 8M + 4M）。書式は詳細利用状況と同じ K / M / B
+    assert rows["fujii"][-3:-1] == ["120.0M", "12.0M"]
+    # 未割当のアカウントのトークンも合計に入る（主 56M + 副 44K）
+    assert rows["nishi"][-3:-1] == ["56.0M", "5.6M"]
+    # 副にだけアカウントがある人は副のトークンだけ
+    assert rows["yagi"][-3:-1] == ["2.2M", "222K"]
+    assert ("- input / output は全アカウントのトークンの合計（input はキャッシュ読取分を含む）"
+            in section)
+    html = outputs["dashboard"]
+    spaces_tab = html[html.index('data-tab="spaces" role="tabpanel"'):]
+    assert ('<th class="num">input</th><th class="num">output</th>'
+            '<th class="num">行数(CC)</th>') in spaces_tab
 
 
 def test_group_summary_breaks_ties_by_group_name():
@@ -408,7 +460,7 @@ def test_dashboard_spaces_tab_and_cards(outputs):
     html = outputs["dashboard"]
     assert re.findall(r'data-tab="([a-z]+)">', html)[:6] == [
         "overview", "actions", "members", "org", "spaces", "notes"]
-    assert '<div class="v">11</div><div class="l">人（アカウント 15）</div>' in html
+    assert '<div class="v">11</div><div class="l">人（アカウント 16）</div>' in html
     for title in ("スペース別", "人別の利用", "払い出し判定（副を持たない人）",
                   "継続判定（副にシートを持つ人）", "副を持ちながら主で実課金が発生した人",
                   "ユーザ別 API 換算コスト（主スペース）",
@@ -417,7 +469,7 @@ def test_dashboard_spaces_tab_and_cards(outputs):
     assert "<th>ユーザ</th><th>スペース</th>" in html
     # 判定の読み方は前提と注意に置く
     notes = html[html.index('data-tab="notes" role="tabpanel"'):]
-    assert "払い出し判定は、副にアカウントを持たず" in notes
+    assert "払い出し判定は、副にシートを持たず（副で未割当の人を含む）" in notes
     assert "判定に使用した月: 主スペース: 2026-07, 2026-08 / 副スペース: 2026-07, 2026-08" in notes
 
 
@@ -449,6 +501,6 @@ def test_org_summary_counts_people_and_accounts(org_c, cfg, tmp_path):
     other = analyze(EXAMPLES_INPUT / "org-b", "2026-08", cfg, org="org-b")
     path = write_org_summary([other, org_c], tmp_path)
     text = path.read_text(encoding="utf-8")
-    assert "| 11 名（アカウント 15） |" in text
+    assert "| 11 名（アカウント 16） |" in text
     n_b = len(other.users)
-    assert f"**{n_b + 11} 名（アカウント {n_b + 15}）**" in text
+    assert f"**{n_b + 11} 名（アカウント {n_b + 16}）**" in text

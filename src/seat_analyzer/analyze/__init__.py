@@ -27,6 +27,7 @@ from .persons import (
     PersonLayer as PersonLayer,
     build_person_layer as build_person_layer,
     build_persons as build_persons,
+    holds_seat as holds_seat,
     person_frame as person_frame,
 )
 from .pipeline import (
@@ -111,6 +112,7 @@ __all__ = [
     "build_person_layer",
     "build_persons",
     "credits_mode",
+    "holds_seat",
     "own_demand_users",
     "person_frame",
     "preview",

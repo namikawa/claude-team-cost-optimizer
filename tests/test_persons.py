@@ -453,6 +453,103 @@ def test_billed_with_secondary(make_input, tmp_path):
         ("2026-05", 125.0, 260.0), ("2026-06", 125.0, 300.0))
 
 
+def _seat_boundary_input(make_input) -> Path:
+    """副に未割当・不明・Premium のアカウントを持つ人が並ぶ構成（「副を持つ」の境界）。
+
+    3人とも主は Premium で、主の実課金が損益分岐（$125）ちょうどの月が2か月続く。
+    alice は副で未割当（シートを払い出していない管理者）で、少しだけ利用がある。
+    bob は副の spend にだけ現れる（members に居ないのでシートは不明）。carol は副に
+    Premium を持つ。
+    """
+    main_rows = [spend_row("alice@example.com", 300.0, net=125.0),
+                 spend_row("bob@example.com", 300.0, net=125.0),
+                 spend_row("carol@example.com", 300.0, net=125.0)]
+    input_dir = make_input(
+        {"2026-05": main_rows, "2026-06": main_rows},
+        members=["alice@example.com,premium", "bob@example.com,premium",
+                 "carol@example.com,premium"],
+        org=ORG, workspace="main",
+    )
+    second_rows = [spend_row("alice@example.com", 2.0, net=0.0),
+                   spend_row("bob@example.com", 50.0, net=0.0),
+                   spend_row("carol@example.com", 200.0, net=0.0)]
+    make_input(
+        {"2026-05": second_rows, "2026-06": second_rows},
+        members=["alice@example.com,unassigned", "carol@example.com,premium"],
+        org=ORG, workspace="second",
+    )
+    _write_members_info(
+        input_dir,
+        "email,追加クレジット上限\n"
+        "alice@example.com,250\nbob@example.com,250\ncarol@example.com,250\n",
+    )
+    return input_dir
+
+
+def _seat_boundary_layer(make_input, tmp_path):
+    input_dir = _seat_boundary_input(make_input)
+    cfg = _cfg(tmp_path, {
+        "main": {"primary": True}, "second": {"fixed_seat": "premium"},
+    })
+    return analyze_org(input_dir / ORG, "2026-06", cfg, ORG)
+
+
+def test_has_secondary_needs_a_seat(make_input, tmp_path):
+    # 副を持つ＝副にシートのあるアカウント（Standard / Premium / 不明）。未割当は持たない
+    persons = {p.email: p for p in _seat_boundary_layer(make_input, tmp_path).persons.persons}
+    alice, bob, carol = (persons[f"{name}@example.com"] for name in ("alice", "bob", "carol"))
+    assert [(a.workspace, a.seat) for a in alice.accounts] == [
+        ("main", "premium"), ("second", "unassigned")]
+    assert alice.secondaries and alice.seated_secondaries == ()
+    assert alice.has_secondary is False
+    # spend にだけ現れる不明のアカウントは、使っているがシートが分からないので持つ側
+    assert [a.seat for a in bob.seated_secondaries] == ["unknown"]
+    assert bob.has_secondary is True
+    assert carol.has_secondary is True
+
+
+def test_unassigned_secondary_is_judged_for_payout(make_input, tmp_path):
+    # 副で未割当だけの人は副を持たない人として払い出し判定の対象になる
+    layer = _seat_boundary_layer(make_input, tmp_path).persons
+    payout = {j.email: j for j in layer.payout}
+    assert list(payout) == ["alice@example.com"]
+    assert payout["alice@example.com"].status == PAYOUT_CANDIDATE
+    assert payout["alice@example.com"].streak_months == 2
+    # 判定に併記する需要は人の需要合計（未割当のアカウントの利用も含む）
+    assert payout["alice@example.com"].api_cost_usd == 302.0
+    # 継続判定はシートのある副アカウントだけ（未割当は判定しない・不明は判定する）
+    assert [(j.email, j.seat) for j in layer.continuation] == [
+        ("bob@example.com", "unknown"), ("carol@example.com", "premium")]
+
+
+def test_unassigned_secondary_is_not_billed_with_secondary(make_input, tmp_path):
+    # 「副を持ちながら主で実課金が発生した人」も同じ定義（未割当だけの人は載らない）
+    layer = _seat_boundary_layer(make_input, tmp_path).persons
+    rows = {r.email: r for r in layer.billed_with_secondary}
+    assert list(rows) == ["bob@example.com", "carol@example.com"]
+    assert rows["bob@example.com"].secondary_api_cost_usd == 50.0
+    assert rows["bob@example.com"].monthly == (
+        ("2026-05", 125.0, 50.0), ("2026-06", 125.0, 50.0))
+
+
+def test_person_tokens_sum_every_account(make_input, tmp_path):
+    # トークンは未割当のアカウントも含めた全アカウントの合計。主の行の需要は合算値だが、
+    # トークンは主のアカウント自身の観測なので、足しても副の分が二重にならない
+    result = _seat_boundary_layer(make_input, tmp_path)
+    frame = result.persons.frame.set_index("email")
+    main_users = result.workspaces["main"].users.set_index("email")
+    second_users = result.workspaces["second"].users.set_index("email")
+    assert main_users.loc["alice@example.com", "api_cost_usd"] == 302.0
+    assert main_users.loc["alice@example.com", "prompt_tokens"] == 66_666_666
+    assert second_users.loc["alice@example.com", "prompt_tokens"] == 444_444
+    assert frame.loc["alice@example.com", "prompt_tokens"] == 67_111_110
+    assert frame.loc["alice@example.com", "completion_tokens"] == 6_711_110
+    for email in ("bob@example.com", "carol@example.com"):
+        for column in ("prompt_tokens", "completion_tokens"):
+            assert frame.loc[email, column] == (
+                main_users.loc[email, column] + second_users.loc[email, column])
+
+
 def test_person_frame_holds_both_accounts(make_input, tmp_path):
     # 人の行は保有シート・シート費合計・主と副の内訳を持つ
     input_dir = _continuation_input(make_input)

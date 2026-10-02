@@ -380,6 +380,9 @@ CC_STATS_ORG_A = {  # (PRs with CC, All PRs, Lines with CC, All Lines) — 2026-
 #     ueda=戻す候補（遊休）/ yagi=データ蓄積待ち（2026-08 加入）
 #   副を持ちながら主で実課金が発生した人: fujii
 #   V1 の変更推奨: morita（Premium → Standard）
+# nishi は 2026-08 から副に未割当のアカウント（シートを払い出していない管理者）を持ち、
+# 少しだけ利用がある。未割当だけの人は副を持たない扱いなので、払い出し判定に残り、
+# 継続判定と「副を持ちながら主で実課金が発生した人」には載らない
 ORG_C = "org-c"
 ORG_C_UUID = "1c2d3e4f-5a67-4890-b123-456789abcdef"
 
@@ -430,6 +433,7 @@ SPEND_ORG_C = {
             ("ueda@example.co.jp",      0.5, 0.0, "claude-haiku-4-5"),
             ("kubota@example.co.jp",  300.0, 0.0, "claude-opus-4-8"),
             ("yagi@example.co.jp",     10.0, 0.0, "claude-sonnet-4-6"),
+            ("nishi@example.co.jp",     0.2, 0.0, "claude-sonnet-4-6"),   # 副で未割当
         ],
     },
 }
@@ -464,6 +468,7 @@ MEMBERS_ORG_C = {
             ("ueda@example.co.jp",    "Premium"),
             ("kubota@example.co.jp",  "Premium"),
             ("yagi@example.co.jp",    "Premium"),   # 2026-08 に副を払い出した
+            ("nishi@example.co.jp",   "Unassigned"),   # 管理者（シートを払い出していない）
         ],
     },
 }

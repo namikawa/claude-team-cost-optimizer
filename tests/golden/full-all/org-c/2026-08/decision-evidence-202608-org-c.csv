@@ -4,7 +4,7 @@ hoshino@example.co.jp,main,account:uuid-822c45e7,stable,premium,2026-08,True,202
 kimura@example.co.jp,main,account:uuid-91a02ad0,stable,premium,2026-08,True,2026-07;2026-08,900.00,900.00,False,250.00,250.00,450.00,keep,keep,none,,3,
 kubota@example.co.jp,main,account:uuid-12aafb1c,stable,standard,2026-08,True,2026-07;2026-08,380.00,380.00,False,0.00,250.00,450.00,keep,keep,none,,3,
 morita@example.co.jp,main,account:uuid-c6033c81,stable,premium,2026-08,True,2026-07;2026-08,15.00,0.00,False,0.00,250.00,450.00,recommended,downgrade_to_standard,none,SUSTAINED_LOW_CODE_DEMAND;SUSTAINED_LOW_TOTAL_DEMAND;CAPACITY_SIGNAL_UNAVAILABLE,3,
-nishi@example.co.jp,main,account:uuid-8896d862,stable,premium,2026-08,True,2026-07;2026-08,420.00,252.00,True,60.00,250.00,450.00,keep,keep,none,,3,
+nishi@example.co.jp,main,account:uuid-8896d862,stable,premium,2026-08,True,2026-07;2026-08,420.20,252.20,True,60.00,250.00,450.00,keep,keep,none,,3,
 ota@example.co.jp,main,account:uuid-7af4eeae,stable,premium,2026-08,True,2026-07;2026-08,180.00,54.00,True,0.00,250.00,450.00,recommended,review_assignment,none,REVIEW_NON_CODE_USAGE;HIGH_SUPPLEMENTARY_USAGE,3,
 sakai@example.co.jp,main,account:uuid-186abcf3,stable,standard,2026-08,True,2026-07;2026-08,25.00,25.00,False,0.00,250.00,450.00,keep,keep,none,,3,
 takagi@example.co.jp,main,account:uuid-1f873c47,stable,premium,2026-08,True,2026-07;2026-08,160.00,80.00,False,0.00,0.00,450.00,recommended,downgrade_to_standard,none,SUSTAINED_LOW_CODE_DEMAND;SUSTAINED_LOW_TOTAL_DEMAND;CAPACITY_SIGNAL_UNAVAILABLE,3,

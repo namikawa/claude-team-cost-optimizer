@@ -9,6 +9,10 @@
 価格）。追加クレジットは API 等価単価で課金されるので、副アカウントの需要は「同じ
 利用を副なしでクレジットに払った場合の額」であり、副のシート料と直接比較できる。
 
+「副を持つ」は副 workspace にシートのあるアカウント（holds_seat）を持つことを指す。
+副で未割当のアカウント（シートを払い出していない管理者など）だけの人は副を持たない
+扱いにする。需要・トークンの合計は未割当のアカウントも含めた全アカウントで数える。
+
 I/O は持たない純粋関数だけを置く（members スナップショットの読み取りが要る
 「払い出した月」は workspaces.analyze_org が解決して first_seen として渡す）。
 """
@@ -45,6 +49,7 @@ PERSON_COLUMNS = (
     "email", "department", "team", "role", "note",
     "n_accounts", "seats", "primary_seat", "seat_cost_usd",
     "api_cost_usd", "billed_extra_usd", "cost_current_usd",
+    "prompt_tokens", "completion_tokens",
     "primary_api_cost_usd", "primary_billed_usd",
     "secondary_api_cost_usd", "secondary_billed_usd", "secondary_ratio",
     "status", "monthly_saving_usd",
@@ -52,6 +57,15 @@ PERSON_COLUMNS = (
 
 # シート費を数えるシート種別（未割当・不明は費用が発生しないので数えない）
 _PRICED_SEATS = ("standard", "premium")
+
+# シートのあるアカウントのシート種別。不明（spend にいて members にいない）は使っているが
+# シートが分からない状態なので、持つ側に倒す。未割当は含めない
+_SEATED = ("standard", "premium", "unknown")
+
+
+def holds_seat(seat: str) -> bool:
+    """シートのあるアカウントか（副を「持つ」かはこの述語で決める）。"""
+    return seat in _SEATED
 
 
 def _number(value, default: float = 0.0) -> float:
@@ -81,6 +95,8 @@ class Account:
 
     api_cost_usd はそのアカウント自身の需要。主の users の需要列は複数アカウント
     保有者では合算値になるため、ここは月次表（AnalysisResult.monthly）から取る。
+    prompt_tokens / completion_tokens は users の値をそのまま持つ（合算されるのは
+    需要の列だけで、トークンはどの workspace でもそのアカウント自身の観測）。
     """
 
     workspace: str
@@ -93,6 +109,8 @@ class Account:
     credit_limit_usd: float
     credits_mode: str
     loc_with_cc: int | None
+    prompt_tokens: int
+    completion_tokens: int
 
 
 @dataclass(frozen=True)
@@ -124,8 +142,18 @@ class Person:
 
     @property
     def secondaries(self) -> tuple[Account, ...]:
-        """主以外のアカウント（workspace の並び順）。"""
+        """主以外のアカウント（workspace の並び順。未割当のアカウントも含む）。"""
         return tuple(a for a in self.accounts if a.workspace != self.primary_workspace)
+
+    @property
+    def seated_secondaries(self) -> tuple[Account, ...]:
+        """主以外のアカウントのうち、シートのあるもの（workspace の並び順）。"""
+        return tuple(a for a in self.secondaries if holds_seat(a.seat))
+
+    @property
+    def has_secondary(self) -> bool:
+        """副を持つか（副にシートのあるアカウントがあるか。副で未割当だけなら False）。"""
+        return bool(self.seated_secondaries)
 
     @property
     def n_accounts(self) -> int:
@@ -139,6 +167,16 @@ class Person:
     @property
     def billed_usd(self) -> float:
         return round(sum(a.billed_usd for a in self.accounts), 2)
+
+    @property
+    def prompt_tokens(self) -> int:
+        """全アカウントの input トークンの合計（キャッシュ読取分を含む）。"""
+        return sum(a.prompt_tokens for a in self.accounts)
+
+    @property
+    def completion_tokens(self) -> int:
+        """全アカウントの output トークンの合計。"""
+        return sum(a.completion_tokens for a in self.accounts)
 
     @property
     def seat_cost_usd(self) -> float:
@@ -364,6 +402,8 @@ def _account(workspace: str, row: pd.Series, api_cost_usd: float,
             int(row["loc_with_cc"])
             if "loc_with_cc" in row.index and not pd.isna(row["loc_with_cc"]) else None
         ),
+        prompt_tokens=int(_number(row.get("prompt_tokens"))),
+        completion_tokens=int(_number(row.get("completion_tokens"))),
     )
 
 
@@ -433,7 +473,7 @@ def person_frame(persons: Sequence[Person],
     monthly_saving_usd は変更推奨のアカウントの削減額の合計で、いずれも
     report の集計（_group_summary_rows）がそのまま読める形にしてある。
     seats は保有シートを「<workspace>=<シート種別>」で並べた文字列（表示の整形は
-    レポート側の担当）。
+    レポート側の担当）。prompt_tokens / completion_tokens は全アカウントの合計。
     """
     order = {name: index for index, name in enumerate(contexts)}
     has_loc = any(a.loc_with_cc is not None for p in persons for a in p.accounts)
@@ -457,6 +497,8 @@ def person_frame(persons: Sequence[Person],
             "api_cost_usd": person.api_cost_usd,
             "billed_extra_usd": person.billed_usd,
             "cost_current_usd": person.cost_current_usd,
+            "prompt_tokens": person.prompt_tokens,
+            "completion_tokens": person.completion_tokens,
             "primary_api_cost_usd": person.primary_api_cost_usd,
             "primary_billed_usd": person.primary_billed_usd,
             "secondary_api_cost_usd": person.secondary_api_cost_usd,
@@ -492,8 +534,9 @@ def payout_judgments(persons: Sequence[Person], org: OrgAnalysisResult,
                      cfg: dict) -> tuple[PayoutJudgment, ...]:
     """副を持たない人への払い出し判定（§26.5-1。email 昇順）。
 
-    対象は主にアカウントを持ち副に持たない人のうち、シートが standard / premium の
-    もの。主の実課金が「副を足さずクレジットへ払っている額」なので、副の損益分岐と
+    対象は主にアカウントを持ち副を持たない（副にシートのあるアカウントが無い。副で
+    未割当だけの人を含む）人のうち、主のシートが standard / premium のもの。
+    主の実課金が「副を足さずクレジットへ払っている額」なので、副の損益分岐と
     比べて候補・観察・不要を分け、実課金が上限到達を語らない状態（κ が無効・不明）と
     払い出すシート種別と主のシートが違う状態は判断材料なしにする。
     """
@@ -513,7 +556,7 @@ def payout_judgments(persons: Sequence[Person], org: OrgAnalysisResult,
     judgments = []
     for person in persons:
         account = person.primary
-        if account is None or person.secondaries:
+        if account is None or person.has_secondary:
             continue
         if account.seat not in _PRICED_SEATS:
             continue
@@ -574,9 +617,9 @@ def continuation_judgments(
     cfg: dict,
     first_seen: Mapping[str, Mapping[str, str]] | None = None,
 ) -> tuple[ContinuationJudgment, ...]:
-    """副のアカウントごとの継続判定（§26.5-2。email 昇順・同一人物内は workspace 順）。
+    """副のシートのあるアカウントごとの継続判定（§26.5-2）。
 
-    first_seen は workspace → email → 払い出した月（spend か members にその email が
+    並びは email 昇順で、同一人物の中は workspace 順。first_seen は workspace → email → 払い出した月（spend か members にその email が
     最初に現れた月）。払い出した月は不完全月として数えないため、連続月数の起点に使う。
     """
     policy = _policy(org, cfg)
@@ -596,9 +639,9 @@ def continuation_judgments(
         primary_cap = person.primary.credit_limit_usd if person.primary else float("nan")
         capped = (not pd.isna(primary_cap)
                   and not math.isinf(primary_cap) and primary_cap > 0.0)
-        for account in person.secondaries:
+        for account in person.seated_secondaries:
             result = org.workspaces.get(account.workspace)
-            if result is None or account.seat not in ("standard", "premium", "unknown"):
+            if result is None:
                 continue
             by_month = demand_by_workspace[account.workspace]
             monthly_demand = tuple(
@@ -650,7 +693,11 @@ def continuation_judgments(
 
 def billed_with_secondary(persons: Sequence[Person],
                           org: OrgAnalysisResult) -> tuple[MultiAccountBilling, ...]:
-    """副を持ちながら主で実課金が発生した人の一覧（§26.5-3。email 昇順）。"""
+    """副を持ちながら主で実課金が発生した人の一覧（§26.5-3。email 昇順）。
+
+    副を持つかは has_secondary（副で未割当だけの人は載せない）。副の需要は人の表の
+    副の需要と同じく、未割当のアカウントも含めた副の全アカウントの合計。
+    """
     primary_result = org.workspaces.get(org.primary)
     if primary_result is None:
         return ()
@@ -669,7 +716,7 @@ def billed_with_secondary(persons: Sequence[Person],
     rows = []
     for person in persons:
         account = person.primary
-        if account is None or not person.secondaries or account.billed_usd <= 0.0:
+        if account is None or not person.has_secondary or account.billed_usd <= 0.0:
             continue
         workspaces = [a.workspace for a in person.secondaries]
         monthly = tuple(
