@@ -12,5 +12,6 @@ ueda@example.co.jp,main,300.00,300.00,1.0000,1200,1200,1,False,False
 fujii@example.co.jp,second,300.00,300.00,1.0000,1200,1200,1,False,False
 hoshino@example.co.jp,second,20.00,20.00,1.0000,80,80,1,False,False
 kubota@example.co.jp,second,300.00,300.00,1.0000,1200,1200,1,False,False
+nishi@example.co.jp,second,0.20,0.20,1.0000,1,1,1,False,False
 ueda@example.co.jp,second,0.50,0.50,1.0000,2,2,1,False,False
 yagi@example.co.jp,second,10.00,10.00,1.0000,40,40,1,False,False

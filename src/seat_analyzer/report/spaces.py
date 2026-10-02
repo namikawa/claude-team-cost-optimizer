@@ -27,6 +27,7 @@ from ..analyze import (
 )
 from .format import (
     _fmt_compact,
+    _fmt_tokens,
     _fmt_usd,
     _has_values,
     _is_missing,
@@ -227,8 +228,14 @@ def workspace_table_view(org: OrgAnalysisResult, summary: dict) -> dict:
 
 # --- 人別の利用（1人1行） ---
 
-def _held_seats(org: OrgAnalysisResult, person) -> str:
-    """保有シート（主は常に先頭で、主にアカウントが無ければ「—」。副は持つものだけ）。"""
+def _held_seat_parts(org: OrgAnalysisResult, person) -> list[str]:
+    """保有シートの「表示名: シート種別」の並び（主は常に先頭で、主にアカウントが
+    無ければ「—」）。
+
+    副はアカウントのある workspace だけを並べ、未割当のアカウントもそのまま表示する。
+    Markdown は「 / 」でつないだ1行（_held_seats）、dashboard は列幅を抑えるため
+    スペースごとに改行して並べる。
+    """
     by_workspace = {account.workspace: account.seat for account in person.accounts}
     primary_seat = (_seat(by_workspace[org.primary])
                     if org.primary in by_workspace else "—")
@@ -236,7 +243,12 @@ def _held_seats(org: OrgAnalysisResult, person) -> str:
     for name in org.contexts:
         if name != org.primary and name in by_workspace:
             parts.append(f"{org.contexts[name].label}: {_seat(by_workspace[name])}")
-    return " / ".join(parts)
+    return parts
+
+
+def _held_seats(org: OrgAnalysisResult, person) -> str:
+    """保有シート（_held_seat_parts を「 / 」でつないだ1行）。"""
+    return " / ".join(_held_seat_parts(org, person))
 
 
 def person_rows(org: OrgAnalysisResult) -> tuple[list[dict], dict]:
@@ -257,19 +269,22 @@ def person_rows(org: OrgAnalysisResult) -> tuple[list[dict], dict]:
         rows.append({
             "email": email,
             "seats": _held_seats(org, persons[email]),
+            "seat_parts": _held_seat_parts(org, persons[email]),
             "department": _text_value(record.get("department")),
             "team": _text_value(record.get("team")),
             "seat_cost": float(record["seat_cost_usd"]),
             "api": float(record["api_cost_usd"]),
             "primary_api": float(record["primary_api_cost_usd"]),
             "secondary_api": float(record["secondary_api_cost_usd"]),
-            # 副にアカウントが無い人は比率を出さない（副をほぼ使っていない人の 0% と
-            # 区別するため。値そのものは人の表のまま）
+            # 副を持たない人（副で未割当だけの人を含む）は比率を出さない（副をほぼ
+            # 使っていない人の 0% と区別するため。値そのものは人の表のまま）
             "ratio": (record.get("secondary_ratio")
-                      if persons[email].secondaries else None),
+                      if persons[email].has_secondary else None),
             "billed": float(record["billed_extra_usd"]),
             "status": str(record["status"]),
             "saving": None if _is_missing(saving) else float(saving),
+            "input": int(record["prompt_tokens"]),
+            "output": int(record["completion_tokens"]),
             "loc": record.get("loc_with_cc") if columns["loc"] else None,
         })
     rows.sort(key=lambda r: (order.get(r["status"], len(order)), -r["api"], r["email"]))
@@ -279,8 +294,9 @@ def person_rows(org: OrgAnalysisResult) -> tuple[list[dict], dict]:
 PERSON_LEGEND = (
     ("1人1行。API換算需要は全スペースの需要の合計で、主の需要・副の需要はそれぞれのスペースの"
      "アカウント自身の需要"),
-    "副の比率 = 副の需要 / API換算需要（副にアカウントが無い人と、需要が無い人は —）",
+    "副の比率 = 副の需要 / API換算需要（副にシートを持たない人と、需要が無い人は —）",
     "シート費/月は保有シートの月額の合計、実課金(従量)は全アカウントの合計",
+    "input / output は全アカウントのトークンの合計（input はキャッシュ読取分を含む）",
     ("シート判定はアカウントの V1 判定（どれかのアカウントが変更推奨ならその判定、無ければ主の"
      "アカウントの判定）。シート変更の削減/月は V1 の変更推奨による削減額で、「複数スペースの利用」"
      "の継続判定（戻す候補・削減見込み/月）とは別の値"),
@@ -295,10 +311,10 @@ def persons_md(org: OrgAnalysisResult) -> str:
         + (" 部署 |" if columns["dept"] else "")
         + (" チーム |" if columns["team"] else "")
         + " シート費/月 | API換算需要 | 主の需要 | 副の需要 | 副の比率 | 実課金(従量) |"
-        + " シート判定 | シート変更の削減/月 |"
+        + " シート判定 | シート変更の削減/月 | input | output |"
         + (" 行数(CC) |" if columns["loc"] else "")
     )
-    n_columns = 10 + int(columns["dept"]) + int(columns["team"]) + int(columns["loc"])
+    n_columns = 12 + int(columns["dept"]) + int(columns["team"]) + int(columns["loc"])
     lines = ["## 人別の利用", "", header, "|" + "---|" * n_columns]
     for r in rows:
         cells = [r["email"], r["seats"]]
@@ -310,6 +326,7 @@ def persons_md(org: OrgAnalysisResult) -> str:
             _fmt_usd(r["seat_cost"]), _fmt_usd(r["api"]), _fmt_usd(r["primary_api"]),
             _fmt_usd(r["secondary_api"]), _pct(r["ratio"]), _fmt_usd(r["billed"]),
             r["status"], _fmt_usd(r["saving"]),
+            _fmt_tokens(r["input"]), _fmt_tokens(r["output"]),
         ]
         if columns["loc"]:
             cells.append("—" if _is_missing(r["loc"]) else f"{int(r['loc']):,}")
@@ -420,10 +437,10 @@ def overview_lines(org: OrgAnalysisResult, fmt: Formatter) -> list[str]:
 
 # 判定の読み方。機序の説明はこの1箇所に置き、Markdown と dashboard が同じ文を出す
 JUDGMENT_LEGEND = (
-    ("払い出し判定は、副にアカウントを持たず主のシートが Standard / Premium の人について、"
-     "主の実課金（副を足さずに追加クレジットへ払っている額）を設定された損益分岐と比べます。"
-     "対象月に主の追加クレジット上限へ到達していれば1か月で候補、損益分岐以上の月が必要な"
-     "連続月数続けば候補、候補に当たらず主の実課金が 0 より大きければ観察、0 なら不要です"),
+    ("払い出し判定は、副にシートを持たず（副で未割当の人を含む）主のシートが Standard / Premium の"
+     "人について、主の実課金（副を足さずに追加クレジットへ払っている額）を設定された損益分岐と"
+     "比べます。対象月に主の追加クレジット上限へ到達していれば1か月で候補、損益分岐以上の月が"
+     "必要な連続月数続けば候補、候補に当たらず主の実課金が 0 より大きければ観察、0 なら不要です"),
     ("主の追加クレジットが無効の人と、有効かどうか分からない人（上限が未記入で実課金も観測されて"
      "いない）は、実課金が上限到達を語らないので判断材料なしです。主のシートが払い出すシート種別と"
      "違う人も判断材料なしです"),
@@ -514,6 +531,8 @@ def spaces_view(org: OrgAnalysisResult) -> dict:
         "ratio_fmt": _pct(r["ratio"]),
         "billed_fmt": _fmt_compact(r["billed"]),
         "saving_fmt": _fmt_compact(r["saving"]),
+        "input_fmt": _fmt_tokens(r["input"]),
+        "output_fmt": _fmt_tokens(r["output"]),
         "loc_fmt": "—" if _is_missing(r["loc"]) else f"{int(r['loc']):,}",
     } for r in rows]
     payout, unneeded = payout_rows(org, _fmt_compact)

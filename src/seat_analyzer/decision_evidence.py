@@ -24,11 +24,13 @@
   需要は add_demand で api_cost だけを足し、Code・補助の特徴量は連結した明細に
   product_usage.compute を掛け直して作る（supplementary_high は閾値判定なので真偽値では
   合算できない）。実課金・κ・現シート・シート変更 event・Identity の subject_id は
-  主 workspace のものを使う。履歴と完全性は人ごとに決め、副に払い出した月（first_seen）が
+  主 workspace のものを使う。履歴と完全性は人ごとに決め、副にシートのあるアカウント
+  （Standard / Premium と、spend にだけ現れる不明）を持ち副に払い出した月（first_seen）が
   ある人だけ、副の部分月を不完全月とし、副を使い始めた後の副の欠月で履歴を打ち切る。
   欠月を不完全月にすると、降格の評価窓が完全月だけを末尾から採るため、欠けた月を飛ばして
   古い月で補い、主で実課金があった月が窓から外れて降格が成立しうる。欠月は主の欠月と同じく
-  打ち切りに揃え、副にアカウントの無い人は主の履歴のままにする。Identity は workspace ごとに
+  打ち切りに揃え、副にシートの無い人（副で未割当の人を含む）は主の履歴のままにする。
+  需要の合算は未割当のアカウントも含めた全アカウントで行う。Identity は workspace ごとに
   解き、副でその email が衝突していれば衝突として扱う（workspace 間で ID が違うこと自体は
   衝突にしない）。主が飛ばされた月は行を作らず、主 workspace に fixed_seat があれば
   Standard / Premium のアカウントを判定対象外（excluded）にする
@@ -51,7 +53,13 @@ from dataclasses import dataclass, field, replace
 import pandas as pd
 
 from . import identity
-from .analyze import AnalysisResult, DecisionContext, OrgAnalysisResult, add_demand
+from .analyze import (
+    AnalysisResult,
+    DecisionContext,
+    OrgAnalysisResult,
+    add_demand,
+    holds_seat,
+)
 from .decision_v2 import (
     DecisionV2,
     MonthObservation,
@@ -210,7 +218,13 @@ def _person_overrides(
     org: OrgAnalysisResult,
     secondaries: list[tuple[str, AnalysisResult]],
 ) -> dict[str, _PersonOverride]:
-    """副に関与する人だけ履歴を調整し、副の欠月以前を判定へ渡さない。"""
+    """副に関与する人だけ履歴を調整し、副の欠月以前を判定へ渡さない。
+
+    副に関与する人は、対象月のその副の users にシートのあるアカウント（holds_seat）を
+    持ち、払い出した月（first_seen）がある人。副で未割当だけの人は主の履歴のままにする。
+    Identity の衝突はシートの有無によらず、払い出した月がある副すべてで見る（未割当の
+    アカウントの需要も合算に入るため）。
+    """
     context = primary.decision_context
     history = _contiguous_months(context.months, primary.month)
     resolved = {
@@ -225,17 +239,29 @@ def _person_overrides(
         }
         for name, _ in secondaries
     }
+    seated = {
+        name: {
+            key
+            for email, seat in zip(
+                result.users["email"], result.users["current_seat"], strict=True
+            )
+            if holds_seat(str(seat)) and (key := _email_key(email)) is not None
+        }
+        for name, result in secondaries
+    }
     overrides = {}
     for email in primary.users["email"]:
         key = _email_key(email)
         if key is None:
             continue
+        present = [name for name, _ in secondaries if key in first_seen[name]]
+        if not present:
+            continue
         involved = [
             (name, result, first_seen[name][key])
-            for name, result in secondaries if key in first_seen[name]
+            for name, result in secondaries
+            if key in first_seen[name] and key in seated[name]
         ]
-        if not involved:
-            continue
         missing = [
             month for _, result, start in involved
             for month in history
@@ -255,7 +281,7 @@ def _person_overrides(
         }
         conflict = any(
             (subject := resolved[name].get(key)) is not None and subject.conflict
-            for name, _, _ in involved
+            for name in present
         )
         overrides[key] = _PersonOverride(months, complete, conflict)
     return overrides

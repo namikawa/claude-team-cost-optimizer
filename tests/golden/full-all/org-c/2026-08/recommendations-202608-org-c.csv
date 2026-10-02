@@ -4,11 +4,12 @@ fujii@example.co.jp,main,premium,900.0,875.0,165.0,165.0,premium,0.0,現状維�
 hoshino@example.co.jp,main,premium,520.0,495.0,125.0,125.0,premium,0.0,現状維持,高,premium,premium,False,0.0,66666666,6666666,Claude Code 100%,Opus 4.8 100%,プラットフォーム開発部,SREチーム,エンジニア,2026-08 から別案件のため副の利用が減っている,250.0,enabled,9,2600
 kimura@example.co.jp,main,premium,900.0,875.0,375.0,375.0,premium,0.0,現状維持,高,premium,premium,False,250.0,120000000,12000000,Claude Code 100%,Opus 4.8 100%,プラットフォーム開発部,基盤チーム,エンジニア,,250.0,enabled,20,5100
 kubota@example.co.jp,main,standard,380.0,25.0,125.0,25.0,standard,0.0,現状維持,高,standard,standard,False,0.0,17777777,1777777,Claude Code 100%,Sonnet 4.6 100%,プロダクト開発部,Webチーム; SREチーム,エンジニア,2チーム兼務（兼務按分のデモ）,250.0,enabled,3,900
-nishi@example.co.jp,main,premium,420.0,395.0,185.0,185.0,premium,0.0,現状維持,高,premium,premium,False,60.0,56000000,5600000,Claude Code 60% / Chat 40%,Opus 4.8 100%,プロダクト開発部,Webチーム,エンジニア,,250.0,enabled,6,1800
+nishi@example.co.jp,main,premium,420.2,395.2,185.0,185.0,premium,0.0,現状維持,高,premium,premium,False,60.0,56000000,5600000,Claude Code 60% / Chat 40%,Opus 4.8 100%,プロダクト開発部,Webチーム,エンジニア,,250.0,enabled,6,1800
 ota@example.co.jp,main,premium,180.0,155.0,125.0,125.0,premium,0.0,現状維持,高,premium,premium,False,0.0,40000000,4000000,Cowork 70% / Claude Code 30%,Sonnet 4.6 100%,コーポレート,,マネージャー,,250.0,enabled,0,0
 sakai@example.co.jp,main,standard,25.0,25.0,125.0,25.0,standard,0.0,現状維持,高,standard,standard,False,0.0,5555555,555555,Claude Code 100%,Sonnet 4.6 100%,プロダクト開発部,SREチーム,エンジニア,,250.0,enabled,1,300
 takagi@example.co.jp,main,premium,160.0,135.0,125.0,125.0,premium,0.0,現状維持,中,premium,standard,False,0.0,35555554,3555554,Claude Code 50% / Design 50%,Sonnet 4.6 100%,コーポレート,,デザイナー,,0.0,disabled,0,0
 ueda@example.co.jp,main,premium,300.5,275.5,125.0,125.0,premium,0.0,現状維持,高,premium,premium,False,0.0,66666666,6666666,Claude Code 100%,Sonnet 4.6 100%,プロダクト開発部,Webチーム,エンジニア,,250.0,enabled,4,1200
+nishi@example.co.jp,second,unassigned,0.2,,,,unassigned,,対象外（シート未割当）,—,unassigned,unassigned,False,0.0,44444,4444,Claude Code 100%,Sonnet 4.6 100%,プロダクト開発部,Webチーム,エンジニア,,0.0,disabled,,
 fujii@example.co.jp,second,premium,300.0,,,125.0,premium,,対象外（固定シート）,—,premium,premium,False,0.0,40000000,4000000,Claude Code 100%,Opus 4.8 100%,プラットフォーム開発部,基盤チーム,テックリード,,0.0,disabled,,
 hoshino@example.co.jp,second,premium,20.0,,,125.0,premium,,対象外（固定シート）,—,premium,premium,False,0.0,4444444,444444,Claude Code 100%,Sonnet 4.6 100%,プラットフォーム開発部,SREチーム,エンジニア,2026-08 から別案件のため副の利用が減っている,0.0,disabled,,
 kubota@example.co.jp,second,premium,300.0,,,125.0,premium,,対象外（固定シート）,—,premium,premium,False,0.0,40000000,4000000,Claude Code 100%,Opus 4.8 100%,プロダクト開発部,Webチーム; SREチーム,エンジニア,2チーム兼務（兼務按分のデモ）,0.0,disabled,,
