@@ -1,7 +1,7 @@
 
 {% if trend %}
 <section class="card">
-  <div class="card-hd"><div class="hd-main"><h2>月次推移</h2></div></div>
+  <div class="card-hd"><div class="hd-main"><h2>月次推移{% if ws_label %}（{{ ws_label }}）{% endif %}</h2></div></div>
   <div class="card-bd">
     <div class="months">
 {% for m in trend.series %}      <div class="m-row">

@@ -69,7 +69,14 @@ jobs:
           "$bin" --version
           cd "$work"
           "$bin" init
-          "$bin" analyze --input-dir "$GITHUB_WORKSPACE/examples/input" \
+          "$bin" analyze --config "$GITHUB_WORKSPACE/examples/config.yaml" \
+            --input-dir "$GITHUB_WORKSPACE/examples/input" \
             --month 2026-06 --output-dir "$work/out"
-          "$bin" discuss --input-dir "$GITHUB_WORKSPACE/examples/input" \
+          "$bin" discuss --config "$GITHUB_WORKSPACE/examples/config.yaml" \
+            --input-dir "$GITHUB_WORKSPACE/examples/input" \
             --org org-a --month 2026-06 --output-dir "$work/out" --dry-run > /dev/null
+          # 2つの Team スペースを運用する組織の経路（workspace ごとの断片と複数スペースの
+          # タブ）も、インストールした状態で動くことを確かめる
+          "$bin" analyze --config "$GITHUB_WORKSPACE/examples/config.yaml" \
+            --input-dir "$GITHUB_WORKSPACE/examples/input" \
+            --org org-c --month 2026-08 --decision-version v2 --output-dir "$work/out"

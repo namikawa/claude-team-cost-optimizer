@@ -453,11 +453,13 @@ uv run pytest
 
 - 開発時は `uv run seat-analyzer ...` で実行する（リポジトリの `.venv/` の中身を使う）。
   `uv tool install` で入れたものとは別の環境になる
-- サンプル 2 組織での E2E は出力先を分けて実行する。既定の `reports/` に出すと、実データの
-  分析結果と混ざり `reports/summary/YYYY-MM.md` を上書きしてしまう
+- サンプル組織での E2E は出力先を分けて実行する。既定の `reports/` に出すと、実データの
+  分析結果と混ざり `reports/summary/YYYY-MM.md` を上書きしてしまう。設定には合成データ用の
+  `examples/config.yaml`（2つの Team スペースを運用するサンプル組織 org-c の workspace の
+  設定）を添える
 
   ```sh
-  uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --month 2026-06
+  uv run seat-analyzer analyze --config examples/config.yaml --input-dir examples/input --output-dir examples/reports --month 2026-06
   ```
 
 - `seat-analyzer check-text` は「すでに公開されている内容」をリポジトリの HEAD から読む

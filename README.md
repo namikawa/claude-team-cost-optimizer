@@ -118,12 +118,13 @@ uv run ruff check .        # lint
 ```
 
 開発時は `uv run seat-analyzer ...` で実行する（`uv tool install` で入れたものとは別の環境）。
-サンプル 2 組織での E2E は出力先を分ける。
+サンプル組織での E2E は出力先を分け、合成データ用の設定 `examples/config.yaml` を添える
+（2つの Team スペースを運用するサンプル組織 org-c の workspace の設定を持つ）。
 
 ```sh
-uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --month 2026-06   # サンプル2組織でE2E
-uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --org org-b       # 特定組織のみ
-uv run seat-analyzer analyze --input-dir examples/input --output-dir examples/reports --org org-b --month 2026-08   # 条件つきセクションが全部出る月
+uv run seat-analyzer analyze --config examples/config.yaml --input-dir examples/input --output-dir examples/reports --month 2026-06   # サンプル組織でE2E
+uv run seat-analyzer analyze --config examples/config.yaml --input-dir examples/input --output-dir examples/reports --org org-b       # 特定組織のみ
+uv run seat-analyzer analyze --config examples/config.yaml --input-dir examples/input --output-dir examples/reports --org org-b --month 2026-08   # 条件つきセクションが全部出る月
 ```
 
 設定の既定値は `src/seat_analyzer/default-config.yaml`（単価・カラムエイリアス・閾値）。

@@ -1,0 +1,70 @@
+
+{#- 複数 workspace の組織だけが持つ「複数スペース」タブ。本体側の差し込み先が multi のとき
+    だけ描くので、ここには条件を持たない。表の列は report / details の同名の表と同じ #}
+<section class="tabpanel" data-tab="spaces" role="tabpanel">
+<h2 class="panel-title">複数スペース</h2>
+<div class="stack">
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>スペースと判定の前提</h2></div></div>
+    <div class="card-bd">
+      <ul class="notes">
+{% for line in spaces.overview %}        <li>{{ line }}。</li>
+{% endfor %}        <li>判定の読み方は「前提と注意」にまとめています。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>人別の利用</h2></div></div>
+    <div class="tablebox tall">
+      <table>
+        <thead><tr><th>ユーザ</th><th>保有シート</th>{% if spaces.person_columns.dept %}<th>部署</th>{% endif %}{% if spaces.person_columns.team %}<th>チーム</th>{% endif %}<th class="num">シート費</th><th class="num">API換算需要</th><th class="num">主の需要</th><th class="num">副の需要</th><th class="num">副の比率</th><th class="num">実課金</th><th>シート判定</th><th class="num">シート変更の削減/月</th>{% if spaces.person_columns.loc %}<th class="num">行数(CC)</th>{% endif %}</tr></thead>
+        <tbody>
+{% for p in spaces.persons %}        <tr><td class="user" title="{{ p.email }}">{{ p.email.split('@')[0] }}</td><td class="sub">{{ p.seats }}</td>{% if spaces.person_columns.dept %}<td class="sub">{{ p.department }}</td>{% endif %}{% if spaces.person_columns.team %}<td class="sub">{{ p.team }}</td>{% endif %}<td class="num sub">{{ p.seat_cost_fmt }}</td><td class="num">{{ p.api_fmt }}</td><td class="num sub">{{ p.primary_fmt }}</td><td class="num sub">{{ p.secondary_fmt }}</td><td class="num sub">{{ p.ratio_fmt }}</td><td class="num">{{ p.billed_fmt }}</td><td class="judge"><span class="badge {{ p.badge_class }}">{{ p.status }}</span></td><td class="num save">{{ p.saving_fmt }}</td>{% if spaces.person_columns.loc %}<td class="num sub">{{ p.loc_fmt }}</td>{% endif %}</tr>
+{% endfor %}        </tbody>
+      </table>
+    </div>
+    <div class="card-ft">{% for line in spaces.person_legend %}{{ line }}。{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+  </section>
+
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>払い出し判定（副を持たない人）</h2></div>{% if spaces.unneeded %}<div class="hd-note">不要 {{ spaces.unneeded }} 名（主の実課金 $0）は表に出していません</div>{% endif %}</div>
+{% if spaces.payout %}    <div class="tablebox">
+      <table>
+        <thead><tr><th>ユーザ</th><th>判定</th><th class="num">主の実課金</th><th>上限到達</th><th class="num">損益分岐以上が続いた月数</th><th class="num">API換算需要</th><th class="num">Code比率</th><th class="num">行数(CC)</th><th>月別の実課金</th><th>理由</th></tr></thead>
+        <tbody>
+{% for r in spaces.payout %}        <tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td><td class="judge"><span class="badge {{ r.badge_class }}">{{ r.status }}</span></td><td class="num">{{ r.billed_fmt }}</td><td class="sub">{{ r.cap }}</td><td class="num sub">{{ r.streak }}</td><td class="num">{{ r.api_fmt }}</td><td class="num sub">{{ r.code_ratio }}</td><td class="num sub">{{ r.loc }}</td><td class="wrap">{{ r.monthly }}</td><td class="wrap">{{ r.reason }}</td></tr>
+{% endfor %}        </tbody>
+      </table>
+    </div>
+{% else %}    <div class="card-bd"><div class="empty">該当なし。</div></div>
+{% endif %}  </section>
+
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>継続判定（副にシートを持つ人）</h2></div></div>
+{% if spaces.continuation %}    <div class="tablebox">
+      <table>
+        <thead><tr><th>ユーザ</th><th>スペース</th><th>シート</th><th>判定</th><th class="num">副の需要</th><th class="num">損益分岐</th><th class="num">必要月数</th><th class="num">払い出し後の月数</th><th class="num">損益分岐未満が続いた月数</th><th class="num">削減見込み/月</th><th>月別の副の需要</th><th>注記</th></tr></thead>
+        <tbody>
+{% for r in spaces.continuation %}        <tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td><td class="sub">{{ r.space }}</td><td class="sub">{{ r.seat }}</td><td class="judge"><span class="badge {{ r.badge_class }}">{{ r.status }}</span></td><td class="num">{{ r.api_fmt }}</td><td class="num sub">{{ r.breakeven_fmt }}</td><td class="num sub">{{ r.evaluation_months }}</td><td class="num sub">{{ r.complete_months }}</td><td class="num sub">{{ r.streak_months }}</td><td class="num save">{{ r.saving_fmt }}</td><td class="wrap">{{ r.monthly }}</td><td class="wrap">{{ r.notes }}</td></tr>
+{% endfor %}        </tbody>
+      </table>
+    </div>
+{% else %}    <div class="card-bd"><div class="empty">該当なし。</div></div>
+{% endif %}  </section>
+
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>副を持ちながら主で実課金が発生した人</h2></div></div>
+{% if spaces.billed %}    <div class="tablebox">
+      <table>
+        <thead><tr><th>ユーザ</th><th class="num">主の実課金</th><th class="num">副の需要</th><th>月別（主の実課金 / 副の需要）</th></tr></thead>
+        <tbody>
+{% for r in spaces.billed %}        <tr><td class="user" title="{{ r.email }}">{{ r.email.split('@')[0] }}</td><td class="num">{{ r.billed_fmt }}</td><td class="num">{{ r.secondary_fmt }}</td><td class="wrap">{{ r.monthly }}</td></tr>
+{% endfor %}        </tbody>
+      </table>
+    </div>
+{% else %}    <div class="card-bd"><div class="empty">該当なし。</div></div>
+{% endif %}  </section>
+</div>
+</section>
+

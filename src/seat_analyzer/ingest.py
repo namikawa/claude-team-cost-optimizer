@@ -493,6 +493,23 @@ def workspace_layout(org_input: Path, org: str | None = None) -> str:
     return layout
 
 
+def discover_org_months(org_input: Path) -> list[str]:
+    """組織のスペンドレポートが存在する月の一覧（昇順）。
+
+    従来レイアウトは組織直下の spend/ の月、入れ子レイアウトは全 workspace の月の
+    和集合。対象月の決定と「その月のデータが無い組織」の判定を、レイアウトによらず
+    組織単位で行うための読み取り口。混在レイアウトは workspace_layout の ValueError で
+    止まる。
+    """
+    org_input = Path(org_input)
+    if workspace_layout(org_input) == WORKSPACE_LAYOUT_SINGLE:
+        return discover_months(org_input)
+    months: set[str] = set()
+    for name in discover_workspaces(org_input):
+        months.update(discover_months(org_input / name))
+    return sorted(months)
+
+
 def workspace_settings(cfg: dict, org: str) -> dict[str, dict]:
     """config の organizations.<組織名>.workspaces（書かれていなければ空）。
 

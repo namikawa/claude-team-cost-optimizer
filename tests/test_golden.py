@@ -5,9 +5,10 @@
 モジュールを分けるような移動の前後で「見た目は緑のまま出力が壊れる」ことが
 起きうるので、生成物そのものを固定して比較する。
 
-入力は `examples/input/` の合成データ（org-a / org-b）だけを使う。リポジトリ
-直下の `input/` は実データなので、golden がそこに依存すると手元の月次運用で
-テストが揺れる。CLI の引数は既定値に頼らず毎回明示する。
+入力は `examples/input/` の合成データ（org-a / org-b / org-c）と、それに合わせた
+上書き設定 `examples/config.yaml`（org-c の workspace の設定だけを持ち、org-a /
+org-b には効かない）だけを使う。リポジトリ直下の `input/` は実データなので、golden が
+そこに依存すると手元の月次運用でテストが揺れる。CLI の引数は既定値に頼らず毎回明示する。
 
 ケースは3軸で持つ。2組織そろった 2026-06 が土台（組織横断サマリを含む通常の
 出力構成）で、org-b の 2026-07 が条件付きの断片を通すためのケース。後者が無いと、
@@ -17,7 +18,13 @@ Claude Code 活動・メンバー変動）が golden の経路に一度も乗ら
 
 3つ目の org-b 2026-07 の翌月（2026-08）は、条件つき section がすべて出る
 「全部入り」のケース。部署・チーム別サマリと月中差分が同時に出る組み合わせは
-他のケースに無く、レポートの見た目を作り直すときの入力にもなる。
+他のケースに無く、レポートの見た目を作り直すときの入力にもなる。同じ月に、2つの
+Team スペース（workspace）を運用する org-c を並べ、複数 workspace の組織だけが持つ
+成果物の形（スペース列・workspace ごとの節・人の層・複数スペースのタブ）と、人数と
+アカウント数を併記する組織横断サマリを固定する。
+
+org-c は 2026-07 と 2026-08 のデータしか持たないので、2026-06 のケース（full /
+preview）では対象月のデータが無い組織として飛ばされ、出力は org-a / org-b のまま。
 
 golden の更新手順:
 
@@ -41,9 +48,11 @@ import pytest
 
 from seat_analyzer.cli import main
 
-from .conftest import CONFIG, REPO_ROOT
+from .conftest import REPO_ROOT
 
 EXAMPLES_INPUT = REPO_ROOT / "examples" / "input"
+# examples の合成データ用の上書き設定（org-c の workspace の設定）。既定設定に重ねて使う
+EXAMPLES_CONFIG = str(REPO_ROOT / "examples" / "config.yaml")
 GOLDEN_ROOT = REPO_ROOT / "tests" / "golden"
 
 
@@ -70,8 +79,10 @@ CASES = {
     "preview-snapshots": Case("2026-07", ("--org", "org-b", "--preview", "--days", "31")),
     # 条件つき section がすべて出る月（examples/generate_sample_data.py の全部入りサンプル）。
     # V2 判定の decision-evidence もこのケースで固定する。他のケースは v1 のままなので、
-    # V1 の成果物が V2 の結線で変わらないことの検査になる。
-    "full-all": Case("2026-08", ("--org", "org-b", "--decision-version", "v2")),
+    # V1 の成果物が V2 の結線で変わらないことの検査になる。2つの Team スペースを運用する
+    # org-c を同じ実行に並べ、複数 workspace の組織の6種と組織横断サマリも固定する。
+    "full-all": Case(
+        "2026-08", ("--org", "org-b", "--org", "org-c", "--decision-version", "v2")),
 }
 
 # 差分は該当箇所が分かれば十分なので、1ファイルあたりこの行数で打ち切る。
@@ -130,7 +141,7 @@ def _read(path: Path) -> str:
 def _generate(tmp_path: Path, case: Case) -> Path:
     output_dir = tmp_path / "out"
     rc = main([
-        "analyze", "--config", CONFIG,
+        "analyze", "--config", EXAMPLES_CONFIG,
         "--input-dir", str(EXAMPLES_INPUT),
         "--month", case.month,
         "--output-dir", str(output_dir),

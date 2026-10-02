@@ -207,8 +207,9 @@ class ContinuationJudgment:
 
     complete_months は払い出した月より後の月数（払い出した月は不完全月として数えない）、
     streak_months は直近の完全月から遡って「副の需要 < 損益分岐」が続いた月数。
-    saving_usd は戻す候補のときの削減見込み（副のシート料 − 副の需要）で、
-    over_primary_cap_months は副の需要が主の追加クレジット上限を超えた月＝
+    evaluation_months はその workspace の判定に必要な連続月数（breakeven_usd と同じく
+    workspace ごとに決まる）。saving_usd は戻す候補のときの削減見込み（副のシート料 −
+    副の需要）で、over_primary_cap_months は副の需要が主の追加クレジット上限を超えた月＝
     クレジットでは賄えなかった量が観測された月。
     """
 
@@ -220,6 +221,7 @@ class ContinuationJudgment:
     streak_months: int
     api_cost_usd: float
     breakeven_usd: float
+    evaluation_months: int
     saving_usd: float | None
     idle: bool
     over_primary_cap_months: tuple[str, ...]
@@ -244,8 +246,10 @@ class MultiAccountBilling:
 class PersonLayer:
     """人の層の一式（人の行と §26.5 の参考判定）。
 
-    breakeven_usd と evaluation_months は払い出し判定に使った損益分岐と連続月数。
-    副 workspace が1つも無い組織では判定を行わず、どちらも None になる。
+    breakeven_usd と evaluation_months は払い出し判定に使った損益分岐と連続月数で、
+    payout_workspace はその払い出し先として判定した workspace の名前。副 workspace が
+    1つも無い組織では判定を行わず、いずれも None になる（継続判定の損益分岐と月数は
+    副の workspace ごとに決まるので、各 ContinuationJudgment が持つ）。
     """
 
     persons: tuple[Person, ...]
@@ -255,6 +259,7 @@ class PersonLayer:
     billed_with_secondary: tuple[MultiAccountBilling, ...]
     breakeven_usd: float | None
     evaluation_months: int | None
+    payout_workspace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -527,7 +532,8 @@ def payout_judgments(persons: Sequence[Person], org: OrgAnalysisResult,
         reason = ""
         if account.seat != expected_seat:
             status = PAYOUT_NO_EVIDENCE
-            reason = f"主が {SEAT_LABELS[account.seat]} のため V1 の昇格判定が先"
+            reason = (f"主のシート（{SEAT_LABELS[account.seat]}）が払い出すシート種別"
+                      f"（{SEAT_LABELS[expected_seat]}）と違う")
         elif account.credits_mode != CREDIT_ENABLED:
             status = PAYOUT_NO_EVIDENCE
             reason = ("主の追加クレジットが無効"
@@ -632,6 +638,7 @@ def continuation_judgments(
                 streak_months=streak,
                 api_cost_usd=demand,
                 breakeven_usd=breakeven,
+                evaluation_months=evaluation,
                 saving_usd=saving,
                 idle=demand < policy.idle_usd,
                 over_primary_cap_months=tuple(
@@ -711,4 +718,5 @@ def build_person_layer(
         billed_with_secondary=billed_with_secondary(persons, org),
         breakeven_usd=policy.breakeven_for(policy.payout_workspace),
         evaluation_months=policy.evaluation_months_for(policy.payout_workspace),
+        payout_workspace=policy.payout_workspace,
     )

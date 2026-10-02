@@ -1,9 +1,10 @@
 """合成サンプルデータ生成（examples/input/ 配下）。
 
 実スペンドレポートの公開仕様に基づくカラム構成で、動作確認・デモ用の
-2組織×2ヶ月分データを生成する。実データの形式確認にも参照できる。
+合成データ（org-a / org-b の2026-05〜06 を土台に、月中差分・全部入り・複数 workspace の
+サンプル）を生成する。実データの形式確認にも参照できる。
 組織ごとに input/<組織名>/{spend,members,code-analytics}/ を作る
-（code-analytics は任意のため org-b では省略している）。
+（code-analytics は任意のため org-b の 2026-05〜06 では省略している）。
 
 org-b には 2026-07 の月中差分デモ用に、次のスナップショットも生成する（値は架空）:
   - spend: 月初〜05 / 〜13 / 〜31 の累積エクスポート（月中の利用推移）
@@ -23,6 +24,13 @@ org-b の 2026-08 は条件つきセクションがすべて出る「全部入�
 
 org-a の members-info.csv は追加クレジット上限の列を持たない固定名ファイルのまま残す
 （列なしでも従来どおり動く後方互換の確認用）。
+
+org-c は2つの Team スペース（workspace）を運用する組織のサンプル（値は架空）。入力は
+input/org-c/<workspace>/{spend,members,code-analytics}/ の入れ子で、members-info.csv は
+組織直下に1つ。workspace の設定（主・表示名・固定シート）は examples/config.yaml にある:
+
+    uv run seat-analyzer analyze --config examples/config.yaml --input-dir examples/input \
+        --output-dir examples/reports --org org-c --month 2026-08
 
     uv run python examples/generate_sample_data.py
 """
@@ -360,6 +368,140 @@ CC_STATS_ORG_A = {  # (PRs with CC, All PRs, Lines with CC, All Lines) — 2026-
     "yamada@example.co.jp": (6, 12, 900, 2000),
 }
 
+# --- org-c: 2つの Team スペースを運用する組織（すべて架空値） ---
+#
+# main が主スペース（members-info の追加クレジット上限を読む）、second が副スペース
+# （Premium 固定・上限は既定の 0）。設定は examples/config.yaml。副で払い出すシートの
+# 損益分岐は既定で Premium の価格 $125、判定に要る連続月数は 1（2か月のサンプルで
+# 「戻す候補」まで出すため）。人の層の判定が全ステータスに散るようにしてある:
+#   払い出し判定（副を持たない人）: kimura=候補（上限到達）/ nishi=観察 / ota・morita=不要 /
+#     sakai=判断材料なし（主が Standard）/ takagi=判断材料なし（追加クレジット無効）
+#   継続判定（副にシートを持つ人）: fujii・kubota=継続 / hoshino=戻す候補 /
+#     ueda=戻す候補（遊休）/ yagi=データ蓄積待ち（2026-08 加入）
+#   副を持ちながら主で実課金が発生した人: fujii
+#   V1 の変更推奨: morita（Premium → Standard）
+ORG_C = "org-c"
+ORG_C_UUID = "1c2d3e4f-5a67-4890-b123-456789abcdef"
+
+# workspace → 月 → [(email, 需要, 実課金, model[, product 構成])]
+SPEND_ORG_C = {
+    "main": {
+        "2026-07": [
+            ("fujii@example.co.jp",   500.0,   0.0, "claude-opus-4-8"),
+            ("hoshino@example.co.jp", 450.0,   0.0, "claude-opus-4-8"),
+            ("ueda@example.co.jp",    300.0,   0.0, "claude-sonnet-4-6"),
+            ("kubota@example.co.jp",   70.0,   0.0, "claude-sonnet-4-6"),
+            ("kimura@example.co.jp",  800.0, 200.0, "claude-opus-4-8"),
+            ("nishi@example.co.jp",   400.0,  50.0, "claude-opus-4-8",
+             (("Claude Code", 0.6), ("Chat", 0.4))),
+            ("ota@example.co.jp",     200.0,   0.0, "claude-sonnet-4-6",
+             (("Claude Code", 0.3), ("Cowork", 0.7))),
+            ("morita@example.co.jp",   15.0,   0.0, "claude-haiku-4-5", (("Chat", 1.0),)),
+            ("sakai@example.co.jp",    20.0,   0.0, "claude-sonnet-4-6"),
+            ("takagi@example.co.jp",  150.0,   0.0, "claude-sonnet-4-6",
+             (("Claude Code", 0.5), ("Design", 0.5))),
+        ],
+        "2026-08": [
+            ("fujii@example.co.jp",   600.0,  40.0, "claude-opus-4-8"),
+            ("hoshino@example.co.jp", 500.0,   0.0, "claude-opus-4-8"),
+            ("ueda@example.co.jp",    300.0,   0.0, "claude-sonnet-4-6"),
+            ("kubota@example.co.jp",   80.0,   0.0, "claude-sonnet-4-6"),
+            ("kimura@example.co.jp",  900.0, 250.0, "claude-opus-4-8"),
+            ("nishi@example.co.jp",   420.0,  60.0, "claude-opus-4-8",
+             (("Claude Code", 0.6), ("Chat", 0.4))),
+            ("ota@example.co.jp",     180.0,   0.0, "claude-sonnet-4-6",
+             (("Claude Code", 0.3), ("Cowork", 0.7))),
+            ("morita@example.co.jp",   15.0,   0.0, "claude-haiku-4-5", (("Chat", 1.0),)),
+            ("sakai@example.co.jp",    25.0,   0.0, "claude-sonnet-4-6"),
+            ("takagi@example.co.jp",  160.0,   0.0, "claude-sonnet-4-6",
+             (("Claude Code", 0.5), ("Design", 0.5))),
+        ],
+    },
+    "second": {
+        # ueda は 2026-07 から在籍しているが、この月は利用が無い（spend に行が無い）
+        "2026-07": [
+            ("fujii@example.co.jp",   280.0, 0.0, "claude-opus-4-8"),
+            ("hoshino@example.co.jp",  30.0, 0.0, "claude-sonnet-4-6"),
+            ("kubota@example.co.jp",  250.0, 0.0, "claude-opus-4-8"),
+        ],
+        "2026-08": [
+            ("fujii@example.co.jp",   300.0, 0.0, "claude-opus-4-8"),
+            ("hoshino@example.co.jp",  20.0, 0.0, "claude-sonnet-4-6"),
+            ("ueda@example.co.jp",      0.5, 0.0, "claude-haiku-4-5"),
+            ("kubota@example.co.jp",  300.0, 0.0, "claude-opus-4-8"),
+            ("yagi@example.co.jp",     10.0, 0.0, "claude-sonnet-4-6"),
+        ],
+    },
+}
+
+# workspace → 月末日 → [(email, seat)]（月末のスナップショットを月ごとに1本）
+MEMBERS_ORG_C = {
+    "main": {
+        date: [
+            ("fujii@example.co.jp",   "Premium"),
+            ("hoshino@example.co.jp", "Premium"),
+            ("ueda@example.co.jp",    "Premium"),
+            ("kubota@example.co.jp",  "Standard"),
+            ("kimura@example.co.jp",  "Premium"),
+            ("nishi@example.co.jp",   "Premium"),
+            ("ota@example.co.jp",     "Premium"),
+            ("morita@example.co.jp",  "Premium"),
+            ("sakai@example.co.jp",   "Standard"),
+            ("takagi@example.co.jp",  "Premium"),
+        ]
+        for date in ("2026-07-31", "2026-08-31")
+    },
+    "second": {
+        "2026-07-31": [
+            ("fujii@example.co.jp",   "Premium"),
+            ("hoshino@example.co.jp", "Premium"),
+            ("ueda@example.co.jp",    "Premium"),
+            ("kubota@example.co.jp",  "Premium"),
+        ],
+        "2026-08-31": [
+            ("fujii@example.co.jp",   "Premium"),
+            ("hoshino@example.co.jp", "Premium"),
+            ("ueda@example.co.jp",    "Premium"),
+            ("kubota@example.co.jp",  "Premium"),
+            ("yagi@example.co.jp",    "Premium"),   # 2026-08 に副を払い出した
+        ],
+    },
+}
+
+# code-analytics は main にだけ置く（second の行は連結した表で LoC が「—」になる）
+CODE_ORG_C = {
+    "main": {
+        "2026-08-31": [
+            ("fujii@example.co.jp",   4200, 15),
+            ("hoshino@example.co.jp", 2600,  9),
+            ("ueda@example.co.jp",    1200,  4),
+            ("kubota@example.co.jp",   900,  3),
+            ("kimura@example.co.jp",  5100, 20),
+            ("nishi@example.co.jp",   1800,  6),
+            ("sakai@example.co.jp",    300,  1),
+        ],
+    },
+}
+
+# 組織直下の members-info.csv（人単位で全 workspace 共通）。追加クレジット上限は主の設定で、
+# 空欄は主スペースの既定（config の credit_limit_default_usd）になる。
+# (email, 部署, チーム, 職種, 追加クレジット上限, 備考)
+MEMBERS_INFO_ORG_C = [
+    ("fujii@example.co.jp",   "プラットフォーム開発部", "基盤チーム", "テックリード", "250", ""),
+    ("hoshino@example.co.jp", "プラットフォーム開発部", "SREチーム", "エンジニア", "250",
+     "2026-08 から別案件のため副の利用が減っている"),
+    ("ueda@example.co.jp",    "プロダクト開発部", "Webチーム", "エンジニア", "250", ""),
+    ("kubota@example.co.jp",  "プロダクト開発部", "Webチーム; SREチーム", "エンジニア", "250",
+     "2チーム兼務（兼務按分のデモ）"),
+    ("yagi@example.co.jp",    "プラットフォーム開発部", "基盤チーム", "エンジニア", "", ""),
+    ("kimura@example.co.jp",  "プラットフォーム開発部", "基盤チーム", "エンジニア", "250", ""),
+    ("nishi@example.co.jp",   "プロダクト開発部", "Webチーム", "エンジニア", "250", ""),
+    ("ota@example.co.jp",     "コーポレート", "", "マネージャー", "250", ""),
+    ("morita@example.co.jp",  "コーポレート", "", "エンジニア", "", ""),
+    ("sakai@example.co.jp",   "プロダクト開発部", "SREチーム", "エンジニア", "250", ""),
+    ("takagi@example.co.jp",  "コーポレート", "", "デザイナー", "0", ""),
+]
+
 # 組織名 → (メンバー, 非メンバー利用者, code-analytics。None なら生成しない)
 ORGS = {
     "org-a": (USERS_ORG_A, ORPHANS_ORG_A, CC_STATS_ORG_A),
@@ -411,15 +553,21 @@ def write_spend(org: str, month: str, users: list, orphans: list) -> None:
     print(f"wrote {path} ({len(rows)} rows)")
 
 
-def write_spend_snapshot(org: str, date_suffix: str, entries: list) -> None:
+def _base(org: str, workspace: str | None) -> Path:
+    """組織（入れ子レイアウトなら workspace）の入力ディレクトリ。"""
+    return BASE / org / workspace if workspace else BASE / org
+
+
+def write_spend_snapshot(org: str, date_suffix: str, entries: list, *,
+                         workspace: str | None = None, uuid: str = SNAPSHOT_UUID) -> None:
     """月初開始の累積スナップショット1件を range 命名の CSV で書く（差分分析デモ用）。
 
     entries は (email, 累積需要, 累積実課金, model) か、末尾に product 構成
     ((product, 割合), ...) を足した5要素。省略時は Claude Code 100%。累積実課金は
     ユーザ単位の合計なので先頭の product 行にまとめて載せる。
     """
-    name = f"spend-report-{SNAPSHOT_UUID}-{date_suffix}.csv"
-    path = BASE / org / "spend" / name
+    name = f"spend-report-{uuid}-{date_suffix}.csv"
+    path = _base(org, workspace) / "spend" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = []
     for entry in entries:
@@ -460,10 +608,11 @@ def write_members(org: str, month: str, users: list) -> None:
     print(f"wrote {path}")
 
 
-def write_members_snapshot(org: str, date: str, entries: list) -> None:
+def write_members_snapshot(org: str, date: str, entries: list, *,
+                           workspace: str | None = None, uuid: str = SNAPSHOT_UUID) -> None:
     """members の単日スナップショット1件を日付命名の CSV で書く（メンバー変動デモ用）。"""
-    name = f"members-{SNAPSHOT_UUID}-{date}.csv"
-    path = BASE / org / "members" / name
+    name = f"members-{uuid}-{date}.csv"
+    path = _base(org, workspace) / "members" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -473,10 +622,11 @@ def write_members_snapshot(org: str, date: str, entries: list) -> None:
     print(f"wrote {path}")
 
 
-def write_code_snapshot(org: str, date: str, entries: list) -> None:
+def write_code_snapshot(org: str, date: str, entries: list, *,
+                        workspace: str | None = None, uuid: str = SNAPSHOT_UUID) -> None:
     """code-analytics の単日スナップショット1件を日付命名の CSV で書く（活動の差分デモ用）。"""
-    name = f"code-analytics-{SNAPSHOT_UUID}-{date}.csv"
-    path = BASE / org / "code-analytics" / name
+    name = f"code-analytics-{uuid}-{date}.csv"
+    path = _base(org, workspace) / "code-analytics" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -517,6 +667,32 @@ def write_members_info_snapshot(org: str, date: str, entries: list) -> None:
             dept, team, role, note = (list(entry[2:]) + [""] * 4)[:4]
             writer.writerow([email, dept, team, role, credit_limit, note])
     print(f"wrote {path}")
+
+
+def write_members_info_with_limits(org: str, entries: list) -> None:
+    """組織直下の members-info.csv（追加クレジット上限の列つき・固定ファイル名）。"""
+    path = BASE / org / "members-info.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["email", "部署", "チーム", "職種", "追加クレジット上限", "備考"])
+        writer.writerows(entries)
+    print(f"wrote {path}")
+
+
+def write_org_c() -> None:
+    """org-c（2つの Team スペースを運用する組織）の入力一式。"""
+    for workspace, months in SPEND_ORG_C.items():
+        for month, entries in months.items():
+            write_spend_snapshot(ORG_C, f"{month}-01-to-{month}-31", entries,
+                                 workspace=workspace, uuid=ORG_C_UUID)
+    for workspace, snapshots in MEMBERS_ORG_C.items():
+        for date, entries in snapshots.items():
+            write_members_snapshot(ORG_C, date, entries, workspace=workspace, uuid=ORG_C_UUID)
+    for workspace, snapshots in CODE_ORG_C.items():
+        for date, entries in snapshots.items():
+            write_code_snapshot(ORG_C, date, entries, workspace=workspace, uuid=ORG_C_UUID)
+    write_members_info_with_limits(ORG_C, MEMBERS_INFO_ORG_C)
 
 
 def write_code_analytics(org: str, month: str, cc_stats: dict) -> None:
@@ -562,3 +738,6 @@ if __name__ == "__main__":
         write_code_snapshot("org-b", date, entries)
     for date, entries in MEMBERS_INFO_SNAPSHOTS_ORG_B_08.items():
         write_members_info_snapshot("org-b", date, entries)
+
+    # org-c: 2つの Team スペースを運用する組織（設定は examples/config.yaml）
+    write_org_c()

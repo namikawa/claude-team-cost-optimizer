@@ -15,9 +15,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..analyze import AnalysisResult
+from ..analyze import AnalysisResult, OrgAnalysisResult
 from ..product_usage import FEATURE_COLUMNS
 from .csv_out import normalize_cell_newlines, sanitize_csv_cell
+from .format import _sole_result
 
 
 def _usd(value) -> str:
@@ -72,11 +73,34 @@ def _column(values: pd.Series, name: str) -> list[str]:
     return ["" if pd.isna(v) else formatter(v) for v in values]
 
 
-def write_usage_csv(result: AnalysisResult, path: Path) -> None:
+def write_usage_csv(result: AnalysisResult | OrgAnalysisResult, path: Path) -> None:
     """usage-summary.csv を書く。
 
     列は email + FEATURE_COLUMNS、行は features の並び（email 昇順）のまま。
+
+    複数 workspace の組織は workspace ごとの表を主→副の順に連結し、email の次に
+    workspace 列（ディレクトリ名）を置く（各 workspace の中は email 昇順のまま）。
     """
+    if isinstance(result, OrgAnalysisResult):
+        if result.has_multiple_workspaces:
+            tables = []
+            for name, workspace_result in result.workspaces.items():
+                table = _usage_table(workspace_result)
+                table.insert(1, "workspace", name)
+                tables.append(table)
+            combined = (
+                pd.concat(tables, ignore_index=True) if tables
+                else pd.DataFrame(columns=["email", "workspace", *FEATURE_COLUMNS])
+            )
+            combined.to_csv(path, index=False, encoding="utf-8-sig", lineterminator="\n")
+            return
+        result = _sole_result(result)
+    _usage_table(result).to_csv(
+        path, index=False, encoding="utf-8-sig", lineterminator="\n")
+
+
+def _usage_table(result: AnalysisResult) -> pd.DataFrame:
+    """1 workspace 分の usage-summary の表（セルはすべて書式済みの文字列）。"""
     usage = result.product_usage
     if usage is None:
         raise ValueError(
@@ -91,8 +115,7 @@ def write_usage_csv(result: AnalysisResult, path: Path) -> None:
         normalize_cell_newlines(sanitize_csv_cell(str(email)))
         for email in features.index
     ]
-    table = pd.DataFrame({
+    return pd.DataFrame({
         "email": emails,
         **{name: _column(features[name], name) for name in FEATURE_COLUMNS},
     })
-    table.to_csv(path, index=False, encoding="utf-8-sig", lineterminator="\n")

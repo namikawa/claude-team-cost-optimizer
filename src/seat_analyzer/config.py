@@ -512,6 +512,9 @@ def _validate_workspaces(name: str, entry: dict, errors: list[str]) -> None:
 
     primaries: list[str] = []
     named: list[str] = []
+    # 表示名 → それを使う workspace。レポートは workspace を表示名だけで示すので、
+    # 同じ表示名が2つあるとどちらのスペースの行・節なのかが読めなくなる
+    labels: dict[str, list[str]] = {}
     for workspace, settings in workspaces.items():
         where = f"organizations.{name}.workspaces.{workspace}"
         if not _is_text(workspace):
@@ -537,8 +540,12 @@ def _validate_workspaces(name: str, entry: dict, errors: list[str]) -> None:
             errors.append(f"{where}.primary は真偽値が必要です")
         elif primary:
             primaries.append(str(workspace))
-        if not isinstance(settings.get("label", ""), str):
+        label = settings.get("label", "")
+        if not isinstance(label, str):
             errors.append(f"{where}.label は文字列が必要です")
+        else:
+            # 省略時の表示名はディレクトリ名（analyze の WorkspaceContext と同じ解決）
+            labels.setdefault(label or str(workspace), []).append(str(workspace))
         seat = settings.get("fixed_seat", "")
         if not (isinstance(seat, str) and (not seat or seat in _FIXED_SEATS)):
             errors.append(
@@ -560,6 +567,14 @@ def _validate_workspaces(name: str, entry: dict, errors: list[str]) -> None:
         check_org_name_collisions(named)
     except ValueError as exc:
         errors.append(f"organizations.{name}.workspaces の名前が衝突しています: {exc}")
+
+    for label, owners in sorted(labels.items()):
+        if len(owners) > 1:
+            errors.append(
+                f"organizations.{name}.workspaces の表示名（label。省略時は workspace 名）"
+                f"「{label}」が重複しています（{' / '.join(sorted(owners))}）。"
+                "レポートでスペースを見分けられるよう、組織内で別の名前にしてください"
+            )
 
     if not workspaces:
         return

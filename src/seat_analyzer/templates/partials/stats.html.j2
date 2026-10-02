@@ -2,7 +2,7 @@
 {% if stats %}
 <section class="card">
   <div class="card-hd">
-    <div class="hd-main"><h2><!--text:h_stats--></h2></div>
+    <div class="hd-main"><h2><!--text:h_stats-->{% if ws_label %}（{{ ws_label }}）{% endif %}</h2></div>
     <div class="hd-note">母集団は組織内に閉じています</div>
   </div>
   <div class="tablebox">

@@ -135,11 +135,11 @@ def test_payout_statuses(make_input, tmp_path):
 
 
 def test_payout_without_evidence(make_input, tmp_path):
-    # 実課金が上限到達を語らない状態・V1 の昇格判定が先の状態は判断材料なし
+    # 実課金が上限到達を語らない状態・払い出すシート種別と主のシートが違う状態は判断材料なし
     judgments = _payout(make_input, tmp_path)
     erin = judgments["erin@example.com"]
     assert erin.status == PAYOUT_NO_EVIDENCE
-    assert erin.reason == "主が Standard のため V1 の昇格判定が先"
+    assert erin.reason == "主のシート（Standard）が払い出すシート種別（Premium）と違う"
     frank = judgments["frank@example.com"]
     assert frank.status == PAYOUT_NO_EVIDENCE
     assert frank.reason == "主の追加クレジットが無効"
@@ -181,6 +181,8 @@ def test_payout_cap_reached_needs_only_one_month(make_input, tmp_path):
     assert alice.status == PAYOUT_CANDIDATE
     assert layer.breakeven_usd == 125.0
     assert layer.evaluation_months == 2
+    # 払い出し先として判定した workspace（最初の副）を層が持つ
+    assert layer.payout_workspace == "second"
 
 
 def _write_member_snapshot(base: Path, date: str, members: list[str]) -> None:
@@ -408,6 +410,19 @@ def test_continuation_evaluation_months_override(make_input, tmp_path):
     judgments = _continuation(make_input, tmp_path, second={"evaluation_months": 3})
     assert judgments["bob@example.com"].status == WAITING
     assert judgments["bob@example.com"].complete_months == 2
+    # 判定に使った必要月数を判定ごとに持つ（レポートの「必要月数」列）
+    assert judgments["bob@example.com"].evaluation_months == 3
+
+
+def test_continuation_evaluation_months_defaults_to_hysteresis(make_input, tmp_path):
+    judgments = _continuation(make_input, tmp_path)
+    assert {j.evaluation_months for j in judgments.values()} == {2}
+
+
+def test_single_workspace_layer_has_no_payout_workspace(cfg, make_input):
+    input_dir = _single_workspace_input(make_input)
+    layer = analyze_org(input_dir / ORG, "2026-06", cfg, ORG).persons
+    assert layer.payout_workspace is None
 
 
 def test_continuation_breakeven_follows_fixed_seat(make_input, tmp_path):

@@ -9,11 +9,17 @@ import pandas as pd
 from ..analyze import (
     SEAT_LABELS,
     STATUS_CHANGE,
+    STATUS_FIXED_SEAT,
     AnalysisResult,
+    OrgAnalysisResult,
     PreviewResult,
+    single_org_result,
+    summarize_org,
 )
+from . import spaces
 from .document import _atomic_write, _preserve_discussion
 from .format import (
+    _account_rows,
     _detail_rows,
     _fmt_count,
     _fmt_delta,
@@ -23,8 +29,14 @@ from .format import (
     _fmt_usd,
     _group_summary_rows,
     _has_values,
+    _int_cell,
+    _is_missing,
+    _labeled,
+    _md_cell,
     _scope_label,
+    _sole_result,
     _sort_for_display,
+    _text_value,
 )
 from .naming import PREVIEW, REPORT
 from .stats import KIND_USD, Distribution
@@ -38,36 +50,40 @@ from .text import (
 )
 
 
-def _md_cell(v) -> str:
-    """Markdown 表セル用のエスケープ（表崩れ防止）。パイプ・改行が主な対象。"""
-    s = "" if v is None else str(v)
-    return s.replace("\\", "\\\\").replace("|", "\\|").replace("\r", "").replace("\n", "<br>")
+def _user_table_md(users: pd.DataFrame, space: bool = False) -> str:
+    """ユーザ（アカウント）単位の判定表。
 
-
-def _user_table_md(users: pd.DataFrame) -> str:
+    space=True かつ workspace_label 列がある（複数 workspace を連結した）表では、
+    ユーザの次に「スペース」列を置く。片方の workspace にしか無い列のセルは「—」。
+    """
+    has_space = space and "workspace_label" in users.columns
     has_cc = "prs_with_cc" in users.columns
     has_loc = "loc_with_cc" in users.columns
     has_dept = _has_values(users, "department")
     has_team = _has_values(users, "team")
     header = (
-        "| ユーザ | 現シート |"
+        "| ユーザ |"
+        + (" スペース |" if has_space else "")
+        + " 現シート |"
         + (" 部署 |" if has_dept else "")
         + (" チーム |" if has_team else "")
         + " API換算需要 | 実課金(従量) | Standard時 | Premium時 | 推奨 | 削減/月 | 判定 | 確度 |"
         + (" PR(CC) |" if has_cc else "") + (" 行数(CC) |" if has_loc else "")
     )
-    sep = "|" + "---|" * (10 + int(has_dept) + int(has_team) + int(has_cc) + int(has_loc))
+    sep = "|" + "---|" * (10 + int(has_space) + int(has_dept) + int(has_team)
+                          + int(has_cc) + int(has_loc))
     lines = [header, sep]
     for _, r in users.iterrows():
-        flag = " ⚠️上限?" if r["cap_suspected"] else ""
-        cells = [
-            r["email"],
-            SEAT_LABELS.get(r["current_seat"], r["current_seat"]),
-        ]
+        cap = r["cap_suspected"]
+        flag = " ⚠️上限?" if not _is_missing(cap) and bool(cap) else ""
+        cells = [r["email"]]
+        if has_space:
+            cells.append(_text_value(r["workspace_label"]))
+        cells.append(SEAT_LABELS.get(r["current_seat"], r["current_seat"]))
         if has_dept:
-            cells.append(str(r.get("department", "") or ""))
+            cells.append(_text_value(r.get("department", "")))
         if has_team:
-            cells.append(str(r.get("team", "") or ""))
+            cells.append(_text_value(r.get("team", "")))
         cells += [
             _fmt_usd(r["api_cost_usd"]) + flag,
             _fmt_usd(r.get("billed_extra_usd", 0.0)),
@@ -79,18 +95,19 @@ def _user_table_md(users: pd.DataFrame) -> str:
             r["confidence"],
         ]
         if has_cc:
-            cells.append(str(int(r.get("prs_with_cc", 0))))
+            cells.append(_int_cell(r.get("prs_with_cc", 0)))
         if has_loc:
-            cells.append(f"{int(r.get('loc_with_cc', 0)):,}")
+            cells.append(_int_cell(r.get("loc_with_cc", 0), thousands=True))
         lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     return "\n".join(lines)
 
 
-def _user_legend_md(summary: dict) -> str:
+def _user_legend_md(summary: dict, extra: tuple[str, ...] = ()) -> str:
     """ユーザ表の列の読み方（凡例）。
 
     report.md のシート変更推奨（表が空でないとき）と details.md の全ユーザ表で共有する。
     どちらも同じ列構成（_user_table_md）なので、読み方の説明も1つにする。
+    extra は末尾に足す行（複数 workspace の組織だけが持つ説明。既定では何も足さない）。
     """
     lines = [
         "- **API換算需要**: 当月の全利用量をAPI料金（キャッシュ実効単価込み）に換算した金額。シート込み分を含む「需要」の指標",
@@ -105,6 +122,7 @@ def _user_legend_md(summary: dict) -> str:
         "- **確度**: 込み利用量（allowance）の low/mid/high 3シナリオで推奨が一致するか（高=3/3, 中=2/3, 低=1/3）",
         "- **対象外（シート未割当）**: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。損益分岐判定は行わない",
     ]
+    lines += list(extra)
     return "\n".join(lines)
 
 
@@ -121,13 +139,13 @@ def _notes_md(users: pd.DataFrame) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _sensitivity_md(users: pd.DataFrame) -> str:
+def _sensitivity_md(users: pd.DataFrame, label: str | None = None) -> str:
     """「## 感度分析」セクション（allowance の仮定で推奨が変わるユーザ）。"""
     disagree = users[users["confidence"].isin(["中", "低"])]
     table = (_user_table_md(disagree) if not disagree.empty
              else "なし（全ユーザで3シナリオの推奨が一致）。")
     return (
-        "## 感度分析\n\n"
+        f"## {_labeled('感度分析', label)}\n\n"
         "allowance（シート込み利用量のUSD換算・非公開のため推定）の仮定によって推奨が変わるユーザ:"
         f"\n\n{table}\n"
     )
@@ -159,17 +177,25 @@ def _group_summary_md(users: pd.DataFrame, summary: dict, col: str, heading: str
     return "\n".join(lines) + "\n"
 
 
-def _detail_table_md(users: pd.DataFrame) -> str:
-    """詳細利用状況（input/output トークン・モデル割合・LoC）の Markdown 表。"""
+def _detail_table_md(users: pd.DataFrame, space: bool = False) -> str:
+    """詳細利用状況（input/output トークン・モデル割合・LoC）の Markdown 表。
+
+    space=True かつ workspace_label 列がある表では、ユーザの次に「スペース」列を置く。
+    """
     rows, has_loc = _detail_rows(users)
-    header = ("| ユーザ | input | output |" + (" LoC |" if has_loc else "")
+    has_space = space and "workspace_label" in users.columns
+    header = ("| ユーザ |" + (" スペース |" if has_space else "")
+              + " input | output |" + (" LoC |" if has_loc else "")
               + " API換算需要 | モデル割合（トークン基準） | product構成（利用回数） |")
-    sep = "|" + "---|" * (6 + int(has_loc))
+    sep = "|" + "---|" * (6 + int(has_space) + int(has_loc))
     lines = ["## 詳細利用状況", "", header, sep]
     for r in rows:
-        cells = [r["email"], _fmt_tokens(r["in"]), _fmt_tokens(r["out"])]
+        cells = [r["email"]]
+        if has_space:
+            cells.append(r["space"] or "")
+        cells += [_fmt_tokens(r["in"]), _fmt_tokens(r["out"])]
         if has_loc:
-            cells.append(f"{r['loc']:,}")
+            cells.append(f"{r['loc']:,}" if r["loc"] is not None else "—")
         cells += [_fmt_usd(r["api"]), r["models"], r["products"]]
         lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     lines.append("")
@@ -178,11 +204,11 @@ def _detail_table_md(users: pd.DataFrame) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _stats_md(dists: list[Distribution]) -> str:
+def _stats_md(dists: list[Distribution], label: str | None = None) -> str:
     """「## 組織内の分布（参考値）」セクション（対象がなければ空文字列）。"""
     if not dists:
         return ""
-    lines = [f"## {_TEXT['h_stats']}", "",
+    lines = [f"## {_labeled(_TEXT['h_stats'], label)}", "",
              "| 指標 | n | 平均 | 中央値 | 標準偏差 | p25 | p75 | p90 | 最大 |",
              "|" + "---|" * 9]
     for d in dists:
@@ -210,14 +236,18 @@ def _people_line_md(label: str, items: list[dict]) -> str:
     return f"- {label} {len(items)} 名: {listed}"
 
 
-def _trend_md(trend: dict | None) -> str:
-    """「## 前月からの変化」セクション（trend が None なら空文字列）。"""
+def _trend_md(trend: dict | None, label: str | None = None) -> str:
+    """「## 前月からの変化」セクション（trend が None なら空文字列）。
+
+    label は複数 workspace の組織で見出しに添える workspace の表示名（以下の
+    section 関数も同じ。None なら従来と同じ見出し）。
+    """
     if not trend:
         return ""
     cmp_line = f"比較対象: {trend['compare_month']}"
     if trend["gap_skipped"]:
         cmp_line += "（直前月が欠測のため直前の存在月と比較）"
-    lines = ["## 前月からの変化", "", cmp_line, ""]
+    lines = [f"## {_labeled('前月からの変化', label)}", "", cmp_line, ""]
     lines.append(_people_line_md("利用開始", trend["started"]))
     lines.append(_people_line_md("利用停止", trend["stopped"]))
     lines.append(_people_line_md("実課金の新規発生", trend["new_billed"]))
@@ -240,12 +270,13 @@ def _trend_md(trend: dict | None) -> str:
     return "\n".join(lines)
 
 
-def _snapshot_md(snapshot: dict | None) -> str:
+def _snapshot_md(snapshot: dict | None, label: str | None = None) -> str:
     """「## 月中の利用推移（スナップショット差分）」セクション（None なら空文字列）。"""
     if not snapshot:
         return ""
     snap_list = " / ".join(f"{s['label']}（{s['days']}日）" for s in snapshot["snaps"])
-    lines = [f"## {_TEXT['h_snapshot']}", "", f"スナップショット: {snap_list}", ""]
+    lines = [f"## {_labeled(_TEXT['h_snapshot'], label)}", "",
+             f"スナップショット: {snap_list}", ""]
     if not snapshot["judged"]:
         lines.append(
             f"- 最新区間が {snapshot['latest_interval_days']} 日と短いため停止判定は行っていません"
@@ -280,7 +311,7 @@ def _snapshot_md(snapshot: dict | None) -> str:
     return "\n".join(lines)
 
 
-def _code_diff_md(code_diff: dict | None) -> str:
+def _code_diff_md(code_diff: dict | None, label: str | None = None) -> str:
     """「## 月中の Claude Code 活動（code-analytics 差分）」セクション（None なら空文字列）。"""
     if not code_diff:
         return ""
@@ -289,7 +320,7 @@ def _code_diff_md(code_diff: dict | None) -> str:
     header = ("| ユーザ | " + " | ".join(labels)
               + " | LoC 増分（最新区間） |" + (" PR 増分 |" if has_prs else ""))
     sep = "|" + "---|" * (len(labels) + 2 + int(has_prs))
-    lines = [f"## {_TEXT['h_code_diff']}", "", header, sep]
+    lines = [f"## {_labeled(_TEXT['h_code_diff'], label)}", "", header, sep]
     for r in code_diff["rows"]:
         cums = " | ".join(f"{c:,}" for c in r["loc_cum"])
         cells = f"| {_md_cell(r['email'])} | {cums} | {_fmt_delta_int(r['loc_delta'])} |"
@@ -302,7 +333,7 @@ def _code_diff_md(code_diff: dict | None) -> str:
     return "\n".join(lines)
 
 
-def _member_changes_md(mc: dict | None) -> str:
+def _member_changes_md(mc: dict | None, label: str | None = None) -> str:
     """「## 月中のメンバー変動（スナップショット差分）」セクション（None なら空文字列）。
 
     members スナップショット由来のシート変更・追加・削除に加え、members-info スナップショット
@@ -311,7 +342,7 @@ def _member_changes_md(mc: dict | None) -> str:
     if not mc:
         return ""
     credit_changes = mc.get("credit_changes") or []
-    lines = [f"## {_TEXT['h_member_changes']}", "",
+    lines = [f"## {_labeled(_TEXT['h_member_changes'], label)}", "",
              f"スナップショット時点: {' / '.join(mc['labels'])}", ""]
     if mc["empty"]:
         lines.append("- 変動なし")
@@ -341,22 +372,22 @@ def _member_changes_md(mc: dict | None) -> str:
     return "\n".join(lines)
 
 
-def _credit_summary_md_row(s: dict) -> str:
+def _credit_summary_md_row(s: dict, label: str | None = None) -> str:
     """サマリ表に差し込む追加クレジットの構成行（credit_shown でなければ空文字列）。"""
     if not s.get("credit_shown"):
         return ""
     return (
-        f"| 追加クレジット | 有効 {s['credit_enabled_n']} 名"
+        f"| {_labeled('追加クレジット', label)} | 有効 {s['credit_enabled_n']} 名"
         f"（上限計 {_fmt_usd(s['credit_cap_total_usd'])}/月・無制限 {s['credit_unlimited_n']} 名）"
         f" / 無効 {s['credit_disabled_n']} 名 / 不明 {s['credit_unknown_n']} 名 |"
     )
 
 
-def _e_distribution_md(edist: dict | None) -> str:
+def _e_distribution_md(edist: dict | None, label: str | None = None) -> str:
     """「## シートが吸収した量の実測（E = API換算需要 − 実課金）」セクション（None なら空文字列）。"""
     if not edist:
         return ""
-    lines = [f"## {_TEXT['h_e_dist']}", ""]
+    lines = [f"## {_labeled(_TEXT['h_e_dist'], label)}", ""]
     for g in edist["groups"]:
         seat_label = SEAT_LABELS.get(g["seat"], g["seat"])
         lines += [f"### {seat_label}（実課金発生 {g['count']} 名）", "",
@@ -379,11 +410,11 @@ def _e_distribution_md(edist: dict | None) -> str:
     return "\n".join(lines)
 
 
-def _grant_candidates_md(candidates: list, cap_usd) -> str:
+def _grant_candidates_md(candidates: list, cap_usd, label: str | None = None) -> str:
     """「## 追加クレジット付与候補」セクション（該当なしなら空文字列）。正式・速報で共通。"""
     if not candidates:
         return ""
-    lines = [f"## {_TEXT['h_grant']}", ""]
+    lines = [f"## {_labeled(_TEXT['h_grant'], label)}", ""]
     for c in candidates:
         lines.append(
             f"- {_md_cell(c['email'])}（クレジット{_CREDIT_MODE_LABEL.get(c['mode'], c['mode'])}"
@@ -427,12 +458,20 @@ def _org_products(summary: dict) -> str:
     return f"（{detail}）"
 
 
-def write_markdown(result: AnalysisResult, path: Path) -> None:
+def write_markdown(result: AnalysisResult | OrgAnalysisResult, path: Path) -> None:
     """report.md（サマリ・推奨・考察を中心にした本文）。
 
     ユーザ単位の表・月中の推移・分布は details.md が受け持つ（report/details.py）。
     チーム別サマリの縦合計の断りも、説明対象の表と一緒に details.md 側にある。
+
+    OrgAnalysisResult は、複数 workspace の組織なら workspace ごとの節と人の層の節を
+    持つ形で書き、そうでなければ唯一の workspace の結果で従来どおりに書く。
     """
+    if isinstance(result, OrgAnalysisResult):
+        if result.has_multiple_workspaces:
+            _write_markdown_multi(result, path)
+            return
+        result = _sole_result(result)
     s = result.summary
     users = _sort_for_display(result.users, "status", STATUS_ORDER, "monthly_saving_usd")
 
@@ -501,6 +540,119 @@ def write_markdown(result: AnalysisResult, path: Path) -> None:
         md, path, fallback=REPORT.legacy_sibling(path, result.month, result.org))
     # 引き継いだ手書きの考察は他のどこにも無い。切り詰めてから書く write_text では
     # 中断時に本文ごと失うため、考察の差し替えと同じく置換で書く
+    _atomic_write(path, md)
+
+
+def _warning_lines(org: OrgAnalysisResult) -> list[str]:
+    """組織単位の警告 → workspace ごとの警告（表示名を前置）の順に並べた警告。"""
+    lines = list(org.warnings)
+    for name, result in org.workspaces.items():
+        label = org.contexts[name].label
+        lines += [f"[{label}] {w}" for w in result.warnings]
+    return lines
+
+
+def _write_markdown_multi(org: OrgAnalysisResult, path: Path) -> None:
+    """複数 workspace の組織の report.md（設計書 §26.7）。
+
+    合計はアカウント単位の数（変更推奨・要観察など）と人数を分けて書く。workspace
+    ごとの節は「見出し（表示名）」の同じ階層で主→副の順に並べる。シート変更推奨は
+    全アカウントを連結した判定の表（主の行の需要は合算値）にスペース列を足す。
+    """
+    nl = "\n"
+    summary = summarize_org(org)
+    total = summary["total"]
+    results = org.workspaces
+    labels = {name: org.contexts[name].label for name in results}
+
+    judged = _account_rows(org, {name: r.users for name, r in results.items()})
+    users = _sort_for_display(judged, "status", STATUS_ORDER, "monthly_saving_usd")
+    changes = users[users["status"] == STATUS_CHANGE]
+
+    credit_rows = "".join(
+        row + nl for name, r in results.items()
+        if (row := _credit_summary_md_row(r.summary, labels[name]))
+    )
+    hysteresis = next(iter(results.values())).summary["hysteresis_months"]
+    months = " / ".join(
+        f"{labels[name]}: {', '.join(r.summary['months_used'])}" for name, r in results.items()
+    )
+    org_service = {"org_service_by_product": total["org_service_by_product"]}
+
+    extra_sections = ""
+    for name, r in results.items():
+        block = _trend_md(r.trend, labels[name])
+        if block:
+            extra_sections += nl + block + nl
+    for name, r in results.items():
+        if org.contexts[name].fixed_seat:
+            continue  # 固定シートの workspace は損益分岐判定をしないので付与候補も無い
+        block = _grant_candidates_md(
+            r.grant_candidates, r.summary["grant_suggested_cap_usd"], labels[name])
+        if block:
+            extra_sections += nl + block + nl
+
+    credit_shown = any(r.summary.get("credit_shown", False) for r in results.values())
+    changes_block = (_user_table_md(changes, space=True) if not changes.empty
+                     else "該当なし。")
+    if not changes.empty:
+        changes_block += nl + nl + _user_legend_md(
+            {"credit_shown": credit_shown}, spaces.account_legend_lines(org))
+
+    # 固定シートのアカウントは「Standard時/Premium時」を試算しないので、無効の注記の
+    # 対象に数えない（数えると、試算の無い行のための注記が出る）
+    disabled_note = _disabled_cost_note(users[users["status"] != STATUS_FIXED_SEAT])
+    note_lines = ""
+    if disabled_note:
+        note_lines += f"{nl}- {disabled_note}。"
+    for line in spaces.notes_lines(org):
+        note_lines += f"{nl}- {line}。"
+
+    warnings = _warning_lines(org)
+    warnings_md = nl.join(f"- {w}" for w in warnings) if warnings else "- なし"
+
+    md = f"""# Claude Team シート最適化レポート — {_scope_label(org)}
+
+## サマリ
+
+| 指標 | 値 |
+|---|---|
+| 対象メンバー数 | {summary['n_persons']} 名（アカウント {summary['n_accounts']}） |
+| 現在のシート費用 | {_fmt_usd(total['seat_cost_now_usd'])} /月 |
+| 全体の API 換算需要（ユーザ帰属分） | {_fmt_usd(total['total_api_cost_usd'])} /月 |
+| 実際の従量課金（ユーザ帰属分） | {_fmt_usd(total['total_billed_extra_usd'])} /月 |
+| 組織サービス利用（ユーザ非帰属・シート判定対象外） | {_fmt_usd(total['org_service_cost_usd'])} /月{_org_products(org_service)} |
+| **変更推奨** | **{total['n_change_recommended']} 名（削減見込み {_fmt_usd(total['est_monthly_saving_usd'])} /月）** |
+| 要観察 | {total['n_watching']} 名 |
+| 上限到達疑い（Standard） | {total['n_cap_suspected']} 名 |
+{credit_rows}| 判定に使用した月 | {months}（ヒステリシス {hysteresis} ヶ月） |
+
+{spaces.workspaces_md(org, summary)}
+{extra_sections}
+## シート変更推奨
+
+{changes_block}
+
+{spaces.multi_space_md(org)}
+
+## 注意事項
+
+- 従量課金（usage credits）が無効の場合、Standardユーザの利用量は上限で頭打ちになるため、
+  実際の需要はここに表示された値より大きい可能性があります（センサリング）。
+- 「Standard時/Premium時」の従量課金額は allowance の推定値（mid シナリオ）に基づく試算です。{note_lines}
+- スペンドデータは前日分まで・過去90日分のみ参照可能です。毎月のエクスポートを忘れずに。
+
+## データ検証・警告
+
+{warnings_md}
+
+## 考察
+
+<!-- /seat-analysis または seat-analyzer discuss 実行時に Claude が記入するセクション -->
+（未記入 — `/seat-analysis` または `seat-analyzer discuss` を実行すると考察が追記されます）
+"""
+    md = _preserve_discussion(
+        md, path, fallback=REPORT.legacy_sibling(path, org.month, org.org))
     _atomic_write(path, md)
 
 
@@ -608,9 +760,30 @@ def write_preview_markdown(result: PreviewResult, path: Path) -> None:
     _atomic_write(path, md)
 
 
-def write_org_summary(results: list[AnalysisResult], output_dir: str | Path) -> Path:
-    """複数組織を一括分析したときの横断サマリ（reports/summary/YYYY-MM.md）。"""
-    month = results[0].month
+def _summary_line(result: OrgAnalysisResult) -> tuple[dict, str, int, int]:
+    """横断サマリの1組織分（数値・メンバー列の表記・人数・アカウント数）。
+
+    複数 workspace の組織は人数とアカウント数を併記し、数値は組織の合計を使う。
+    それ以外は唯一の workspace の summary をそのまま使う（従来と同じ値・同じ表記）。
+    """
+    if result.has_multiple_workspaces:
+        summary = summarize_org(result)
+        n_persons, n_accounts = summary["n_persons"], summary["n_accounts"]
+        return summary["total"], f"{n_persons} 名（アカウント {n_accounts}）", n_persons, n_accounts
+    s = _sole_result(result).summary
+    return s, f"{s['n_members']} 名", s["n_members"], s["n_members"]
+
+
+def write_org_summary(results: list[AnalysisResult | OrgAnalysisResult],
+                      output_dir: str | Path) -> Path:
+    """複数組織を一括分析したときの横断サマリ（reports/summary/YYYY-MM.md）。
+
+    複数 workspace の組織は、メンバー列を「人数（アカウント数）」にする。変更推奨の
+    列はアカウント単位のまま。合計行は人数の和で、複数 workspace の組織が1つでも
+    あればアカウント数の和を添える。
+    """
+    orgs = [r if isinstance(r, OrgAnalysisResult) else single_org_result(r) for r in results]
+    month = orgs[0].month
     out = Path(output_dir) / "summary"
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{month}.md"
@@ -622,23 +795,33 @@ def write_org_summary(results: list[AnalysisResult], output_dir: str | Path) -> 
         "|---|---|---|---|---|---|---|---|",
     ]
     keys = (
-        "n_members", "seat_cost_now_usd", "total_api_cost_usd",
+        "seat_cost_now_usd", "total_api_cost_usd",
         "total_billed_extra_usd", "org_service_cost_usd",
         "n_change_recommended", "est_monthly_saving_usd",
     )
     totals = dict.fromkeys(keys, 0.0)
-    for r in results:
-        s = r.summary
+    # 合計行の人数は人の和（複数 workspace の組織も人数で数える）。アカウント数の和は
+    # 複数 workspace の組織があるときだけ添える
+    n_persons_total = 0
+    n_accounts_total = 0
+    any_multi = False
+    for r in orgs:
+        s, members, n_persons, n_accounts = _summary_line(r)
+        any_multi = any_multi or r.has_multiple_workspaces
+        n_persons_total += n_persons
+        n_accounts_total += n_accounts
         for k in keys:
             totals[k] += float(s.get(k, 0) or 0)
         lines.append(
-            f"| [{r.org}](../{r.org}/{month}/{REPORT.name(month, r.org)}) | {s['n_members']} 名 "
+            f"| [{r.org}](../{r.org}/{month}/{REPORT.name(month, r.org)}) | {members} "
             f"| {_fmt_usd(s['seat_cost_now_usd'])} | {_fmt_usd(s['total_api_cost_usd'])} "
             f"| {_fmt_usd(s.get('total_billed_extra_usd', 0.0))} | {_fmt_usd(s.get('org_service_cost_usd', 0.0))} "
             f"| {s['n_change_recommended']} 名 | {_fmt_usd(s['est_monthly_saving_usd'])} |"
         )
+    members_total = f"{n_persons_total} 名" + (
+        f"（アカウント {n_accounts_total}）" if any_multi else "")
     lines += [
-        (f"| **合計** | **{int(totals['n_members'])} 名** "
+        (f"| **合計** | **{members_total}** "
          f"| **{_fmt_usd(totals['seat_cost_now_usd'])}** | **{_fmt_usd(totals['total_api_cost_usd'])}** "
          f"| **{_fmt_usd(totals['total_billed_extra_usd'])}** | **{_fmt_usd(totals['org_service_cost_usd'])}** "
          f"| **{int(totals['n_change_recommended'])} 名** | **{_fmt_usd(totals['est_monthly_saving_usd'])}** |"),

@@ -9,6 +9,8 @@ import pandas as pd
 from jinja2 import Environment
 
 from ..analyze import (
+    CONTINUATION_WATCH,
+    CONTINUE,
     LABEL_EXCLUDED,
     LABEL_HOLD,
     LABEL_IDLE,
@@ -16,6 +18,10 @@ from ..analyze import (
     LABEL_PREM_OK,
     LABEL_STD_CAND,
     LABEL_STD_OK,
+    PAYOUT_CANDIDATE,
+    PAYOUT_NO_EVIDENCE,
+    PAYOUT_WATCH,
+    RETURN_CANDIDATE,
     SEAT_LABELS,
     STATUS_CHANGE,
     STATUS_EXCLUDED,
@@ -24,11 +30,17 @@ from ..analyze import (
     STATUS_UNKNOWN,
     STATUS_WATCH,
     STATUS_WATCH_WAIT,
+    WAITING,
     AnalysisResult,
+    OrgAnalysisResult,
     PreviewResult,
+    own_demand_users,
+    summarize_org,
 )
 from ..product_usage import ProductUsage
+from . import spaces
 from .format import (
+    _account_rows,
     _detail_rows,
     _fmt_compact,
     _fmt_count,
@@ -40,6 +52,7 @@ from .format import (
     _group_summary_rows,
     _has_values,
     _scope_label,
+    _sole_result,
     _sort_for_display,
 )
 from .minify import strip_css_comments, strip_js_comments
@@ -542,6 +555,12 @@ _PRODUCT_HTML = _asset("partials/product.html.j2")
 # 特徴量を持たず、日割り換算した値の分布も意味が変わるため出さない）。
 _STATS_HTML = _asset("partials/stats.html.j2")
 
+# 「スペース別」と「複数スペース」タブの HTML 断片（正式ダッシュボードの、複数 workspace の
+# 組織だけ。本体側の差し込み先を multi の条件で囲んであり、単一 workspace の出力には
+# 1文字も足さない）。
+_WORKSPACES_HTML = _asset("partials/workspaces.html.j2")
+_SPACES_HTML = _asset("partials/spaces.html.j2")
+
 
 _HTML_TEMPLATE_SRC = _asset("dashboard.html.j2")
 _PREVIEW_HTML_TEMPLATE_SRC = _asset("preview-dashboard.html.j2")
@@ -559,6 +578,8 @@ _DASHBOARD_SECTIONS = {
     "<!--CREDIT_SECTION-->": (_GRANT_HTML,),
     "<!--PRODUCT_SECTION-->": (_PRODUCT_HTML,),
     "<!--STATS_SECTION-->": (_STATS_HTML,),
+    "<!--WORKSPACES_SECTION-->": (_WORKSPACES_HTML,),
+    "<!--SPACES_SECTION-->": (_SPACES_HTML,),
 }
 
 _PREVIEW_SECTIONS = {
@@ -680,10 +701,9 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
     path.write_text(html, encoding="utf-8", newline="\n")
 
 
-def write_html(result: AnalysisResult, path: Path) -> None:
-    users_sorted = _sort_for_display(
-        result.users, "status", STATUS_ORDER, "api_cost_usd"
-    ).to_dict("records")
+def _recommendation_rows(users) -> list[dict]:
+    """推奨一覧の行（判定の表示順・需要の降順。需要は判定に使った値）。"""
+    users_sorted = _sort_for_display(users, "status", STATUS_ORDER, "api_cost_usd").to_dict("records")
     _apply_billed_bg(users_sorted, "billed_extra_usd")
     for u in users_sorted:
         u["api_cost_fmt"] = _fmt_compact(u["api_cost_usd"])
@@ -694,20 +714,55 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         u["badge_class"] = _STATUS_BADGE_CLASS.get(u["status"], "b-keep")
         saving = u.get("monthly_saving_usd")
         u["saving_positive"] = bool(pd.notna(saving) and float(saving or 0.0) > 0)
+    return users_sorted
+
+
+def _workspace_view(result: AnalysisResult, users, *, label: str | None = None,
+                    fixed_seat: str | None = None) -> dict:
+    """1 workspace 分の section の材料（テンプレートが workspaces を回して描く）。
+
+    users はユーザ別の棒・順位・ガイド線・分布に使う表で、単一 workspace では
+    result.users、複数 workspace ではそのアカウント自身の需要に差し替えた表を渡す。
+    label は見出しに添える表示名（単一 workspace では None で、見出しは従来のまま）。
+    """
+    bar_users = _sort_for_display(users, "status", STATUS_ORDER, "api_cost_usd").to_dict("records")
     # 観測された最大需要と、棒の幅の除算に使うスケールを分ける。スケールは 0 除算を
     # 避けるため 1.0 に倒すが、ガイド線の可否は倒す前の値で決める（_cost_guide 参照）
-    max_demand = max((u["api_cost_usd"] for u in users_sorted), default=0.0)
-    max_cost = max_demand or 1.0
+    max_demand = max((u["api_cost_usd"] for u in bar_users), default=0.0)
     # 順位は分布・ガイド線と同じ母集団。未割当のユーザには順位を付けない
-    ranks = _cost_ranks(result.users)
-    for u in users_sorted:
+    ranks = _cost_ranks(users)
+    for u in bar_users:
         rank = ranks.get(u["email"])
         u["rank_fmt"] = "—" if rank is None else f"#{rank}"
-    dists = distributions(result.users, result.product_usage)
-    # 部署別 → チーム別の順で、データがある軸のみサマリ表を出す
+    dists = distributions(users, result.product_usage)
+    summary = result.summary
+    return {
+        "label": label,
+        "fixed_seat": fixed_seat,
+        "s": summary,
+        "credit_bars": _credit_bars(summary),
+        "trend": _trend_view(result.trend),
+        "snapshot": _snapshot_view(result.snapshot),
+        "code_diff": _code_diff_view(result.code_diff),
+        "member_changes": _member_changes_view(result.member_changes),
+        "grant_candidates": _grant_candidates_view(result.grant_candidates),
+        "grant_cap_fmt": _fmt_setting_usd(summary["grant_suggested_cap_usd"]),
+        # 付与候補の空状態は「該当者なし」と「判定できていない」を分けるので、
+        # 候補の一覧だけでなく上限が記入されているか（credit_shown）も渡す
+        "credit_shown": bool(summary.get("credit_shown", False)),
+        "product": _product_view(result.product_usage, summary["supplementary_high_usd"]),
+        "stats": _stats_view(dists),
+        "cost_guide": _cost_guide(dists, max_demand),
+        "max_cost": max_demand or 1.0,
+        "bar_users": bar_users,
+    }
+
+
+def _group_summaries(users, summary: dict) -> list[dict]:
+    """部署別 → チーム別の順で、データがある軸のみのサマリ表。"""
     group_summaries = []
     for col, heading, include_unset in GROUP_AXES:
-        rows = _group_summary_rows(result.users, result.summary, col, include_unset=include_unset)
+        rows = _group_summary_rows(users, summary, col, include_unset=include_unset)
         if not rows:
             continue
         for t in rows:
@@ -720,49 +775,73 @@ def write_html(result: AnalysisResult, path: Path) -> None:
             "heading": heading,
             "col_label": heading.replace("別サマリ", ""),
             "rows": rows,
-            "has_loc": "loc_with_cc" in result.users.columns,
+            "has_loc": "loc_with_cc" in users.columns,
             # （未設定）を落とした軸は縦合計が全体と一致しないので、その断りを表に添える
             "include_unset": include_unset,
         })
-    detail_rows, detail_has_loc = _detail_rows(result.users)
+    return group_summaries
+
+
+def _detail_view(users) -> tuple[list[dict], bool]:
+    """詳細利用状況の行（トークン降順）。LoC の観測が無いセルは「—」。"""
+    detail_rows, detail_has_loc = _detail_rows(users)
     for d in detail_rows:
         d["in_fmt"] = _fmt_tokens(d["in"])
         d["out_fmt"] = _fmt_tokens(d["out"])
         d["api_fmt"] = _fmt_compact(d["api"])
-        d["loc_fmt"] = f"{d['loc']:,}" if d["loc"] is not None else ""
-    cap_usd = result.summary["grant_suggested_cap_usd"]
-    # タブの件数バッジは、そのタブの中身の件数をそのまま出す（集計はしない）。概要は
-    # 先頭の KPI と同じメンバー数、推奨アクションとメンバー別はそれぞれの表の行数、
-    # 組織は描画された軸の行数。0 のときはテンプレート側でバッジを出さない。
-    # 前提と注意は数えるものが無いので件数を持たない
+        d["loc_fmt"] = f"{d['loc']:,}" if d["loc"] is not None else "—"
+    return detail_rows, detail_has_loc
+
+
+def _tabs(overview_count: int, users_sorted: list, detail_rows: list,
+          group_summaries: list, spaces_count: int | None = None) -> list[dict]:
+    """タブと件数バッジ。
+
+    件数は、そのタブの中身の件数をそのまま出す（集計はしない）。概要は先頭の KPI と
+    同じ数、推奨アクションとメンバー別はそれぞれの表の行数、組織は描画された軸の行数。
+    0 のときはテンプレート側でバッジを出さない。前提と注意は数えるものが無いので件数を
+    持たない。複数スペースのタブは複数 workspace の組織だけが持ち、件数は人数。
+    """
     tabs = [
-        {"key": "overview", "label": "概要", "count": result.summary["n_members"]},
+        {"key": "overview", "label": "概要", "count": overview_count},
         {"key": "actions", "label": "推奨アクション", "count": len(users_sorted)},
         {"key": "members", "label": "メンバー別", "count": len(detail_rows)},
         {"key": "org", "label": "組織", "count": _org_tab_count(group_summaries)},
-        {"key": "notes", "label": "前提と注意", "count": 0},
     ]
+    if spaces_count is not None:
+        tabs.append({"key": "spaces", "label": "複数スペース", "count": spaces_count})
+    tabs.append({"key": "notes", "label": "前提と注意", "count": 0})
+    return tabs
+
+
+def write_html(result: AnalysisResult | OrgAnalysisResult, path: Path) -> None:
+    """dashboard.html。
+
+    OrgAnalysisResult は、複数 workspace の組織なら workspace ごとのカードと
+    「複数スペース」タブを持つ形で書き、そうでなければ唯一の workspace の結果で
+    従来どおりに書く。
+    """
+    if isinstance(result, OrgAnalysisResult):
+        if result.has_multiple_workspaces:
+            path.write_text(_render_multi(result), encoding="utf-8", newline="\n")
+            return
+        result = _sole_result(result)
+    users_sorted = _recommendation_rows(result.users)
+    group_summaries = _group_summaries(result.users, result.summary)
+    detail_rows, detail_has_loc = _detail_view(result.users)
     html = _HTML_TEMPLATE.render(
         dashboard_css=_DASHBOARD_CSS,
         dashboard_js=_DASHBOARD_JS,
         scope=_scope_label(result),
         org=result.org,
         month=result.month,
-        tabs=tabs,
+        tabs=_tabs(result.summary["n_members"], users_sorted, detail_rows, group_summaries),
         s=result.summary,
         # ヘッダーの削減見込みは SAVING の KPI カードと同じ値・同じ書式で出す
         saving_fmt=f"${result.summary['est_monthly_saving_usd']:.0f}",
-        credit_bars=_credit_bars(result.summary),
         judge_counts=_judge_counts(users_sorted),
-        trend=_trend_view(result.trend),
-        snapshot=_snapshot_view(result.snapshot),
-        code_diff=_code_diff_view(result.code_diff),
-        member_changes=_member_changes_view(result.member_changes),
-        grant_candidates=_grant_candidates_view(result.grant_candidates),
-        grant_cap_fmt=_fmt_setting_usd(cap_usd),
-        # 付与候補の空状態は「該当者なし」と「判定できていない」を分けるので、
-        # 候補の一覧だけでなく上限が記入されているか（credit_shown）も渡す
-        credit_shown=bool(result.summary.get("credit_shown", False)),
+        workspaces=[_workspace_view(result, result.users)],
+        multi=False,
         cap_supplement=_cap_legend_supplement(result.summary.get("credit_shown", False)),
         disabled_note=_disabled_cost_note(result.users),
         users_sorted=users_sorted,
@@ -770,11 +849,92 @@ def write_html(result: AnalysisResult, path: Path) -> None:
         has_team_summary=any(g["heading"] == "チーム別サマリ" for g in group_summaries),
         detail_rows=detail_rows,
         detail_has_loc=detail_has_loc,
-        product=_product_view(result.product_usage,
-                              result.summary["supplementary_high_usd"]),
-        stats=_stats_view(dists),
-        cost_guide=_cost_guide(dists, max_demand),
-        max_cost=max_cost,
         seat_short=SEAT_LABELS,
     )
     path.write_text(html, encoding="utf-8", newline="\n")
+
+
+# 払い出し判定・継続判定の判定 → .badge クラス（推奨一覧と同じ色の意味: 対応が要る
+# ものを緑、様子見を橙、対応が要らないものをグレー）
+_PAYOUT_BADGE_CLASS = {
+    PAYOUT_CANDIDATE: "b-change",
+    PAYOUT_WATCH: "b-watch",
+    PAYOUT_NO_EVIDENCE: "b-keep",
+}
+_CONTINUATION_BADGE_CLASS = {
+    RETURN_CANDIDATE: "b-change",
+    CONTINUATION_WATCH: "b-watch",
+    WAITING: "b-watch",
+    CONTINUE: "b-keep",
+}
+
+
+def _render_multi(org: OrgAnalysisResult) -> str:
+    """複数 workspace の組織の dashboard.html（設計書 §26.7）。
+
+    推奨一覧と判定サマリは全アカウントの判定（主の行の需要は合算値）、ユーザ別の棒・
+    詳細利用状況・分布・Code と他プロダクトの需要は各アカウント自身の需要で出す。
+    部署別・チーム別は人の層から数える。
+    """
+    summary = summarize_org(org)
+    total = summary["total"]
+    results = org.workspaces
+    labels = {name: org.contexts[name].label for name in results}
+    judged = _account_rows(org, {name: r.users for name, r in results.items()})
+    users_sorted = _recommendation_rows(judged)
+    own = {name: own_demand_users(r) for name, r in results.items()}
+    workspaces = [
+        _workspace_view(r, own[name], label=labels[name],
+                        fixed_seat=org.contexts[name].fixed_seat)
+        for name, r in results.items()
+    ]
+    first = next(iter(results.values())).summary
+    persons = org.persons.frame if org.persons is not None else judged
+    group_summaries = _group_summaries(persons, first)
+    detail_rows, detail_has_loc = _detail_view(_account_rows(org, own))
+    credit_shown = any(r.summary.get("credit_shown", False) for r in results.values())
+
+    spaces_data = spaces.spaces_view(org)
+    for row in spaces_data["persons"]:
+        row["badge_class"] = _STATUS_BADGE_CLASS.get(row["status"], "b-keep")
+    for row in spaces_data["payout"]:
+        row["badge_class"] = _PAYOUT_BADGE_CLASS.get(row["status"], "b-keep")
+    for row in spaces_data["continuation"]:
+        row["badge_class"] = _CONTINUATION_BADGE_CLASS.get(row["status"], "b-keep")
+
+    org_summary = {
+        **total,
+        "n_persons": summary["n_persons"],
+        "hysteresis_months": first["hysteresis_months"],
+    }
+    months_text = " / ".join(
+        f"{labels[name]}: {', '.join(r.summary['months_used'])}" for name, r in results.items()
+    )
+    return _HTML_TEMPLATE.render(
+        dashboard_css=_DASHBOARD_CSS,
+        dashboard_js=_DASHBOARD_JS,
+        scope=_scope_label(org),
+        org=org.org,
+        month=org.month,
+        tabs=_tabs(summary["n_persons"], users_sorted, detail_rows, group_summaries,
+                   spaces_count=summary["n_persons"]),
+        s=org_summary,
+        saving_fmt=f"${total['est_monthly_saving_usd']:.0f}",
+        judge_counts=_judge_counts(users_sorted),
+        workspaces=workspaces,
+        multi=True,
+        spaces_table=spaces.workspace_table_view(org, summary),
+        spaces=spaces_data,
+        merged_note=spaces.MERGED_DEMAND_NOTE,
+        months_text=months_text,
+        multi_notes=[*spaces.notes_lines(org), *spaces.JUDGMENT_LEGEND],
+        cap_supplement=_cap_legend_supplement(credit_shown),
+        # 固定シートのアカウントは「Std時 / Prem時」を試算しないので注記の対象に数えない
+        disabled_note=_disabled_cost_note(judged[judged["status"] != STATUS_FIXED_SEAT]),
+        users_sorted=users_sorted,
+        group_summaries=group_summaries,
+        has_team_summary=any(g["heading"] == "チーム別サマリ" for g in group_summaries),
+        detail_rows=detail_rows,
+        detail_has_loc=detail_has_loc,
+        seat_short=SEAT_LABELS,
+    )

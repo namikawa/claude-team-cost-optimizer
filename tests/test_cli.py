@@ -26,6 +26,7 @@ from seat_analyzer.report import (
     DECISION_EVIDENCE,
     DETAILS,
     GITHUB_SUMMARY,
+    PREVIEW,
     RECOMMENDATIONS,
     REPORT,
     USAGE_SUMMARY,
@@ -1760,7 +1761,7 @@ def test_collect_failure_text_covers_every_failure():
     assert set(_COLLECT_FAILURE_TEXT) == set(GhFailure)
 
 
-# --- 複数 workspace のレイアウト（Step 43 では入力層だけ。分析はまだ行わない） ---
+# --- 複数 workspace のレイアウト ---
 
 
 def _nested_org(make_input, org: str = "org-x") -> Path:
@@ -1823,15 +1824,195 @@ def test_init_org_rejects_invalid_workspace_names(tmp_path, capsys, value):
     assert not input_dir.exists()   # 1つでも不正なら1つも作らない
 
 
-def test_analyze_rejects_nested_layout(make_input, tmp_path, capsys):
-    input_dir = _nested_org(make_input)
-    rc = main(["analyze", "--config", CONFIG, "--input-dir", str(input_dir),
-               "--output-dir", str(tmp_path / "reports"), "--month", "2026-06"])
+# 主・副の2 workspace を持つ組織の設定（副は Premium 固定）
+_NESTED_CONFIG = (
+    "organizations:\n"
+    "  {org}:\n"
+    "    workspaces:\n"
+    "      main:\n"
+    "        primary: true\n"
+    "        label: 主スペース\n"
+    "      second:\n"
+    "        label: 副スペース\n"
+    "        fixed_seat: premium\n"
+)
+
+
+def _nested_ready(make_input, tmp_path: Path, org: str = "org-x",
+                  second_months: tuple[str, ...] = ("2026-05", "2026-06")) -> tuple[Path, str]:
+    """分析できる2 workspace の組織（両方に members）と、その設定ファイルのパス。"""
+    input_dir = make_input(
+        {"2026-05": [spend_row("a@x.jp", 8.0)], "2026-06": [spend_row("a@x.jp", 10.0)]},
+        members=["a@x.jp,Premium", "b@x.jp,Premium"], org=org, workspace="main")
+    make_input(
+        {month: [spend_row("a@x.jp", 20.0)] for month in second_months},
+        members=["a@x.jp,Premium"], org=org, workspace="second")
+    path = tmp_path / f"nested-{org}.yaml"
+    path.write_text(_NESTED_CONFIG.format(org=org), encoding="utf-8", newline="\n")
+    return input_dir, str(path)
+
+
+def _analyze_nested(config: str, input_dir: Path, tmp_path: Path, *extra: str) -> int:
+    return main(["analyze", "--config", config, "--input-dir", str(input_dir),
+                 "--output-dir", str(tmp_path / "reports"), *extra])
+
+
+def test_analyze_accepts_nested_layout(make_input, tmp_path, capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+
+    out = capsys.readouterr().out
+    assert "人数: 2 名（アカウント 3）" in out
+    assert "[主スペース] メンバー 2 名" in out
+    assert "[副スペース] メンバー 1 名" in out
+    assert "複数スペース: 払い出し候補" in out
+    report_text = out_file(tmp_path / "reports", REPORT, org="org-x").read_text(encoding="utf-8")
+    assert "## 複数スペースの利用" in report_text
+    assert "| 対象メンバー数 | 2 名（アカウント 3） |" in report_text
+
+
+def test_analyze_nested_v2_writes_the_workspace_column(make_input, tmp_path):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--decision-version", "v2") == 0
+    path = out_file(tmp_path / "reports", DECISION_EVIDENCE, org="org-x")
+    rows = list(csv.DictReader(io.StringIO(path.read_text(encoding="utf-8-sig"))))
+    assert list(rows[0])[:2] == ["email", "workspace"]
+    # 複数アカウント保有者も主の行1本（副の行は作らない）
+    assert [(r["email"], r["workspace"]) for r in rows] == [
+        ("a@x.jp", "main"), ("b@x.jp", "main")]
+
+
+def test_analyze_preview_skips_nested_orgs_in_a_multi_org_run(make_input, tmp_path, capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    make_input({"2026-06": [spend_row("c@y.jp", 10.0)]}, members=["c@y.jp,Premium"],
+               org="org-a")
+    rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                         "--preview", "--days", "10")
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "複数 workspace の組織の速報はまだ対応していないため飛ばしました: org-x" in out
+    assert out_file(tmp_path / "reports", PREVIEW).is_file()
+    assert not (tmp_path / "reports" / "org-x" / "2026-06").exists()
+
+
+def test_analyze_preview_stops_for_a_single_nested_org(make_input, tmp_path, capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                         "--preview", "--days", "10")
     assert rc == 1
     err = capsys.readouterr().err
-    assert "org-x" in err and "複数 workspace" in err
-    assert str(tmp_path) not in err.split("\n")[0]
-    assert not (tmp_path / "reports" / "org-x").exists()
+    assert "org-x" in err and "速報" in err and "複数 workspace" in err
+    assert not (tmp_path / "reports" / "org-x" / "2026-06").exists()
+
+
+def test_analyze_preview_reports_when_every_org_was_skipped_as_nested(
+    make_input, tmp_path, capsys
+):
+    """書けた組織が0のときの文言は、速報が未対応で飛ばしたという実態と食い違わない。"""
+    input_dir, _ = _nested_ready(make_input, tmp_path, org="org-x")
+    _nested_ready(make_input, tmp_path, org="org-y")
+    path = tmp_path / "two-nested.yaml"
+    path.write_text(
+        _NESTED_CONFIG.format(org="org-x")
+        + _NESTED_CONFIG.format(org="org-y").removeprefix("organizations:\n"),
+        encoding="utf-8", newline="\n")
+    rc = _analyze_nested(str(path), input_dir, tmp_path, "--month", "2026-06",
+                         "--preview", "--days", "10")
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "速報を書ける組織がありません" in err
+    assert "データを持つ組織がありません" not in err
+
+
+def test_allow_missing_workspace_rejects_an_unknown_name(make_input, tmp_path, capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                         "--allow-missing-workspace", "secnod")
+    assert rc == 1
+    assert "secnod" in capsys.readouterr().err
+    assert not (tmp_path / "reports" / "org-x" / "2026-06").exists()
+
+
+def test_allow_missing_workspace_cannot_be_used_with_preview(make_input, tmp_path, capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06", "--preview",
+                         "--allow-missing-workspace", "second")
+    assert rc == 1
+    assert "速報モードでは指定できません" in capsys.readouterr().err
+
+
+def test_allow_missing_workspace_must_name_one_org(make_input, tmp_path, capsys):
+    """同じ workspace 名を持つ組織が複数あると、どの組織の欠月かが決まらない。"""
+    input_dir, _ = _nested_ready(make_input, tmp_path, org="org-x")
+    _nested_ready(make_input, tmp_path, org="org-y")
+    path = tmp_path / "two-nested.yaml"
+    path.write_text(
+        _NESTED_CONFIG.format(org="org-x")
+        + _NESTED_CONFIG.format(org="org-y").removeprefix("organizations:\n"),
+        encoding="utf-8", newline="\n")
+    rc = _analyze_nested(str(path), input_dir, tmp_path, "--month", "2026-06",
+                         "--allow-missing-workspace", "second")
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "org-x" in err and "org-y" in err and "--org" in err
+    # --org で1つに絞れば受け付ける
+    assert _analyze_nested(str(path), input_dir, tmp_path, "--month", "2026-06",
+                           "--org", "org-x", "--allow-missing-workspace", "second") == 0
+
+
+def test_missing_month_of_a_started_workspace_stops_without_the_option(
+    make_input, tmp_path, capsys
+):
+    input_dir, config = _nested_ready(make_input, tmp_path, second_months=("2026-05",))
+    rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06")
+    assert rc == 1
+    assert "--allow-missing-workspace second" in capsys.readouterr().err
+
+
+def test_allow_missing_workspace_analyzes_the_month_as_no_usage(
+    make_input, tmp_path, capsys
+):
+    input_dir, config = _nested_ready(make_input, tmp_path, second_months=("2026-05",))
+    rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                         "--allow-missing-workspace", "second")
+    assert rc == 0
+    report_text = out_file(tmp_path / "reports", REPORT, org="org-x").read_text(encoding="utf-8")
+    # 指定した workspace の欠月は需要 0 として扱い、その旨がレポートの警告に残る
+    assert "workspace second は 2026-06 のスペンドレポートが無いため需要 0 として" in report_text
+    assert "副スペース（Premium 固定）: 需要 0（対象月の spend 無し）" in report_text
+
+
+def test_allow_missing_workspace_for_every_workspace_completes(make_input, tmp_path):
+    """全 workspace の欠月を許可した月も、欠月のスキップで止めずに分析する。"""
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-07",
+                         "--allow-missing-workspace", "main",
+                         "--allow-missing-workspace", "second")
+    assert rc == 0
+    path = out_file(tmp_path / "reports", REPORT, org="org-x", month="2026-07")
+    text = path.read_text(encoding="utf-8")
+    assert "workspace main は 2026-07 のスペンドレポートが無いため需要 0" in text
+    assert "workspace second は 2026-07 のスペンドレポートが無いため需要 0" in text
+
+
+def test_org_without_any_started_workspace_is_treated_as_missing_data(
+    make_input, tmp_path, capsys
+):
+    """分析できた workspace が1つも無い組織は、対象月のデータが無い組織と同じ扱い。"""
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-04",
+                         "--allow-missing-workspace", "main")
+    assert rc == 1
+    assert "2026-04" in capsys.readouterr().err
+    # 複数組織の実行ではスキップして他の組織を書く
+    make_input({"2026-04": [spend_row("c@y.jp", 10.0)]}, members=["c@y.jp,Premium"],
+               org="org-a", members_month="2026-04")
+    rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-04",
+                         "--allow-missing-workspace", "main")
+    assert rc == 0
+    assert "スキップした組織: org-x" in capsys.readouterr().out
+    assert not (tmp_path / "reports" / "org-x" / "2026-04").exists()
 
 
 def test_analyze_rejects_mixed_layout(make_input, tmp_path, capsys):
@@ -1844,12 +2025,16 @@ def test_analyze_rejects_mixed_layout(make_input, tmp_path, capsys):
     assert "混在" in capsys.readouterr().err
 
 
-def test_collect_rejects_nested_layout(make_input, capsys):
-    input_dir = _nested_org(make_input)
-    rc = main(["collect", "--config", CONFIG, "--input-dir", str(input_dir),
-               "--org", "org-x", "--source", "github", "--month", "2026-06"])
-    assert rc == 1
-    assert "複数 workspace" in capsys.readouterr().err
+def test_collect_accepts_nested_layout(make_input, tmp_path, monkeypatch, capsys):
+    """キャッシュは組織直下に置くので、workspace の分け方に依らず収集できる。"""
+    input_dir, _ = _nested_ready(make_input, tmp_path)
+    path = tmp_path / "nested-github.yaml"
+    path.write_text(
+        _NESTED_CONFIG.format(org="org-x") + f"    github_org: {GH_ORG}\n",
+        encoding="utf-8", newline="\n")
+    _stub_search(monkeypatch)
+    assert _collect(str(path), input_dir, "--org", "org-x") == 0
+    assert _cache_path(input_dir, "org-x").is_file()
 
 
 def test_doctor_inspects_each_workspace_of_a_nested_org(make_input, tmp_path, capsys):
@@ -1917,12 +2102,35 @@ def test_doctor_uses_the_latest_month_across_workspaces(make_input, capsys):
     assert "最新月を使用: 2026-06" in capsys.readouterr().err
 
 
-def test_discuss_rejects_nested_layout(make_input, tmp_path, capsys):
-    input_dir = _nested_org(make_input)
-    rc = main(["discuss", "--config", CONFIG, "--input-dir", str(input_dir),
-               "--output-dir", str(tmp_path / "reports"), "--month", "2026-06"])
-    assert rc == 1
-    assert "複数 workspace" in capsys.readouterr().err
+def test_discuss_accepts_nested_layout(make_input, tmp_path, capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+    capsys.readouterr()
+    rc = main(["discuss", "--config", config, "--input-dir", str(input_dir),
+               "--output-dir", str(tmp_path / "reports"), "--month", "2026-06", "--dry-run"])
+    assert rc == 0
+    prompt = capsys.readouterr().out
+    assert "## 複数スペースの利用" in prompt
+    assert "## 人別の利用" in prompt
+
+
+def test_discuss_preview_follows_the_analyze_rule(make_input, tmp_path, capsys):
+    """速報の考察は、複数 workspace の組織を単一対象なら止め、複数組織なら飛ばす。"""
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    base = ["discuss", "--config", config, "--input-dir", str(input_dir),
+            "--output-dir", str(tmp_path / "reports"), "--month", "2026-06",
+            "--preview", "--dry-run"]
+    assert main(base) == 1
+    assert "速報" in capsys.readouterr().err
+
+    make_input({"2026-06": [spend_row("c@y.jp", 10.0)]}, members=["c@y.jp,Premium"],
+               org="org-a")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--org", "org-a", "--preview", "--days", "10") == 0
+    capsys.readouterr()
+    assert main(base) == 0
+    err = capsys.readouterr().err
+    assert "複数 workspace の組織の速報はまだ対応していないため飛ばしました: org-x" in err
 
 
 def test_doctor_reports_configured_workspaces_without_an_org_directory(
