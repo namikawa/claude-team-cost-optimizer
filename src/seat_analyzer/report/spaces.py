@@ -228,10 +228,13 @@ def workspace_table_view(org: OrgAnalysisResult, summary: dict) -> dict:
 
 # --- 人別の利用（1人1行） ---
 
-def _held_seats(org: OrgAnalysisResult, person) -> str:
-    """保有シート（主は常に先頭で、主にアカウントが無ければ「—」）。
+def _held_seat_parts(org: OrgAnalysisResult, person) -> list[str]:
+    """保有シートの「表示名: シート種別」の並び（主は常に先頭で、主にアカウントが
+    無ければ「—」）。
 
     副はアカウントのある workspace だけを並べ、未割当のアカウントもそのまま表示する。
+    Markdown は「 / 」でつないだ1行（_held_seats）、dashboard は列幅を抑えるため
+    スペースごとに改行して並べる。
     """
     by_workspace = {account.workspace: account.seat for account in person.accounts}
     primary_seat = (_seat(by_workspace[org.primary])
@@ -240,7 +243,12 @@ def _held_seats(org: OrgAnalysisResult, person) -> str:
     for name in org.contexts:
         if name != org.primary and name in by_workspace:
             parts.append(f"{org.contexts[name].label}: {_seat(by_workspace[name])}")
-    return " / ".join(parts)
+    return parts
+
+
+def _held_seats(org: OrgAnalysisResult, person) -> str:
+    """保有シート（_held_seat_parts を「 / 」でつないだ1行）。"""
+    return " / ".join(_held_seat_parts(org, person))
 
 
 def person_rows(org: OrgAnalysisResult) -> tuple[list[dict], dict]:
@@ -261,6 +269,7 @@ def person_rows(org: OrgAnalysisResult) -> tuple[list[dict], dict]:
         rows.append({
             "email": email,
             "seats": _held_seats(org, persons[email]),
+            "seat_parts": _held_seat_parts(org, persons[email]),
             "department": _text_value(record.get("department")),
             "team": _text_value(record.get("team")),
             "seat_cost": float(record["seat_cost_usd"]),
