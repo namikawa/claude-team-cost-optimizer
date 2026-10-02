@@ -3,7 +3,7 @@
 <section class="card">
   <div class="card-hd">
     <div class="hd-main">
-      <h2>Codeと他プロダクトの需要（API換算）</h2>
+      <h2>Codeと他プロダクトの需要（API換算）{% if ws_label %}（{{ ws_label }}）{% endif %}</h2>
 {% if product.summary_line %}      <div class="hd-sub">{{ product.summary_line }}</div>
 {% endif %}    </div>
     <div class="legend"><span><i class="k-accent"></i>Code</span><span><i class="k-dim"></i>他プロダクト</span><span><i class="k-hatch"></i>内訳不明</span></div>
@@ -21,7 +21,7 @@
 </section>
 
 <section class="card">
-  <div class="card-hd"><div class="hd-main"><h2>Code / 他product 需要の内訳</h2></div></div>
+  <div class="card-hd"><div class="hd-main"><h2>Code / 他product 需要の内訳{% if ws_label %}（{{ ws_label }}）{% endif %}</h2></div></div>
   <div class="tablebox">
     <table>
       <thead><tr><th>ユーザ</th><th class="num">需要（計）</th><th class="num">Code需要</th><th class="num">Code比率</th><th class="num">他product需要</th><th class="num">product数</th></tr></thead>

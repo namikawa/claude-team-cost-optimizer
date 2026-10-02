@@ -1264,6 +1264,55 @@ def test_missing_primary_workspace_is_rejected(tmp_path):
         load_config(path)
 
 
+def test_duplicated_workspace_label_is_rejected(tmp_path):
+    """レポートは workspace を表示名だけで示すので、組織内で同じ表示名を許さない。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "        label: スペース\n"
+        "      second:\n"
+        "        label: スペース\n"
+    ))
+    with pytest.raises(ValueError, match="「スペース」が重複しています（main / second）"):
+        load_config(path)
+
+
+def test_label_equal_to_another_workspace_name_is_rejected(tmp_path):
+    """省略した表示名はディレクトリ名になるので、それとの衝突も重複として止める。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "      second:\n"
+        "        label: main\n"
+    ))
+    with pytest.raises(ValueError, match="「main」が重複しています（main / second）"):
+        load_config(path)
+
+
+def test_same_label_in_different_orgs_is_allowed(tmp_path):
+    """一意にするのは組織の中だけ（組織ごとに別のレポートになるため）。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "        label: 主スペース\n"
+        "  other:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "        label: 主スペース\n"
+    ))
+    assert load_config(path)["organizations"]["other"]["workspaces"]["main"]["label"] == "主スペース"
+
+
 def test_duplicated_primary_workspace_is_rejected(tmp_path):
     """0個と2個以上は原因が違うので別の文言にする。"""
     path = _override(tmp_path, (

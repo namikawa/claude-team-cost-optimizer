@@ -779,6 +779,42 @@ def _own_demand_users(users: pd.DataFrame, month_agg: pd.DataFrame) -> pd.DataFr
     return copy
 
 
+def own_demand_users(result: AnalysisResult) -> pd.DataFrame:
+    """分析結果の users を、需要列だけそのアカウント自身の観測に差し替えた複製。
+
+    複数アカウント保有者の主の行は需要列が全 workspace の合算（判定に使う値）なので、
+    アカウントごとの観測を並べる表（詳細利用状況・ユーザ別の棒・組織内の分布）はこちらを
+    読む。他 workspace の需要を足していない結果では users と同じ値になる。
+    """
+    month_agg = result.monthly.get(result.month)
+    if month_agg is None:
+        # 月次表を持たない結果（手で組んだもの等）は合算もしていないので users のまま
+        return result.users.copy()
+    return _own_demand_users(result.users, month_agg)
+
+
+def _warn_fixed_seat_mismatch(users: pd.DataFrame,
+                              workspace: WorkspaceContext | None) -> list[str]:
+    """シート種別を固定した workspace に、固定と違う種別のアカウントがある場合の警告。
+
+    判定は変えない（固定シートの workspace のアカウントは種別によらず判定の対象外）。
+    払い出しの運用と管理画面の設定が食い違っている可能性を実行者へ知らせるだけ。
+    """
+    if workspace is None or workspace.fixed_seat is None:
+        return []
+    other = next(
+        (seat for seat in ("standard", "premium") if seat != workspace.fixed_seat), None)
+    if other is None:
+        return []
+    found = sorted(users.loc[users["current_seat"] == other, "email"].astype(str))
+    if not found:
+        return []
+    return [
+        (f"workspace {workspace.name} は {SEAT_LABELS[workspace.fixed_seat]} 固定の方針ですが"
+         f" {SEAT_LABELS[other]} のアカウントが {len(found)} 名います: {found[:5]}")
+    ]
+
+
 def _empty_analysis_users(context: _AnalysisContext) -> pd.DataFrame:
     """ユーザが1人も居ないときの users（列・並び・型を通常の行と揃えた0行の表）。
 
@@ -914,6 +950,7 @@ def analyze(
     # spend にいるが members にいないユーザ
     warnings.extend(_warn_orphan_users(users))
     warnings.extend(_warn_active_unassigned(own_users, "api_cost_usd"))
+    warnings.extend(_warn_fixed_seat_mismatch(users, workspace))
 
     # 追加クレジットの整合性・上限到達の警告（表示専用・判定には影響しない）
     reached = _credit_reached_emails(users, cfg, "billed_extra_usd")

@@ -1,10 +1,12 @@
 # 実装ステータス
 
-- 最終更新: 2026-09-30
+- 最終更新: 2026-10-02
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 9（複数workspace・設計書§26）の Step 47（複数workspaceの出力）。
+- 次のタスク: Track 9（複数workspace・設計書§26）の Step 48（速報・doctorの人の検査・docs）。
   Step 43（workspaceの発見と設定）・Step 44（workspace別の分析と結合）・Step 45（人の層と
-  判定）・Step 46（V2の合算）は完了した（46 は 2026-09-30）。同一の組織が複数の Team
+  判定）・Step 46（V2の合算）・Step 47（複数workspaceの出力）は完了した（47 は 2026-10-02）。
+  入れ子レイアウトの組織は正式分析・discuss・collect まで通り、速報だけが未対応（複数組織の
+  実行では通知して飛ばし、単一対象では止める）。同一の組織が複数の Team
   スペースを運用し、同じ人が各スペースに1アカウントずつ持って使い分ける運用を、組織1セットの
   レポートで集計・分析できるようにする。Phase 1（Step 43〜48）を v1.3.0 として出し、
   2026-09 の分析（10月初旬）に間に合わせることを目標にする（間に合わなければ 2026-10 の
@@ -111,8 +113,8 @@
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 7 | 0 | 0 | 1 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| 9 | 複数workspace | 4 | 0 | 0 | 3 | 0 |
-| **合計** |  | **34** | **0** | **0** | **22** | **0** |
+| 9 | 複数workspace | 5 | 0 | 0 | 2 | 0 |
+| **合計** |  | **35** | **0** | **0** | **21** | **0** |
 
 ## 5. Step一覧
 
@@ -222,11 +224,72 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 44 | workspace別の分析と結合 | `完了` | 2026-09-17 |
 | 45 | 人の層と判定（合算・払い出し・継続） | `完了` | 2026-09-18 |
 | 46 | V2の合算（decision-evidence） | `完了` | 2026-09-30 |
-| 47 | 複数workspaceの出力 | `未着手` |  |
+| 47 | 複数workspaceの出力 | `完了` | 2026-10-02 |
 | 48 | 速報・doctorの人の検査・docs（v1.3.0） | `未着手` |  |
 | 49 | 切替の観測（Phase 2） | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-10-02 — Step 47: 複数workspaceの出力
+
+- CLIの`_reject_nested_layout`を廃止し、入れ子レイアウトの組織を`analyze_org`→
+  `report.write_all(OrgAnalysisResult)`→（V2なら）`evaluate_org`の順に結線した。`discuss`・
+  `collect`も入れ子レイアウトを通す。対象月の決定と欠月のスキップは
+  `ingest.discover_org_months`（入れ子は全workspaceの月の和集合）で組織単位に行い、doctorの
+  最新月も同じ関数に寄せた。分析できたworkspaceが1つも無い組織は「対象月のデータが無い組織」と
+  同じ扱いにする
+- 速報（`--preview`）は複数workspaceの組織にまだ対応しないので、複数組織の実行では通知して
+  飛ばし、単一対象では止める（`discuss --preview`も同じ規則）。書けた組織が0のときは、速報が
+  未対応で飛ばした旨のエラーにする
+- `--allow-missing-workspace <名前>`を追加した。`--preview`との同時指定・どの対象組織のconfigにも
+  無い名前・2つ以上の対象組織のworkspace名に一致する名前（一般名なので別の組織の欠月まで需要0に
+  しうる）はエラー。指定のある組織は欠月でもスキップせず`analyze_org`に委ねる
+- 出力関数（`write_all`と5種のwriter・`write_org_summary`）は`OrgAnalysisResult`を受け取る。
+  複数workspaceの組織（`has_multiple_workspaces`）でなければ唯一のworkspaceの結果で従来の経路を
+  通し、従来の`AnalysisResult`と`users`だけの代用物もそのまま受け付ける。単一workspaceの成果物は
+  golden 5ケースでバイト一致を確認した
+- 複数workspaceの組織の成果物（設計書§26.7）: 判定系の表は全アカウントを主→副の順に連結し、
+  主の行の需要は合算値のまま（凡例に断り）、観測系の表は`own_demand_users`（`_own_demand_users`
+  を公開）で各アカウント自身の需要にした。workspaceごとの節は「見出し（表示名）」の同じ階層で
+  並べ、`fixed_seat`のworkspaceでは感度分析・付与候補を出さない。人の層の出力は`report/spaces.py`に
+  新設し、reportに判定（払い出し・継続・主での実課金と判定の読み方）、detailsに人の表（全員1人
+  1行）を置いた。部署別・チーム別サマリは人の表から数え、同額グループの並びをグループ名の昇順で
+  決めるタイブレークを足した（既存のgoldenに同額グループは無く不変）
+- dashboardはpartialの見出しに`{% if ws_label %}`で表示名を添え、本体の差し込み先を
+  `{% for ws in workspaces %}{% with ... %}`で囲んだ（単一workspaceでは要素1つ・表示名なしで
+  出力が変わらない。速報テンプレートは変えていない）。新設の`workspaces.html.j2`（スペース別）と
+  `spaces.html.j2`（複数スペースのタブ）は本体側で`{% if multi %}`の中に差し込む。
+  `dashboard.css`・`dashboard.js`は変えていない
+- CSVは`workspace`列（ディレクトリ名）をemailの次に置く。連結で欠ける整数列は`Int64`に戻して
+  "12.0"と出さず、欠損は空欄にする。横断サマリは複数workspaceの組織のメンバー列を「人数
+  （アカウント数）」にした
+- analyze層の小変更（判定は不変）: `summarize_org`（組織単位の集計。件数はアカウント単位）・
+  `single_org_result`・`OrgAnalysisResult.nested`・固定シートと違う種別のアカウントの警告・
+  `PersonLayer.payout_workspace`・`ContinuationJudgment.evaluation_months`・払い出し判定の
+  種別不一致の理由を「主のシート（X）が払い出すシート種別（Y）と違う」の形にした。configの
+  ロードでworkspaceの表示名（`label`。省略時はディレクトリ名）の組織内の重複を止める
+- 考察の指示文に、固定シートのアカウントへ種別変更を提案しない検証項目と、「複数スペースの
+  利用」の観点を足した
+- 合成データ: `examples/input/org-c`（main / second の2 workspace・2026-07と2026-08）と
+  `examples/config.yaml`を追加した。払い出し判定（候補1・観察1・不要2・判断材料なし2）・継続判定
+  （継続2・戻す候補2〈うち遊休1〉・データ蓄積待ち1）・主での実課金1・V1の変更推奨1が出る。
+  goldenは全ケースを`examples/config.yaml`で回し、`full-all`を`--org org-b --org org-c`にして
+  org-cの6種と`summary/2026-08.md`を追加した（既存のgoldenは1バイトも変わらない）。README・
+  docs/setup.md・CIのpackageジョブのE2Eに`--config examples/config.yaml`を添え、CIにはorg-cの
+  正式分析（V2）を1本足した
+- テスト: 2305 passed（+45件）、ruff 緑、`check-text --diff`は0件
+- 外部レビュー（codex）: 設計段階で1巡（設計案全体）。21件のうち19件を採用し2件を部分採用して
+  設計を直した（連結で欠ける任意列の表示・共有のCSSとJSを変えないこと・速報と共有するpartial・
+  速報の拒否と欠月スキップの順序・判定系と観測系の需要の分け方・固定シートのworkspaceの感度分析と
+  付与候補など）。実装後の受け入れ確認（基準8点に範囲固定）は基準1〜5を満たし、指摘3件のうち
+  判定の読み方の誤り（上限が未記入でも実課金が観測されていれば有効として判定するのに、上限が不明の
+  人を判断材料なしと書いていた）を採用して直した。workspaceが1つの入れ子組織の速報が止まる件は
+  Step 48の作業そのものなので申し送りにし、workspaceが1つの組織に`fixed_seat`を書いたときに
+  感度分析と付与候補が出る件は、`fixed_seat`が副スペースの運用方針のための設定で現実の構成に
+  無いため不採用とした
+- Step 48 への申し送り: 入れ子レイアウトでworkspaceが1つの組織の速報は、従来レイアウトと同じ
+  出力にする（今は複数workspaceの組織と同じく、複数組織の実行では飛ばし単一対象では止まる）。
+  docsで`fixed_seat`を副スペース（複数workspaceの組織）のための設定と書く
 
 ### 2026-09-30 — Step 46: V2の合算（decision-evidence）
 

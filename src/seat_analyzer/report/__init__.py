@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ..analyze import (
     AnalysisResult,
+    OrgAnalysisResult,
     PreviewResult,
 )
 from .csv_out import write_csv
@@ -72,7 +73,15 @@ __all__ = [  # noqa: RUF022
 ]
 
 
-def write_all(result: AnalysisResult, output_dir: str | Path) -> dict[str, Path]:
+def write_all(result: AnalysisResult | OrgAnalysisResult,
+              output_dir: str | Path) -> dict[str, Path]:
+    """正式分析の5種（recommendations / usage-summary / report / details / dashboard）。
+
+    OrgAnalysisResult（analyze_org の戻り）をそのまま各 writer へ渡す。複数 workspace の
+    組織だけ成果物の形が変わり、それ以外は唯一の workspace の結果で従来どおりに書く
+    （判断は各 writer が OrgAnalysisResult.has_multiple_workspaces で行う）。
+    従来の AnalysisResult も受け付ける。
+    """
     month, org = result.month, result.org
     (Path(output_dir) / month).mkdir(parents=True, exist_ok=True)
     paths = {

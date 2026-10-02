@@ -152,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
              " decision_v2.enabled に従う（既定は v1）。速報モードでは指定できない",
     )
     p.add_argument(
+        "--allow-missing-workspace", action="append", metavar="WORKSPACE名",
+        help="複数 workspace の組織で、対象月のスペンドレポートが無い workspace を需要 0"
+             "（利用なし）として続行する（複数指定可）。指定はレポートの警告に残る。"
+             "速報モードでは指定できない",
+    )
+    p.add_argument(
         "--with-discussion", action="store_true",
         help="レポート生成後に考察の執筆まで行う（discuss と同じ処理。ヘッドレス Claude CLI を使用）",
     )
@@ -578,19 +584,44 @@ def _resolve_targets(
     return [(org, input_dir / org, output_dir / org) for org in selected]
 
 
-def _reject_nested_layout(targets: Sequence[tuple]) -> None:
-    """複数 workspace のレイアウトの組織を、分析を始める前に明示的に止める。
+def _nested_orgs(targets: Sequence[tuple]) -> set[str]:
+    """入れ子レイアウト（workspace ごとの spend/）の組織。
 
-    分析本体は workspace ごとに回す必要があるが、その結線はまだ無い。素通しすると
-    「spend/ にスペンドレポートがありません」という無関係な失敗になるため、レイアウトを
-    名指しして止める（構造の検査は doctor が行う）。混在レイアウトもここで止まる。
+    混在レイアウト（直下と子ディレクトリの両方に spend/）はここで ValueError になる。
+    分析を始める前に全対象を見るので、1組織目を書いてから止まることはない。
     """
-    for org, org_input, *_ in targets:
-        if ingest.workspace_layout(org_input, org) == ingest.WORKSPACE_LAYOUT_NESTED:
+    return {
+        org for org, org_input, *_ in targets
+        if ingest.workspace_layout(org_input, org) == ingest.WORKSPACE_LAYOUT_NESTED
+    }
+
+
+def _allow_missing_by_org(
+    names: Sequence[str], targets: Sequence[tuple], cfg: dict
+) -> dict[str, tuple[str, ...]]:
+    """--allow-missing-workspace の名前を、対象組織ごとの許可に振り分ける。
+
+    workspace 名は main / second のような一般名なので、同じ名前が複数の組織にあると、
+    意図しない組織の欠月まで需要 0 として分析してしまう。その場合は --org で組織を
+    1つに絞るよう求めて止める。どの組織の config にも無い名前（綴り違い）も黙って
+    無視せず止める。
+    """
+    allowed: dict[str, list[str]] = {}
+    for name in dict.fromkeys(names):
+        owners = [org for org, *_ in targets if name in ingest.workspace_settings(cfg, org)]
+        if not owners:
             raise ValueError(
-                f"組織 {org} は複数 workspace のレイアウトのため、まだ分析できません"
-                "（構造の検査は seat-analyzer doctor で行えます）"
+                f"--allow-missing-workspace の {name} は、対象組織のどの"
+                f" {WORKSPACE_CONFIG_NAME} > organizations.<組織名>.workspaces にもありません"
+                "（綴りを確認してください）"
             )
+        if len(owners) > 1:
+            raise ValueError(
+                f"--allow-missing-workspace の {name} は複数の組織（{', '.join(owners)}）の"
+                " workspace 名に一致します。--org で組織を1つに絞ってください"
+            )
+        allowed.setdefault(owners[0], []).append(name)
+    return {org: tuple(found) for org, found in allowed.items()}
 
 
 def _discover_inspect_orgs(input_dir: Path) -> list[str]:
@@ -638,18 +669,14 @@ def _latest_month(org_input: Path) -> str | None:
     """対象組織のスペンドの最新月。ファイル名を解決できない場合は None（doctor が検査する）。
 
     入れ子レイアウトでは全 workspace のうち最も新しい月を採る（組織単位の検査なので、
-    対象月も組織単位で決める）。
+    対象月も組織単位で決める）。混在レイアウトは月を決めず None にする（構造の問題として
+    doctor が報告する）。
     """
     try:
-        layout, workspaces = ingest.detect_workspace_layout(org_input)
-        directories = (
-            [org_input / name for name in workspaces]
-            if layout == ingest.WORKSPACE_LAYOUT_NESTED else [org_input]
-        )
-        months = [m for d in directories for m in ingest.discover_months(d)]
+        months = ingest.discover_org_months(org_input)
     except (OSError, ValueError):
         return None
-    return max(months) if months else None
+    return months[-1] if months else None
 
 
 def _inspect_org(
@@ -772,6 +799,12 @@ def _run_analyze(args: argparse.Namespace) -> int:
             "--decision-version は速報モードでは指定できません"
             "（速報は V2 判定を行いません）"
         )
+    allow_missing = tuple(args.allow_missing_workspace or ())
+    if allow_missing and args.preview:
+        raise ValueError(
+            "--allow-missing-workspace は速報モードでは指定できません"
+            "（速報は複数 workspace の組織にまだ対応していません）"
+        )
 
     cfg = load_config(args.config)
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
@@ -788,25 +821,39 @@ def _run_analyze(args: argparse.Namespace) -> int:
     gated = github_collect.gated_orgs(cfg)
 
     targets = _resolve_targets(input_dir, output_dir, args.org)
-    _reject_nested_layout(targets)
     # 使い方の誤りは分析を走らせる前に落とす（3組織の分析を完走してから失敗させない）
+    nested = _nested_orgs(targets)
+    allowed = _allow_missing_by_org(allow_missing, targets, cfg)
     if args.with_discussion:
         _check_allow_scope(tuple(args.allow_term or ()), len(targets))
 
     # 対象月: 未指定なら対象組織全体での最新月。その月のデータが無い組織はスキップ
     month = _resolve_month(targets, args.month)
 
-    results: list[analyze.AnalysisResult] = []
+    results: list[analyze.OrgAnalysisResult] = []
     skipped: list[str] = []
+    preview_skipped: list[str] = []
     written: list[tuple[str, Path]] = []
     n_previewed = 0
     for org, org_input, org_output in targets:
-        if month not in ingest.discover_months(org_input):
+        org_allowed = allowed.get(org, ())
+        # 入れ子の組織で欠月を許可した workspace があれば、欠月でも分析へ委ねる
+        # （許可されていない開始済み workspace の欠月は analyze_org が止める）
+        if month not in ingest.discover_org_months(org_input) and not (
+            org in nested and org_allowed
+        ):
             if len(targets) == 1:
-                raise FileNotFoundError(
-                    f"{org_input}/spend/ に {month} のスペンドレポートがありません"
-                )
+                raise FileNotFoundError(_missing_month_message(
+                    org_input, month, nested=org in nested))
             skipped.append(org)
+            continue
+        if args.preview and org in nested:
+            if len(targets) == 1:
+                raise ValueError(
+                    f"組織 {org} は複数 workspace の組織のため、速報（--preview）には"
+                    "まだ対応していません（正式分析は --preview なしで実行できます）"
+                )
+            preview_skipped.append(org)
             continue
         if args.preview:
             if decision_version == "v2":
@@ -839,9 +886,15 @@ def _run_analyze(args: argparse.Namespace) -> int:
             n_previewed += 1
             continue
         v2 = decision_version == "v2"
-        result = analyze.analyze(
-            org_input, month, cfg, org=org, decision_context=v2
+        result = analyze.analyze_org(
+            org_input, month, cfg, org, decision_context=v2, allow_missing=org_allowed
         )
+        if not result.workspaces:
+            # どの workspace も対象月以前のデータを持たない（対象月のデータが無い組織と同じ）
+            if len(targets) == 1:
+                raise FileNotFoundError(_missing_month_message(org_input, month, nested=True))
+            skipped.append(org)
+            continue
         paths = report.write_all(result, org_output)
         evidence: tuple[decision_evidence.EvidenceRow, ...] | None = None
         notices: list[str] = []
@@ -867,7 +920,15 @@ def _run_analyze(args: argparse.Namespace) -> int:
 
     if skipped:
         print(f"\n! {month} のスペンドレポートが無いためスキップした組織: {', '.join(skipped)}")
+    if preview_skipped:
+        print(f"\n! 複数 workspace の組織の速報はまだ対応していないため飛ばしました: "
+              f"{', '.join(preview_skipped)}")
     if not results and not n_previewed:
+        if preview_skipped:
+            raise ValueError(
+                f"{month} の速報を書ける組織がありません"
+                "（複数 workspace の組織は速報にまだ対応していないため飛ばしました）"
+            )
         raise FileNotFoundError(f"{month} のデータを持つ組織がありません")
 
     if len(results) > 1:
@@ -882,6 +943,13 @@ def _run_analyze(args: argparse.Namespace) -> int:
             include_previous=args.with_previous_discussion,
         )
     return 0
+
+
+def _missing_month_message(org_input: Path, month: str, *, nested: bool) -> str:
+    """対象月のスペンドレポートが無いことの説明（単一組織の実行で止めるとき）。"""
+    if nested:
+        return f"{org_input} のどの workspace にも {month} のスペンドレポートがありません"
+    return f"{org_input}/spend/ に {month} のスペンドレポートがありません"
 
 
 # ASCII 数字のみ・全体一致で検証する（`\d` は全角数字にも一致し、`$` は末尾改行を許す）
@@ -903,7 +971,7 @@ def _resolve_month(targets: list[tuple[str, Path, Path]], month: str | None) -> 
     """対象月。未指定なら対象組織全体での spend の最新月。"""
     if month is not None:
         return _validate_month(month)
-    latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_months(d))]
+    latest = [m[-1] for _, d, _ in targets if (m := ingest.discover_org_months(d))]
     if not latest:
         raise FileNotFoundError(
             "スペンドレポートがありません。docs/usage.md の月次運用手順に従いエクスポートしてください。"
@@ -950,8 +1018,9 @@ def _run_collect(args: argparse.Namespace) -> int:
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
     month = _validate_month(args.month)
     # 組織の存在は doctor と同じ経路で確かめる（このコマンドだけが受理する形を作らない）
+    # 入れ子レイアウトの組織も受け付ける（キャッシュと対応表は組織直下に置くため、
+    # workspace の分け方に依らない）
     org, org_input = _resolve_input_targets(input_dir, [args.org])[0]
-    _reject_nested_layout([(org, org_input)])
 
     enabled = github_collect.gated_orgs(cfg)
     if org not in enabled:
@@ -1098,10 +1167,23 @@ def _run_discuss(args: argparse.Namespace) -> int:
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
     output_dir = _resolve_dir(args.output_dir, cfg, "output")
     targets = _resolve_targets(input_dir, output_dir, args.org)
-    _reject_nested_layout(targets)
+    nested = _nested_orgs(targets)
     month = _resolve_month(targets, args.month)
+    items = [(org, org_output) for org, _, org_output in targets]
+    if args.preview and nested:
+        # 速報は複数 workspace の組織にまだ対応していない（analyze --preview と同じ規則）
+        if len(targets) == 1:
+            raise ValueError(
+                f"組織 {targets[0][0]} は複数 workspace の組織のため、速報（--preview）には"
+                "まだ対応していません"
+            )
+        names = sorted(nested)
+        # --dry-run は stdout をプロンプトだけに保つ契約なので通知は stderr へ回す
+        print(f"! 複数 workspace の組織の速報はまだ対応していないため飛ばしました: "
+              f"{', '.join(names)}", file=sys.stderr if args.dry_run else sys.stdout)
+        items = [(org, org_output) for org, org_output in items if org not in nested]
     return _run_discussions(
-        [(org, org_output) for org, _, org_output in targets],
+        items,
         month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
         preview=args.preview, force=args.force, dry_run=args.dry_run,
         allow=tuple(args.allow_term or ()),
@@ -1234,41 +1316,56 @@ def _print_preview(pv, paths: dict[str, Path]) -> None:
     print(f"\n--- 出力 ---\n  preview:   {paths['markdown']}\n  dashboard: {paths['html']}")
 
 
-def _prohibited_warnings(result: analyze.AnalysisResult) -> list[str]:
+def _prohibited_warnings(result: analyze.OrgAnalysisResult) -> list[str]:
     """policy で禁止指定した product を観測したことの警告。
 
     宛先は分析の実行者なので、共有物であるレポートには載せず実行時の出力にだけ出す
     （レポートの内容は判定に使う値だけで決まることを保つ）。product 名の欠落
     （CAPACITY_SIGNAL_UNAVAILABLE）は特徴量が空欄になることで usage-summary.csv から
     見えるため、ここでは扱わない。
+
+    分析済みの全 workspace から集め、複数 workspace の組織ではどのスペースの観測かを
+    表示名で前置する。
     """
-    usage = result.product_usage
-    if usage is None:
-        return []
-    return [
-        issue.message for issue in usage.issues
-        if issue.code == IssueCode.PROHIBITED_PRODUCT_OBSERVED
-    ]
+    multi = result.has_multiple_workspaces
+    found = []
+    for name, workspace in result.workspaces.items():
+        usage = workspace.product_usage
+        if usage is None:
+            continue
+        prefix = f"[{result.contexts[name].label}] " if multi else ""
+        found += [
+            prefix + issue.message for issue in usage.issues
+            if issue.code == IssueCode.PROHIBITED_PRODUCT_OBSERVED
+        ]
+    return found
 
 
 def _write_decision_evidence(
-    result: analyze.AnalysisResult,
+    result: analyze.OrgAnalysisResult,
     org_input: Path,
     org_output: Path,
     cfg: dict,
     paths: dict[str, Path],
 ) -> tuple[decision_evidence.EvidenceRow, ...]:
-    """V2 判定の根拠を書き、出力一覧へ加える（V1 の成果物には触れない）。"""
-    changes = seat_changes.detect_from_input(org_input, cfg)
-    rows = decision_evidence.evaluate(result, changes, cfg)
+    """V2 判定の根拠を書き、出力一覧へ加える（V1 の成果物には触れない）。
+
+    判定は evaluate_org に一本化する（従来レイアウトでも evaluate と同じ結果）。シート
+    変更 event は主 workspace の members から作り、複数 workspace の組織だけ email の次に
+    workspace 列を足す。
+    """
+    members_dir = org_input / result.primary if result.nested else org_input
+    changes = seat_changes.detect_from_input(members_dir, cfg)
+    rows = decision_evidence.evaluate_org(result, changes, cfg)
     path = report.DECISION_EVIDENCE.path(org_output, result.month, result.org)
-    report.write_decision_evidence(rows, path)
+    report.write_decision_evidence(
+        rows, path, workspace_column=result.has_multiple_workspaces)
     paths["evidence"] = path
     return rows
 
 
 def _stale_evidence_notices(
-    result: analyze.AnalysisResult, org_output: Path
+    result: analyze.OrgAnalysisResult, org_output: Path
 ) -> list[str]:
     """V1 での実行で、前回の V2 判定の根拠が残っている場合の通知。
 
@@ -1397,7 +1494,8 @@ def _print_decision_evidence(rows: tuple[decision_evidence.EvidenceRow, ...]) ->
         or _V2_STATUS_LABELS.get(row.decision.status, "判定なし")
         for row in rows
     ]
-    print(f"V2判定: {_counted(seat_labels, _V2_SEAT_ORDER)}")
+    # 行が無い（主 workspace がまだ始まっていない月など）ときも空の行を出さない
+    print(f"V2判定: {_counted(seat_labels, _V2_SEAT_ORDER) or '対象なし'}")
     credit_labels = [
         label for row in rows
         if (label := _V2_CREDIT_LABELS.get(row.decision.credit_action)) is not None
@@ -1406,32 +1504,77 @@ def _print_decision_evidence(rows: tuple[decision_evidence.EvidenceRow, ...]) ->
         print(f"V2追加クレジット: {_counted(credit_labels, _V2_CREDIT_ORDER)}")
 
 
+def _print_workspaces(result: analyze.OrgAnalysisResult) -> list[str]:
+    """複数 workspace の組織の内訳と合計を表示し、使用データの表記を返す。"""
+    summary = analyze.summarize_org(result)
+    total = summary["total"]
+    print(f"人数: {summary['n_persons']} 名（アカウント {summary['n_accounts']}）")
+    months = []
+    for row in summary["workspaces"]:
+        label = row["label"]
+        if row["skipped"]:
+            print(f"  [{label}] 未開始（対象月以前のデータなし）")
+            continue
+        no_usage = "・需要 0（対象月の spend 無し）" if row["assume_no_usage"] else ""
+        print(f"  [{label}] メンバー {row['n_members']} 名"
+              f" (Standard {row['n_standard']} / Premium {row['n_premium']}"
+              f" / 未割当 {row['n_unassigned']} / 不明 {row['n_unknown']}),"
+              f" API換算利用額 ${row['total_api_cost_usd']:,.2f}/月,"
+              f" 実課金 ${row['total_billed_extra_usd']:,.2f}/月,"
+              f" 変更推奨 {row['n_change_recommended']} 名{no_usage}")
+        months.append(f"[{label}] {', '.join(row['months_used'])}")
+    print(f"組織合計: シート費用 ${total['seat_cost_now_usd']:,.2f}/月,"
+          f" API換算利用額 ${total['total_api_cost_usd']:,.2f}/月")
+    if total.get("org_service_cost_usd"):
+        print(f"組織サービス利用（非帰属）: ${total['org_service_cost_usd']:,.2f}/月")
+    print(f"変更推奨: {total['n_change_recommended']} 名"
+          f" (削減見込み ${total['est_monthly_saving_usd']:,.2f}/月・アカウント単位)")
+    print(f"要観察: {total['n_watching']} 名, 上限到達疑い: {total['n_cap_suspected']} 名"
+          "（アカウント単位）")
+    layer = result.persons
+    if layer is not None:
+        payout = sum(1 for j in layer.payout if j.status == analyze.PAYOUT_CANDIDATE)
+        returning = sum(1 for j in layer.continuation if j.status == analyze.RETURN_CANDIDATE)
+        print(f"複数スペース: 払い出し候補 {payout} 名 / 戻す候補 {returning} 名")
+    return months
+
+
 def _print_result(
-    result: analyze.AnalysisResult,
+    result: analyze.OrgAnalysisResult,
     paths: dict[str, Path],
     evidence: tuple[decision_evidence.EvidenceRow, ...] | None = None,
     notices: Sequence[str] = (),
     metrics: github_metrics.GithubMetrics | None = None,
 ) -> None:
-    s = result.summary
     print(f"\n=== {result.org} {result.month} 分析結果 ===")
-    print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']}"
-          f" / 未割当 {s.get('n_unassigned', 0)} / 不明 {s['n_unknown']})")
-    print(f"現在のシート費用: ${s['seat_cost_now_usd']:,.2f}/月, API換算利用額: ${s['total_api_cost_usd']:,.2f}/月")
-    if s.get("org_service_cost_usd"):
-        print(f"組織サービス利用（非帰属）: ${s['org_service_cost_usd']:,.2f}/月")
-    print(f"変更推奨: {s['n_change_recommended']} 名 (削減見込み ${s['est_monthly_saving_usd']:,.2f}/月)")
-    print(f"要観察: {s['n_watching']} 名, 上限到達疑い: {s['n_cap_suspected']} 名")
-    print(f"使用データ: {', '.join(s['months_used'])}")
+    multi = result.has_multiple_workspaces
+    if multi:
+        months = _print_workspaces(result)
+        print(f"使用データ: {' / '.join(months)}")
+    else:
+        s = next(iter(result.workspaces.values())).summary
+        print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']}"
+              f" / 未割当 {s.get('n_unassigned', 0)} / 不明 {s['n_unknown']})")
+        print(f"現在のシート費用: ${s['seat_cost_now_usd']:,.2f}/月, API換算利用額: ${s['total_api_cost_usd']:,.2f}/月")
+        if s.get("org_service_cost_usd"):
+            print(f"組織サービス利用（非帰属）: ${s['org_service_cost_usd']:,.2f}/月")
+        print(f"変更推奨: {s['n_change_recommended']} 名 (削減見込み ${s['est_monthly_saving_usd']:,.2f}/月)")
+        print(f"要観察: {s['n_watching']} 名, 上限到達疑い: {s['n_cap_suspected']} 名")
+        print(f"使用データ: {', '.join(s['months_used'])}")
     if evidence is not None:
         _print_decision_evidence(evidence)
     if metrics is not None:
         _print_github_metrics(metrics)
 
+    # 警告は組織単位 → workspace ごと（複数 workspace の組織は表示名を前置）
+    warnings = list(result.warnings)
+    for name, workspace in result.workspaces.items():
+        prefix = f"[{result.contexts[name].label}] " if multi else ""
+        warnings += [prefix + w for w in workspace.warnings]
     prohibited = _prohibited_warnings(result)
-    if result.warnings or prohibited or notices:
+    if warnings or prohibited or notices:
         print("\n--- 警告 ---")
-        for w in [*result.warnings, *prohibited, *notices]:
+        for w in [*warnings, *prohibited, *notices]:
             print(f"  ! {w}")
 
     print("\n--- 出力 ---")
@@ -1439,13 +1582,18 @@ def _print_result(
         print(f"  {kind}: {path}")
 
 
-def _print_totals(results: list[analyze.AnalysisResult], summary_path: Path) -> None:
-    n_members = sum(r.summary["n_members"] for r in results)
-    seat_cost = sum(r.summary["seat_cost_now_usd"] for r in results)
-    n_change = sum(r.summary["n_change_recommended"] for r in results)
-    saving = sum(r.summary["est_monthly_saving_usd"] for r in results)
+def _print_totals(results: list[analyze.OrgAnalysisResult], summary_path: Path) -> None:
+    """複数組織の合計（人数は人の和。複数 workspace の組織があればアカウント数を添える）。"""
+    summaries = [analyze.summarize_org(r) for r in results]
+    n_persons = sum(s["n_persons"] for s in summaries)
+    n_accounts = sum(s["n_accounts"] for s in summaries)
+    seat_cost = sum(s["total"]["seat_cost_now_usd"] for s in summaries)
+    n_change = sum(s["total"]["n_change_recommended"] for s in summaries)
+    saving = sum(s["total"]["est_monthly_saving_usd"] for s in summaries)
+    accounts = (f"（アカウント {n_accounts}）"
+                if any(r.has_multiple_workspaces for r in results) else "")
     print(f"\n=== 全体 ({len(results)} 組織) ===")
-    print(f"メンバー: {n_members} 名, シート費用: ${seat_cost:,.2f}/月")
+    print(f"メンバー: {n_persons} 名{accounts}, シート費用: ${seat_cost:,.2f}/月")
     print(f"変更推奨: {n_change} 名 (削減見込み ${saving:,.2f}/月)")
     print(f"横断サマリ: {summary_path}")
 

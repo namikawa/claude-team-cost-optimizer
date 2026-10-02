@@ -2,7 +2,7 @@
 {% if member_changes %}
 <section class="card">
   <div class="card-hd">
-    <div class="hd-main"><h2><!--text:h_member_changes--></h2></div>
+    <div class="hd-main"><h2><!--text:h_member_changes-->{% if ws_label %}（{{ ws_label }}）{% endif %}</h2></div>
     <div class="hd-note">スナップショット時点: {{ member_changes.snap_list }}</div>
   </div>
   <div class="card-bd">

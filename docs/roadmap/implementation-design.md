@@ -2992,24 +2992,50 @@ dashboardで読めるようにする。
 
 対象:
 
-- `src/seat_analyzer/report/`（markdown・details・html・csv_out・usage_csv・evidence_csv・text）
-- `src/seat_analyzer/templates/`
-- `src/seat_analyzer/cli.py`（入れ子レイアウトの結線・`--allow-missing-workspace`）
-- `examples/`（2 workspaceの合成組織を追加）
-- `tests/golden/`・`tests/test_golden.py`・`tests/test_report_split.py`・`tests/test_cli.py`
+- `src/seat_analyzer/ingest.py`（`discover_org_months`）・`src/seat_analyzer/config.py`
+  （`label`の重複検査）
+- `src/seat_analyzer/analyze/`（`OrgAnalysisResult.nested`・`single_org_result`・
+  `summarize_org`・`own_demand_users`の公開・固定シートと違う種別の警告・
+  `PersonLayer.payout_workspace`・`ContinuationJudgment.evaluation_months`・種別不一致の理由の文言）
+- `src/seat_analyzer/report/`（markdown・details・html・csv_out・usage_csv・format・新設の
+  `spaces.py`）
+- `src/seat_analyzer/templates/`（partialの見出しに表示名・新設の`workspaces.html.j2`と
+  `spaces.html.j2`）・`src/seat_analyzer/prompts/`（固定シートと複数スペースの観点）
+- `src/seat_analyzer/cli.py`（入れ子レイアウトの結線・`--allow-missing-workspace`・速報の扱い・
+  V2を`evaluate_org`に一本化）
+- `examples/`（2 workspaceの合成組織org-cと`examples/config.yaml`）・`README.md`・
+  `docs/setup.md`・`.github/workflows/ci.yml`（E2Eに`--config examples/config.yaml`）・
+  `CHANGELOG.md`
+- `tests/golden/`・`tests/test_golden.py`・`tests/test_spaces.py`（新設）・`tests/test_cli.py`・
+  `tests/test_report_split.py`・`tests/test_dashboard_shell.py`・`tests/test_config.py`・
+  `tests/test_persons.py`・`tests/test_analyze.py`
 
 実装:
 
-- §26.7
-- `cli._reject_nested_layout`を、workspaceごとの分析（Step 44）と組織単位の出力への結線に
-  置き換える
+- §26.6（`--allow-missing-workspace`の検証）・§26.7
+- `cli._reject_nested_layout`を廃止し、`analyze`（正式）・`discuss`・`collect`は入れ子レイアウトを
+  通す。対象月の決定と欠月のスキップは組織単位（入れ子は全workspaceの月の和集合）
+- 出力関数は`OrgAnalysisResult`を受け取り、複数workspaceの組織でなければ唯一のworkspaceの結果で
+  従来の経路を通す（従来の`AnalysisResult`もそのまま受け付ける）
 
 受け入れ条件:
 
-- 単一workspaceのgoldenが不変
-- 2 workspaceの合成組織のgoldenを追加し、7種の成果物と横断サマリを固定する
-- dashboardの3不変条件（メールはローカル部のみ・$100以上は整数・外部通信なし）
-- 追加した文言は`check-text`を通す
+- 単一workspaceのgolden 5ケースがバイト一致（`full/summary/2026-06.md`・速報2ケースを含む）
+- `full-all`にorg-cの6種（report / details / dashboard / recommendations / usage-summary /
+  decision-evidence）と`summary/2026-08.md`が追加され、org-bの2026-08の成果物は不変
+- org-cの成果物で合成データの期待判定（払い出し・継続・主での実課金・V1の変更推奨）が出る
+- recommendations / usage-summary / decision-evidenceの`workspace`列がemailの次にあり、副が
+  始まっていない月でも列がある。連結で欠けた任意列は空欄／「—」で、生成が落ちない
+- dashboardの3不変条件（メールはローカル部のみ・$100以上は整数・外部通信なし）がorg-cでも成立し、
+  タブ並びはoverview / actions / members / org / spaces / notes、単一workspaceでは従来の5つ。
+  `dashboard.css`・`dashboard.js`は不変
+- `analyze --preview`は入れ子の組織を複数組織の実行では通知して飛ばし、単一対象では止まる。
+  `--allow-missing-workspace`は未知の名前・`--preview`併用で止まり、指定したworkspaceの欠月は
+  需要0で完走して警告がレポートに残る。全workspaceを指定した欠月も完走する。`discuss`・`collect`は
+  入れ子レイアウトを受け付ける
+- 固定シートのworkspaceでは感度分析・付与候補が出ず、`label`の重複はconfigのロードで止まる
+- 追加した文言は`check-text`を通し、差分は`check-text --diff`で0件
+- `uv run pytest`と`uv run ruff check .`が通り、CIの全ジョブが緑
 
 #### Step 48: 速報・doctorの人の検査・docs（v1.3.0）
 
@@ -3459,10 +3485,12 @@ Premiumシートの込み容量は非公開で「容量の何%を使ったか」
    - 候補: 対象月に主の追加クレジット上限へ到達している（容量不足が確定しているので1か月で
      足りる）、または主の実課金がbreakeven以上の月が`evaluation_months`連続（副の固定費より
      多くをクレジットに払っている）
-   - 観察: 主の実課金が0より大きくbreakeven未満（枠は使い切るが、クレジットのほうが安い）
+   - 観察: 候補に当たらず主の実課金が0より大きい（損益分岐未満の月がある、または損益分岐以上の
+     月がまだ必要な連続月数に達していない）
    - 不要: 主の実課金が0（込み枠で足りている。需要の大小は問わない）
-   - 判断材料なし: 主のκが無効・不明（実課金が上限到達を語らない）。主がStandardの人はV1の
-     昇格判定が先
+   - 判断材料なし: 主の追加クレジットが無効、または有効かどうか分からない（κが未記入で実課金も
+     観測されていない。κが未記入でも実課金が観測されていれば有効として判定する）。どちらも実課金が
+     上限到達を語らない。主がStandardの人はV1の昇格判定が先
    - 併記する材料: 月別の実課金・上限到達の有無・需要・Code比率・LoC（あれば）。「さらに
      仕事が進むか」は、上限到達（作業が止まった事実）とCode主体の利用で読む
 2. 継続判定（副にシートを持つ人）
@@ -3493,21 +3521,55 @@ Standardの運用でも同じ規則で動く。
 - 始まっているのに対象月のspendが無いworkspaceはエラー。`analyze --allow-missing-workspace <名前>`
   を付けると需要0として続行し、その旨をレポートの警告に残す（利用が無くエクスポートしなかった
   月のための逃げ道）。membersは従来の「月末に最も近いスナップショット」で解決する
+- `--allow-missing-workspace`は、`--preview`との同時指定・対象組織のどのconfigの`workspaces`にも
+  無い名前（綴り違い）・2つ以上の対象組織のworkspace名に一致する名前（一般名なので別の組織の
+  欠月まで需要0にしうる。`--org`で1つに絞る）をエラーにする。指定のある組織は、どのworkspaceにも
+  対象月のspendが無くても欠月のスキップをせず分析へ回す（全workspaceを指定した月も完走する）。
+  分析できたworkspaceが1つも無い組織は「対象月のデータが無い組織」と同じ扱い
 
 ### 26.7 出力
 
-組織ごとに1セットのまま。複数workspaceの組織だけ形が変わる。
+組織ごとに1セットのまま。複数workspaceの組織（configの`workspaces`が2つ以上。副が未開始の
+月・`--allow-missing-workspace`の月も同じ形）だけ形が変わり、それ以外の組織の成果物は従来と
+バイト一致する。
 
-- report: サマリにworkspace別（人数・シート内訳・シート費・実課金）と組織合計、人数と
-  アカウント数の両方。推奨表にworkspace列。「複数スペースの利用」節を新設し、人の表・
-  払い出し判定・継続判定・複数アカウント保有者の実課金（§26.5）を置く。前月からの変化・月中の推移・メンバー変動・Claude Code活動はworkspaceごとに
-  小見出しで並べる（主が先）
-- details / dashboard: workspace列と人の表（dashboardはタブ）
-- recommendations / usage-summary / decision-evidence: `workspace`列をemailの次に足す。列を
-  足すのはconfigの`workspaces`が2つ以上の組織（まだ始まっていないworkspaceがある月も同じ形に
-  して、月をまたいだ突き合わせで列の形が変わらないようにする）
-- 横断サマリ（`reports/summary/`）: 人数とアカウント数
-- 速報: workspaceごとに従来の一次判断を出し、人の需要合計を表に足す
+- 表の需要は2系統に分ける。判定系（全ユーザ・シート変更推奨・推奨一覧と判定サマリ・
+  recommendations）は全アカウントを主→副の順に連結し、複数アカウント保有者の主の行の需要は
+  合算値のまま出す（凡例に「縦に足すと副の分が二重になる」と書く）。観測系（詳細利用状況・
+  ユーザ別の棒と順位・組織内の分布・Codeと他プロダクトの需要・usage-summary）は各アカウント
+  自身の需要で出す
+- workspaceごとの節は、見出しの末尾に表示名を添えた同じ階層の節（例: 「前月からの変化
+  （主スペース）」）を主→副の順に並べる。入れ子の小見出しにはしない
+- report: サマリに人数とアカウント数の両方・組織合計・workspaceごとの追加クレジット構成と
+  判定に使用した月。サマリ直下に「スペース別」表（workspace別の人数・シート内訳・シート費・
+  需要・実課金・変更推奨と合計。未開始と需要0として扱ったworkspaceは注記）。前月からの変化・
+  追加クレジット付与候補はworkspaceごと。シート変更推奨にスペース列。「複数スペースの利用」
+  節を新設し、スペースの一覧と閾値・払い出し判定・継続判定・副を持ちながら主で実課金が発生した
+  人（§26.5）と判定の読み方を置く。人の表（全員1人1行）はdetailsに置く（reportは短い実行判断の
+  文書・表はdetailsという分担）
+- details: 全ユーザ（判定系・スペース列）、備考と部署別・チーム別サマリは人の層から数える、
+  「人別の利用」（人の表）を新設、詳細利用状況（観測系・スペース列）。分布・月中の利用推移・
+  Claude Code活動・メンバー変動・Eの実測・感度分析はworkspaceごと
+- dashboard: 概要のKPIは人数（添え書きにアカウント数）、KPIの直下に「スペース別」の表、
+  月次推移・前月からの変化・追加クレジット構成・メンバー変動・主な増減・付与候補・ユーザ別の
+  棒・月中の推移・Claude Code活動・Codeと他プロダクト・分布はworkspaceごとのカード。推奨一覧と
+  詳細利用状況にスペース列。新タブ「複数スペース」（組織タブの次。人別の利用・払い出し判定・
+  継続判定・主での実課金）。前提と注意に判定の読み方。CSS・JSは単一workspaceと同じものを使う
+- `fixed_seat`のworkspaceでは、V1の損益分岐判定に由来する感度分析と追加クレジット付与候補を
+  出さない（判定していない状態を「全員一致」「該当者なし」と見せない）。追加クレジット構成は
+  事実なので出す
+- recommendations / usage-summary / decision-evidence: `workspace`列（ディレクトリ名）をemailの
+  次に足す（まだ始まっていないworkspaceがある月も同じ形にして、月をまたいだ突き合わせで列の形が
+  変わらないようにする）。連結で欠けた任意列（code-analytics等）は空欄、Markdown・HTMLでは「—」
+- 表示名（`label`。省略時はディレクトリ名）は組織内で一意（configのロードで検査）。表・見出しは
+  表示名だけで示し、CSVはディレクトリ名
+- 横断サマリ（`reports/summary/`）: 複数workspaceの組織のメンバー列を「人数（アカウント数）」に
+  する。合計行は人数の和で、複数workspaceの組織があればアカウント数の和を添える。変更推奨の
+  列はアカウント単位のまま
+- 人数以外の件数（変更推奨・要観察・上限到達疑い・一覧の件数）はアカウント単位で、その旨を
+  注意事項に書く
+- 速報: workspaceごとに従来の一次判断を出し、人の需要合計を表に足す（Step 48。それまでは
+  複数workspaceの組織を、複数組織の実行では通知して飛ばし、単一対象では止める）
 - workspace名は他組織の禁止語に加えない（一般名を推奨する。Teamの表示名を使うなら`label`に書く）
 
 ### 26.8 doctor

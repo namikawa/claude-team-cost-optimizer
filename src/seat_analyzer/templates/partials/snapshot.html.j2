@@ -3,7 +3,7 @@
 <section class="card">
   <div class="card-hd">
     <div class="hd-main">
-      <h2><!--text:h_snapshot--></h2>
+      <h2><!--text:h_snapshot-->{% if ws_label %}（{{ ws_label }}）{% endif %}</h2>
       <div class="hd-sub">スナップショット: {{ snapshot.snap_list }}{% if not snapshot.judged %}　最新区間が {{ snapshot.latest_interval_days }} 日と短いため停止判定は行っていません。{% endif %}</div>
     </div>
   </div>

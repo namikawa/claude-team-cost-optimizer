@@ -119,6 +119,51 @@ def test_every_tab_has_a_panel_and_a_heading(dashboards):
     assert full.count('class="tab is-active"') == 1
 
 
+@pytest.fixture
+def multi_dashboard(make_input, tmp_path):
+    """2 workspace の組織の dashboard.html（副は Premium 固定）。"""
+    from seat_analyzer.analyze import analyze_org
+    from seat_analyzer.config import load_config
+
+    input_dir = make_input(
+        {"2026-05": [spend_row("a@x.jp", 300.0, net=50.0)],
+         "2026-06": [spend_row("a@x.jp", 400.0, net=80.0),
+                     spend_row("b@x.jp", 10.0, net=0.0)]},
+        members=["a@x.jp,Premium", "b@x.jp,Standard"], org="org-x", workspace="main")
+    make_input({"2026-06": [spend_row("a@x.jp", 200.0)]},
+               members=["a@x.jp,Premium"], org="org-x", workspace="second")
+    config = tmp_path / "multi.yaml"
+    config.write_text(
+        "organizations:\n  org-x:\n    workspaces:\n"
+        "      main:\n        primary: true\n        label: 主スペース\n"
+        "      second:\n        label: 副スペース\n        fixed_seat: premium\n",
+        encoding="utf-8", newline="\n")
+    org = analyze_org(input_dir / "org-x", "2026-06", load_config(str(config)), "org-x")
+    path = tmp_path / "dashboard.html"
+    write_html(org, path)
+    return path.read_text(encoding="utf-8")
+
+
+def test_multi_workspace_adds_the_spaces_tab_before_the_notes(multi_dashboard):
+    """複数 workspace の組織だけ「複数スペース」タブを持つ（組織タブの次）。"""
+    tabs = re.findall(
+        r'<button type="button" class="tab[^"]*"[^>]*data-tab="([^"]+)"', multi_dashboard)
+    panels = re.findall(r'<section class="tabpanel[^"]*" data-tab="([^"]+)"', multi_dashboard)
+    assert tabs == ["overview", "actions", "members", "org", "spaces", "notes"]
+    assert panels == tabs
+    assert multi_dashboard.count('<h2 class="panel-title">') == len(panels)
+    labels = dict(re.findall(r'data-tab="([^"]+)">(.*?)</button>', multi_dashboard))
+    # 件数は人数（アカウント数ではない）
+    assert '<span class="tab-count">2</span>' in labels["spaces"]
+
+
+def test_multi_workspace_dashboard_keeps_the_shared_assets(multi_dashboard):
+    """CSS と JS は単一 workspace と同じものをそのまま埋め込む（外部参照も持たない）。"""
+    assert f"<style>{_DASHBOARD_CSS}</style>" in multi_dashboard
+    assert f"<script>{_DASHBOARD_JS}</script>" in multi_dashboard
+    assert not _EXTERNAL.findall(multi_dashboard)
+
+
 def test_tab_counts_show_what_the_tab_contains(dashboards):
     """件数バッジはそのタブの中身の数。数えるものが無いタブには付けない。
 

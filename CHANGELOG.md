@@ -14,10 +14,21 @@
 - `init-org --workspaces main,second` で入れ子レイアウトの雛形を作れるようにした
 - 複数 workspace の組織の decision-evidence で、複数アカウントを持つ人を主 workspace の行1本に
   まとめ（需要は全 workspace の合算）、`workspace` 列を付けるようにした
+- 入れ子レイアウトの組織を `analyze`（正式分析）・`discuss`・`collect` で扱えるようにした
+  （複数 workspace の組織の成果物に、スペース列・workspace ごとの節・人別の利用・
+  「複数スペースの利用」・dashboard の「複数スペース」タブが加わる。速報は未対応）
+- `analyze --allow-missing-workspace <名前>` で、対象月のスペンドレポートが無い workspace を
+  需要 0 として分析できるようにした
+- 複数 workspace の組織の recommendations / usage-summary に `workspace` 列を付けるようにした
+- 組織横断サマリで、複数 workspace の組織のメンバー数を「人数（アカウント数）」で示すようにした
+- シート種別を固定した workspace に、固定と違う種別のアカウントがあると警告するようにした
 
 ### 変更
 
 - `organizations.<組織名>.github_org` を任意にした（書かない組織は GitHub 分析が無効になる）
+- workspace の `label` が組織内で重複していると、config のロードで止まるようにした
+- 従来レイアウトの組織に `workspaces` を書いた config では、`analyze` も不一致として止まるように
+  した（これまでは `doctor` だけが報告していた）
 
 ## [1.2.0] - 2026-09-05
 

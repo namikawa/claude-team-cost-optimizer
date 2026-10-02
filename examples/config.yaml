@@ -1,0 +1,19 @@
+# examples/input の合成データ用の上書き設定（既定は src/seat_analyzer/default-config.yaml）。
+# org-c は2つの Team スペース（workspace）を運用する組織のサンプルで、各 workspace の
+# 主・表示名・固定シートをここで決める。org-a / org-b には効かない。
+#
+#   uv run seat-analyzer analyze --config examples/config.yaml --input-dir examples/input \
+#       --output-dir examples/reports --org org-c --month 2026-08
+organizations:
+  org-c:
+    workspaces:
+      main:
+        primary: true
+        label: 主スペース
+        credit_limit_default_usd: 250
+      second:
+        label: 副スペース
+        fixed_seat: premium
+        credit_limit_default_usd: 0
+        # 2か月のサンプルで「戻す候補」まで出すため、判定に要る連続月数を 1 にする
+        evaluation_months: 1

@@ -23,6 +23,7 @@ from seat_analyzer.analyze import (
     WorkspaceContext,
     analyze,
     analyze_org,
+    own_demand_users,
 )
 from seat_analyzer.analyze.pipeline import add_demand, credit_limit_for
 from seat_analyzer.config import load_config
@@ -941,3 +942,52 @@ def test_combined_demand_keeps_account_level_values(tmp_path, make_input):
     assert [r["e"] for g in main.e_distribution["groups"] for r in g["rows"]] == [250.0]
     assert main.trend == alone.trend
     assert sum("シート未割当なのに利用実績" in w for w in main.warnings) == 1
+
+
+# --- 固定シートと違う種別の警告・自身の需要（Step 47） ---
+
+
+def test_fixed_seat_workspace_warns_about_another_seat_type(make_input, tmp_path):
+    """Premium 固定の workspace に Standard のアカウントがあれば警告する（判定は変えない）。"""
+    rows = {"2026-06": [spend_row("alice@example.com", 10.0, net=0.0),
+                        spend_row("bob@example.com", 10.0, net=0.0)]}
+    input_dir = make_input(rows, members=["alice@example.com,premium"], org=ORG,
+                           workspace="main")
+    make_input(rows, members=["alice@example.com,premium", "bob@example.com,standard"],
+               org=ORG, workspace="second")
+    cfg = _workspace_cfg(tmp_path, {
+        "main": {"primary": True}, "second": {"fixed_seat": "premium"},
+    })
+    org = analyze_org(input_dir / ORG, "2026-06", cfg, ORG)
+    second = org.workspaces["second"]
+    assert any(
+        "workspace second は Premium 固定の方針ですが Standard のアカウントが 1 名います" in w
+        and "bob@example.com" in w for w in second.warnings)
+    assert set(second.users["status"]) == {STATUS_FIXED_SEAT}
+    assert not any("固定の方針" in w for w in org.workspaces["main"].warnings)
+
+
+def test_own_demand_users_replaces_only_the_demand(make_input, tmp_path):
+    rows_main = {"2026-06": [spend_row("alice@example.com", 100.0, net=0.0)]}
+    rows_second = {"2026-06": [spend_row("alice@example.com", 300.0, net=0.0)]}
+    input_dir = make_input(rows_main, members=["alice@example.com,premium"], org=ORG,
+                           workspace="main")
+    make_input(rows_second, members=["alice@example.com,premium"], org=ORG,
+               workspace="second")
+    cfg = _workspace_cfg(tmp_path, {
+        "main": {"primary": True}, "second": {"fixed_seat": "premium"},
+    })
+    main = analyze_org(input_dir / ORG, "2026-06", cfg, ORG).workspaces["main"]
+    own = own_demand_users(main)
+    users = main.users.set_index("email")
+    assert users.loc["alice@example.com", "api_cost_usd"] == 400.0   # 判定は合算
+    assert own.set_index("email").loc["alice@example.com", "api_cost_usd"] == 100.0
+    # 需要以外の列は変えない
+    assert own.drop(columns="api_cost_usd").equals(main.users.drop(columns="api_cost_usd"))
+
+
+def test_own_demand_users_matches_users_without_other_workspaces(cfg, make_input):
+    input_dir = make_input({"2026-06": [spend_row("alice@example.com", 10.0)]},
+                           members=["alice@example.com,premium"])
+    result = analyze(input_dir, "2026-06", cfg, org=ORG)
+    assert own_demand_users(result).equals(result.users)

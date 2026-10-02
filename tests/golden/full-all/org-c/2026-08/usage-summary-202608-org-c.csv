@@ -1,0 +1,16 @@
+﻿email,workspace,total_demand_usd,code_demand_usd,code_demand_share,total_requests,code_requests,product_breadth,supplementary_high,prohibited_observed
+fujii@example.co.jp,main,600.00,600.00,1.0000,2400,2400,1,False,False
+hoshino@example.co.jp,main,500.00,500.00,1.0000,2000,2000,1,False,False
+kimura@example.co.jp,main,900.00,900.00,1.0000,3600,3600,1,False,False
+kubota@example.co.jp,main,80.00,80.00,1.0000,320,320,1,False,False
+morita@example.co.jp,main,15.00,0.00,0.0000,60,0,1,False,False
+nishi@example.co.jp,main,420.00,252.00,0.6000,1680,1008,2,True,False
+ota@example.co.jp,main,180.00,54.00,0.3000,720,216,2,True,False
+sakai@example.co.jp,main,25.00,25.00,1.0000,100,100,1,False,False
+takagi@example.co.jp,main,160.00,80.00,0.5000,640,320,2,False,False
+ueda@example.co.jp,main,300.00,300.00,1.0000,1200,1200,1,False,False
+fujii@example.co.jp,second,300.00,300.00,1.0000,1200,1200,1,False,False
+hoshino@example.co.jp,second,20.00,20.00,1.0000,80,80,1,False,False
+kubota@example.co.jp,second,300.00,300.00,1.0000,1200,1200,1,False,False
+ueda@example.co.jp,second,0.50,0.50,1.0000,2,2,1,False,False
+yagi@example.co.jp,second,10.00,10.00,1.0000,40,40,1,False,False

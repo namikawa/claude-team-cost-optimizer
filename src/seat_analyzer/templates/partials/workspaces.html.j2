@@ -1,0 +1,17 @@
+
+{#- 複数 workspace の組織の「スペース別」（概要タブの KPI の直下）。本体側の差し込み先が
+    multi のときだけ描くので、ここには条件を持たない #}
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>スペース別</h2></div><div class="hd-note">人数は各スペースのアカウント数</div></div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>スペース</th><th class="num">人数</th><th class="num">Standard</th><th class="num">Premium</th><th class="num">未割当</th><th class="num">不明</th><th class="num">シート費用</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">変更推奨</th></tr></thead>
+      <tbody>
+{% for w in spaces_table.rows %}{% if w.skipped %}      <tr><td>{{ w.space }}</td><td class="num sub">—</td><td class="num sub">—</td><td class="num sub">—</td><td class="num sub">—</td><td class="num sub">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>
+{% else %}      <tr><td>{{ w.space }}</td><td class="num sub">{{ w.n_members }}</td><td class="num sub">{{ w.n_standard }}</td><td class="num sub">{{ w.n_premium }}</td><td class="num sub">{{ w.n_unassigned }}</td><td class="num sub">{{ w.n_unknown }}</td><td class="num">{{ w.seat_cost_fmt }}</td><td class="num">{{ w.api_fmt }}</td><td class="num">{{ w.billed_fmt }}</td><td class="num save{% if w.n_change > 0 %} pos{% endif %}">{{ w.n_change }}</td></tr>
+{% endif %}{% endfor %}      </tbody>
+      <tfoot><tr><td>合計</td><td class="num sub">{{ spaces_table.total.n_members }}</td><td class="num sub">{{ spaces_table.total.n_standard }}</td><td class="num sub">{{ spaces_table.total.n_premium }}</td><td class="num sub">{{ spaces_table.total.n_unassigned }}</td><td class="num sub">{{ spaces_table.total.n_unknown }}</td><td class="num">{{ spaces_table.total.seat_cost_fmt }}</td><td class="num">{{ spaces_table.total.api_fmt }}</td><td class="num">{{ spaces_table.total.billed_fmt }}</td><td class="num save{% if spaces_table.total.n_change > 0 %} pos{% endif %}">{{ spaces_table.total.n_change }}</td></tr></tfoot>
+    </table>
+  </div>
+  <div class="card-ft">合計は複数のスペースにアカウントを持つ人を重複して数えます（人数は {{ spaces_table.n_persons }} 人）。{% for w in spaces_table.rows %}{% if w.note %}<br>{{ w.space }}: {{ w.note }}。{% endif %}{% endfor %}</div>
+</section>

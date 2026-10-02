@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .. import ingest
 from .persons import PersonLayer, build_person_layer
-from .pipeline import AnalysisResult, analyze
+from .pipeline import NO_USAGE_SOURCE, AnalysisResult, analyze
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,8 @@ class OrgAnalysisResult:
     warnings は組織単位の警告で、workspace ごとの警告は各 AnalysisResult が持つ。
     persons は全 workspace のアカウントを email で束ねた人の層（§26.4〜§26.5）。
     first_seen は副 workspace → email → 払い出した月で、人の層と V2 の人ごとの履歴が読む。
+    nested は入力が入れ子レイアウト（<組織>/<workspace>/spend/）だったか。主 workspace の
+    入力ディレクトリを後段が組み立てるときに使う（レイアウトを検出し直さないため）。
     """
 
     org: str
@@ -60,6 +62,7 @@ class OrgAnalysisResult:
     warnings: list[str] = field(default_factory=list)
     persons: PersonLayer | None = None
     first_seen: dict[str, dict[str, str]] = field(default_factory=dict)
+    nested: bool = False
 
     @property
     def has_multiple_workspaces(self) -> bool:
@@ -232,12 +235,100 @@ def analyze_org(
         org=org, month=month, primary=primary,
         workspaces={name: results[name] for name in contexts if name in results},
         contexts=contexts, skipped=tuple(sorted(skipped)), warnings=warnings,
+        nested=True,
     )
     result.first_seen = {
         name: _first_seen(org_input / name, results[name], cfg) for name in secondaries
     }
     result.persons = build_person_layer(result, cfg, result.first_seen)
     return result
+
+
+def single_org_result(result: AnalysisResult) -> OrgAnalysisResult:
+    """1 workspace の分析結果を、workspace が1つの組織の容れ物に包む。
+
+    組織単位の集計（summarize_org）しか読まない側が、従来の AnalysisResult と
+    OrgAnalysisResult を同じ形で扱えるようにするためのもの。人の層は設定が無いと
+    組めないので持たない（summarize_org は人数をアカウント数で代える）。
+    """
+    return OrgAnalysisResult(
+        org=result.org, month=result.month, primary=result.org,
+        workspaces={result.org: result},
+        contexts={result.org: _single_context(result.org)},
+    )
+
+
+# 組織単位の集計で workspace ごとに足し合わせる数値（summary のキー）。
+# 件数は人ではなくアカウント単位（同じ人が2つの workspace で変更推奨なら2件）
+_SUMMED_KEYS = (
+    "n_members", "n_standard", "n_premium", "n_unassigned", "n_unknown",
+    "seat_cost_now_usd", "total_api_cost_usd", "total_billed_extra_usd",
+    "org_service_cost_usd", "n_change_recommended", "est_monthly_saving_usd",
+    "n_watching", "n_cap_suspected",
+)
+# 金額のキー（足した後に小数2桁へ丸める）
+_USD_KEYS = frozenset(key for key in _SUMMED_KEYS if key.endswith("_usd"))
+
+
+def _assumed_no_usage(result: AnalysisResult) -> bool:
+    """対象月の spend を読まずに需要 0 として分析した結果か。"""
+    spend = result.sources.get("spend")
+    return isinstance(spend, dict) and spend.get(result.month) == NO_USAGE_SOURCE
+
+
+def summarize_org(org: OrgAnalysisResult) -> dict:
+    """組織単位の集計（report と CLI が同じ値を読むための純粋関数）。
+
+    戻り値のキー:
+      - n_persons: 人数（人の層の人数。人の層が無ければアカウント数）
+      - n_accounts: アカウント数（各 workspace のメンバー数の和）
+      - workspaces: config の順（主が先）の行。分析を飛ばした workspace の数値は None
+      - total: 数値キーの和と、product ごとに足した org_service_by_product
+
+    需要の合計は各 workspace の total_api_cost_usd（そのアカウント自身の需要）の和なので、
+    複数アカウント保有者の需要を二重に数えない。変更推奨・要観察・上限到達疑いの件数は
+    アカウント単位で、人数ではない。
+    """
+    rows = []
+    total = dict.fromkeys(_SUMMED_KEYS, 0)
+    by_product: dict[str, float] = {}
+    for name, context in org.contexts.items():
+        result = org.workspaces.get(name)
+        row: dict = {
+            "name": name,
+            "label": context.label,
+            "primary": context.primary,
+            "fixed_seat": context.fixed_seat,
+            "skipped": result is None,
+            "assume_no_usage": result is not None and _assumed_no_usage(result),
+        }
+        if result is None:
+            row.update(dict.fromkeys(_SUMMED_KEYS))
+            row["months_used"] = None
+            rows.append(row)
+            continue
+        summary = result.summary
+        for key in _SUMMED_KEYS:
+            value = summary.get(key, 0) or 0
+            row[key] = value
+            total[key] += value
+        row["months_used"] = list(summary.get("months_used", result.months_used))
+        for product, value in (summary.get("org_service_by_product") or {}).items():
+            by_product[str(product)] = by_product.get(str(product), 0.0) + float(value)
+        rows.append(row)
+    for key in _USD_KEYS:
+        total[key] = round(float(total[key]), 2)
+    total["org_service_by_product"] = {
+        product: round(value, 2) for product, value in sorted(by_product.items())
+    }
+    n_accounts = int(total["n_members"])
+    persons = org.persons
+    return {
+        "n_persons": len(persons.persons) if persons is not None else n_accounts,
+        "n_accounts": n_accounts,
+        "workspaces": rows,
+        "total": total,
+    }
 
 
 def _members_evidence_applies(source: Path, month: str) -> bool:

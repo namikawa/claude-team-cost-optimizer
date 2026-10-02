@@ -220,6 +220,24 @@ def test_details_is_written_for_every_analysis(make_input, cfg, tmp_path):
     assert _headings(details) == ["全ユーザ", "詳細利用状況", "組織内の分布（参考値）", "感度分析"]
 
 
+def test_multi_workspace_documents_have_no_overlapping_sections(tmp_path):
+    """複数 workspace の組織でも、同じ section が report と details の両方に出ない。"""
+    output_dir = tmp_path / "reports"
+    rc = main([
+        "analyze", "--config", str(REPO_ROOT / "examples" / "config.yaml"),
+        "--input-dir", str(EXAMPLES_INPUT), "--month", MONTH, "--org", "org-c",
+        "--output-dir", str(output_dir),
+    ])
+    assert rc == 0
+    org_out = output_dir / "org-c"
+    report_md = REPORT.path(org_out, MONTH, "org-c").read_text(encoding="utf-8")
+    details_md = DETAILS.path(org_out, MONTH, "org-c").read_text(encoding="utf-8")
+    in_report, in_details = set(_headings(report_md)), set(_headings(details_md))
+    assert not (in_report & in_details)
+    # 判定は report、人の表は details（同じ人の層を2つの文書で重ねない）
+    assert "複数スペースの利用" in in_report and "人別の利用" in in_details
+
+
 def test_details_has_no_discussion_section(all_in):
     """考察は report.md にだけ置く（考察の保全の対象を1つに保つ）。"""
     _, _, details_path = all_in

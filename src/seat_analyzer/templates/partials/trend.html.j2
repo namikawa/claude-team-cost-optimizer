@@ -2,7 +2,7 @@
 {% if trend %}
 <section class="card">
   <div class="card-hd">
-    <div class="hd-main"><h2>前月からの変化</h2></div>
+    <div class="hd-main"><h2>前月からの変化{% if ws_label %}（{{ ws_label }}）{% endif %}</h2></div>
     <div class="hd-note">比較対象: {{ trend.compare_month }}{% if trend.gap_skipped %}（直前月が欠測のため直前の存在月と比較）{% endif %}</div>
   </div>
   <div class="card-bd">

@@ -1,0 +1,14 @@
+Email,Account UUID,Product,Model,Model Family,Request Count,Prompt Tokens,Completion Tokens,Total Gross Spend USD,Total Net Spend USD
+fujii@example.co.jp,uuid-2eb625dd,Claude Code,claude-opus-4-8,claude-opus,2400,80000000,8000000,40.0000,40.0000
+hoshino@example.co.jp,uuid-822c45e7,Claude Code,claude-opus-4-8,claude-opus,2000,66666666,6666666,0.0000,0.0000
+ueda@example.co.jp,uuid-1db79413,Claude Code,claude-sonnet-4-6,claude-sonnet,1200,66666666,6666666,0.0000,0.0000
+kubota@example.co.jp,uuid-12aafb1c,Claude Code,claude-sonnet-4-6,claude-sonnet,320,17777777,1777777,0.0000,0.0000
+kimura@example.co.jp,uuid-91a02ad0,Claude Code,claude-opus-4-8,claude-opus,3600,120000000,12000000,250.0000,250.0000
+nishi@example.co.jp,uuid-8896d862,Claude Code,claude-opus-4-8,claude-opus,1008,33600000,3360000,60.0000,60.0000
+nishi@example.co.jp,uuid-8896d862,Chat,claude-opus-4-8,claude-opus,672,22400000,2240000,0.0000,0.0000
+ota@example.co.jp,uuid-7af4eeae,Claude Code,claude-sonnet-4-6,claude-sonnet,216,12000000,1200000,0.0000,0.0000
+ota@example.co.jp,uuid-7af4eeae,Cowork,claude-sonnet-4-6,claude-sonnet,504,28000000,2800000,0.0000,0.0000
+morita@example.co.jp,uuid-c6033c81,Chat,claude-haiku-4-5,claude-haiku,60,10000000,1000000,0.0000,0.0000
+sakai@example.co.jp,uuid-186abcf3,Claude Code,claude-sonnet-4-6,claude-sonnet,100,5555555,555555,0.0000,0.0000
+takagi@example.co.jp,uuid-1f873c47,Claude Code,claude-sonnet-4-6,claude-sonnet,320,17777777,1777777,0.0000,0.0000
+takagi@example.co.jp,uuid-1f873c47,Design,claude-sonnet-4-6,claude-sonnet,320,17777777,1777777,0.0000,0.0000
