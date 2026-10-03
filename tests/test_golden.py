@@ -25,6 +25,7 @@ Team スペース（workspace）を運用する org-c を並べ、複数 workspa
 
 org-c は 2026-07 と 2026-08 のデータしか持たないので、2026-06 のケース（full /
 preview）では対象月のデータが無い組織として飛ばされ、出力は org-a / org-b のまま。
+速報の複数スペースも org-c の 2026-08 を独立ケースで固定する。
 
 golden の更新手順:
 
@@ -77,6 +78,7 @@ CASES = {
     # 合わせる。短い値を書くと、月全体のデータを部分月と偽って割り増した数字が
     # golden に固定される。
     "preview-snapshots": Case("2026-07", ("--org", "org-b", "--preview", "--days", "31")),
+    "preview-multi": Case("2026-08", ("--org", "org-c", "--preview", "--days", "31")),
     # 条件つき section がすべて出る月（examples/generate_sample_data.py の全部入りサンプル）。
     # V2 判定の decision-evidence もこのケースで固定する。他のケースは v1 のままなので、
     # V1 の成果物が V2 の結線で変わらないことの検査になる。2つの Team スペースを運用する

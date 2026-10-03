@@ -13,6 +13,8 @@ from seat_analyzer.data_quality import (
     issue_to_dict,
     issues_to_canonical_json,
     issues_to_json,
+    members_info_issues,
+    person_issues,
     sort_issues,
     workspace_config_issues,
     workspace_issues,
@@ -31,10 +33,13 @@ EXPECTED_CODES = {
     "UNKNOWN_MODEL",
     "NUMERIC_PARSE_FAILED",
     "MEMBER_ROW_MISSING",
+    "MEMBERS_INFO_UNREGISTERED",
+    "MEMBERS_INFO_UNREADABLE",
     # Workspace
     "WORKSPACE_LAYOUT_MIXED",
     "WORKSPACE_CONFIG_MISMATCH",
     "WORKSPACE_PRIMARY_INVALID",
+    "SECONDARY_ONLY_ACCOUNT",
     # Identity
     "IDENTITY_EMAIL_FALLBACK",
     "IDENTITY_CONFLICT",
@@ -69,14 +74,96 @@ def test_issue_code_vocabulary_is_fixed():
     # __members__はaliasも列挙するため、別名の紛れ込みも検出できる
     members = IssueCode.__members__
     assert set(members) == EXPECTED_CODES
-    assert len(members) == 32
-    assert len(EXPECTED_CODES) == 32
+    assert len(members) == 35
+    assert len(EXPECTED_CODES) == 35
 
 
 def test_issue_code_value_equals_name():
     for name, member in IssueCode.__members__.items():
         assert name == member.name
         assert name == member.value
+
+
+def _person_cfg(cfg):
+    cfg["organizations"] = {"org-x": {"workspaces": {
+        "main": {"primary": True}, "second": {"fixed_seat": "premium"},
+    }}}
+    return cfg
+
+
+def test_history_gap_excludes_months_before_first_spend(cfg, make_input):
+    root = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                      members=["a@x.jp,Premium"], org="org-x")
+    issues = inspect_input(root / "org-x", "2026-06", cfg, "org-x")
+    assert IssueCode.MISSING_HISTORY_MONTH not in {issue.code for issue in issues}
+    make_input({"2026-04": [spend_row("a@x.jp", 10.0)]},
+               org="org-x")
+    issues = inspect_input(root / "org-x", "2026-06", cfg, "org-x")
+    assert IssueCode.MISSING_HISTORY_MONTH in {issue.code for issue in issues}
+
+
+def test_person_issues_only_for_started_seated_secondary(cfg, make_input):
+    cfg = _person_cfg(cfg)
+    root = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                      members=["a@x.jp,Premium"], org="org-x", workspace="main")
+    make_input({"2026-06": [spend_row("b@y.jp", 10.0)]},
+               members=["b@y.jp,Premium", "c@y.jp,Unassigned"],
+               org="org-x", workspace="second")
+    issues = person_issues(root / "org-x", "2026-06", cfg, "org-x")
+    assert len(issues) == 1
+    assert issues[0].code == IssueCode.SECONDARY_ONLY_ACCOUNT
+    assert issues[0].scope["workspace"] == "second"
+    assert issues[0].scope["emails"] == ("b@y.jp",)
+    assert "c@y.jp" not in issues[0].message
+    assert person_issues(root / "org-x", None, cfg, "org-x") == []
+    (root / "org-x" / "main" / "members" / "members_2026-06.csv").write_text(
+        "Email,Seat Type\na@x.jp,Premium\nb@y.jp,Standard\n",
+        encoding="utf-8", newline="\n")
+    assert person_issues(root / "org-x", "2026-06", cfg, "org-x") == []
+    (root / "org-x" / "main" / "members" / "members_2026-06.csv").unlink()
+    assert person_issues(root / "org-x", "2026-06", cfg, "org-x") == []
+
+
+def test_person_issues_ignores_future_secondary_members(cfg, make_input):
+    cfg = _person_cfg(cfg)
+    root = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                      members=["a@x.jp,Premium"], org="org-x", workspace="main")
+    make_input({"2026-07": [spend_row("b@y.jp", 10.0)]},
+               members=["b@y.jp,Premium"], members_month="2026-07",
+               org="org-x", workspace="second")
+    assert person_issues(root / "org-x", "2026-06", cfg, "org-x") == []
+    issues = inspect_input(root / "org-x" / "second", "2026-07", cfg, "org-x")
+    assert IssueCode.MISSING_HISTORY_MONTH not in {issue.code for issue in issues}
+
+
+def test_members_info_issues_include_started_union_without_workspace(cfg, make_input):
+    cfg = _person_cfg(cfg)
+    root = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                      members=["a@x.jp,Premium"], org="org-x", workspace="main")
+    make_input({"2026-06": [spend_row("b@y.jp", 10.0)]},
+               members=["b@y.jp,Premium"], org="org-x", workspace="second")
+    org_input = root / "org-x"
+    dirs = [org_input / "main", org_input / "second"]
+    assert members_info_issues(org_input, "2026-06", cfg, "org-x", dirs) == []
+    (org_input / "members-info.csv").write_text(
+        "email,department\na@x.jp,架空部\n", encoding="utf-8", newline="\n")
+    issues = members_info_issues(org_input, "2026-06", cfg, "org-x", dirs)
+    assert len(issues) == 1
+    assert issues[0].code == IssueCode.MEMBERS_INFO_UNREGISTERED
+    assert issues[0].scope["emails"] == ("b@y.jp",)
+    assert "workspace" not in issues[0].scope
+
+
+def test_members_info_unreadable_is_issue_without_absolute_path(cfg, make_input):
+    root = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                      members=["a@x.jp,Premium"], org="org-x")
+    org_input = root / "org-x"
+    (org_input / "members-info.csv").write_text(
+        "department\n架空部\n", encoding="utf-8", newline="\n")
+    issues = members_info_issues(org_input, "2026-06", cfg, "org-x", [org_input])
+    assert len(issues) == 1 and issues[0].code == IssueCode.MEMBERS_INFO_UNREADABLE
+    assert issues[0].severity == Severity.ERROR
+    assert str(org_input) not in issues[0].message
 
 
 def test_severity_has_only_error_and_warning():

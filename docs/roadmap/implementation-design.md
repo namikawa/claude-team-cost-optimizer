@@ -1136,6 +1136,18 @@ V2判定の根拠（decision-evidence）を併記する」opt-inで、主判定�
 - `UNKNOWN_MODEL`
 - `NUMERIC_PARSE_FAILED`
 - `MEMBER_ROW_MISSING`
+- `MEMBERS_INFO_UNREGISTERED`
+- `MEMBERS_INFO_UNREADABLE`
+
+### Workspace
+
+- `WORKSPACE_LAYOUT_MIXED`
+- `WORKSPACE_CONFIG_MISMATCH`
+- `WORKSPACE_PRIMARY_INVALID`
+- `SECONDARY_ONLY_ACCOUNT`
+
+複数のTeamスペースを運用する組織（§26）の構造と人の検査。`MEMBERS_INFO_UNREGISTERED`と
+`MEMBERS_INFO_UNREADABLE`はレイアウトによらず持つ検査なので入力に置く（§26.8）。
 
 ### Identity
 
@@ -3045,21 +3057,50 @@ dashboardで読めるようにする。
 
 対象:
 
-- `src/seat_analyzer/analyze/preview.py`
-- `src/seat_analyzer/data_quality.py`（§26.8の人の検査）
-- `docs/usage.md`・`docs/reference.md`・`README.md`・`CHANGELOG.md`
+- `src/seat_analyzer/analyze/preview.py`（任意引数`workspace`・`members_info_dir`・
+  `extra_demand`と、未丸めの観測需要`own_demand`）・`src/seat_analyzer/analyze/workspaces.py`
+  （`OrgPreviewResult`・`preview_org`・`preview_days`。発見と設定の突き合わせを正式分析と共用）・
+  `src/seat_analyzer/analyze/persons.py`（`preview_persons`）
+- `src/seat_analyzer/report/`（markdown・html・spaces・text）・`src/seat_analyzer/templates/`
+  （preview-dashboardのworkspaceごとの節・credit-reachの見出しに表示名・新設の
+  `preview-workspaces.html.j2`と`preview-persons.html.j2`）・
+  `src/seat_analyzer/prompts/aspects-preview.md`
+- `src/seat_analyzer/cli.py`（速報の入れ子レイアウトの拒否を外す・観測日数の決定・
+  `discuss --preview`）
+- `src/seat_analyzer/data_quality.py`・`src/seat_analyzer/domain.py`（§26.8の人の検査と
+  `MISSING_HISTORY_MONTH`の規則）
+- `docs/usage.md`・`docs/reference.md`・`docs/setup.md`・`docs/README.md`・`README.md`・
+  `CHANGELOG.md`
+- `tests/golden/`（新ケース`preview-multi`）・`tests/test_golden.py`・`tests/test_preview.py`・
+  `tests/test_cli.py`・`tests/test_data_quality.py`
 
 実装:
 
-- 速報をworkspaceごとに出し、人の需要合計を表に足す
-- 副にだけアカウントがある人の警告、members-infoの未登録を全workspaceのメールで見る
+- §26.7の速報。`preview()`は1 workspace分のまま任意引数を足し、組織単位は`preview_org`が束ねる
+  （正式分析の`analyze`と`analyze_org`と同じ分担）。出力関数は複数workspaceの組織でなければ
+  唯一のworkspaceの結果で従来の経路を通す
+- §26.8の人の検査と`MISSING_HISTORY_MONTH`の規則と、まだ始まっていないworkspaceの対象月の
+  検査（§26.8の「対象月」）
 - 入力レイアウト・config・レポートの節・CSVの列・移行手順（既存の3ディレクトリを主workspaceへ
-  移す。`members-info.csv`と`github-cache/`は動かさない）を文書化する
+  移す。`members-info.csv`と`github-cache/`は動かさない）を文書化する。`fixed_seat`は副スペース
+  （複数workspaceの組織）のための設定と書く
 
 受け入れ条件:
 
-- 単一workspaceの速報が不変
-- 移行手順どおりに動かした組織の出力が移行前とバイト一致（`workspaces`が1つのとき）
+- 単一workspaceの速報・正式分析のgolden 5ケースがバイト一致
+- 新ケース`preview-multi`（org-cの2026-08）で、スペース別・連結した一次判断テーブル・人別の
+  需要・workspaceごとの節がMarkdownとHTMLの両方に出て、主の行の需要は合算値・観測系は各
+  アカウント自身の需要
+- 固定シートのworkspaceのStandard / Premiumは「対象外（固定シート）」、観測需要がほぼゼロなら
+  「遊休候補」、付与候補は出ない
+- 移行手順どおりに動かした組織（`workspaces`が1つ）の速報・正式分析の出力が移行前とバイト一致
+- 観測日数の食い違い・始まったworkspaceの欠月・`--allow-missing-workspace`との併用で止まり、
+  未開始のworkspaceは警告して飛ぶ。`discuss --preview`が入れ子レイアウトを受け付ける
+- doctorの3つの検査が定義どおりに出て、`MISSING_HISTORY_MONTH`が最古のspendの月より前の月に
+  出ない。読めないmembers-infoがあっても`--format json`が出力される。まだ始まっていない
+  workspaceは過去の月の検査でerrorにならない
+- 追加した文言は`check-text`を通し、差分は`check-text --diff`で0件
+- `uv run pytest`と`uv run ruff check .`が通り、CIの全ジョブが緑
 
 #### Step 49: 切替の観測（Phase 2）
 
@@ -3572,16 +3613,46 @@ Standardの運用でも同じ規則で動く。
   列はアカウント単位のまま
 - 人数以外の件数（変更推奨・要観察・上限到達疑い・一覧の件数）はアカウント単位で、その旨を
   注意事項に書く
-- 速報: workspaceごとに従来の一次判断を出し、人の需要合計を表に足す（Step 48。それまでは
-  複数workspaceの組織を、複数組織の実行では通知して飛ばし、単一対象では止める）
+- 速報（preview / preview-dashboard）: 複数workspaceの組織は、workspaceごとに従来の一次判断を
+  出して組織1セットにまとめる（それ以外の組織の速報は従来とバイト一致）。§26.4の両軸に従い、
+  副を先に計算して、主の行の一次判断を全workspaceの合算需要（未丸めの観測値の和を月末ペースに
+  換算したもの）で決める。主の行の集合は主のmembersと主自身のspendのままで、副にだけ居る人の
+  主の行は作らない。判定系（一次判断テーブル・一次判断の内訳・付与候補・追加クレジット残額）は
+  全アカウントを主→副の順に連結し、観測系（月末ペース換算需要の棒・詳細利用状況・スペース別・
+  サマリの観測需要の合計）は各アカウント自身の需要で出す
+  - 新設の表: サマリ直下の「スペース別」（workspace別の人数・シート内訳・シート費・観測需要・
+    月末ペース換算・実課金）、一次判断テーブルのスペース列、「人別の需要（スペース合算）」
+    （1人1行。保有シート・シート費・観測需要と月末ペース換算の合計・主と副の換算需要・副の比率・
+    実課金・主の一次判断）。副の比率はシートのある副アカウントが無い人と、換算需要の合計が0の人は
+    「—」。払い出し判定・継続判定は完全月で行うので速報には置かない
+  - workspaceごとの節（見出しに表示名）: 追加クレジットの状態・追加クレジット残額・月中の利用
+    推移・月中のClaude Code活動・月中のメンバー変動・付与候補。LoCの観測時点はworkspaceごとに示す
+  - `fixed_seat`のworkspaceのStandard / Premiumは「対象外（固定シート）」（観測需要がほぼゼロなら
+    観測として「遊休候補」のまま）。そのworkspaceでは付与候補を出さない
+  - 観測日数は全workspaceで同じにする。`--days`を省略したときはファイル名の期間から決め、
+    workspace間で食い違えば止めて`--days`の指定を求める
+  - まだ始まっていないworkspaceは警告して飛ばす。始まっているのに対象月のspendが無いworkspaceは
+    止める（速報は`--allow-missing-workspace`を受け付けない。§26.6）。どのworkspaceにも対象月の
+    spendが無い組織は、正式分析と同じく「対象月のデータが無い組織」として扱う
 - workspace名は他組織の禁止語に加えない（一般名を推奨する。Teamの表示名を使うなら`label`に書く）
 
 ### 26.8 doctor
 
 - 構造: 混在レイアウト・configとの不一致・主の不在と重複
-- 対象月: workspace別のspend/membersの有無（§26.6の規則でerror/warning）
-- 人: 副にだけアカウントがある人（主に居ない）を警告する。許容するが、主の払い出し漏れか
-  メールの相違の可能性がある。members-infoの未登録は全workspaceのメールで見る
+- 対象月: workspace別のspend/membersの有無（§26.6の規則でerror/warning。まだ始まっていない
+  workspaceは入力の検査をせずwarningを1件出し、始まっているのに対象月のspendが無いworkspaceは
+  error）。ヒステリシス窓の
+  欠月（`MISSING_HISTORY_MONTH`）は、その入力の最古のspendの月より前の月を数えない（まだ
+  始まっていない月。従来レイアウトも同じ規則）
+- 人: 対象月に始まっているworkspaceだけを見る（membersは月末に最も近いファイルを後の月からも
+  採るので、未開始のworkspaceを含めると将来のメンバーと比べてしまう）
+  - 副にだけアカウントがある人（副のStandard / Premiumのアカウントが主のmembersに居ない）を
+    警告する（`SECONDARY_ONLY_ACCOUNT`）。許容するが、主の払い出し漏れかメールの相違の可能性が
+    ある。主が未開始なら比べない
+  - members-infoの未登録は、全workspaceのmembersと対象月のspendのメールの和集合で見る
+    （`MEMBERS_INFO_UNREGISTERED`・組織単位で1件。従来レイアウトも同じ検査を持つ）。
+    ファイルがあるのに読めないときはerror（`MEMBERS_INFO_UNREADABLE`。分析も同じ理由で止まる）
+    にし、他の検査と`--format json`の出力は続ける
 
 ### 26.9 V2との関係
 

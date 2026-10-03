@@ -1,0 +1,1386 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Team シート速報プレビュー — org-c — 2026-08</title>
+<style>
+  :root {
+    color-scheme: light;
+    --sans: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+            "Hiragino Sans", "Noto Sans JP", monospace;
+    --bg: #f4f5f3;
+    --surface: #ffffff;
+    --surface-2: #f1f3f0;
+    --line: #e3e6e2;
+    --line-2: #eef0ed;
+    --ink: #14181a;
+    --ink-2: #495256;
+    --muted: #676f74;
+    --hover: #f8f9f7;
+    --accent: #0d796f;
+    --accent-soft: #e2f2ef;
+    --std: #2f6f9b;
+    --std-soft: #e6eef5;
+    --prem: #a8601c;
+    --prem-soft: #f9eede;
+    --warn: #bd4038;
+    --warn-soft: #fbeae8;
+    --amber: #8d6717;
+    --amber-soft: #faf1dd;
+    --track: #e8ebe7;
+    --dim: #697478;
+    --shadow: 0 1px 2px rgba(20,24,26,.05), 0 14px 32px -22px rgba(20,24,26,.22);
+    --bar-head: 276px;
+    --bar-tail: 124px;
+  }
+  @media (prefers-color-scheme: dark) {
+    html:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0c0f11;
+      --surface: #15191b;
+      --surface-2: #1b2022;
+      --line: #262c2f;
+      --line-2: #202628;
+      --ink: #e9edea;
+      --ink-2: #b0b9ba;
+      --muted: #848e90;
+      --hover: #1b2123;
+      --accent: #2fbfae;
+      --accent-soft: #12302d;
+      --std: #63aada;
+      --std-soft: #16262f;
+      --prem: #e09a4e;
+      --prem-soft: #2e2314;
+      --warn: #e8776a;
+      --warn-soft: #331d1b;
+      --amber: #d9a94a;
+      --amber-soft: #2f2713;
+      --track: #242a2c;
+      --dim: #80898b;
+      --shadow: 0 1px 2px rgba(0,0,0,.5), 0 16px 34px -24px rgba(0,0,0,.8);
+    }
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0c0f11;
+    --surface: #15191b;
+    --surface-2: #1b2022;
+    --line: #262c2f;
+    --line-2: #202628;
+    --ink: #e9edea;
+    --ink-2: #b0b9ba;
+    --muted: #848e90;
+    --hover: #1b2123;
+    --accent: #2fbfae;
+    --accent-soft: #12302d;
+    --std: #63aada;
+    --std-soft: #16262f;
+    --prem: #e09a4e;
+    --prem-soft: #2e2314;
+    --warn: #e8776a;
+    --warn-soft: #331d1b;
+    --amber: #d9a94a;
+    --amber-soft: #2f2713;
+    --track: #242a2c;
+    --dim: #80898b;
+    --shadow: 0 1px 2px rgba(0,0,0,.5), 0 16px 34px -24px rgba(0,0,0,.8);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; }
+  h1, h2 { margin: 0; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    background: var(--surface); border-bottom: 1px solid var(--line);
+  }
+  .topbar-inner { max-width: 1600px; margin: 0 auto; padding: 20px 36px 0; }
+  .topbar-row {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 32px; flex-wrap: wrap;
+  }
+  .topbar-left { display: flex; flex-direction: column; gap: 8px; }
+  .crumbs {
+    display: flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .crumbs .org {
+    padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--ink-2);
+  }
+  .crumbs .sep { color: var(--dim); }
+  .page-title { font-size: 24px; font-weight: 600; letter-spacing: -.01em; }
+  .topbar-right { display: flex; align-items: center; gap: 20px; padding-top: 4px; }
+  .hero { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+  .hero-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .08em; color: var(--muted);
+  }
+  .hero-value {
+    font-family: var(--mono); font-size: 19px; font-weight: 600; color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .theme-switch {
+    display: none; gap: 2px; padding: 3px;
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px;
+  }
+  html.js .theme-switch { display: flex; }
+  .theme-btn {
+    border: 1px solid transparent; background: transparent; color: var(--muted);
+    cursor: pointer;
+    padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 500;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .theme-btn.is-active {
+    background: var(--surface); border-color: var(--dim); color: var(--ink);
+    box-shadow: var(--shadow);
+  }
+
+  .tabbar { display: none; gap: 4px; margin-top: 22px; flex-wrap: wrap; }
+  html.js .tabbar { display: flex; }
+  .tab {
+    display: flex; align-items: center; gap: 8px;
+    border: none; background: none; cursor: pointer;
+    padding: 10px 16px 14px; font-size: 13.5px; font-weight: 500; color: var(--muted);
+    transition: color .15s;
+  }
+  .tab.is-active { color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 0 var(--accent); }
+  .tab:hover { color: var(--ink); }
+  .tab-count {
+    font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 999px;
+    background: var(--surface-2); color: var(--muted);
+  }
+  .tab.is-active .tab-count { background: var(--accent-soft); color: var(--accent); }
+  .tabspacer { height: 22px; }
+
+  .main { max-width: 1600px; margin: 0 auto; padding: 32px 36px 96px; }
+  .tabpanel { display: block; }
+  .tabpanel + .tabpanel { margin-top: 28px; }
+  html.js .tabpanel { display: none; }
+  html.js .tabpanel.is-active { display: block; }
+  .panel-title {
+    font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 18px;
+  }
+  html.js .panel-title { display: none; }
+  .stack { display: flex; flex-direction: column; gap: 28px; }
+  .grid-2 {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr));
+    gap: 20px; align-items: start;
+  }
+  .stack > .grid-2:not(:has(> *)) { display: none; }
+
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .kpis.five { grid-template-columns: repeat(5, 1fr); }
+  .kpi {
+    display: flex; flex-direction: column; gap: 10px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    padding: 20px 22px; box-shadow: var(--shadow);
+  }
+  .kpi .tag {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .kpi .v {
+    font-family: var(--mono); font-size: 32px; line-height: 1.05; font-weight: 600;
+    letter-spacing: -.02em; font-variant-numeric: tabular-nums; word-break: break-all;
+  }
+  .kpi.hl .v { color: var(--accent); }
+  .kpi .l { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .card-hd {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+    padding: 16px 20px; border-bottom: 1px solid var(--line);
+  }
+  .card-hd h2 { font-size: 14.5px; font-weight: 600; }
+  .hd-main { display: flex; flex-direction: column; gap: 3px; }
+  .hd-sub { font-size: 12px; color: var(--muted); }
+  .hd-note { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .card-bd { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+  .card-bd.bars-bd { padding: 20px 22px; gap: 9px; }
+  .card-ft {
+    padding: 14px 20px; border-top: 1px solid var(--line);
+    font-size: 11.5px; color: var(--muted); line-height: 1.7;
+  }
+  .lead { margin: 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.8; }
+
+  .legend {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    font-size: 11.5px; color: var(--muted);
+  }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+  .legend i.line { width: 3px; height: 13px; }
+  .k-std { background: var(--std); }
+  .k-prem { background: var(--prem); }
+  .k-accent { background: var(--accent); }
+  .k-dim { background: var(--dim); }
+  .k-median { background: var(--ink); }
+  .k-mean { background: repeating-linear-gradient(to bottom, var(--dim) 0 3px, transparent 3px 6px); }
+  .k-hatch {
+    background: repeating-linear-gradient(45deg, var(--dim) 0 3px, var(--track) 3px 6px);
+  }
+
+  .tablebox { overflow: auto; max-height: 540px; }
+  .tablebox.tall { max-height: 620px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th {
+    position: sticky; top: 0; z-index: 2;
+    text-align: left; padding: 11px 18px; white-space: nowrap;
+    background: var(--surface-2); border-bottom: 1px solid var(--line);
+    font-family: var(--mono); font-size: 11.5px; font-weight: 500; letter-spacing: .05em;
+    color: var(--muted);
+  }
+  td { padding: 13px 18px; border-bottom: 1px solid var(--line-2); }
+  tr:hover td { background: var(--hover); }
+  th.num, td.num {
+    text-align: right; white-space: nowrap;
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+  }
+  td.user {
+    max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-weight: 500;
+  }
+  td.sub { color: var(--ink-2); }
+  td.delta { color: var(--prem); font-weight: 500; }
+  td.code { color: var(--accent); }
+  td.dim { color: var(--dim); }
+  td.up { color: var(--prem); }
+  td.gain { font-weight: 500; }
+  td.gain.zero { color: var(--dim); }
+  .ink-code { color: var(--accent); }
+  .ink-dim { color: var(--dim); }
+  td.seat, td.judge { white-space: nowrap; font-size: 12.5px; }
+  td.wrap { font-size: 12px; color: var(--ink-2); line-height: 1.6; min-width: 200px; }
+  td.arrow { color: var(--dim); padding: 0 6px; }
+  td.save { color: var(--ink-2); }
+  td.save.pos { color: var(--accent); font-weight: 600; }
+  td.flag { color: var(--warn); font-weight: 600; font-size: 12px; }
+  td.latest { color: var(--ink); }
+  .to { font-weight: 600; }
+  .arrow { color: var(--dim); padding: 0 6px; }
+
+  .badge {
+    display: inline-block; border-radius: 999px; padding: 3px 9px;
+    font-size: 11.5px; font-weight: 600;
+  }
+  .b-change { background: var(--accent-soft); color: var(--accent); }
+  .b-watch { background: var(--amber-soft); color: var(--amber); }
+  .b-keep { background: var(--surface-2); color: var(--muted); }
+  .b-unknown { background: var(--warn-soft); color: var(--warn); }
+  .conf { color: var(--dim); font-size: 11px; margin-left: 6px; }
+  .cap { color: var(--warn); font-weight: 700; }
+  .seat-standard { color: var(--std); }
+  .seat-premium { color: var(--prem); }
+  .seat-unassigned, .seat-unknown { color: var(--dim); }
+
+  .bars { position: relative; display: flex; flex-direction: column; gap: 9px; }
+  .bar { display: flex; align-items: center; gap: 14px; }
+  .bar .rank {
+    width: 38px; text-align: right;
+    font-family: var(--mono); font-size: 11px; color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .bar .name {
+    width: 210px; font-size: 12.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .bar .track {
+    flex: 1; height: 16px; border-radius: 4px; background: var(--track); position: relative;
+  }
+  .bar .fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 4px; }
+  .bar .val {
+    width: 110px; text-align: right; font-size: 12.5px;
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+  }
+  .bar .val.wide { width: 190px; font-size: 12px; color: var(--ink-2); }
+  .guides {
+    position: absolute; top: -2px; bottom: -2px;
+    left: var(--bar-head); right: var(--bar-tail);
+    pointer-events: none; z-index: 1;
+  }
+  .guide { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1px; border-radius: 2px; }
+  .g-median { background: var(--ink); }
+  .g-mean { background: repeating-linear-gradient(to bottom, var(--dim) 0 5px, transparent 5px 10px); }
+  .guide-key { display: inline-block; width: 3px; height: .95em; vertical-align: -1px; }
+  .fill-code { background: var(--accent); }
+  .fill-hatch {
+    background: repeating-linear-gradient(45deg, var(--dim) 0 4px, var(--track) 4px 8px);
+  }
+
+  .months { display: flex; flex-direction: column; gap: 14px; }
+  .m-row { display: flex; align-items: center; gap: 14px; }
+  .m-month { width: 64px; font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+  .m-tracks { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+  .m-track { height: 11px; border-radius: 3px; background: var(--track); position: relative; overflow: hidden; }
+  .m-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; height: 100%; }
+  .m-api { background: var(--std); }
+  .m-billed { background: var(--accent); }
+  .m-billed.pos { min-width: 2px; }
+  .m-vals {
+    width: 110px; display: flex; flex-direction: column; gap: 5px; text-align: right;
+    font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums;
+  }
+  .m-vals .api { color: var(--std); }
+  .m-vals .billed { color: var(--accent); }
+  .m-active {
+    width: 56px; text-align: right;
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+  }
+
+  .prev-group { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+  .prev-hd { display: flex; align-items: center; gap: 10px; }
+  .kind {
+    font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    white-space: nowrap;
+  }
+  .kind.started { background: var(--accent-soft); color: var(--accent); }
+  .kind.stopped { background: var(--warn-soft); color: var(--warn); }
+  .kind.billed { background: var(--amber-soft); color: var(--amber); }
+  .prev-n { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .people { display: flex; flex-direction: column; }
+  .person {
+    display: flex; align-items: center; gap: 12px;
+    padding: 7px 0; border-bottom: 1px solid var(--line-2);
+  }
+  .person .who {
+    font-size: 12.5px; color: var(--ink);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .person .amount {
+    margin-left: auto; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .empty { padding: 4px 0 8px; font-size: 12.5px; color: var(--muted); }
+
+  .creditbar { display: flex; gap: 6px; height: 8px; }
+  .creditbar span { border-radius: 99px; min-width: 4px; }
+  .creditbar .c-enabled { background: var(--accent); }
+  .creditbar .c-disabled { background: var(--track); }
+  .creditbar .c-unknown { background: var(--warn); }
+
+  .jrow { display: flex; align-items: center; gap: 12px; }
+  .jrow .label { width: 140px; font-size: 12.5px; color: var(--ink-2); }
+  .jrow .track { flex: 1; height: 10px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .jrow .fill { height: 100%; border-radius: 3px; }
+  .jrow .n {
+    width: 34px; text-align: right;
+    font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums;
+  }
+  .f-change { background: var(--accent); }
+  .f-watch { background: var(--amber); }
+  .f-keep { background: var(--muted); }
+  .f-unknown { background: var(--warn); }
+
+  .items { display: flex; flex-direction: column; }
+  .items li {
+    display: flex; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line-2);
+    font-size: 12.5px; color: var(--ink-2); line-height: 1.7;
+  }
+  .items li:last-child { border-bottom: none; }
+  .items li::before { content: "—"; color: var(--dim); }
+  .notes { display: flex; flex-direction: column; gap: 9px; }
+  .notes li {
+    display: flex; gap: 10px; font-size: 12px; color: var(--ink-2); line-height: 1.8;
+  }
+  .notes li::before { content: "—"; color: var(--dim); }
+  .notes.assumptions li { font-size: 12.5px; line-height: 1.85; }
+  ul.items, ul.notes { margin: 0; padding: 0; list-style: none; }
+  .uname { font-weight: 500; color: var(--ink); }
+  .callout {
+    padding: 12px 14px; background: var(--accent-soft); border-radius: 10px;
+    font-size: 12.5px; line-height: 1.7;
+  }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  .toolbar { display: none; }
+  html.js .toolbar {
+    display: flex; align-items: center; align-self: center; gap: 10px; flex-wrap: wrap;
+  }
+  .search, .filter {
+    padding: 7px 11px; background: var(--surface-2);
+    border: 1px solid var(--dim); border-radius: 8px;
+    color: var(--ink); font-family: var(--sans); font-size: 12.5px;
+    -webkit-appearance: none; appearance: none;
+    transition: background .15s, border-color .15s;
+  }
+  .search { width: 200px; }
+  .search::placeholder { color: var(--muted); }
+  .filter { cursor: pointer; }
+  .search:focus, .filter:focus { outline: none; border-color: var(--accent); }
+  .list-count {
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+
+  th.sortable { cursor: pointer; transition: color .15s; }
+  th.sortable:hover { color: var(--ink); }
+  .sort-ind { display: inline-block; min-width: 10px; margin-left: 6px; color: var(--accent); }
+
+  .grab { display: none; }
+  html.js .grab.is-on {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; height: 18px;
+    background: var(--surface-2); border-top: 1px solid var(--line);
+    cursor: ns-resize; touch-action: none; transition: background .15s;
+  }
+  html.js .grab.is-on:hover { background: var(--accent-soft); }
+  .grab span { width: 28px; height: 3px; border-radius: 2px; background: var(--dim); }
+  body.resizing { user-select: none; -webkit-user-select: none; }
+
+  .is-out { display: none; }
+
+  .banner {
+    background: var(--amber-soft); border: 1px solid var(--amber); border-left-width: 5px;
+    border-radius: 10px; padding: 14px 18px; font-size: 12.5px; line-height: 1.8;
+    color: var(--ink-2);
+  }
+</style>
+<script>
+(function () {
+  "use strict";
+
+  var root = document.documentElement;
+  var THEME_KEY = "seatdash-theme";
+  var theme = "auto";
+
+  var MIN_BOX_H = 180;
+
+  var lists = [];
+
+  function each(collection, fn) {
+    for (var i = 0; i < collection.length; i += 1) {
+      fn(collection[i], i);
+    }
+  }
+
+  function toArray(collection) {
+    var out = [];
+    each(collection, function (item) { out.push(item); });
+    return out;
+  }
+
+
+  function applyTheme(mode) {
+    if (mode === "light" || mode === "dark") {
+      root.setAttribute("data-theme", mode);
+    } else {
+      root.removeAttribute("data-theme");
+    }
+  }
+
+  function readTheme() {
+    try {
+      return window.localStorage.getItem(THEME_KEY);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveTheme(mode) {
+    try {
+      window.localStorage.setItem(THEME_KEY, mode);
+    } catch (e) {
+    }
+  }
+
+  root.className = root.className ? root.className + " js" : "js";
+  var saved = readTheme();
+  theme = (saved === "light" || saved === "dark") ? saved : "auto";
+  applyTheme(theme);
+
+  function markTheme() {
+    each(document.querySelectorAll("[data-theme-set]"), function (button) {
+      var on = button.getAttribute("data-theme-set") === theme;
+      if (on) {
+        button.classList.add("is-active");
+      } else {
+        button.classList.remove("is-active");
+      }
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+
+  function setTheme(mode) {
+    theme = mode;
+    applyTheme(mode);
+    markTheme();
+    saveTheme(mode);
+  }
+
+
+  function showTab(name) {
+    each(document.querySelectorAll(".tabpanel"), function (panel) {
+      var on = panel.getAttribute("data-tab") === name;
+      if (on) {
+        panel.classList.add("is-active");
+      } else {
+        panel.classList.remove("is-active");
+      }
+    });
+    each(document.querySelectorAll(".tab"), function (tab) {
+      var on = tab.getAttribute("data-tab") === name;
+      if (on) {
+        tab.classList.add("is-active");
+      } else {
+        tab.classList.remove("is-active");
+      }
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    refreshGrabs();
+  }
+
+
+  var UNITS = { B: 1e9, M: 1e6, K: 1e3 };
+  var NUMBER_RE = /-?\d+(?:\.\d+)?[BMK]?/;
+
+  function toNumber(text) {
+    var found = NUMBER_RE.exec(text.replace(/[\s,$+%]/g, ""));
+    if (!found) {
+      return -Infinity;
+    }
+    var token = found[0];
+    var unit = UNITS[token.charAt(token.length - 1)];
+    return unit ? parseFloat(token.slice(0, -1)) * unit : parseFloat(token);
+  }
+
+  function textOf(node) {
+    return node ? (node.textContent || "") : "";
+  }
+
+  function sortKey(row, index, numeric) {
+    var text = textOf(row.cells ? row.cells[index] : null);
+    return numeric ? toNumber(text) : text.replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  function compare(a, b) {
+    if (a === b) {
+      return 0;
+    }
+    return a < b ? -1 : 1;
+  }
+
+
+  function searchText(row) {
+    var cell = row.querySelector(".user, .name");
+    if (!cell) {
+      return "";
+    }
+    return (textOf(cell) + " " + (cell.getAttribute("title") || "")).toLowerCase();
+  }
+
+  function statusText(row) {
+    return textOf(row.querySelector(".judge .badge")).trim();
+  }
+
+  function show(element, on) {
+    if (on) {
+      element.classList.remove("is-out");
+    } else {
+      element.classList.add("is-out");
+    }
+  }
+
+  function apply(list) {
+    var matched = 0;
+    each(list.rows, function (row) {
+      var ok = true;
+      if (list.query && row._search.indexOf(list.query) < 0) {
+        ok = false;
+      }
+      if (ok && list.status && row._status !== list.status) {
+        ok = false;
+      }
+      if (ok) {
+        matched += 1;
+      }
+      show(row, ok);
+    });
+    if (list.count) {
+      var filtering = Boolean(list.query || list.status);
+      list.count.textContent = filtering
+        ? matched + " / " + list.rows.length + " " + list.unit + "（絞り込み中）"
+        : list.rows.length + " " + list.unit;
+    }
+    updateGrab(list);
+  }
+
+
+  function markSort(list) {
+    each(list.marks, function (mark, index) {
+      var on = index === list.sortCol;
+      mark.indicator.textContent = on ? (list.sortDir > 0 ? "↑" : "↓") : "";
+      mark.th.setAttribute(
+        "aria-sort", on ? (list.sortDir > 0 ? "ascending" : "descending") : "none");
+    });
+  }
+
+  function sortRows(list, index, dir) {
+    var numeric = list.numeric[index];
+    var keyed = [];
+    each(list.rows, function (row, at) {
+      keyed.push({ row: row, at: at, key: sortKey(row, index, numeric) });
+    });
+    keyed.sort(function (a, b) {
+      var order = compare(a.key, b.key);
+      return order === 0 ? a.at - b.at : dir * order;
+    });
+    var rows = [];
+    each(keyed, function (item) {
+      list.body.appendChild(item.row);
+      rows.push(item.row);
+    });
+    list.rows = rows;
+  }
+
+  function addSort(list) {
+    var head = list.table.tHead;
+    if (!head || head.rows.length === 0) {
+      return;
+    }
+    each(head.rows[head.rows.length - 1].cells, function (th, index) {
+      list.numeric.push(th.classList.contains("num"));
+      var indicator = document.createElement("span");
+      indicator.className = "sort-ind";
+      th.appendChild(indicator);
+      th.classList.add("sortable");
+      th.setAttribute("aria-sort", "none");
+      list.marks.push({ th: th, indicator: indicator });
+      th.addEventListener("click", function () {
+        list.sortDir = (list.sortCol === index) ? -list.sortDir
+          : (list.numeric[index] ? -1 : 1);
+        list.sortCol = index;
+        sortRows(list, index, list.sortDir);
+        markSort(list);
+      });
+    });
+  }
+
+
+  function updateGrab(list) {
+    if (!list.grab) {
+      return;
+    }
+    if (list.box.scrollHeight > MIN_BOX_H) {
+      list.grab.classList.add("is-on");
+    } else {
+      list.grab.classList.remove("is-on");
+    }
+  }
+
+  function refreshGrabs() {
+    each(lists, updateGrab);
+  }
+
+  var REFRESH_MS = 120;
+  var refreshTimer = 0;
+
+  function scheduleRefresh() {
+    if (refreshTimer) {
+      return;
+    }
+    refreshTimer = window.setTimeout(function () {
+      refreshTimer = 0;
+      refreshGrabs();
+    }, REFRESH_MS);
+  }
+
+  function watchSize() {
+    window.addEventListener("resize", scheduleRefresh);
+    if (window.ResizeObserver) {
+      var observer = new ResizeObserver(scheduleRefresh);
+      each(lists, function (list) {
+        if (list.box) {
+          observer.observe(list.box);
+        }
+      });
+    }
+  }
+
+  function addGrab(list) {
+    if (!window.PointerEvent) {
+      return null;
+    }
+    var box = list.box;
+    var grab = document.createElement("div");
+    grab.className = "grab";
+    grab.setAttribute("aria-hidden", "true");
+    grab.appendChild(document.createElement("span"));
+    grab.appendChild(document.createElement("span"));
+    box.parentNode.insertBefore(grab, box.nextSibling);
+    list.grab = grab;
+
+    var dragging = false;
+    var startY = 0;
+    var startH = 0;
+    var contentH = 0;
+
+    grab.addEventListener("pointerdown", function (ev) {
+      dragging = true;
+      startY = ev.clientY;
+      startH = box.clientHeight;
+      contentH = box.scrollHeight;
+      document.body.classList.add("resizing");
+      if (grab.setPointerCapture) {
+        grab.setPointerCapture(ev.pointerId);
+      }
+      ev.preventDefault();
+    });
+
+    grab.addEventListener("pointermove", function (ev) {
+      if (!dragging) {
+        return;
+      }
+      var wanted = startH + (ev.clientY - startY);
+      var upper = Math.max(MIN_BOX_H, contentH);
+      box.style.maxHeight = Math.max(MIN_BOX_H, Math.min(wanted, upper)) + "px";
+    });
+
+    function end(ev) {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      document.body.classList.remove("resizing");
+      if (grab.releasePointerCapture && grab.hasPointerCapture
+          && grab.hasPointerCapture(ev.pointerId)) {
+        grab.releasePointerCapture(ev.pointerId);
+      }
+    }
+
+    grab.addEventListener("pointerup", end);
+    grab.addEventListener("pointercancel", end);
+    return grab;
+  }
+
+
+  function closestCard(element) {
+    var node = element;
+    while (node && node.classList) {
+      if (node.classList.contains("card")) {
+        return node;
+      }
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function toolbarOf(card) {
+    if (!card) {
+      return null;
+    }
+    var head = card.querySelector(".card-hd");
+    if (!head) {
+      return null;
+    }
+    var bar = head.querySelector(".toolbar");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "toolbar";
+      head.appendChild(bar);
+    }
+    return bar;
+  }
+
+  function addSearch(list, bar) {
+    var input = document.createElement("input");
+    input.type = "search";
+    input.className = "search";
+    input.placeholder = "ユーザを検索";
+    input.setAttribute("aria-label", "ユーザ名・メールアドレスで絞り込む");
+    bar.insertBefore(input, bar.firstChild);
+    input.addEventListener("input", function () {
+      list.query = input.value.trim().toLowerCase();
+      apply(list);
+    });
+  }
+
+  function addCount(list, bar) {
+    var count = document.createElement("span");
+    count.className = "list-count";
+    bar.appendChild(count);
+    list.count = count;
+  }
+
+  function addFilter(list, bar) {
+    var select = bar.querySelector("select[data-filter]");
+    if (!select) {
+      return;
+    }
+    select.addEventListener("change", function () {
+      list.status = select.value;
+      apply(list);
+    });
+  }
+
+
+  function newList(rows) {
+    var list = {
+      rows: rows, query: "", status: "",
+      numeric: [], marks: [], sortCol: -1, sortDir: 1,
+      count: null, grab: null, unit: "件",
+    };
+    lists.push(list);
+    return list;
+  }
+
+  function setUp(list, anchor) {
+    var person = false;
+    each(list.rows, function (row) {
+      row._search = searchText(row);
+      row._status = statusText(row);
+      person = person || row._search !== "";
+    });
+    list.unit = person ? "名" : "件";
+    if (person) {
+      var bar = toolbarOf(closestCard(anchor));
+      if (bar) {
+        addSearch(list, bar);
+        addFilter(list, bar);
+        addCount(list, bar);
+      }
+    }
+    apply(list);
+  }
+
+  function setUpTables() {
+    each(document.querySelectorAll(".tablebox"), function (box) {
+      var table = box.querySelector("table");
+      var body = table ? table.tBodies[0] : null;
+      if (!body) {
+        return;
+      }
+      var list = newList(toArray(body.rows));
+      list.box = box;
+      list.table = table;
+      list.body = body;
+      addSort(list);
+      addGrab(list);
+      setUp(list, box);
+    });
+  }
+
+  function setUpBars() {
+    each(document.querySelectorAll(".bars"), function (bars) {
+      var rows = [];
+      each(bars.children, function (child) {
+        if (child.classList && child.classList.contains("bar")) {
+          rows.push(child);
+        }
+      });
+      if (rows.length === 0) {
+        return;
+      }
+      setUp(newList(rows), bars);
+    });
+  }
+
+  function init() {
+    markTheme();
+    each(document.querySelectorAll("[data-theme-set]"), function (button) {
+      button.addEventListener("click", function (ev) {
+        setTheme(ev.currentTarget.getAttribute("data-theme-set"));
+      });
+    });
+    each(document.querySelectorAll(".tab"), function (tab) {
+      tab.addEventListener("click", function (ev) {
+        showTab(ev.currentTarget.getAttribute("data-tab"));
+      });
+    });
+    setUpTables();
+    setUpBars();
+    watchSize();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="topbar-row">
+      <div class="topbar-left">
+        <div class="crumbs"><span class="org">org-c</span><span>2026-08</span><span class="sep">/</span><span>Claude Team</span></div>
+        <h1 class="page-title">シート速報プレビュー</h1>
+      </div>
+      <div class="topbar-right">
+        <div class="hero"><div class="hero-label">PROJECTED DEMAND</div><div class="hero-value">$3,811</div></div>
+        <div class="theme-switch"><button type="button" class="theme-btn" data-theme-set="light" title="ライト">Light</button><button type="button" class="theme-btn" data-theme-set="dark" title="ダーク">Dark</button><button type="button" class="theme-btn is-active" data-theme-set="auto" title="OS設定に追従">Auto</button></div>
+      </div>
+    </div>
+    <div class="tabspacer"></div>
+  </div>
+</header>
+<main class="main">
+<div class="stack">
+  <div class="banner">31日間の観測データ（暦31日、月末ペース換算 ×1.0）に基づく一次判断です。シート変更の確定判断には使わず、ヒアリング・観察対象の絞り込みに使ってください。</div>
+
+  <div class="kpis five">
+    <div class="kpi"><div class="tag">MEMBERS</div><div class="v">11</div><div class="l">人（アカウント 16）</div></div>
+    <div class="kpi"><div class="tag">SEAT COST</div><div class="v">$1675</div><div class="l">現在のシート費用 /月</div></div>
+    <div class="kpi"><div class="tag">OBSERVED</div><div class="v">$3,811</div><div class="l">観測需要（31日）</div></div>
+    <div class="kpi hl"><div class="tag">PROJECTED</div><div class="v">$3,811</div><div class="l">月末ペース換算 /月</div></div>
+    <div class="kpi"><div class="tag">BILLED</div><div class="v">3</div><div class="l">実課金発生</div></div>
+  </div>
+
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>スペース別</h2></div><div class="hd-note">人数は各スペースのアカウント数</div></div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>スペース</th><th class="num">人数</th><th class="num">Standard</th><th class="num">Premium</th><th class="num">未割当</th><th class="num">不明</th><th class="num">シート費用/月</th><th class="num">観測需要</th><th class="num">月末ペース換算</th><th class="num">実課金(観測)</th></tr></thead>
+      <tbody>
+      <tr><td>主スペース（主）</td><td class="num sub">10</td><td class="num sub">2</td><td class="num sub">8</td><td class="num sub">0</td><td class="num sub">0</td><td class="num">$1,050</td><td class="num">$3,180</td><td class="num">$3,180</td><td class="num">$350</td></tr>
+      <tr><td>副スペース（Premium 固定）</td><td class="num sub">6</td><td class="num sub">0</td><td class="num sub">5</td><td class="num sub">1</td><td class="num sub">0</td><td class="num">$625</td><td class="num">$631</td><td class="num">$631</td><td class="num">$0.00</td></tr>
+      </tbody>
+      <tfoot><tr><td>合計</td><td class="num sub">16</td><td class="num sub">2</td><td class="num sub">13</td><td class="num sub">1</td><td class="num sub">0</td><td class="num">$1,675</td><td class="num">$3,811</td><td class="num">$3,811</td><td class="num">$350</td></tr></tfoot>
+    </table>
+  </div>
+  <div class="card-ft">人数はそのスペースのアカウント数です。合計は複数のスペースにアカウントを持つ人を重複して数えます（人数は 11 名）。</div>
+</section>
+
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>追加クレジットの状態（主スペース）</h2></div></div>
+  <div class="card-bd">
+    <div class="creditbar"><span class="c-enabled" style="flex: 9" title="有効 9 名"></span><span class="c-disabled" style="flex: 1" title="無効 1 名"></span></div>
+    <p class="lead">追加クレジット: 有効 9 名（上限計 $2250/月・無制限 0 名） / 無効 1 名 / 不明 0 名</p>
+  </div>
+</section>
+
+
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>追加クレジットの状態（副スペース）</h2></div></div>
+  <div class="card-bd">
+    <div class="creditbar"><span class="c-disabled" style="flex: 6" title="無効 6 名"></span></div>
+    <p class="lead">追加クレジット: 有効 0 名（上限計 $0/月・無制限 0 名） / 無効 6 名 / 不明 0 名</p>
+  </div>
+</section>
+
+
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>一次判断の内訳</h2></div></div>
+    <div class="card-bd">
+      <div class="badges"><span class="badge b-watch">遊休候補 1 名</span><span class="badge b-change">Standard候補 1 名</span><span class="badge b-change">Premium検討 1 名</span><span class="badge b-keep">Premium妥当 7 名</span><span class="badge b-keep">Standard妥当 1 名</span><span class="badge b-keep">対象外（固定シート） 4 名</span><span class="badge b-keep">対象外（未割当） 1 名</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-hd">
+      <div class="hd-main"><h2>月末ペース換算需要（主スペース）</h2></div>
+      <div class="legend"><span><i class="k-std"></i>Standard</span><span><i class="k-prem"></i>Premium</span><span><i class="k-dim"></i>未割当・不明</span></div>
+    </div>
+    <div class="card-bd bars-bd">
+      <div class="bars">
+        <div class="bar">
+          <div class="name" title="morita@example.co.jp">morita</div>
+          <div class="track"><div class="fill" style="width: 1.7%; background: var(--prem);"></div></div>
+          <div class="val">$15.00</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="kubota@example.co.jp">kubota</div>
+          <div class="track"><div class="fill" style="width: 8.9%; background: var(--std);"></div></div>
+          <div class="val">$80.00</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="kimura@example.co.jp">kimura</div>
+          <div class="track"><div class="fill" style="width: 100.0%; background: var(--prem);"></div></div>
+          <div class="val">$900</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="fujii@example.co.jp">fujii</div>
+          <div class="track"><div class="fill" style="width: 66.7%; background: var(--prem);"></div></div>
+          <div class="val">$600</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="hoshino@example.co.jp">hoshino</div>
+          <div class="track"><div class="fill" style="width: 55.6%; background: var(--prem);"></div></div>
+          <div class="val">$500</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="nishi@example.co.jp">nishi</div>
+          <div class="track"><div class="fill" style="width: 46.7%; background: var(--prem);"></div></div>
+          <div class="val">$420</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="ueda@example.co.jp">ueda</div>
+          <div class="track"><div class="fill" style="width: 33.3%; background: var(--prem);"></div></div>
+          <div class="val">$300</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="ota@example.co.jp">ota</div>
+          <div class="track"><div class="fill" style="width: 20.0%; background: var(--prem);"></div></div>
+          <div class="val">$180</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="takagi@example.co.jp">takagi</div>
+          <div class="track"><div class="fill" style="width: 17.8%; background: var(--prem);"></div></div>
+          <div class="val">$160</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="sakai@example.co.jp">sakai</div>
+          <div class="track"><div class="fill" style="width: 2.8%; background: var(--std);"></div></div>
+          <div class="val">$25.00</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-ft">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span> / <span class="seat-unassigned">■ 未割当・不明</span></div>
+  </section>  <section class="card">
+    <div class="card-hd">
+      <div class="hd-main"><h2>月末ペース換算需要（副スペース）</h2></div>
+      <div class="legend"><span><i class="k-std"></i>Standard</span><span><i class="k-prem"></i>Premium</span><span><i class="k-dim"></i>未割当・不明</span></div>
+    </div>
+    <div class="card-bd bars-bd">
+      <div class="bars">
+        <div class="bar">
+          <div class="name" title="ueda@example.co.jp">ueda</div>
+          <div class="track"><div class="fill" style="width: 0.2%; background: var(--prem);"></div></div>
+          <div class="val">$0.50</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="fujii@example.co.jp">fujii</div>
+          <div class="track"><div class="fill" style="width: 100.0%; background: var(--prem);"></div></div>
+          <div class="val">$300</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="kubota@example.co.jp">kubota</div>
+          <div class="track"><div class="fill" style="width: 100.0%; background: var(--prem);"></div></div>
+          <div class="val">$300</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="hoshino@example.co.jp">hoshino</div>
+          <div class="track"><div class="fill" style="width: 6.7%; background: var(--prem);"></div></div>
+          <div class="val">$20.00</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="yagi@example.co.jp">yagi</div>
+          <div class="track"><div class="fill" style="width: 3.3%; background: var(--prem);"></div></div>
+          <div class="val">$10.00</div>
+        </div>
+        <div class="bar">
+          <div class="name" title="nishi@example.co.jp">nishi</div>
+          <div class="track"><div class="fill" style="width: 0.1%; background: var(--dim);"></div></div>
+          <div class="val">$0.20</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-ft">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span> / <span class="seat-unassigned">■ 未割当・不明</span></div>
+  </section>
+
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>一次判断テーブル</h2></div></div>
+    <div class="tablebox tall">
+      <table>
+        <thead><tr><th>ユーザ</th><th>スペース</th><th>現シート</th><th>部署</th><th>チーム</th><th class="num">観測需要(31日)</th><th class="num">月末ペース換算</th><th class="num">実課金(観測)</th><th>一次判断</th><th>確度</th></tr></thead>
+        <tbody>
+        <tr>
+          <td class="user" title="ueda@example.co.jp">ueda</td><td class="sub">副スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プロダクト開発部</td>
+          <td class="sub">Webチーム</td>
+          <td class="num sub">$0.50</td>
+          <td class="num">$0.50</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-watch">遊休候補</span></td>
+          <td class="judge"></td>
+        </tr>
+        <tr>
+          <td class="user" title="morita@example.co.jp">morita</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">コーポレート</td>
+          <td class="sub"></td>
+          <td class="num sub">$15.00</td>
+          <td class="num">$15.00</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-change">Standard候補</span></td>
+          <td class="judge"><span class="conf">高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="kubota@example.co.jp">kubota</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-standard">Standard</span></td>
+          <td class="sub">プロダクト開発部</td>
+          <td class="sub">Webチーム; SREチーム</td>
+          <td class="num sub">$380</td>
+          <td class="num">$380</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-change">Premium検討</span></td>
+          <td class="judge"><span class="conf">高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="fujii@example.co.jp">fujii</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プラットフォーム開発部</td>
+          <td class="sub">基盤チーム</td>
+          <td class="num sub">$900</td>
+          <td class="num">$900</td>
+          <td class="num" style="background:rgba(192,57,43,0.20)">$40.00 <span class="cap">⚠️超過済</span></td>
+          <td class="judge"><span class="badge b-keep">Premium妥当</span></td>
+          <td class="judge"><span class="conf">高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="kimura@example.co.jp">kimura</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プラットフォーム開発部</td>
+          <td class="sub">基盤チーム</td>
+          <td class="num sub">$900</td>
+          <td class="num">$900</td>
+          <td class="num" style="background:rgba(192,57,43,0.60)">$250 <span class="cap">⚠️超過済</span></td>
+          <td class="judge"><span class="badge b-keep">Premium妥当</span></td>
+          <td class="judge"><span class="conf">高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="hoshino@example.co.jp">hoshino</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プラットフォーム開発部</td>
+          <td class="sub">SREチーム</td>
+          <td class="num sub">$520</td>
+          <td class="num">$520</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">Premium妥当</span></td>
+          <td class="judge"><span class="conf">高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="nishi@example.co.jp">nishi</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プロダクト開発部</td>
+          <td class="sub">Webチーム</td>
+          <td class="num sub">$420</td>
+          <td class="num">$420</td>
+          <td class="num" style="background:rgba(192,57,43,0.24)">$60.00 <span class="cap">⚠️超過済</span></td>
+          <td class="judge"><span class="badge b-keep">Premium妥当</span></td>
+          <td class="judge"><span class="conf">高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="ueda@example.co.jp">ueda</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プロダクト開発部</td>
+          <td class="sub">Webチーム</td>
+          <td class="num sub">$300</td>
+          <td class="num">$300</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">Premium妥当</span></td>
+          <td class="judge"><span class="conf">高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="ota@example.co.jp">ota</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">コーポレート</td>
+          <td class="sub"></td>
+          <td class="num sub">$180</td>
+          <td class="num">$180</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">Premium妥当</span></td>
+          <td class="judge"><span class="conf">高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="takagi@example.co.jp">takagi</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">コーポレート</td>
+          <td class="sub"></td>
+          <td class="num sub">$160</td>
+          <td class="num">$160</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">Premium妥当</span></td>
+          <td class="judge"><span class="conf">中</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="sakai@example.co.jp">sakai</td><td class="sub">主スペース</td>
+          <td class="seat"><span class="seat-standard">Standard</span></td>
+          <td class="sub">プロダクト開発部</td>
+          <td class="sub">SREチーム</td>
+          <td class="num sub">$25.00</td>
+          <td class="num">$25.00</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">Standard妥当</span></td>
+          <td class="judge"><span class="conf">高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="fujii@example.co.jp">fujii</td><td class="sub">副スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プラットフォーム開発部</td>
+          <td class="sub">基盤チーム</td>
+          <td class="num sub">$300</td>
+          <td class="num">$300</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">対象外（固定シート）</span></td>
+          <td class="judge"></td>
+        </tr>
+        <tr>
+          <td class="user" title="kubota@example.co.jp">kubota</td><td class="sub">副スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プロダクト開発部</td>
+          <td class="sub">Webチーム; SREチーム</td>
+          <td class="num sub">$300</td>
+          <td class="num">$300</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">対象外（固定シート）</span></td>
+          <td class="judge"></td>
+        </tr>
+        <tr>
+          <td class="user" title="hoshino@example.co.jp">hoshino</td><td class="sub">副スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プラットフォーム開発部</td>
+          <td class="sub">SREチーム</td>
+          <td class="num sub">$20.00</td>
+          <td class="num">$20.00</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">対象外（固定シート）</span></td>
+          <td class="judge"></td>
+        </tr>
+        <tr>
+          <td class="user" title="yagi@example.co.jp">yagi</td><td class="sub">副スペース</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="sub">プラットフォーム開発部</td>
+          <td class="sub">基盤チーム</td>
+          <td class="num sub">$10.00</td>
+          <td class="num">$10.00</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">対象外（固定シート）</span></td>
+          <td class="judge"></td>
+        </tr>
+        <tr>
+          <td class="user" title="nishi@example.co.jp">nishi</td><td class="sub">副スペース</td>
+          <td class="seat"><span class="seat-unassigned">未割当</span></td>
+          <td class="sub">プロダクト開発部</td>
+          <td class="sub">Webチーム</td>
+          <td class="num sub">$0.20</td>
+          <td class="num">$0.20</td>
+          <td class="num">$0.00</td>
+          <td class="judge"><span class="badge b-keep">対象外（未割当）</span></td>
+          <td class="judge"></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-ft">月末ペース換算（複数スペース）: スペースを複数持つ人の主の行の観測需要と月末ペース換算は全スペースの合算（一次判断に使う値）で、縦に足すと副の分が二重になる。<br>対象外（固定シート）: 運用方針でシート種別を固定したスペース（副スペース）のアカウント。一次判断は行わない（続けるか戻すかは正式分析の「複数スペースの利用」で判定する）。</div>
+  </section>
+
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>人別の需要（スペース合算）</h2></div></div>
+  <div class="tablebox tall">
+    <table>
+      <thead><tr><th>ユーザ</th><th>保有シート</th><th>部署</th><th>チーム</th><th class="num">シート費/月</th><th class="num">観測需要(31日)</th><th class="num">月末ペース換算</th><th class="num">主の換算需要</th><th class="num">副の換算需要</th><th class="num">副の比率</th><th class="num">実課金(観測)</th><th>主の一次判断</th></tr></thead>
+      <tbody>
+      <tr><td class="user" title="fujii@example.co.jp">fujii</td><td class="sub">主スペース: Premium<br>副スペース: Premium</td><td class="sub">プラットフォーム開発部</td><td class="sub">基盤チーム</td><td class="num sub">$250</td><td class="num">$900</td><td class="num">$900</td><td class="num sub">$600</td><td class="num sub">$300</td><td class="num sub">33%</td><td class="num">$40.00</td><td class="judge">Premium妥当</td></tr>
+      <tr><td class="user" title="kimura@example.co.jp">kimura</td><td class="sub">主スペース: Premium</td><td class="sub">プラットフォーム開発部</td><td class="sub">基盤チーム</td><td class="num sub">$125</td><td class="num">$900</td><td class="num">$900</td><td class="num sub">$900</td><td class="num sub">$0.00</td><td class="num sub">—</td><td class="num">$250</td><td class="judge">Premium妥当</td></tr>
+      <tr><td class="user" title="hoshino@example.co.jp">hoshino</td><td class="sub">主スペース: Premium<br>副スペース: Premium</td><td class="sub">プラットフォーム開発部</td><td class="sub">SREチーム</td><td class="num sub">$250</td><td class="num">$520</td><td class="num">$520</td><td class="num sub">$500</td><td class="num sub">$20.00</td><td class="num sub">4%</td><td class="num">$0.00</td><td class="judge">Premium妥当</td></tr>
+      <tr><td class="user" title="nishi@example.co.jp">nishi</td><td class="sub">主スペース: Premium<br>副スペース: 未割当</td><td class="sub">プロダクト開発部</td><td class="sub">Webチーム</td><td class="num sub">$125</td><td class="num">$420</td><td class="num">$420</td><td class="num sub">$420</td><td class="num sub">$0.20</td><td class="num sub">—</td><td class="num">$60.00</td><td class="judge">Premium妥当</td></tr>
+      <tr><td class="user" title="kubota@example.co.jp">kubota</td><td class="sub">主スペース: Standard<br>副スペース: Premium</td><td class="sub">プロダクト開発部</td><td class="sub">Webチーム; SREチーム</td><td class="num sub">$150</td><td class="num">$380</td><td class="num">$380</td><td class="num sub">$80.00</td><td class="num sub">$300</td><td class="num sub">79%</td><td class="num">$0.00</td><td class="judge">Premium検討</td></tr>
+      <tr><td class="user" title="ueda@example.co.jp">ueda</td><td class="sub">主スペース: Premium<br>副スペース: Premium</td><td class="sub">プロダクト開発部</td><td class="sub">Webチーム</td><td class="num sub">$250</td><td class="num">$300</td><td class="num">$300</td><td class="num sub">$300</td><td class="num sub">$0.50</td><td class="num sub">0%</td><td class="num">$0.00</td><td class="judge">Premium妥当</td></tr>
+      <tr><td class="user" title="ota@example.co.jp">ota</td><td class="sub">主スペース: Premium</td><td class="sub">コーポレート</td><td class="sub"></td><td class="num sub">$125</td><td class="num">$180</td><td class="num">$180</td><td class="num sub">$180</td><td class="num sub">$0.00</td><td class="num sub">—</td><td class="num">$0.00</td><td class="judge">Premium妥当</td></tr>
+      <tr><td class="user" title="takagi@example.co.jp">takagi</td><td class="sub">主スペース: Premium</td><td class="sub">コーポレート</td><td class="sub"></td><td class="num sub">$125</td><td class="num">$160</td><td class="num">$160</td><td class="num sub">$160</td><td class="num sub">$0.00</td><td class="num sub">—</td><td class="num">$0.00</td><td class="judge">Premium妥当</td></tr>
+      <tr><td class="user" title="sakai@example.co.jp">sakai</td><td class="sub">主スペース: Standard</td><td class="sub">プロダクト開発部</td><td class="sub">SREチーム</td><td class="num sub">$25.00</td><td class="num">$25.00</td><td class="num">$25.00</td><td class="num sub">$25.00</td><td class="num sub">$0.00</td><td class="num sub">—</td><td class="num">$0.00</td><td class="judge">Standard妥当</td></tr>
+      <tr><td class="user" title="morita@example.co.jp">morita</td><td class="sub">主スペース: Premium</td><td class="sub">コーポレート</td><td class="sub"></td><td class="num sub">$125</td><td class="num">$15.00</td><td class="num">$15.00</td><td class="num sub">$15.00</td><td class="num sub">$0.00</td><td class="num sub">—</td><td class="num">$0.00</td><td class="judge">Standard候補</td></tr>
+      <tr><td class="user" title="yagi@example.co.jp">yagi</td><td class="sub">主スペース: —<br>副スペース: Premium</td><td class="sub">プラットフォーム開発部</td><td class="sub">基盤チーム</td><td class="num sub">$125</td><td class="num">$10.00</td><td class="num">$10.00</td><td class="num sub">$0.00</td><td class="num sub">$10.00</td><td class="num sub">100%</td><td class="num">$0.00</td><td class="judge">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card-ft">1人1行。需要は全アカウントの合計。<br>副の比率 = 副の換算需要 / 全スペースの換算需要（副にシートを持たない人と、需要が無い人は —）。<br>主の一次判断は全スペースの合算需要での判定。払い出し判定・継続判定は正式分析で行う。</div>
+</section>
+
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>追加クレジット残額（主スペース）</h2></div></div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>ユーザ</th><th class="num">実課金(観測)</th><th class="num">上限 κ</th><th class="num">残額</th><th>到達見込み</th></tr></thead>
+      <tbody>
+      <tr><td class="user" title="kimura@example.co.jp">kimura</td><td class="num">$250</td><td class="num sub">$250</td><td class="num">$0.00</td><td><span class="cap">⚠️上限到達</span></td></tr>
+      <tr><td class="user" title="nishi@example.co.jp">nishi</td><td class="num">$60.00</td><td class="num sub">$250</td><td class="num">$190</td><td>—</td></tr>
+      <tr><td class="user" title="fujii@example.co.jp">fujii</td><td class="num">$40.00</td><td class="num sub">$250</td><td class="num">$210</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card-ft">到達見込みはスナップショットがある場合は直近区間の課金ペース、無い場合は月初からの平均ペースによる目安です。平均ペースの場合、課金は込み枠を使い切ってから始まるため実際の到達はこれより早くなりうる点に注意してください。</div>
+</section>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>追加クレジット付与候補（主スペース）</h2></div></div>
+  <div class="card-bd">
+    <div class="empty">該当者なし。追加クレジットが無効または未設定の Standard ユーザのうち、需要のモデル試算が Premium 有利になった人をここに挙げます。</div>
+  </div>
+</section>
+
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>詳細利用状況（観測値）</h2></div></div>
+    <div class="tablebox tall">
+      <table>
+        <thead><tr><th>ユーザ</th><th>スペース</th><th class="num">input</th><th class="num">output</th><th class="num">LoC</th><th class="num">API換算需要（観測）</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr></thead>
+        <tbody>
+        <tr><td class="user" title="kimura@example.co.jp">kimura</td><td class="sub">主スペース</td><td class="num sub">120.0M</td><td class="num sub">12.0M</td><td class="num sub">5,100</td><td class="num">$900</td><td class="wrap">Opus 4.8 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="fujii@example.co.jp">fujii</td><td class="sub">主スペース</td><td class="num sub">80.0M</td><td class="num sub">8.0M</td><td class="num sub">4,200</td><td class="num">$600</td><td class="wrap">Opus 4.8 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="hoshino@example.co.jp">hoshino</td><td class="sub">主スペース</td><td class="num sub">66.7M</td><td class="num sub">6.7M</td><td class="num sub">2,600</td><td class="num">$500</td><td class="wrap">Opus 4.8 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="ueda@example.co.jp">ueda</td><td class="sub">主スペース</td><td class="num sub">66.7M</td><td class="num sub">6.7M</td><td class="num sub">1,200</td><td class="num">$300</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="nishi@example.co.jp">nishi</td><td class="sub">主スペース</td><td class="num sub">56.0M</td><td class="num sub">5.6M</td><td class="num sub">1,800</td><td class="num">$420</td><td class="wrap">Opus 4.8 100%</td><td class="wrap">Claude Code 60% / Chat 40%</td></tr>
+        <tr><td class="user" title="fujii@example.co.jp">fujii</td><td class="sub">副スペース</td><td class="num sub">40.0M</td><td class="num sub">4.0M</td><td class="num sub">—</td><td class="num">$300</td><td class="wrap">Opus 4.8 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="kubota@example.co.jp">kubota</td><td class="sub">副スペース</td><td class="num sub">40.0M</td><td class="num sub">4.0M</td><td class="num sub">—</td><td class="num">$300</td><td class="wrap">Opus 4.8 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="ota@example.co.jp">ota</td><td class="sub">主スペース</td><td class="num sub">40.0M</td><td class="num sub">4.0M</td><td class="num sub">0</td><td class="num">$180</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Cowork 70% / Claude Code 30%</td></tr>
+        <tr><td class="user" title="takagi@example.co.jp">takagi</td><td class="sub">主スペース</td><td class="num sub">35.6M</td><td class="num sub">3.6M</td><td class="num sub">0</td><td class="num">$160</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Claude Code 50% / Design 50%</td></tr>
+        <tr><td class="user" title="kubota@example.co.jp">kubota</td><td class="sub">主スペース</td><td class="num sub">17.8M</td><td class="num sub">1.8M</td><td class="num sub">900</td><td class="num">$80.00</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="morita@example.co.jp">morita</td><td class="sub">主スペース</td><td class="num sub">10.0M</td><td class="num sub">1.0M</td><td class="num sub">0</td><td class="num">$15.00</td><td class="wrap">Haiku 4.5 100%</td><td class="wrap">Chat 100%</td></tr>
+        <tr><td class="user" title="sakai@example.co.jp">sakai</td><td class="sub">主スペース</td><td class="num sub">5.6M</td><td class="num sub">556K</td><td class="num sub">300</td><td class="num">$25.00</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="hoshino@example.co.jp">hoshino</td><td class="sub">副スペース</td><td class="num sub">4.4M</td><td class="num sub">444K</td><td class="num sub">—</td><td class="num">$20.00</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="yagi@example.co.jp">yagi</td><td class="sub">副スペース</td><td class="num sub">2.2M</td><td class="num sub">222K</td><td class="num sub">—</td><td class="num">$10.00</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="ueda@example.co.jp">ueda</td><td class="sub">副スペース</td><td class="num sub">333K</td><td class="num sub">33K</td><td class="num sub">—</td><td class="num">$0.50</td><td class="wrap">Haiku 4.5 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="nishi@example.co.jp">nishi</td><td class="sub">副スペース</td><td class="num sub">44K</td><td class="num sub">4K</td><td class="num sub">—</td><td class="num">$0.20</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-ft">観測値（31日分）のままで、月末ペース換算はしていません。<br>LoC は 主スペース: 2026-08-31 時点の code-analytics スナップショットの累積値です。<br>input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
+  </section>
+
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>注意事項</h2></div></div>
+    <div class="card-bd">
+      <ul class="notes assumptions">
+        <li>日割り換算（×1.0）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません。</li>
+        <li>実課金は込み量を使い切ってから発生する非線形な値のため、月末ペース換算していません。</li>
+        <li>変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（analyze）で行ってください。</li>
+        <li>クレジット無効のユーザについては、「Standard時/Premium時」の枠超過分は実際には請求されず、絞り負担のドル換算（需要が上限で抑えられる分の目安）です。</li>
+        <li>遊休候補: 観測期間中の利用がほぼゼロ。解約前にオンボーディング状況のヒアリングを推奨。</li>
+        <li>⚠️超過済: Premium の込み量を観測期間中にすでに超過し実課金が発生（明確なヘビー層）。</li>
+        <li>⚠️従量あり: Standard 等で従量課金が発生（Premium 検討の重要シグナル）。</li>
+        <li>対象外（未割当）: 意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。</li>
+        <li>人数以外の件数（一次判断の内訳・実課金発生）はアカウント単位です。</li>
+        <li>対象外（固定シート）は一次判断と追加クレジット付与候補の対象にしていません。</li>
+
+      </ul>
+    </div>
+  </section>
+</div>
+</main>
+</body>
+</html>

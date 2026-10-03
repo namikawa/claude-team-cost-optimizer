@@ -29,7 +29,8 @@ STATUS_ORDER = [STATUS_CHANGE, STATUS_WATCH, STATUS_WATCH_WAIT, STATUS_UNKNOWN,
 
 # 速報の一次判断ラベルの表示順（対応アクションが明確なものから）
 PREVIEW_ORDER = [LABEL_IDLE, LABEL_STD_CAND, LABEL_PREM_CONSIDER, LABEL_HOLD,
-                 STATUS_UNKNOWN, LABEL_PREM_OK, LABEL_STD_OK, LABEL_EXCLUDED]
+                 STATUS_UNKNOWN, LABEL_PREM_OK, LABEL_STD_OK, STATUS_FIXED_SEAT,
+                 LABEL_EXCLUDED]
 
 # クレジットモード → 表示ラベル（付与候補の Markdown / HTML で共用）。
 # enabled は付与候補に現れないためラベルを持たない。

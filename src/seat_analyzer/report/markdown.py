@@ -12,6 +12,7 @@ from ..analyze import (
     STATUS_FIXED_SEAT,
     AnalysisResult,
     OrgAnalysisResult,
+    OrgPreviewResult,
     PreviewResult,
     single_org_result,
     summarize_org,
@@ -428,11 +429,11 @@ def _grant_candidates_md(candidates: list, cap_usd, label: str | None = None) ->
     return "\n".join(lines)
 
 
-def _credit_reach_md(cr: dict | None) -> str:
+def _credit_reach_md(cr: dict | None, label: str | None = None) -> str:
     """速報の「## 追加クレジット残額」セクション（None なら空文字列）。"""
     if not cr:
         return ""
-    lines = [f"## {_TEXT['h_credit_reach']}", "",
+    lines = [f"## {_labeled(_TEXT['h_credit_reach'], label)}", "",
              "| ユーザ | 実課金(観測) | 上限 κ | 残額 | 到達見込み |", "|---|---|---|---|---|"]
     for r in cr["rows"]:
         if r["reached"]:
@@ -656,8 +657,13 @@ def _write_markdown_multi(org: OrgAnalysisResult, path: Path) -> None:
     _atomic_write(path, md)
 
 
-def write_preview_markdown(result: PreviewResult, path: Path) -> None:
+def write_preview_markdown(result: PreviewResult | OrgPreviewResult, path: Path) -> None:
     """速報モードの Markdown（preview.md）。"""
+    if isinstance(result, OrgPreviewResult):
+        if result.has_multiple_workspaces:
+            _write_preview_markdown_multi(result, path)
+            return
+        result = _sole_result(result)
     s = result.summary
 
     users = _sort_for_display(result.users, "label", PREVIEW_ORDER, "api_cost_projected_usd")
@@ -757,6 +763,176 @@ def write_preview_markdown(result: PreviewResult, path: Path) -> None:
         md, path, fallback=PREVIEW.legacy_sibling(path, result.month, result.org))
     # 引き継いだ手書きの考察は他のどこにも無い。切り詰めてから書く write_text では
     # 中断時に本文ごと失うため、考察の差し替えと同じく置換で書く
+    _atomic_write(path, md)
+
+
+def _preview_workspace_md(org: OrgPreviewResult) -> str:
+    """速報のスペース別表。合計の人数はアカウント数として示す。"""
+    rows, total = spaces.preview_workspace_rows(org)
+    lines = [
+        "### スペース別", "",
+        "| スペース | 人数 | Standard | Premium | 未割当 | 不明 | シート費用/月 | 観測需要 | 月末ペース換算 | 実課金(観測) |",
+        "|" + "---|" * 10,
+    ]
+    notes = []
+    for row in [*rows, {**total, "space": "合計", "skipped": False, "note": ""}]:
+        if row["skipped"]:
+            cells = [row["space"], *(["—"] * 9)]
+        else:
+            cells = [row["space"], f"{row['n_members']} 名",
+                     *(str(row[key]) for key in (
+                         "n_standard", "n_premium", "n_unassigned", "n_unknown")),
+                     *(_fmt_usd(row[key]) for key in (
+                         "seat_cost_now_usd", "total_api_observed_usd",
+                         "total_api_projected_usd", "billed_observed_usd"))]
+        lines.append("| " + " | ".join(_md_cell(cell) for cell in cells) + " |")
+        if row["note"]:
+            notes.append(f"- {_md_cell(row['space'])}: {row['note']}")
+    lines += ["", f"- {spaces.workspace_members_note(len(org.persons))}",
+              *notes]
+    return "\n".join(lines)
+
+
+def _preview_persons_md(org: OrgPreviewResult) -> str:
+    """速報の人別需要を Markdown の書式で表す。"""
+    rows, columns = spaces.preview_person_rows(org)
+    has_dept, has_team = columns["dept"], columns["team"]
+    header = ("| ユーザ | 保有シート |" + (" 部署 |" if has_dept else "")
+              + (" チーム |" if has_team else "")
+              + f" シート費/月 | 観測需要({org.days_observed}日) | 月末ペース換算 |"
+                " 主の換算需要 | 副の換算需要 | 副の比率 | 実課金(観測) | 主の一次判断 |")
+    lines = ["## 人別の需要（スペース合算）", "", header,
+             "|" + "---|" * (10 + int(has_dept) + int(has_team))]
+    for person in rows:
+        cells = [person["email"], " / ".join(person["seat_parts"])]
+        if has_dept:
+            cells.append(person["department"])
+        if has_team:
+            cells.append(person["team"])
+        cells += [_fmt_usd(person[key]) for key in (
+            "seat_cost_usd", "api_cost_observed_usd", "api_cost_projected_usd",
+            "primary_projected_usd", "secondary_projected_usd")]
+        cells += [spaces._pct(person["secondary_ratio"]),
+                  _fmt_usd(person["billed_observed_usd"]), person["primary_label"] or "—"]
+        lines.append("| " + " | ".join(_md_cell(cell) for cell in cells) + " |")
+    lines += ["", *(f"- {line}" for line in spaces.PREVIEW_PERSON_LEGEND)]
+    return "\n".join(lines)
+
+
+def _write_preview_markdown_multi(org: OrgPreviewResult, path: Path) -> None:
+    """複数スペースの速報を判定系と観測系の表に分けて書く。"""
+    results = org.workspaces
+    judged = _account_rows(org, {name: result.users for name, result in results.items()})
+    users = _sort_for_display(judged, "label", PREVIEW_ORDER, "api_cost_projected_usd")
+    has_dept = _has_values(users, "department")
+    has_team = _has_values(users, "team")
+    obs_label = f"観測需要({org.days_observed}日)"
+    lines = ["| ユーザ | スペース | 現シート |"
+             + (" 部署 |" if has_dept else "") + (" チーム |" if has_team else "")
+             + f" {obs_label} | 月末ペース換算 | 実課金(観測) | 一次判断 | 確度 |",
+             "|" + "---|" * (8 + int(has_dept) + int(has_team))]
+    for _, row in users.iterrows():
+        billed = float(row["billed_observed_usd"])
+        flag = (" ⚠️超過済" if row["current_seat"] == "premium" else " ⚠️従量あり") if billed > 0 else ""
+        cells = [row["email"], row["workspace_label"],
+                 SEAT_LABELS.get(row["current_seat"], row["current_seat"])]
+        if has_dept:
+            cells.append(row.get("department", "") or "")
+        if has_team:
+            cells.append(row.get("team", "") or "")
+        cells += [_fmt_usd(row["api_cost_observed_usd"]),
+                  _fmt_usd(row["api_cost_projected_usd"]),
+                  _fmt_usd(billed) + flag, row["label"], row["confidence"]]
+        lines.append("| " + " | ".join(_md_cell(cell) for cell in cells) + " |")
+    table = "\n".join(lines)
+    summaries = [result.summary for result in results.values()]
+    _, total = spaces.preview_workspace_rows(org)
+    accounts = total["n_members"]
+    seat_cost = total["seat_cost_now_usd"]
+    observed = total["total_api_observed_usd"]
+    projected = total["total_api_projected_usd"]
+    billed = total["n_billed"]
+    counts = {label: sum(summary["label_counts"].get(label, 0) for summary in summaries)
+              for label in PREVIEW_ORDER}
+    count_line = " / ".join(f"{label} {n} 名" for label, n in counts.items() if n) or "対象なし"
+    credit_rows = "".join(row + "\n" for name, result in results.items()
+                          if (row := _credit_summary_md_row(result.summary, org.contexts[name].label)))
+    sections = []
+    for field_name, writer in (("credit_reach", _credit_reach_md),
+                               ("snapshot", _snapshot_md), ("code_diff", _code_diff_md),
+                               ("member_changes", _member_changes_md)):
+        for name, result in results.items():
+            block = writer(getattr(result, field_name), org.contexts[name].label)
+            if block:
+                sections.append(block)
+    for name, result in results.items():
+        if org.contexts[name].fixed_seat:
+            continue
+        block = _grant_candidates_md(result.grant_candidates,
+                                     result.summary["grant_suggested_cap_usd"],
+                                     org.contexts[name].label)
+        if block:
+            sections.append(block)
+    fixed_legend = spaces.preview_fixed_seat_legend(org)
+    fixed_legend = f"\n- {fixed_legend}" if fixed_legend else ""
+    multi_notes = "\n".join(f"- {line}" for line in spaces.preview_notes_lines(org))
+    disabled = _disabled_cost_note(users[users["label"] != STATUS_FIXED_SEAT])
+    disabled_line = f"\n- {disabled}。" if disabled else ""
+    warnings = _warning_lines(org)
+    warnings_md = "\n".join(f"- {line}" for line in warnings) if warnings else "- なし"
+    factor = org.days_in_month / org.days_observed
+    notes = _notes_md(users.drop_duplicates(subset="email"))
+    notes_block = "\n" + notes if notes else ""
+    sections_block = "".join("\n\n" + section for section in sections)
+    md = f"""# Claude Team シート速報プレビュー — {_scope_label(org)}
+
+{org.days_observed}日間の観測データ（{org.month}、暦{org.days_in_month}日、月末ペース換算 ×{factor:.1f}）に基づく一次判断です。
+シート変更の確定判断には使わず、ヒアリング・観察対象の絞り込みに使ってください。
+
+## サマリ
+
+| 指標 | 値 |
+|---|---|
+| 対象メンバー数 | {len(org.persons)} 名（アカウント {accounts}） |
+| 現在のシート費用 | {_fmt_usd(seat_cost)} /月 |
+| 観測需要 → 月末ペース換算 | {_fmt_usd(observed)} → {_fmt_usd(projected)} |
+| 一次判断の内訳 | {count_line} |
+| 実課金発生 | {billed} アカウント |
+{credit_rows}
+{_preview_workspace_md(org)}
+
+## 一次判断テーブル
+
+{table}
+{notes_block}
+- 一次判断: 月末ペース換算需要を損益分岐モデル（allowance 3シナリオ）にかけた参考判定。
+  境界付近（3シナリオ不一致 or 削減見込みがバッファ未満）は「判断保留」に倒しています
+- {_TEXT['legend_idle']}
+- {_TEXT['legend_over']}
+- {_TEXT['legend_billed']}
+- {_TEXT['legend_excluded']}{fixed_legend}
+- {spaces.PREVIEW_MERGED_DEMAND_NOTE}
+
+{_preview_persons_md(org)}{sections_block}
+
+## 注意事項
+
+- 日割り換算（×{factor:.1f}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません
+- {_TEXT['note_billed_nonlinear']}
+- 変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（`analyze`）で行ってください{disabled_line}
+{multi_notes}
+
+## データ検証・警告
+
+{warnings_md}
+
+## 考察
+
+<!-- /seat-analysis または seat-analyzer discuss --preview 実行時に Claude が記入するセクション -->
+（未記入 — `/seat-analysis preview <日数>` または `seat-analyzer discuss --preview` を実行すると考察が追記されます）
+"""
+    md = _preserve_discussion(
+        md, path, fallback=PREVIEW.legacy_sibling(path, org.month, org.org))
     _atomic_write(path, md)
 
 

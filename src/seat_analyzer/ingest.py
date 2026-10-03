@@ -414,6 +414,11 @@ def discover_months(input_dir: Path) -> list[str]:
     return sorted(files)
 
 
+def workspace_started(directory: str | Path, month: str) -> bool:
+    """対象月以前にスペンドレポートがある workspace か。"""
+    return any(found <= month for found in discover_months(Path(directory)))
+
+
 def spend_file_period(input_dir: Path, month: str) -> FilePeriod | None:
     """対象月のスペンドレポートのファイル名期間（--preview の観測日数自動判別用）。"""
     files, _ = _files_by_month(Path(input_dir) / "spend")

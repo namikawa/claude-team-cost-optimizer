@@ -33,8 +33,10 @@ from ..analyze import (
     WAITING,
     AnalysisResult,
     OrgAnalysisResult,
+    OrgPreviewResult,
     PreviewResult,
     own_demand_users,
+    preview_own_demand_users,
     summarize_org,
 )
 from ..product_usage import ProductUsage
@@ -98,6 +100,7 @@ _PREVIEW_BADGE_CLASS = {
     STATUS_UNKNOWN: "b-unknown",                                  # データ不整合（赤）
     LABEL_PREM_OK: "b-keep", LABEL_STD_OK: "b-keep",             # 現状妥当（グレー）
     LABEL_EXCLUDED: "b-keep",
+    STATUS_FIXED_SEAT: "b-keep",
 }
 
 
@@ -560,6 +563,8 @@ _STATS_HTML = _asset("partials/stats.html.j2")
 # 1文字も足さない）。
 _WORKSPACES_HTML = _asset("partials/workspaces.html.j2")
 _SPACES_HTML = _asset("partials/spaces.html.j2")
+_PREVIEW_WORKSPACES_HTML = _asset("partials/preview-workspaces.html.j2")
+_PREVIEW_PERSONS_HTML = _asset("partials/preview-persons.html.j2")
 
 
 _HTML_TEMPLATE_SRC = _asset("dashboard.html.j2")
@@ -583,6 +588,8 @@ _DASHBOARD_SECTIONS = {
 }
 
 _PREVIEW_SECTIONS = {
+    "<!--PREVIEW_WORKSPACES-->": (_PREVIEW_WORKSPACES_HTML,),
+    "<!--PREVIEW_PERSONS-->": (_PREVIEW_PERSONS_HTML,),
     "<!--CREDIT_COMPOSITION-->": (_CREDIT_COMPOSITION_HTML,),
     "<!--CREDIT_REACH-->": (_CREDIT_REACH_HTML,),
     "<!--SNAPSHOT_SECTION-->": (_SNAPSHOT_HTML, _CODE_DIFF_HTML, _MEMBER_CHANGES_HTML),
@@ -622,8 +629,13 @@ _PREVIEW_HTML_SOURCE = _embed_shared_text(_PREVIEW_HTML_ASSEMBLED)
 _PREVIEW_HTML_TEMPLATE = _HTML_ENV.from_string(_PREVIEW_HTML_SOURCE)
 
 
-def write_preview_html(result: PreviewResult, path: Path) -> None:
+def write_preview_html(result: PreviewResult | OrgPreviewResult, path: Path) -> None:
     """速報ダッシュボード（preview-dashboard.html）。preview.md のミラー。"""
+    if isinstance(result, OrgPreviewResult):
+        if result.has_multiple_workspaces:
+            path.write_text(_render_preview_multi(result), encoding="utf-8", newline="\n")
+            return
+        result = _sole_result(result)
     users_sorted = _sort_for_display(
         result.users, "label", PREVIEW_ORDER, "api_cost_projected_usd"
     ).to_dict("records")
@@ -697,8 +709,136 @@ def write_preview_html(result: PreviewResult, path: Path) -> None:
         total_proj_fmt=_fmt_compact(result.summary["total_api_projected_usd"]),
         max_proj=max_proj,
         seat_short=SEAT_LABELS,
+        multi=False,
+        workspaces=[{
+            "label": None, "fixed_seat": None, "s": result.summary,
+            "credit_bars": _credit_bars(result.summary),
+            "bar_users": users_sorted, "max_proj": max_proj,
+            "credit_reach": _credit_reach_view(result.credit_reach),
+            "snapshot": _snapshot_view(result.snapshot),
+            "code_diff": _code_diff_view(result.code_diff),
+            "member_changes": _member_changes_view(result.member_changes),
+            "grant_candidates": _grant_candidates_view(result.grant_candidates),
+            "grant_cap_fmt": _fmt_setting_usd(cap_usd),
+            "credit_shown": bool(result.summary.get("credit_shown", False)),
+        }],
     )
     path.write_text(html, encoding="utf-8", newline="\n")
+
+
+def _preview_html_rows(users: pd.DataFrame) -> list[dict]:
+    """一次判断テーブルと棒に共通の表示列を付ける。"""
+    rows = _sort_for_display(
+        users, "label", PREVIEW_ORDER, "api_cost_projected_usd"
+    ).to_dict("records")
+    _apply_billed_bg(rows, "billed_observed_usd")
+    for row in rows:
+        row["obs_fmt"] = _fmt_compact(row["api_cost_observed_usd"])
+        row["proj_fmt"] = _fmt_compact(row["api_cost_projected_usd"])
+        row["billed_fmt"] = _fmt_compact(row.get("billed_observed_usd", 0.0))
+        row["badge_class"] = _PREVIEW_BADGE_CLASS.get(row["label"], "b-keep")
+        billed = float(row.get("billed_observed_usd") or 0.0)
+        row["billed_flag"] = ("⚠️超過済" if row["current_seat"] == "premium"
+                              else "⚠️従量あり") if billed > 0 else ""
+    return rows
+
+
+def _render_preview_multi(org: OrgPreviewResult) -> str:
+    """複数 workspace の速報ダッシュボード。組織合計には自身の需要だけを使う。"""
+    results = org.workspaces
+    judged = _account_rows(org, {name: result.users for name, result in results.items()})
+    users_sorted = _preview_html_rows(judged)
+    has_dept = _has_values(judged, "department")
+    has_team = _has_values(judged, "team")
+    for row in users_sorted:
+        row["department"] = str(row.get("department", "") or "") if has_dept else ""
+        row["team"] = str(row.get("team", "") or "") if has_team else ""
+
+    workspaces = []
+    spaces_rows, totals = spaces.preview_workspace_rows(org)
+
+    def workspace_view(row: dict) -> dict:
+        return {
+            **row,
+            "seat_cost_fmt": _fmt_compact(row["seat_cost_now_usd"]),
+            "obs_fmt": _fmt_compact(row["total_api_observed_usd"]),
+            "proj_fmt": _fmt_compact(row["total_api_projected_usd"]),
+            "billed_fmt": _fmt_compact(row["billed_observed_usd"]),
+        }
+
+    for name, context in org.contexts.items():
+        result = results.get(name)
+        if result is None:
+            continue
+        summary = result.summary
+        bar_users = _preview_html_rows(preview_own_demand_users(result))
+        workspaces.append({
+            "label": context.label, "fixed_seat": context.fixed_seat,
+            "s": summary, "credit_bars": _credit_bars(summary),
+            "bar_users": bar_users,
+            "max_proj": max((u["api_cost_projected_usd"] for u in bar_users), default=0) or 1.0,
+            "credit_reach": _credit_reach_view(result.credit_reach),
+            "snapshot": _snapshot_view(result.snapshot),
+            "code_diff": _code_diff_view(result.code_diff),
+            "member_changes": _member_changes_view(result.member_changes),
+            "grant_candidates": _grant_candidates_view(result.grant_candidates),
+            "grant_cap_fmt": _fmt_setting_usd(summary["grant_suggested_cap_usd"]),
+            "credit_shown": bool(summary.get("credit_shown", False)),
+        })
+    counts = {label: sum(r.summary["label_counts"].get(label, 0)
+                         for r in results.values()) for label in PREVIEW_ORDER}
+    label_counts = [{"label": label, "n": n,
+                     "cls": _PREVIEW_BADGE_CLASS.get(label, "b-keep")}
+                    for label, n in counts.items() if n]
+    own = _account_rows(org, {name: preview_own_demand_users(result)
+                              for name, result in results.items()})
+    detail_rows, detail_has_loc = _detail_rows(own, "api_cost_observed_usd")
+    for row in detail_rows:
+        row["in_fmt"] = _fmt_tokens(row["in"])
+        row["out_fmt"] = _fmt_tokens(row["out"])
+        row["api_fmt"] = _fmt_compact(row["api"])
+        row["loc_fmt"] = f"{row['loc']:,}" if row["loc"] is not None else "—"
+    persons, person_columns = spaces.preview_person_rows(org)
+    for person in persons:
+        for key, dest in (("seat_cost_usd", "seat_cost_fmt"),
+                          ("api_cost_observed_usd", "obs_fmt"),
+                          ("api_cost_projected_usd", "proj_fmt"),
+                          ("primary_projected_usd", "primary_fmt"),
+                          ("secondary_projected_usd", "secondary_fmt"),
+                          ("billed_observed_usd", "billed_fmt")):
+            person[dest] = _fmt_compact(person[key])
+        person["ratio_fmt"] = spaces._pct(person["secondary_ratio"])
+    code_asof = " / ".join(
+        f"{org.contexts[name].label}: {result.code_asof}"
+        for name, result in results.items()
+        if result.code_asof and "loc_with_cc" in result.users.columns
+        and result.users["loc_with_cc"].notna().any()
+    ) or None
+    return _PREVIEW_HTML_TEMPLATE.render(
+        dashboard_css=_DASHBOARD_CSS, dashboard_js=_DASHBOARD_JS,
+        scope=_scope_label(org), org=org.org, month=org.month,
+        s=totals, n_persons=len(org.persons), multi=True,
+        spaces_table={"rows": [workspace_view(row) for row in spaces_rows],
+                      "total": workspace_view(totals),
+                      "members_note": spaces.workspace_members_note(len(org.persons))},
+        workspaces=workspaces, persons=persons,
+        persons_has_dept=person_columns["dept"],
+        persons_has_team=person_columns["team"],
+        person_legend=spaces.PREVIEW_PERSON_LEGEND,
+        merged_note=spaces.PREVIEW_MERGED_DEMAND_NOTE + "。",
+        fixed_legend=spaces.preview_fixed_seat_legend(org),
+        multi_notes=spaces.preview_notes_lines(org),
+        users_sorted=users_sorted, label_counts=label_counts,
+        detail_rows=detail_rows, detail_has_loc=detail_has_loc, code_asof=code_asof,
+        has_dept=has_dept, has_team=has_team,
+        obs_label=f"観測需要({org.days_observed}日)",
+        days_observed=org.days_observed, days_in_month=org.days_in_month,
+        factor=org.days_in_month / org.days_observed,
+        total_obs_fmt=_fmt_compact(totals["total_api_observed_usd"]),
+        total_proj_fmt=_fmt_compact(totals["total_api_projected_usd"]),
+        disabled_note=_disabled_cost_note(judged[judged["label"] != STATUS_FIXED_SEAT]),
+        seat_short=SEAT_LABELS,
+    )
 
 
 def _recommendation_rows(users) -> list[dict]:

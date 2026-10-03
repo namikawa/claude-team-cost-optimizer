@@ -1,0 +1,14 @@
+
+{# 速報の人別需要。シート判定と副の払い出し判定は正式分析で行う #}
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>人別の需要（スペース合算）</h2></div></div>
+  <div class="tablebox tall">
+    <table>
+      <thead><tr><th>ユーザ</th><th>保有シート</th>{% if persons_has_dept %}<th>部署</th>{% endif %}{% if persons_has_team %}<th>チーム</th>{% endif %}<th class="num">シート費/月</th><th class="num">観測需要({{ days_observed }}日)</th><th class="num">月末ペース換算</th><th class="num">主の換算需要</th><th class="num">副の換算需要</th><th class="num">副の比率</th><th class="num">実課金(観測)</th><th>主の一次判断</th></tr></thead>
+      <tbody>
+{% for p in persons %}      <tr><td class="user" title="{{ p.email }}">{{ p.email.split('@')[0] }}</td><td class="sub">{% for part in p.seat_parts %}{{ part }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td>{% if persons_has_dept %}<td class="sub">{{ p.department }}</td>{% endif %}{% if persons_has_team %}<td class="sub">{{ p.team }}</td>{% endif %}<td class="num sub">{{ p.seat_cost_fmt }}</td><td class="num">{{ p.obs_fmt }}</td><td class="num">{{ p.proj_fmt }}</td><td class="num sub">{{ p.primary_fmt }}</td><td class="num sub">{{ p.secondary_fmt }}</td><td class="num sub">{{ p.ratio_fmt }}</td><td class="num">{{ p.billed_fmt }}</td><td class="judge">{{ p.primary_label or '—' }}</td></tr>
+{% endfor %}      </tbody>
+    </table>
+  </div>
+  <div class="card-ft">{% for line in person_legend %}{{ line }}。{% if not loop.last %}<br>{% endif %}{% endfor %}</div>
+</section>

@@ -294,6 +294,9 @@ Set-Location ~\claude-seat-analysis
 seat-analyzer init-org <組織名>
 ```
 
+複数の Team スペースを運用する組織は `--workspaces main,second` を付ける。
+配置と設定は [usage.md](./usage.md) の「複数の Team スペースを運用する組織」を参照する。
+
 `input/<組織名>/{spend,members,code-analytics}/` と `reports/<組織名>/`、および
 ヘッダ行だけの `input/<組織名>/members-info.csv` が作られる。CSV はまだ無くてよい。
 

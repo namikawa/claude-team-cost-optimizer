@@ -280,7 +280,8 @@ def _history_gap_issues(
     for _ in range(max(n_hyst - 1, 0)):
         cursor = _prev_month(cursor)
         window.append(cursor)
-    missing = [m for m in reversed(window) if m not in spend_months]
+    oldest = min(spend_months) if spend_months else month
+    missing = [m for m in reversed(window) if oldest <= m and m not in spend_months]
     if not missing:
         return []
     return [_issue(
@@ -544,6 +545,111 @@ def workspace_issues(
             org, primary=primary, found=found,
         ))
     return sort_issues(issues)
+
+
+def unstarted_workspace_issue(org: str, month: str, workspace: str) -> QualityIssue:
+    """まだ始まっていない workspace の入力を検査しなかったことの warning。
+
+    対象月以前にスペンドレポートが1つも無い workspace は、分析（analyze_org）が警告して
+    飛ばす（設計書 §26.6）。入力の検査も同じ規則で行わず、その旨だけを1件報告する
+    （始まる前の月を欠損として error にしない）。
+    """
+    return _issue(
+        Severity.WARNING, IssueCode.MISSING_SPEND,
+        f"workspace {workspace} は {month} 以前のスペンドレポートが無いため、"
+        "まだ始まっていない workspace として検査しませんでした（分析でも対象外になります）",
+        org, month, workspace=workspace,
+    )
+
+
+def person_issues(
+    org_input: Path | str, month: str | None, cfg: dict, org: str
+) -> list[QualityIssue]:
+    """開始済みの副のシート保持者が主のメンバー一覧にも居るか検査する。"""
+    if month is None:
+        return []
+    org_input = Path(org_input)
+    layout, found = ingest.detect_workspace_layout(org_input)
+    if layout != ingest.WORKSPACE_LAYOUT_NESTED:
+        return []
+    primary = _configured_primary(ingest.workspace_settings(cfg, org))
+    if primary is None or primary not in found:
+        return []
+    try:
+        if not ingest.workspace_started(org_input / primary, month):
+            return []
+        main = ingest.load_members(org_input / primary, month, cfg).df
+    except (FileNotFoundError, OSError, ValueError):
+        return []
+    primary_emails = set(main["email"])
+    issues = []
+    for name in sorted(found):
+        if name == primary:
+            continue
+        try:
+            if not ingest.workspace_started(org_input / name, month):
+                continue
+            secondary = ingest.load_members(org_input / name, month, cfg).df
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+        seated = set(secondary.loc[
+            secondary["seat_type"].isin(("standard", "premium")), "email"
+        ])
+        missing = sorted(seated - primary_emails)
+        if missing:
+            examples = missing[:_MAX_LISTED]
+            issues.append(_issue(
+                Severity.WARNING, IssueCode.SECONDARY_ONLY_ACCOUNT,
+                f"主 workspace（{primary}）のメンバー一覧に居ない人が {len(missing)} 名います"
+                f"（例: {', '.join(examples)}）。主の払い出し漏れか、メールアドレスの"
+                "相違の可能性があります",
+                org, month, workspace=name, users=len(missing), emails=examples,
+            ))
+    return issues
+
+
+def members_info_issues(
+    org_input: Path | str, month: str | None, cfg: dict, org: str,
+    workspace_dirs: Iterable[Path | str],
+) -> list[QualityIssue]:
+    """組織直下の members-info と対象月に分析するユーザの対応を検査する。"""
+    if month is None:
+        return []
+    org_input = Path(org_input)
+    try:
+        info = ingest.load_members_info(org_input, cfg, month)
+    except (OSError, ValueError) as exc:
+        return [_issue(
+            Severity.ERROR, IssueCode.MEMBERS_INFO_UNREADABLE,
+            f"members-info.csv を読めません: {_reason(exc, org_input)}"
+            "（部署・チーム・追加クレジット上限を結合できないため、分析も止まります）",
+            org, month,
+        )]
+    if info is None:
+        return []
+    users: set[str] = set()
+    for raw_dir in workspace_dirs:
+        directory = Path(raw_dir)
+        try:
+            users.update(ingest.load_members(directory, month, cfg).df["email"])
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+        try:
+            spend = ingest.load_spend(directory, month, cfg).df
+            users.update(spend.loc[spend["email"].str.contains("@", na=False), "email"])
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+    missing = sorted(users - set(info.df["email"]))
+    if not missing:
+        return []
+    examples = missing[:_MAX_LISTED]
+    return [_issue(
+        Severity.WARNING, IssueCode.MEMBERS_INFO_UNREGISTERED,
+        f"members-info.csv に未登録の分析対象ユーザが {len(missing)} 名います"
+        f"（例: {', '.join(examples)}）。部署・チーム・職種が空欄で集計されます"
+        "（管理画面へのメンバー追加に追記が追従しているか確認してください）",
+        org, month, users=len(missing), emails=examples,
+    )]
 
 
 def inspect_input(

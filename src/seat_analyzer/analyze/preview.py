@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import calendar
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -29,6 +31,7 @@ from .pipeline import (
     LABEL_STD_OK,
     PREVIEW_IDLE_OBS_USD,
     SCENARIOS,
+    STATUS_FIXED_SEAT,
     STATUS_UNKNOWN,
     _code_asof,
     _detail_columns,
@@ -38,10 +41,14 @@ from .pipeline import (
     _recommend,
     _seat_summary,
     _warn_active_unassigned,
+    _warn_fixed_seat_mismatch,
     _warn_orphan_users,
     _warn_unknown_models,
     aggregate_month,
 )
+
+if TYPE_CHECKING:
+    from .workspaces import WorkspaceContext
 
 
 @dataclass
@@ -67,6 +74,9 @@ class PreviewResult:
     # LoC（code-analytics）の観測時点 "YYYY-MM-DD"（表示専用）。spend の観測期間と
     # ずれることがあるため、詳細利用状況の脚注に添える。時点が読めない場合は None
     code_asof: str | None = None
+    # 自身の未丸めの観測需要（email → USD）。extra_demand の有無によらず、spend に
+    # 行の無い人は含まない（読む側では需要 0 として扱う）
+    own_demand: dict[str, float] = field(default_factory=dict)
 
 
 def _preview_label(
@@ -75,6 +85,7 @@ def _preview_label(
     api_proj: float,
     cfg: dict,
     min_saving: float,
+    fixed_seat: str | None = None,
 ) -> tuple[str, str]:
     """月末ペース換算需要を allowance モデルにかけた一次判断ラベルと確度。
 
@@ -88,6 +99,8 @@ def _preview_label(
         return STATUS_UNKNOWN, "—"
     if api_obs < PREVIEW_IDLE_OBS_USD:
         return LABEL_IDLE, "—"
+    if fixed_seat and seat in ("standard", "premium"):
+        return STATUS_FIXED_SEAT, "—"
     recommendations = {
         scenario: _recommend(api_proj, scenario, cfg) for scenario in SCENARIOS
     }
@@ -112,6 +125,8 @@ def _preview_rows(
     seat_by_email: dict[str, str],
     factor: float,
     cfg: dict,
+    extra_demand: Mapping[str, float] | None = None,
+    fixed_seat: str | None = None,
 ) -> pd.DataFrame:
     """速報の全ユーザ行を構築する。"""
     min_saving = _min_saving(cfg)
@@ -119,12 +134,13 @@ def _preview_rows(
     for email in sorted(set(members["email"]) | set(aggregate.index)):
         seat = seat_by_email.get(email, "unknown")
         row = aggregate.loc[email] if email in aggregate.index else None
-        api_observed = float(row["api_cost"]) if row is not None else 0.0
+        own_observed = float(row["api_cost"]) if row is not None else 0.0
+        api_observed = own_observed + (extra_demand or {}).get(email, 0.0)
         # billed は aggregate_month が常に付与するため row があれば必ず存在する
         billed_observed = float(row["billed"]) if row is not None else 0.0
         api_projected = api_observed * factor
         label, confidence = _preview_label(
-            seat, api_observed, api_projected, cfg, min_saving
+            seat, api_observed, api_projected, cfg, min_saving, fixed_seat
         )
         rows.append(
             {
@@ -147,8 +163,22 @@ def preview(
     cfg: dict,
     days_observed: int,
     org: str,
+    workspace: WorkspaceContext | None = None,
+    members_info_dir: str | Path | None = None,
+    extra_demand: Mapping[str, float] | None = None,
 ) -> PreviewResult:
-    """部分月データの一次判断。対象月のみ使用し、ヒステリシス・変更推奨は行わない。"""
+    """1 workspace 分の速報。対象月だけを使い、ヒステリシス・変更推奨は行わない。
+
+    input_dir は spend/ 等を直下に持つ入力ディレクトリ。days_observed は全 workspace
+    で共通の観測日数（対象月の暦日数以内）で、需要を月末ペースに換算するために使う。
+    任意引数の既定値では従来レイアウトの速報と同じ挙動になる。
+
+    workspace はその workspace の運用設定（κ の既定値・固定シート）。
+    members_info_dir は members-info を置くディレクトリ（既定は input_dir。入れ子
+    レイアウトでは組織直下で、人単位の情報は workspace ごとに分けない）。
+    extra_demand は他 workspace の未丸めの観測需要（email → USD）。主の行の判定需要
+    にだけ足し、月末ペースへ換算する。members と spend に無い email の行は作らない。
+    """
     input_dir = Path(input_dir)
     warnings: list[str] = []
 
@@ -176,6 +206,8 @@ def preview(
     df = pricing.apply_cost_basis(df, basis)
     org_service_observed = round(float(df[~is_user]["billed_usd"].sum()), 2)
     aggregate = aggregate_month(df[is_user]).set_index("email")
+    own_demand = {str(email): float(value) for email, value in
+                  aggregate["api_cost"].items()}
 
     members_result = ingest.load_members(
         input_dir, month, cfg, snapshot_active=active.members
@@ -196,21 +228,28 @@ def preview(
         sources["code_analytics"] = str(code_result.source)
         code_asof = _code_asof(code_result.source)
 
+    # κ の月中変更は、そのアカウントの κ を members-info が決める workspace
+    # （単一 workspace の組織と主）だけを検出の対象にする
+    info_dir = Path(members_info_dir) if members_info_dir is not None else input_dir
+    credit_limit_dir = info_dir if workspace is None or workspace.primary else None
     snapshot, code_diff, member_changes, diff_warnings = _midmonth_diffs(
-        # 速報は単一 workspace の組織だけを扱うため、κ は同じディレクトリの members-info
-        input_dir, month, cfg, seat_by_email, credit_limit_dir=input_dir
+        input_dir, month, cfg, seat_by_email, credit_limit_dir=credit_limit_dir
     )
     warnings.extend(diff_warnings)
 
-    users = _preview_rows(members, aggregate, seat_by_email, factor, cfg)
-    warnings.extend(_merge_members_info(users, input_dir, cfg, sources, month))
+    users = _preview_rows(members, aggregate, seat_by_email, factor, cfg,
+                          extra_demand, workspace.fixed_seat if workspace else None)
+    warnings.extend(_merge_members_info(users, info_dir, cfg, sources, month,
+                                        workspace=workspace))
     _merge_code_analytics(users, code_result)
     # クレジットモード（速報は当月の観測実課金のみで billed_ever を判断）
     billed_ever = set(users.loc[users["billed_observed_usd"] > 0.0, "email"])
     _attach_credits_mode(users, billed_ever)
 
     warnings.extend(_warn_orphan_users(users))
-    warnings.extend(_warn_active_unassigned(users, "api_cost_observed_usd"))
+    own_users = _own_demand_users(users, own_demand, factor)
+    warnings.extend(_warn_active_unassigned(own_users, "api_cost_observed_usd"))
+    warnings.extend(_warn_fixed_seat_mismatch(users, workspace))
     warnings.extend(_credit_integrity_warnings(users, cfg, "billed_observed_usd"))
 
     summary = _seat_summary(users, cfg)
@@ -219,10 +258,10 @@ def preview(
             "days_observed": days_observed,
             "days_in_month": days_in_month,
             "total_api_observed_usd": round(
-                float(users["api_cost_observed_usd"].sum()), 2
+                float(own_users["api_cost_observed_usd"].sum()), 2
             ),
             "total_api_projected_usd": round(
-                float(users["api_cost_projected_usd"].sum()), 2
+                float(own_users["api_cost_projected_usd"].sum()), 2
             ),
             "n_billed": int((users["billed_observed_usd"] > 0).sum()),
             "label_counts": users["label"].value_counts().to_dict(),
@@ -238,7 +277,8 @@ def preview(
     )
     upgrade = users["label"].isin([LABEL_PREM_CONSIDER, LABEL_HOLD])
     grant_candidates = _grant_candidates(
-        users, upgrade, cfg, demand_col="api_cost_projected_usd"
+        users, upgrade & (users["label"] != STATUS_FIXED_SEAT), cfg,
+        demand_col="api_cost_projected_usd"
     )
     users = _drop_unused_credit_columns(users, summary)
     return PreviewResult(
@@ -256,4 +296,26 @@ def preview(
         credit_reach=credit_reach,
         grant_candidates=grant_candidates,
         code_asof=code_asof,
+        own_demand=own_demand,
+    )
+
+
+def _own_demand_users(users: pd.DataFrame, own_demand: Mapping[str, float],
+                      factor: float) -> pd.DataFrame:
+    """判定用の需要列だけを自身の観測需要と換算需要に差し替える。"""
+    users = users.copy()
+    users["api_cost_observed_usd"] = users["email"].map(
+        lambda email: round(own_demand.get(email, 0.0), 2)
+    )
+    users["api_cost_projected_usd"] = users["email"].map(
+        lambda email: round(own_demand.get(email, 0.0) * factor, 2)
+    )
+    return users
+
+
+def preview_own_demand_users(result: PreviewResult) -> pd.DataFrame:
+    """判定用の合算需要を各アカウント自身の観測需要に戻した表示用の複製。"""
+    return _own_demand_users(
+        result.users, result.own_demand,
+        result.days_in_month / result.days_observed,
     )

@@ -16,7 +16,9 @@
   まとめ（需要は全 workspace の合算）、`workspace` 列を付けるようにした
 - 入れ子レイアウトの組織を `analyze`（正式分析）・`discuss`・`collect` で扱えるようにした
   （複数 workspace の組織の成果物に、スペース列・workspace ごとの節・人別の利用・
-  「複数スペースの利用」・dashboard の「複数スペース」タブが加わる。速報は未対応）
+  「複数スペースの利用」・dashboard の「複数スペース」タブが加わる）
+- 速報（`--preview`）で複数 workspace の組織を扱えるようにした（workspace ごとの一次判断・人別の需要）
+- `doctor` に主に居ない副のアカウントの警告と、members-info の検査（未登録・読めないファイル）を追加した
 - `analyze --allow-missing-workspace <名前>` で、対象月のスペンドレポートが無い workspace を
   需要 0 として分析できるようにした
 - 複数 workspace の組織の recommendations / usage-summary に `workspace` 列を付けるようにした
@@ -29,6 +31,8 @@
 - workspace の `label` が組織内で重複していると、config のロードで止まるようにした
 - 従来レイアウトの組織に `workspaces` を書いた config では、`analyze` も不一致として止まるように
   した（これまでは `doctor` だけが報告していた）
+- `doctor` の `MISSING_HISTORY_MONTH` を、スペンドレポートが始まる前の月には出さないようにした
+- `doctor` が、まだ始まっていない workspace を過去の月で error にせず、警告して検査を飛ばすようにした
 
 ## [1.2.0] - 2026-09-05
 
