@@ -15,9 +15,12 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pandas as pd
+
 from .. import ingest
-from .persons import PersonLayer, build_person_layer
+from .persons import PersonLayer, build_person_layer, preview_persons
 from .pipeline import NO_USAGE_SOURCE, AnalysisResult, analyze
+from .preview import PreviewResult, preview
 
 
 @dataclass(frozen=True)
@@ -67,6 +70,37 @@ class OrgAnalysisResult:
     @property
     def has_multiple_workspaces(self) -> bool:
         """分析を飛ばした workspace も含め、複数 workspace の設定を持つか。"""
+        return len(self.contexts) >= 2
+
+
+@dataclass
+class OrgPreviewResult:
+    """1組織分の速報（workspace ごとの PreviewResult を束ねたもの）。
+
+    org / month は組織名と対象月、primary は主 workspace の名前。
+    workspaces は主が先で、以降は名前の昇順。飛ばした workspace は含まない。
+    contexts は全 workspace の運用設定（飛ばしたものも含む）で、skipped は未開始のため
+    飛ばした名前（昇順）。warnings は組織単位の警告で、個別の警告は PreviewResult が持つ。
+    days_observed / days_in_month は共通の観測日数と暦日数（全 workspace を飛ばした場合の
+    暦日数は 0）。persons は複数 workspace の組織の人別需要で、単一なら None。
+    nested は入力が入れ子レイアウト（<組織>/<workspace>/spend/）だったか。
+    """
+
+    org: str
+    month: str
+    primary: str
+    workspaces: dict[str, PreviewResult]
+    contexts: dict[str, WorkspaceContext]
+    days_observed: int
+    days_in_month: int
+    skipped: tuple[str, ...] = ()
+    warnings: list[str] = field(default_factory=list)
+    persons: pd.DataFrame | None = None
+    nested: bool = False
+
+    @property
+    def has_multiple_workspaces(self) -> bool:
+        """速報を飛ばした workspace も含め、複数 workspace の設定を持つか。"""
         return len(self.contexts) >= 2
 
 
@@ -120,6 +154,38 @@ def _ordered(names: list[str], primary: str) -> list[str]:
     return [primary, *[name for name in sorted(names) if name != primary]]
 
 
+def _resolve_contexts(
+    org_input: Path, cfg: dict, org: str
+) -> tuple[str, dict[str, WorkspaceContext]]:
+    """入れ子の workspace を検証し、主を先頭とする運用設定を返す。"""
+    found = ingest.discover_workspaces(org_input)
+    # 名前はディレクトリ名として発見したものなので、組織名と同じ規則で検証する
+    # （出力パスと表示に使う名前が、置いた環境によって壊れないようにする）
+    ingest.validate_org_names(found)
+    settings = ingest.workspace_settings(cfg, org)
+    configured = sorted(settings)
+    if not configured:
+        raise ValueError(
+            f"workspace ごとの spend/ がありますが、config.yaml > organizations.{org}"
+            f".workspaces がありません（見つかった workspace: {'/'.join(found)}）。"
+            "各 workspace を書き、primary: true をちょうど1つ付けてください"
+        )
+    missing, unexpected = ingest.compare_workspaces(found, configured)
+    if missing or unexpected:
+        raise ValueError(_mismatch_message(org, missing, unexpected))
+    primary = _primary_name(settings)
+    if primary is None:
+        # 設定のロードが通常は止める条件。workspace_settings を直接組んだ場合でも、
+        # どのシートを「その人の主アカウント」と読むかが決まらないまま進めない
+        raise ValueError(
+            f"config.yaml > organizations.{org}.workspaces で主 workspace が1つに"
+            "決まりません（primary: true をちょうど1つ付けてください）"
+        )
+    contexts = {name: _context(name, settings[name])
+                for name in _ordered(configured, primary)}
+    return primary, contexts
+
+
 def analyze_org(
     input_dir: str | Path,
     month: str,
@@ -160,31 +226,7 @@ def analyze_org(
         single.persons = build_person_layer(single, cfg)
         return single
 
-    found = ingest.discover_workspaces(org_input)
-    # 名前はディレクトリ名として発見したものなので、組織名と同じ規則で検証する
-    # （出力パスと表示に使う名前が、置いた環境によって壊れないようにする）
-    ingest.validate_org_names(found)
-    configured = sorted(settings)
-    if not configured:
-        raise ValueError(
-            f"workspace ごとの spend/ がありますが、config.yaml > organizations.{org}"
-            f".workspaces がありません（見つかった workspace: {'/'.join(found)}）。"
-            "各 workspace を書き、primary: true をちょうど1つ付けてください"
-        )
-    missing, unexpected = ingest.compare_workspaces(found, configured)
-    if missing or unexpected:
-        raise ValueError(_mismatch_message(org, missing, unexpected))
-
-    primary = _primary_name(settings)
-    if primary is None:
-        # 設定のロードが通常は止める条件。workspace_settings を直接組んだ場合でも、
-        # どのシートを「その人の主アカウント」と読むかが決まらないまま進めない
-        raise ValueError(
-            f"config.yaml > organizations.{org}.workspaces で主 workspace が1つに"
-            "決まりません（primary: true をちょうど1つ付けてください）"
-        )
-
-    contexts = {name: _context(name, settings[name]) for name in _ordered(configured, primary)}
+    primary, contexts = _resolve_contexts(org_input, cfg, org)
     allowed = set(allow_missing)
     analyzed: dict[str, bool] = {}  # 分析する workspace → 対象月を需要 0 として扱うか
     skipped: list[str] = []
@@ -192,7 +234,7 @@ def analyze_org(
     for name in contexts:
         workspace_dir = org_input / name
         months = ingest.discover_months(workspace_dir)
-        if not [m for m in months if m <= month]:
+        if not ingest.workspace_started(workspace_dir, month):
             # まだ始まっていない workspace。過去月の再生成を止めないため飛ばす
             skipped.append(name)
             warnings.append(
@@ -241,6 +283,114 @@ def analyze_org(
         name: _first_seen(org_input / name, results[name], cfg) for name in secondaries
     }
     result.persons = build_person_layer(result, cfg, result.first_seen)
+    return result
+
+
+def preview_days(org_input: str | Path, month: str) -> int | None:
+    """対象月の spend ファイル名から、組織で共通の観測日数を得る。
+
+    org_input は組織の入力ディレクトリ。従来レイアウトでは採用ファイルの期間の日数を
+    返し、入れ子では対象月の spend を持つ全 workspace の日数が同じときだけ採る。
+    同一月に複数ファイルがある場合も、spend_file_period が採用する1本だけを見る。
+    対象月のファイルが無い、または期間を持たない命名があれば None。日数が食い違う
+    場合は ValueError（CLI は --days による明示指定を案内する）。
+    """
+    directory = Path(org_input)
+    layout, names = ingest.detect_workspace_layout(directory)
+    if layout == ingest.WORKSPACE_LAYOUT_MIXED:
+        ingest.workspace_layout(directory, directory.name)
+    if layout == ingest.WORKSPACE_LAYOUT_SINGLE:
+        period = ingest.spend_file_period(directory, month)
+        return period.days if period else None
+    days = {}
+    for name in names:
+        period = ingest.spend_file_period(directory / name, month)
+        if period is not None:
+            days[name] = period.days
+    if not days or any(value is None for value in days.values()):
+        return None
+    if len(set(days.values())) != 1:
+        detail = " / ".join(f"{name}: {value} 日" for name, value in sorted(days.items()))
+        raise ValueError(
+            f"workspace ごとの観測日数が違います（{detail}）。"
+            "--days で観測日数を指定してください"
+        )
+    return next(iter(days.values()))
+
+
+def preview_org(
+    input_dir: str | Path, month: str, cfg: dict, days_observed: int, org: str
+) -> OrgPreviewResult:
+    """1組織分の速報。input_dir は組織の入力ディレクトリ。
+
+    従来レイアウトでは preview() を1回呼んで包む。入れ子では config と発見した
+    workspace を突き合わせ、days_observed を共通の観測日数として分析する。
+    対象月以前に spend が無い workspace は未開始として警告して飛ばす。開始済みで
+    対象月の spend が無い workspace は FileNotFoundError で止める（需要 0 にしない）。
+
+    副を先に計算し、各結果の own_demand を email ごとに足した未丸めの需要を、主の
+    extra_demand に渡す。主が未開始なら副だけの結果になる。複数 workspace の組織
+    では人別需要も組み、単一では従来の出力を保つため持たない。
+    """
+    org_input = Path(input_dir)
+    layout = ingest.workspace_layout(org_input, org)
+    settings = ingest.workspace_settings(cfg, org)
+    if layout == ingest.WORKSPACE_LAYOUT_SINGLE:
+        if settings:
+            missing, unexpected = ingest.compare_workspaces([], settings)
+            raise ValueError(_mismatch_message(org, missing, unexpected))
+        result = preview(org_input, month, cfg, days_observed, org)
+        return OrgPreviewResult(
+            org, month, org, {org: result}, {org: _single_context(org)},
+            days_observed, result.days_in_month,
+        )
+
+    primary, contexts = _resolve_contexts(org_input, cfg, org)
+    analyzed = []
+    skipped = []
+    warnings = []
+    for name in contexts:
+        workspace_dir = org_input / name
+        months = ingest.discover_months(workspace_dir)
+        if not ingest.workspace_started(workspace_dir, month):
+            skipped.append(name)
+            warnings.append(
+                f"workspace {name} は {month} 以前のスペンドレポートが無いため対象外に"
+                "しました（まだ利用が始まっていない workspace として飛ばしています）"
+            )
+            continue
+        if month not in months:
+            raise FileNotFoundError(
+                f"workspace {name} に {month} のスペンドレポートがありません"
+                f"（存在する月: {months}）。速報は欠月の workspace を需要 0 として"
+                "扱わないため、始まっている全 workspace に対象月のスペンドレポートが必要です"
+            )
+        analyzed.append(name)
+
+    secondaries = [name for name in analyzed if name != primary]
+    results = {
+        name: preview(org_input / name, month, cfg, days_observed, org,
+                      workspace=contexts[name], members_info_dir=org_input)
+        for name in secondaries
+    }
+    if primary in analyzed:
+        extra: dict[str, float] = {}
+        for name in secondaries:
+            for email, demand in results[name].own_demand.items():
+                extra[email] = extra.get(email, 0.0) + demand
+        results[primary] = preview(
+            org_input / primary, month, cfg, days_observed, org,
+            workspace=contexts[primary], members_info_dir=org_input,
+            extra_demand=extra,
+        )
+    ordered = {name: results[name] for name in contexts if name in results}
+    days_in_month = next(iter(ordered.values())).days_in_month if ordered else 0
+    result = OrgPreviewResult(
+        org, month, primary, ordered, contexts, days_observed, days_in_month,
+        skipped=tuple(sorted(skipped)), warnings=warnings, nested=True,
+    )
+    if result.has_multiple_workspaces:
+        result.persons = preview_persons(result, cfg)
     return result
 
 

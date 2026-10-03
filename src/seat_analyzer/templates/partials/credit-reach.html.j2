@@ -1,7 +1,7 @@
 
 {% if credit_reach %}
 <section class="card">
-  <div class="card-hd"><div class="hd-main"><h2><!--text:h_credit_reach--></h2></div></div>
+  <div class="card-hd"><div class="hd-main"><h2><!--text:h_credit_reach-->{% if ws_label %}（{{ ws_label }}）{% endif %}</h2></div></div>
   <div class="tablebox">
     <table>
       <thead><tr><th>ユーザ</th><th class="num">実課金(観測)</th><th class="num">上限 κ</th><th class="num">残額</th><th>到達見込み</th></tr></thead>

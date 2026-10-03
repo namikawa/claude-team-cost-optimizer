@@ -34,6 +34,7 @@ from .domain import (
 )
 from .github_collect import GhFailure
 from .leakcheck import LeakCheckError
+from .report.text import PREVIEW_ORDER
 
 # ワークスペース雛形用の設定テンプレート（init がコピーする。中身は全行コメント）
 WORKSPACE_CONFIG_TEMPLATE = Path(__file__).parent / "templates" / "workspace-config.yaml"
@@ -684,18 +685,35 @@ def _inspect_org(
 ) -> list[QualityIssue]:
     """1組織分の入力検査（構造 + 入力の中身）。
 
-    入れ子レイアウトでは workspace ごとに同じ検査を回し、どのスペースの issue かを
-    scope に持たせる。混在レイアウトはどちらとしても読めないため構造の報告だけに留める
+    入れ子レイアウトでは未開始の workspace を警告して飛ばし、開始済みの workspace
+    ごとに検査を回して scope を持たせる。混在レイアウトは構造の報告だけに留める
     （どの入力を検査したのかが読み手に決まらない状態で中身の issue を並べない）。
     """
     issues = data_quality.workspace_issues(org_input, cfg, org)
     layout, workspaces = ingest.detect_workspace_layout(org_input)
     if layout == ingest.WORKSPACE_LAYOUT_NESTED:
+        started = []
         for workspace in workspaces:
+            workspace_dir = org_input / workspace
+            if month is not None:
+                try:
+                    has_started = ingest.workspace_started(workspace_dir, month)
+                except (OSError, ValueError):
+                    # ファイル名を解決できない場合は inspect_input に検査を任せる
+                    pass
+                else:
+                    if not has_started:
+                        issues.append(data_quality.unstarted_workspace_issue(
+                            org, month, workspace))
+                        continue
+                    started.append(workspace_dir)
             issues.extend(data_quality.inspect_input(
-                org_input / workspace, month, cfg, org=org, workspace=workspace))
+                workspace_dir, month, cfg, org=org, workspace=workspace))
+        issues.extend(data_quality.person_issues(org_input, month, cfg, org))
+        issues.extend(data_quality.members_info_issues(org_input, month, cfg, org, started))
     elif layout == ingest.WORKSPACE_LAYOUT_SINGLE:
         issues.extend(data_quality.inspect_input(org_input, month, cfg, org=org))
+        issues.extend(data_quality.members_info_issues(org_input, month, cfg, org, [org_input]))
     return data_quality.sort_issues(issues)
 
 
@@ -803,7 +821,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
     if allow_missing and args.preview:
         raise ValueError(
             "--allow-missing-workspace は速報モードでは指定できません"
-            "（速報は複数 workspace の組織にまだ対応していません）"
+            "（速報は欠月の workspace を需要 0 として扱いません）"
         )
 
     cfg = load_config(args.config)
@@ -832,7 +850,6 @@ def _run_analyze(args: argparse.Namespace) -> int:
 
     results: list[analyze.OrgAnalysisResult] = []
     skipped: list[str] = []
-    preview_skipped: list[str] = []
     written: list[tuple[str, Path]] = []
     n_previewed = 0
     for org, org_input, org_output in targets:
@@ -846,14 +863,6 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 raise FileNotFoundError(_missing_month_message(
                     org_input, month, nested=org in nested))
             skipped.append(org)
-            continue
-        if args.preview and org in nested:
-            if len(targets) == 1:
-                raise ValueError(
-                    f"組織 {org} は複数 workspace の組織のため、速報（--preview）には"
-                    "まだ対応していません（正式分析は --preview なしで実行できます）"
-                )
-            preview_skipped.append(org)
             continue
         if args.preview:
             if decision_version == "v2":
@@ -871,15 +880,19 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 )
             days = args.days
             if days is None:
-                period = ingest.spend_file_period(org_input, month)
-                days = period.days if period else None
+                days = analyze.preview_days(org_input, month)
                 if days is None:
                     raise ValueError(
                         f"--days <観測日数> を指定してください"
                         f"（{org}: スペンドレポートのファイル名に期間が無いため自動判別できません）"
                     )
                 print(f"{org}: ファイル名の期間から観測日数 {days} 日を使用")
-            pv = analyze.preview(org_input, month, cfg, days, org=org)
+            pv = analyze.preview_org(org_input, month, cfg, days, org=org)
+            if not pv.workspaces:
+                if len(targets) == 1:
+                    raise FileNotFoundError(_missing_month_message(org_input, month, nested=True))
+                skipped.append(org)
+                continue
             paths = report.write_preview(pv, org_output)
             _print_preview(pv, paths)
             written.append((org, org_output))
@@ -920,15 +933,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
 
     if skipped:
         print(f"\n! {month} のスペンドレポートが無いためスキップした組織: {', '.join(skipped)}")
-    if preview_skipped:
-        print(f"\n! 複数 workspace の組織の速報はまだ対応していないため飛ばしました: "
-              f"{', '.join(preview_skipped)}")
     if not results and not n_previewed:
-        if preview_skipped:
-            raise ValueError(
-                f"{month} の速報を書ける組織がありません"
-                "（複数 workspace の組織は速報にまだ対応していないため飛ばしました）"
-            )
         raise FileNotFoundError(f"{month} のデータを持つ組織がありません")
 
     if len(results) > 1:
@@ -1167,21 +1172,8 @@ def _run_discuss(args: argparse.Namespace) -> int:
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
     output_dir = _resolve_dir(args.output_dir, cfg, "output")
     targets = _resolve_targets(input_dir, output_dir, args.org)
-    nested = _nested_orgs(targets)
     month = _resolve_month(targets, args.month)
     items = [(org, org_output) for org, _, org_output in targets]
-    if args.preview and nested:
-        # 速報は複数 workspace の組織にまだ対応していない（analyze --preview と同じ規則）
-        if len(targets) == 1:
-            raise ValueError(
-                f"組織 {targets[0][0]} は複数 workspace の組織のため、速報（--preview）には"
-                "まだ対応していません"
-            )
-        names = sorted(nested)
-        # --dry-run は stdout をプロンプトだけに保つ契約なので通知は stderr へ回す
-        print(f"! 複数 workspace の組織の速報はまだ対応していないため飛ばしました: "
-              f"{', '.join(names)}", file=sys.stderr if args.dry_run else sys.stdout)
-        items = [(org, org_output) for org, org_output in items if org not in nested]
     return _run_discussions(
         items,
         month=month, input_dir=input_dir, output_dir=output_dir, cfg=cfg,
@@ -1298,6 +1290,35 @@ def _print_discussion(outcome: discussion.DiscussionOutcome, scope: str) -> None
 
 
 def _print_preview(pv, paths: dict[str, Path]) -> None:
+    if pv.has_multiple_workspaces:
+        summaries = [result.summary for result in pv.workspaces.values()]
+        n_accounts = sum(s["n_members"] for s in summaries)
+        print(f"\n=== {pv.org} {pv.month} 速報プレビュー（{pv.days_observed}日間の観測） ===")
+        print(f"人数: {len(pv.persons)} 名（アカウント {n_accounts}）")
+        for name, result in pv.workspaces.items():
+            s = result.summary
+            print(f"[{pv.contexts[name].label}] メンバー {s['n_members']} 名 "
+                  f"(Standard {s['n_standard']} / Premium {s['n_premium']} / "
+                  f"未割当 {s.get('n_unassigned', 0)} / 不明 {s['n_unknown']}) "
+                  f"観測需要 ${s['total_api_observed_usd']:,.2f} → "
+                  f"月末ペース換算 ${s['total_api_projected_usd']:,.2f}")
+        counts = {label: sum(s["label_counts"].get(label, 0) for s in summaries)
+                  for label in PREVIEW_ORDER}
+        detail = " / ".join(f"{label} {n} 名" for label, n in counts.items() if n)
+        print(f"一次判断: {detail}")
+        billed = sum(s["n_billed"] for s in summaries)
+        if billed:
+            print(f"実課金発生: {billed} アカウント")
+        warnings = [*pv.warnings, *(f"[{pv.contexts[name].label}] {warning}"
+                                    for name, result in pv.workspaces.items()
+                                    for warning in result.warnings)]
+        if warnings:
+            print("\n--- 警告 ---")
+            for warning in warnings:
+                print(f"  ! {warning}")
+        print(f"\n--- 出力 ---\n  preview:   {paths['markdown']}\n  dashboard: {paths['html']}")
+        return
+    pv = next(iter(pv.workspaces.values()))
     s = pv.summary
     print(f"\n=== {pv.org} {pv.month} 速報プレビュー（{pv.days_observed}日間の観測） ===")
     print(f"メンバー: {s['n_members']} 名 (Standard {s['n_standard']} / Premium {s['n_premium']}"

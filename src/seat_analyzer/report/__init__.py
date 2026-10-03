@@ -16,6 +16,7 @@ from pathlib import Path
 from ..analyze import (
     AnalysisResult,
     OrgAnalysisResult,
+    OrgPreviewResult,
     PreviewResult,
 )
 from .csv_out import write_csv
@@ -99,7 +100,8 @@ def write_all(result: AnalysisResult | OrgAnalysisResult,
     return paths
 
 
-def write_preview(result: PreviewResult, output_dir: str | Path) -> dict[str, Path]:
+def write_preview(result: PreviewResult | OrgPreviewResult,
+                  output_dir: str | Path) -> dict[str, Path]:
     """速報モードの出力（reports/<組織>/<月>/ の preview と preview-dashboard）。
 
     正式レポート（report / details / dashboard / recommendations）には触れない。

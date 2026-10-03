@@ -30,7 +30,7 @@ from .credits import CREDIT_DISABLED, CREDIT_ENABLED, credit_reached, credits_mo
 from .pipeline import SEAT_LABELS, STATUS_CHANGE, AnalysisResult
 
 if TYPE_CHECKING:  # 実行時の import は循環する（workspaces がこのモジュールを呼ぶため）
-    from .workspaces import OrgAnalysisResult, WorkspaceContext
+    from .workspaces import OrgAnalysisResult, OrgPreviewResult, WorkspaceContext
 
 # 払い出し判定（副を持たない人に副を払い出すべきか）のステータス。report の表示と結合する。
 PAYOUT_CANDIDATE = "候補"
@@ -66,6 +66,70 @@ _SEATED = ("standard", "premium", "unknown")
 def holds_seat(seat: str) -> bool:
     """シートのあるアカウントか（副を「持つ」かはこの述語で決める）。"""
     return seat in _SEATED
+
+
+def preview_persons(org: OrgPreviewResult, cfg: dict) -> pd.DataFrame:
+    """速報の全アカウントを email で束ね、人別需要の表を返す（判定は行わない）。
+
+    org は組織の速報、cfg はシート単価を読む設定。email / department / team / role /
+    note は最初のアカウントの属性、n_accounts はアカウント数、seats は主→副の
+    (workspace 名, シート種別) の並び。seat_cost_usd は有料シートの月額の合計。
+    api_cost_observed_usd / api_cost_projected_usd は全アカウント自身の需要の観測値と
+    月末ペース換算、primary_projected_usd / secondary_projected_usd は主と副の内訳。
+    未割当も需要に含め、own_demand の未丸め値を合算してから表示値を丸める。
+
+    secondary_ratio は副の換算需要 / 全スペースの換算需要。シートのある副アカウント
+    が無い人、または合計の換算需要が 0 以下の人は None（副の需要がほぼ無い人の 0% と
+    区別する）。billed_observed_usd は全アカウントの観測実課金の和、primary_label は
+    主の一次判断（主にアカウントが無ければ空文字）。並びは換算需要の降順→email の昇順。
+    """
+    accounts: dict[str, list[tuple[str, object]]] = {}
+    for name, result in org.workspaces.items():
+        for _, user in result.users.iterrows():
+            accounts.setdefault(str(user["email"]), []).append((name, user))
+    factor = org.days_in_month / org.days_observed
+    rows = []
+    for email, items in accounts.items():
+        first = items[0][1]
+        primary_own = sum(org.workspaces[name].own_demand.get(email, 0.0)
+                          for name, _ in items if name == org.primary)
+        secondary_own = sum(org.workspaces[name].own_demand.get(email, 0.0)
+                            for name, _ in items if name != org.primary)
+        total = primary_own + secondary_own
+        secondary_seated = any(name != org.primary and holds_seat(str(user["current_seat"]))
+                               for name, user in items)
+        seats = tuple((name, str(user["current_seat"])) for name, user in items)
+        primary = next((user for name, user in items if name == org.primary), None)
+        rows.append({
+            "email": email,
+            **{col: _text(first.get(col)) for col in ("department", "team", "role", "note")},
+            "n_accounts": len(items), "seats": seats,
+            "seat_cost_usd": round(sum(float(cfg["seats"][seat]["price_usd"])
+                                      for _, seat in seats if seat in _PRICED_SEATS), 2),
+            "api_cost_observed_usd": round(total, 2),
+            "api_cost_projected_usd": round(total * factor, 2),
+            "primary_projected_usd": round(primary_own * factor, 2),
+            "secondary_projected_usd": round(secondary_own * factor, 2),
+            "secondary_ratio": round(secondary_own / total, 4)
+            if secondary_seated and total > 0 else None,
+            "billed_observed_usd": round(sum(float(user["billed_observed_usd"])
+                                              for _, user in items), 2),
+            "primary_label": str(primary["label"]) if primary is not None else "",
+        })
+    if rows:
+        frame = pd.DataFrame(rows).sort_values(
+            ["api_cost_projected_usd", "email"], ascending=[False, True]
+        ).reset_index(drop=True)
+        frame["secondary_ratio"] = frame["secondary_ratio"].astype(object).where(
+            pd.notna(frame["secondary_ratio"]), None
+        )
+        return frame
+    return pd.DataFrame(columns=(
+        "email", "department", "team", "role", "note", "n_accounts", "seats",
+        "seat_cost_usd", "api_cost_observed_usd", "api_cost_projected_usd",
+        "primary_projected_usd", "secondary_projected_usd", "secondary_ratio",
+        "billed_observed_usd", "primary_label",
+    ))
 
 
 def _number(value, default: float = 0.0) -> float:

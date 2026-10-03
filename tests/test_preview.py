@@ -6,7 +6,13 @@
 
 import pytest
 
-from seat_analyzer.analyze import preview
+from seat_analyzer.analyze import (
+    OrgPreviewResult,
+    WorkspaceContext,
+    preview,
+    preview_own_demand_users,
+    preview_persons,
+)
 from seat_analyzer.cli import main
 from seat_analyzer.report import (
     DASHBOARD,
@@ -72,6 +78,76 @@ def test_days_out_of_range_raises(cfg, make_input):
     )
     with pytest.raises(ValueError, match="暦日数"):
         preview(input_dir, "2026-06", cfg, days_observed=31, org="org-a")
+
+
+def _context(name: str, primary: bool, fixed: str | None = None) -> WorkspaceContext:
+    return WorkspaceContext(name, primary, name, fixed, None, None)
+
+
+def test_preview_extra_demand_changes_primary_judgment_but_not_own_totals(cfg, make_input):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 10.0)]},
+        members=["a@x.jp,Premium", "b@x.jp,Premium"],
+    )
+    alone = preview(input_dir, "2026-06", cfg, 10, "org-a")
+    merged = preview(input_dir, "2026-06", cfg, 10, "org-a",
+                     extra_demand={"a@x.jp": 300.0, "c@y.jp": 999.0})
+    assert _label_of(alone, "a@x.jp") == "Standard候補"
+    assert _label_of(merged, "a@x.jp") == "Premium妥当"
+    assert "c@y.jp" not in set(merged.users["email"])
+    assert merged.summary["total_api_observed_usd"] == alone.summary["total_api_observed_usd"]
+    own = preview_own_demand_users(merged).set_index("email")
+    assert own.loc["a@x.jp", "api_cost_projected_usd"] == alone.users.set_index("email").loc[
+        "a@x.jp", "api_cost_projected_usd"]
+    assert own.loc["b@x.jp", "api_cost_observed_usd"] == 0
+
+
+def test_preview_combines_unrounded_demand_before_idle_check(cfg, make_input):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 0.994)]},
+                           members=["a@x.jp,Premium"])
+    result = preview(input_dir, "2026-06", cfg, 10, "org-a",
+                     extra_demand={"a@x.jp": 0.005})
+    assert result.users.iloc[0]["api_cost_observed_usd"] == 1.0
+    assert _label_of(result, "a@x.jp") == "遊休候補"
+
+
+def test_preview_fixed_seat_keeps_idle_signal_and_excludes_grants(cfg, make_input):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 40.0),
+                                       spend_row("b@x.jp", 0.2)]},
+                           members=["a@x.jp,Premium", "b@x.jp,Standard"])
+    result = preview(input_dir, "2026-06", cfg, 10, "org-a",
+                     workspace=_context("second", False, "premium"))
+    assert _label_of(result, "a@x.jp") == "対象外（固定シート）"
+    assert _label_of(result, "b@x.jp") == "遊休候補"
+    assert result.grant_candidates == []
+
+
+def test_preview_persons_uses_prices_and_secondary_seat_rule(cfg, make_input):
+    root = make_input({"2026-06": [spend_row("a@x.jp", 10.0),
+                                   spend_row("b@x.jp", 20.0)]},
+                      members=["a@x.jp,Premium", "b@x.jp,Standard",
+                               "c@y.jp,Standard"], org="org-x", workspace="main")
+    make_input({"2026-06": [spend_row("a@x.jp", 30.0),
+                            spend_row("b@x.jp", 5.0)]},
+               members=["a@x.jp,Premium", "b@x.jp,Unassigned", "c@y.jp,Premium"],
+               org="org-x", workspace="second")
+    main = preview(root / "org-x" / "main", "2026-06", cfg, 10, "org-x",
+                   extra_demand={"a@x.jp": 30.0, "b@x.jp": 5.0})
+    second = preview(root / "org-x" / "second", "2026-06", cfg, 10, "org-x")
+    org = OrgPreviewResult("org-x", "2026-06", "main", {"main": main, "second": second},
+                           {"main": _context("main", True),
+                            "second": _context("second", False)}, 10, 30)
+    cfg["seats"]["standard"]["price_usd"] = 37
+    cfg["seats"]["premium"]["price_usd"] = 143
+    persons = preview_persons(org, cfg)
+    assert list(persons["email"]) == ["a@x.jp", "b@x.jp", "c@y.jp"]
+    a, b, c = (persons.set_index("email").loc[email] for email in
+               ("a@x.jp", "b@x.jp", "c@y.jp"))
+    assert a["seats"] == (("main", "premium"), ("second", "premium"))
+    assert a["seat_cost_usd"] == 286
+    assert a["secondary_ratio"] == pytest.approx(0.75)
+    assert b["seat_cost_usd"] == 37 and b["secondary_ratio"] is None
+    assert c["secondary_ratio"] is None
 
 
 def _run_cli(input_dir, tmp_path, *extra):

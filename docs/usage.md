@@ -14,9 +14,10 @@ claude.ai からエクスポートした CSV を配置し、毎月の分析を�
 
 ## 入力データの構成（複数組織対応）
 
-組織（Team プランの workspace）ごとに `input/<組織名>/` を作り、その配下に
+組織ごとに `input/<組織名>/` を作り、その配下に
 CSV を配置する。組織名はディレクトリ名がそのまま識別子になる（レポートの
-タイトル・出力先に使われる）。
+タイトル・出力先に使われる）。通常は Team プランの 1 スペースが 1 組織に対応する。
+複数のスペースを運用する組織は後述の入れ子レイアウトを使う。
 
 ```
 input/
@@ -70,6 +71,85 @@ seat-analyzer init-org <組織名>
 直下に置いた形は受け付けず、移行手順を示してエラー終了する（手順は docs/setup.md の
 トラブルシューティング）。組織名 `spend` と `summary` は予約されていて使えない。
 
+## 複数の Team スペースを運用する組織（入れ子レイアウト）
+
+1 つの組織に主スペースと副スペースがある場合、入力をスペースごとに分ける。
+`members-info.csv`（日付つきも）と `github-cache/` は組織直下に置く。
+
+```
+input/
+  <組織名>/
+    main/
+      spend/
+      members/
+      code-analytics/
+    second/
+      spend/
+      members/
+      code-analytics/
+    members-info.csv
+    members-info-YYYY-MM-DD.csv
+    github-cache/
+```
+
+新しい組織の雛形は `seat-analyzer init-org <組織名> --workspaces main,second` で作れる。
+従来レイアウトのデータが既にある組織ではこのコマンドは止まる。workspace 名には
+`main` / `second` のような一般名を使い、Team 側の表示名は `label` に書く。
+
+`config.yaml` の `organizations.<組織名>.workspaces` に各ディレクトリを登録する。
+組織直下には必要に応じて `secondary_breakeven_usd` を書く。
+
+```yaml
+organizations:
+  <組織名>:
+    secondary_breakeven_usd: 125
+    workspaces:
+      main:
+        primary: true
+        label: 主スペース
+      second:
+        label: 副スペース
+        fixed_seat: premium
+        credit_limit_default_usd: 0
+        evaluation_months: 2
+```
+
+`primary` は主の印で、ちょうど 1 つに付ける。`label` は成果物に出す表示名。
+`fixed_seat` は副スペースで払い出すシート種別が運用方針で固定されているときに書く。
+その workspace のアカウントは Standard / Premium の損益分岐判定・感度分析・追加クレジット
+付与候補の対象外になる。`credit_limit_default_usd` は副アカウントの追加クレジット上限の既定、
+`evaluation_months` は払い出し判定と継続判定に必要な連続月数（省略時は
+`decision.hysteresis_months`）。組織直下の `secondary_breakeven_usd` は副の損益分岐の設定で、
+省略時は副の `fixed_seat` の価格を使う。workspace が 1 つの組織には `fixed_seat` を書かない。
+
+スペンドレポート・メンバー一覧・code-analytics は、エクスポート元のスペースの
+同名ディレクトリへ置く。code-analytics は主と副で同じ名前のファイルになることがあるため、
+配置先を取り違えない。組織直下の `spend/` と workspace 配下の `spend/` が共存すると混在
+レイアウトとして止まる。
+
+対象月以前に spend が無い workspace は未開始として飛ばす。開始後に対象月の spend が無い場合は
+正式分析を止める。利用が無くエクスポートしなかった月は
+`analyze --allow-missing-workspace <名前>` で需要 0 として続行できる。速報ではこの指定は使えず、
+始まっている全 workspace に対象月の spend が必要。`doctor` はレイアウトの混在、設定と
+ディレクトリの不一致、主の設定、workspace ごとの入力、主に居ない副のアカウント、
+members-info の未登録・読み取り失敗を検査する。`doctor` も未開始の workspace は検査せず、
+警告して飛ばす。
+
+### 既存の組織を複数スペースの構成へ移す
+
+1. `input/<組織名>/main/` を作り、`spend/`・`members/`・`code-analytics/` をその下へ移す。
+   `members-info.csv`（日付つきも）と `github-cache/` は組織直下に残す。従来レイアウトの
+   データがある組織には `init-org --workspaces` を使えないので手で移す。
+2. `config.yaml` の `organizations.<組織名>.workspaces` に、まず主の `main` だけを登録し、
+   `primary: true` を付ける。
+3. `seat-analyzer doctor --org <組織名>` で構造の検査が通ることを確かめる。
+4. 移行前の最終月の `reports/<組織名>/<月>/` を別の場所へ複製し、同じ版のツールで
+   `seat-analyzer analyze --org <組織名> --month <月>` を実行して複製と差分が無いことを確かめる。
+   workspace が 1 つの間は従来レイアウトとバイト一致し、記入済みの考察も引き継ぐ。
+5. `input/<組織名>/second/{spend,members,code-analytics}/` を作り、config に副を登録する。
+   `label`・`fixed_seat`・`credit_limit_default_usd` と、必要なら `evaluation_months` を書く。
+6. 副のエクスポートを副のディレクトリへ置く。`reports/<組織名>/` はそのまま使う。
+
 ## 月次運用手順（毎月月初・組織ごとに実施）
 
 > ⚠️ スペンドレポートは90日より前に遡れません。毎月必ずエクスポートしてください。
@@ -79,13 +159,16 @@ seat-analyzer init-org <組織名>
    - 「How much is Claude costing?」セクション → Export spend report
    - 期間は Custom で前月1日〜末日 を指定
    - ダウンロードした CSV をそのままのファイル名で `input/<組織名>/spend/` に置く
+     （従来レイアウトの場合。入れ子レイアウトでは `input/<組織名>/<workspace名>/spend/`）
 2. メンバー一覧（必須）
    - 管理画面のメンバー管理からエクスポート（email とシート種別を含むもの）
    - そのまま `input/<組織名>/members/` に置く
+     （従来レイアウトの場合。入れ子レイアウトでは `input/<組織名>/<workspace名>/members/`）
    - エクスポートが無い場合は `email,seat_type` の2列 CSV（ファイル名に YYYY-MM を含める）を手動作成でも可
 3. Claude Code 分析（任意・活用度分析用）
    - https://claude.ai/analytics/claude-code → Leaderboard → Export all users
    - そのまま `input/<組織名>/code-analytics/` に置く
+     （従来レイアウトの場合。入れ子レイアウトでは `input/<組織名>/<workspace名>/code-analytics/`）
 
 ファイル名の解釈ルール（リネーム不要）:
 
@@ -118,6 +201,8 @@ seat-analyzer init-org <組織名>
    スナップショットを採用したときは出さない（月末までのデータを翌月初に取得する通常の運用経路の
    ため）。分析を止めるべき問題（error）があれば終了コード 1 を返し、警告だけなら 0 を返す。
    レポートは書き換えず、判定にも影響しない読み取り専用の検査
+   複数スペースの組織では構造・workspace ごとの入力・人（主に居ない副のアカウント）も
+   検査する。両レイアウトで members-info の未登録と読めないファイルも検査する。
 5. 分析実行
 
    ```sh
@@ -224,3 +309,7 @@ seat-analyzer analyze --preview [--org <組織名>] [--days 10]
 - 日割り換算は利用の偏りを補正しない参考値。シート変更の確定判断は
   全月データ2ヶ月分の正式分析で行うこと
 - 月初に全月分のエクスポートで同じファイルを上書きすれば、そのまま正式分析に移行できる
+- 複数スペースの組織では workspace ごとの一次判断、「スペース別」、
+  「人別の需要（スペース合算）」を出す。主の行は全スペースの合算需要で一次判断する。
+  観測日数は全 workspace で同じ必要があり、違えば `--days` で指定する。開始済みの
+  workspace に対象月の spend が無ければ止まる

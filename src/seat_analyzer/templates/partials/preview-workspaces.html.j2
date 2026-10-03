@@ -1,0 +1,15 @@
+
+{# 複数スペースの速報に限る #}
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>スペース別</h2></div><div class="hd-note">人数は各スペースのアカウント数</div></div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>スペース</th><th class="num">人数</th><th class="num">Standard</th><th class="num">Premium</th><th class="num">未割当</th><th class="num">不明</th><th class="num">シート費用/月</th><th class="num">観測需要</th><th class="num">月末ペース換算</th><th class="num">実課金(観測)</th></tr></thead>
+      <tbody>
+{% for w in spaces_table.rows %}      <tr><td>{{ w.space }}</td>{% if w.skipped %}{% for unused in range(9) %}<td class="num sub">—</td>{% endfor %}{% else %}<td class="num sub">{{ w.n_members }}</td><td class="num sub">{{ w.n_standard }}</td><td class="num sub">{{ w.n_premium }}</td><td class="num sub">{{ w.n_unassigned }}</td><td class="num sub">{{ w.n_unknown }}</td><td class="num">{{ w.seat_cost_fmt }}</td><td class="num">{{ w.obs_fmt }}</td><td class="num">{{ w.proj_fmt }}</td><td class="num">{{ w.billed_fmt }}</td>{% endif %}</tr>
+{% endfor %}      </tbody>
+      <tfoot><tr><td>合計</td><td class="num sub">{{ spaces_table.total.n_members }}</td><td class="num sub">{{ spaces_table.total.n_standard }}</td><td class="num sub">{{ spaces_table.total.n_premium }}</td><td class="num sub">{{ spaces_table.total.n_unassigned }}</td><td class="num sub">{{ spaces_table.total.n_unknown }}</td><td class="num">{{ spaces_table.total.seat_cost_fmt }}</td><td class="num">{{ spaces_table.total.obs_fmt }}</td><td class="num">{{ spaces_table.total.proj_fmt }}</td><td class="num">{{ spaces_table.total.billed_fmt }}</td></tr></tfoot>
+    </table>
+  </div>
+  <div class="card-ft">{{ spaces_table.members_note }}。{% for w in spaces_table.rows %}{% if w.note %}<br>{{ w.space }}: {{ w.note }}。{% endif %}{% endfor %}</div>
+</section>

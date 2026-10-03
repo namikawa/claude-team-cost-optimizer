@@ -23,6 +23,7 @@ from ..analyze import (
     SEAT_LABELS,
     WAITING,
     OrgAnalysisResult,
+    OrgPreviewResult,
     PersonLayer,
 )
 from .format import (
@@ -64,7 +65,7 @@ def _seat(seat: str) -> str:
     return SEAT_LABELS.get(seat, seat)
 
 
-def space_label(org: OrgAnalysisResult, name: str) -> str:
+def space_label(org: OrgAnalysisResult | OrgPreviewResult, name: str) -> str:
     """スペース別の表に出す名前（表示名に主・固定シートの印を添える）。"""
     context = org.contexts[name]
     marks = []
@@ -86,7 +87,7 @@ def space_list(org: OrgAnalysisResult) -> str:
     return " / ".join(parts)
 
 
-def fixed_seat_labels(org: OrgAnalysisResult) -> list[str]:
+def fixed_seat_labels(org: OrgAnalysisResult | OrgPreviewResult) -> list[str]:
     """シート種別を固定した、分析済みの workspace の表示名（config の順）。"""
     return [
         org.contexts[name].label for name in org.workspaces
@@ -151,6 +152,14 @@ def workspace_rows(org: OrgAnalysisResult, summary: dict) -> list[dict]:
     return rows
 
 
+def workspace_members_note(n_persons: int) -> str:
+    """スペース別の人数と、重複を除いた組織の人数の注記。"""
+    return (
+        "人数はそのスペースのアカウント数です。合計は複数のスペースにアカウントを持つ人を"
+        f"重複して数えます（人数は {n_persons} 名）"
+    )
+
+
 def workspaces_md(org: OrgAnalysisResult, summary: dict) -> str:
     """report.md のサマリ直下に置く「### スペース別」の表。"""
     header = ("| スペース | 人数 | Standard | Premium | 未割当 | 不明 | シート費用/月 |"
@@ -183,8 +192,7 @@ def workspaces_md(org: OrgAnalysisResult, summary: dict) -> str:
     ]) + " |")
     lines += [
         "",
-        (f"- 人数はそのスペースのアカウント数です。合計は複数のスペースにアカウントを持つ人を"
-         f"重複して数えます（人数は {summary['n_persons']} 名）"),
+        f"- {workspace_members_note(summary['n_persons'])}",
         *notes,
     ]
     return "\n".join(lines)
@@ -228,7 +236,8 @@ def workspace_table_view(org: OrgAnalysisResult, summary: dict) -> dict:
 
 # --- 人別の利用（1人1行） ---
 
-def _held_seat_parts(org: OrgAnalysisResult, person) -> list[str]:
+def _seat_parts(org: OrgAnalysisResult | OrgPreviewResult,
+                by_workspace: dict[str, str]) -> list[str]:
     """保有シートの「表示名: シート種別」の並び（主は常に先頭で、主にアカウントが
     無ければ「—」）。
 
@@ -236,7 +245,6 @@ def _held_seat_parts(org: OrgAnalysisResult, person) -> list[str]:
     Markdown は「 / 」でつないだ1行（_held_seats）、dashboard は列幅を抑えるため
     スペースごとに改行して並べる。
     """
-    by_workspace = {account.workspace: account.seat for account in person.accounts}
     primary_seat = (_seat(by_workspace[org.primary])
                     if org.primary in by_workspace else "—")
     parts = [f"{org.contexts[org.primary].label}: {primary_seat}"]
@@ -246,9 +254,84 @@ def _held_seat_parts(org: OrgAnalysisResult, person) -> list[str]:
     return parts
 
 
+def _held_seat_parts(org: OrgAnalysisResult, person) -> list[str]:
+    """正式分析の人のアカウントから保有シートの表記を得る。"""
+    return _seat_parts(org, {account.workspace: account.seat for account in person.accounts})
+
+
 def _held_seats(org: OrgAnalysisResult, person) -> str:
     """保有シート（_held_seat_parts を「 / 」でつないだ1行）。"""
     return " / ".join(_held_seat_parts(org, person))
+
+
+# --- 速報の複数スペース（行データと固定文言は両形式で共有） ---
+
+PREVIEW_MERGED_DEMAND_NOTE = (
+    "月末ペース換算（複数スペース）: スペースを複数持つ人の主の行の観測需要と"
+    "月末ペース換算は全スペースの合算（一次判断に使う値）で、縦に足すと副の分が二重になる"
+)
+PREVIEW_PERSON_LEGEND = (
+    "1人1行。需要は全アカウントの合計",
+    "副の比率 = 副の換算需要 / 全スペースの換算需要（副にシートを持たない人と、需要が無い人は —）",
+    "主の一次判断は全スペースの合算需要での判定。払い出し判定・継続判定は正式分析で行う",
+)
+PREVIEW_ACCOUNT_COUNT_NOTE = "人数以外の件数（一次判断の内訳・実課金発生）はアカウント単位です"
+PREVIEW_FIXED_SEAT_NOTE = "対象外（固定シート）は一次判断と追加クレジット付与候補の対象にしていません"
+
+
+def preview_fixed_seat_legend(org: OrgPreviewResult) -> str:
+    """速報の固定シートの凡例（該当 workspace が無ければ空）。"""
+    fixed = fixed_seat_labels(org)
+    if not fixed:
+        return ""
+    return (
+        "対象外（固定シート）: 運用方針でシート種別を固定したスペース"
+        f"（{'・'.join(fixed)}）のアカウント。一次判断は行わない"
+        "（続けるか戻すかは正式分析の「複数スペースの利用」で判定する）"
+    )
+
+
+def preview_notes_lines(org: OrgPreviewResult) -> list[str]:
+    """速報の注意事項に足す行（句点は出力形式側で付ける）。"""
+    lines = [PREVIEW_ACCOUNT_COUNT_NOTE]
+    if fixed_seat_labels(org):
+        lines.append(PREVIEW_FIXED_SEAT_NOTE)
+    return lines
+
+
+def preview_workspace_rows(org: OrgPreviewResult) -> tuple[list[dict], dict]:
+    """速報のスペース別の行と合計（主→副。金額は数値で、未開始も行を持つ）。"""
+    keys = (
+        "n_members", "n_standard", "n_premium", "n_unassigned", "n_unknown", "n_billed",
+        "seat_cost_now_usd", "total_api_observed_usd", "total_api_projected_usd",
+        "billed_observed_usd",
+    )
+    rows = []
+    total = dict.fromkeys(keys, 0)
+    for name in org.contexts:
+        result = org.workspaces.get(name)
+        row = {"space": space_label(org, name), "skipped": result is None,
+               "note": _workspace_note({"skipped": result is None, "assume_no_usage": False})}
+        row.update(dict.fromkeys(keys, 0))
+        if result is not None:
+            row.update({key: result.summary[key] for key in keys[:-1]})
+            row["billed_observed_usd"] = round(float(result.users["billed_observed_usd"].sum()), 2)
+            for key in keys:
+                total[key] += row[key]
+        rows.append(row)
+    return rows, total
+
+
+def preview_person_rows(org: OrgPreviewResult) -> tuple[list[dict], dict]:
+    """速報の人別需要の行と列の有無（需要の降順→email。保有シートは正式と同じ表記）。"""
+    if org.persons is None:
+        raise ValueError(f"組織 {org.org} の人別の需要がありません（preview_org の結果が必要です）")
+    columns = {"dept": _has_values(org.persons, "department"),
+               "team": _has_values(org.persons, "team")}
+    rows = []
+    for record in org.persons.to_dict("records"):
+        rows.append({**record, "seat_parts": _seat_parts(org, dict(record["seats"]))})
+    return rows, columns
 
 
 def person_rows(org: OrgAnalysisResult) -> tuple[list[dict], dict]:

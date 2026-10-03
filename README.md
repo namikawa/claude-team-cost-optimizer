@@ -58,8 +58,10 @@ seat-analyzer --version
    seat-analyzer init-org <組織名>
    ```
 
+   複数の Team スペースを運用する組織では `--workspaces main,second` を付けます。
+
    組織名はディレクトリ名がそのまま識別子になります。詳しくは
-   [docs/usage.md](docs/usage.md) の入力データの構成。
+   [docs/usage.md](docs/usage.md) の入力データの構成と複数スペースの組織の節。
 
 3. claude.ai からエクスポートした CSV を `input/<組織名>/` 配下に置く。
    スペンドレポートとメンバー一覧が必須、Claude Code 分析は任意。エクスポート手順と
@@ -83,7 +85,7 @@ seat-analyzer --version
 
 - `report-YYYYMM-<組織名>.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + 警告 + 考察
 - `details-YYYYMM-<組織名>.md` — 全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + 感度分析（機械生成の詳細資料）
-- `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（概要 / 推奨アクション / メンバー別 / 組織 / 前提と注意 の5タブ。ソート・検索・テーマ切替つきの自己完結 HTML）
+- `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（概要 / 推奨アクション / メンバー別 / 組織 / 前提と注意 の5タブ。複数スペースの組織では「複数スペース」タブが加わる。ソート・検索・テーマ切替つきの自己完結 HTML）
 - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
 - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
 - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（`--decision-version v2` のときだけ出力。V1 の判定・成果物は変わりません）
@@ -100,8 +102,8 @@ seat-analyzer --version
 | ドキュメント | 内容 |
 | --- | --- |
 | [docs/setup.md](docs/setup.md) | ゼロから動く状態にするまでのセットアップ手順（Claude Code に実行させる形式） |
-| [docs/usage.md](docs/usage.md) | 入力データの構成、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、速報モード |
-| [docs/reference.md](docs/reference.md) | レポート各セクションの読み方、追加クレジットの上限、GitHub 分析の有効化、判定ロジックの前提 |
+| [docs/usage.md](docs/usage.md) | 入力データの構成、複数スペースの組織、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、速報モード |
+| [docs/reference.md](docs/reference.md) | レポート各セクションと複数スペースの組織の読み方、追加クレジットの上限、GitHub 分析の有効化、判定ロジックの前提 |
 | [docs/tooling.md](docs/tooling.md) | 考察の自動執筆（`discuss`）と公開テキストの検査（`check-text`） |
 | [CHANGELOG.md](CHANGELOG.md) | バージョンごとの変更履歴 |
 

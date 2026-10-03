@@ -36,13 +36,13 @@
   <div class="banner">{{ days_observed }}日間の観測データ（暦{{ days_in_month }}日、月末ペース換算 ×{{ '%.1f' % factor }}）に基づく一次判断です。シート変更の確定判断には使わず、ヒアリング・観察対象の絞り込みに使ってください。</div>
 
   <div class="kpis five">
-    <div class="kpi"><div class="tag">MEMBERS</div><div class="v">{{ s.n_members }}</div><div class="l">メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}{% if s.n_unassigned %} / 未割当 {{ s.n_unassigned }}{% endif %}）</div></div>
+    <div class="kpi"><div class="tag">MEMBERS</div><div class="v">{% if multi %}{{ n_persons }}{% else %}{{ s.n_members }}{% endif %}</div><div class="l">{% if multi %}人（アカウント {{ s.n_members }}）{% else %}メンバー（Std {{ s.n_standard }} / Prem {{ s.n_premium }}{% if s.n_unassigned %} / 未割当 {{ s.n_unassigned }}{% endif %}）{% endif %}</div></div>
     <div class="kpi"><div class="tag">SEAT COST</div><div class="v">${{ '%.0f' % s.seat_cost_now_usd }}</div><div class="l">現在のシート費用 /月</div></div>
     <div class="kpi"><div class="tag">OBSERVED</div><div class="v">{{ total_obs_fmt }}</div><div class="l">観測需要（{{ days_observed }}日）</div></div>
     <div class="kpi hl"><div class="tag">PROJECTED</div><div class="v">{{ total_proj_fmt }}</div><div class="l">月末ペース換算 /月</div></div>
     <div class="kpi"><div class="tag">BILLED</div><div class="v">{{ s.n_billed }}</div><div class="l">実課金発生</div></div>
   </div>
-<!--CREDIT_COMPOSITION-->
+{% if multi %}<!--PREVIEW_WORKSPACES-->{% endif %}{% for ws in workspaces %}{% with s=ws.s, credit_bars=ws.credit_bars, ws_label=ws.label %}<!--CREDIT_COMPOSITION-->{% endwith %}{% endfor %}
   <section class="card">
     <div class="card-hd"><div class="hd-main"><h2>一次判断の内訳</h2></div></div>
     <div class="card-bd">
@@ -50,9 +50,9 @@
     </div>
   </section>
 
-  <section class="card">
+{% for ws in workspaces %}{% with users_sorted=ws.bar_users, max_proj=ws.max_proj, ws_label=ws.label %}  <section class="card">
     <div class="card-hd">
-      <div class="hd-main"><h2>月末ペース換算需要</h2></div>
+      <div class="hd-main"><h2>月末ペース換算需要{% if ws_label %}（{{ ws_label }}）{% endif %}</h2></div>
       <div class="legend"><span><i class="k-std"></i>Standard</span><span><i class="k-prem"></i>Premium</span><span><i class="k-dim"></i>未割当・不明</span></div>
     </div>
     <div class="card-bd bars-bd">
@@ -65,16 +65,16 @@
 {% endfor %}      </div>
     </div>
     <div class="card-ft">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span> / <span class="seat-unassigned">■ 未割当・不明</span></div>
-  </section>
+  </section>{% endwith %}{% endfor %}
 
   <section class="card">
     <div class="card-hd"><div class="hd-main"><h2>一次判断テーブル</h2></div></div>
     <div class="tablebox tall">
       <table>
-        <thead><tr><th>ユーザ</th><th>現シート</th>{% if has_dept %}<th>部署</th>{% endif %}{% if has_team %}<th>チーム</th>{% endif %}<th class="num">{{ obs_label }}</th><th class="num">月末ペース換算</th><th class="num">実課金(観測)</th><th>一次判断</th><th>確度</th></tr></thead>
+        <thead><tr><th>ユーザ</th>{% if multi %}<th>スペース</th>{% endif %}<th>現シート</th>{% if has_dept %}<th>部署</th>{% endif %}{% if has_team %}<th>チーム</th>{% endif %}<th class="num">{{ obs_label }}</th><th class="num">月末ペース換算</th><th class="num">実課金(観測)</th><th>一次判断</th><th>確度</th></tr></thead>
         <tbody>
 {% for u in users_sorted %}        <tr>
-          <td class="user" title="{{ u.email }}">{{ u.email.split('@')[0] }}</td>
+          <td class="user" title="{{ u.email }}">{{ u.email.split('@')[0] }}</td>{% if multi %}<td class="sub">{{ u.workspace_label }}</td>{% endif %}
           <td class="seat"><span class="seat-{{ u.current_seat }}">{{ seat_short.get(u.current_seat, '?') }}</span></td>
           {% if has_dept %}<td class="sub">{{ u.department }}</td>{% endif %}
           {% if has_team %}<td class="sub">{{ u.team }}</td>{% endif %}
@@ -87,15 +87,16 @@
 {% endfor %}        </tbody>
       </table>
     </div>
-  </section>
-<!--CREDIT_REACH--><!--SNAPSHOT_SECTION--><!--GRANT_SECTION-->
+{% if multi %}    <div class="card-ft">{{ merged_note }}{% if fixed_legend %}<br>{{ fixed_legend }}。{% endif %}</div>
+{% endif %}  </section>
+{% if multi %}<!--PREVIEW_PERSONS-->{% endif %}{% for ws in workspaces %}{% with credit_reach=ws.credit_reach, ws_label=ws.label %}<!--CREDIT_REACH-->{% endwith %}{% endfor %}{% for ws in workspaces %}{% with snapshot=ws.snapshot, code_diff=ws.code_diff, member_changes=ws.member_changes, ws_label=ws.label %}<!--SNAPSHOT_SECTION-->{% endwith %}{% endfor %}{% for ws in workspaces %}{% if not ws.fixed_seat %}{% with grant_candidates=ws.grant_candidates, credit_shown=ws.credit_shown, grant_cap_fmt=ws.grant_cap_fmt, ws_label=ws.label %}<!--GRANT_SECTION-->{% endwith %}{% endif %}{% endfor %}
   <section class="card">
     <div class="card-hd"><div class="hd-main"><h2>詳細利用状況（観測値）</h2></div></div>
     <div class="tablebox tall">
       <table>
-        <thead><tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">API換算需要（観測）</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr></thead>
+        <thead><tr><th>ユーザ</th>{% if multi %}<th>スペース</th>{% endif %}<th class="num">input</th><th class="num">output</th>{% if detail_has_loc %}<th class="num">LoC</th>{% endif %}<th class="num">API換算需要（観測）</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr></thead>
         <tbody>
-{% for d in detail_rows %}        <tr><td class="user" title="{{ d.email }}">{{ d.email.split('@')[0] }}</td><td class="num sub">{{ d.in_fmt }}</td><td class="num sub">{{ d.out_fmt }}</td>{% if detail_has_loc %}<td class="num sub">{{ d.loc_fmt }}</td>{% endif %}<td class="num">{{ d.api_fmt }}</td><td class="wrap">{{ d.models }}</td><td class="wrap">{{ d.products }}</td></tr>
+{% for d in detail_rows %}        <tr><td class="user" title="{{ d.email }}">{{ d.email.split('@')[0] }}</td>{% if multi %}<td class="sub">{{ d.space }}</td>{% endif %}<td class="num sub">{{ d.in_fmt }}</td><td class="num sub">{{ d.out_fmt }}</td>{% if detail_has_loc %}<td class="num sub">{{ d.loc_fmt }}</td>{% endif %}<td class="num">{{ d.api_fmt }}</td><td class="wrap">{{ d.models }}</td><td class="wrap">{{ d.products }}</td></tr>
 {% endfor %}        </tbody>
       </table>
     </div>
@@ -113,7 +114,9 @@
 {% endif %}        <li><!--text:legend_idle-->。</li>
         <li><!--text:legend_over-->。</li>
         <li><!--text:legend_billed-->。</li>
-        <li><!--text:legend_excluded-->。</li>
+        <li><!--text:legend_excluded-->。</li>{% if multi %}{% for line in multi_notes %}
+        <li>{{ line }}。</li>{% endfor %}
+{% endif %}
       </ul>
     </div>
   </section>

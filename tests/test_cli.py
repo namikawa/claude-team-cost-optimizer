@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,12 +28,13 @@ from seat_analyzer.report import (
     DETAILS,
     GITHUB_SUMMARY,
     PREVIEW,
+    PREVIEW_DASHBOARD,
     RECOMMENDATIONS,
     REPORT,
     USAGE_SUMMARY,
 )
 
-from .conftest import CONFIG, out_file, spend_row
+from .conftest import CONFIG, REPO_ROOT, SPEND_HEADER, out_file, spend_row
 
 
 def _run(input_dir: Path, tmp_path: Path, *extra: str) -> tuple[int, Path]:
@@ -864,7 +866,7 @@ def test_doctor_json_output_is_pure_json(make_input, capsys):
     captured = capsys.readouterr()
     assert "対象月未指定" in captured.err
     issues = json.loads(captured.out)
-    assert {i["code"] for i in issues} == {"MISSING_HISTORY_MONTH", "MEMBER_ROW_MISSING"}
+    assert {i["code"] for i in issues} == {"MEMBER_ROW_MISSING"}
     for issue in issues:
         assert set(issue) == {"severity", "code", "message", "scope"}
         assert issue["severity"] == "warning"
@@ -877,10 +879,9 @@ def test_doctor_json_covers_all_orgs(make_input, capsys):
     make_input({"2026-06": [spend_row("b@y.jp", 20.0)]}, org="org-b")  # members なし
     assert _doctor(input_dir, "--month", "2026-06", "--format", "json") == 1
     issues = json.loads(capsys.readouterr().out)
-    # org-a は問題なし。org-b は members 欠損（error）と履歴月欠落（warning）
+    # org-a は問題なし。org-b は members 欠損（初月より前は欠月にしない）
     assert [(i["scope"]["org"], i["severity"], i["code"]) for i in issues] == [
         ("org-b", "error", "MISSING_MEMBERS"),
-        ("org-b", "warning", "MISSING_HISTORY_MONTH"),
     ]
 
 
@@ -1101,9 +1102,7 @@ def test_doctor_accepts_org_named_like_input_subdir(tmp_path, capsys):
     (org / "members" / "members_2026-06.csv").write_text(
         "Email,Seat Type\na@x.jp,Premium\n", encoding="utf-8")
     assert _doctor(tmp_path / "input", "--month", "2026-06", "--format", "json") == 0
-    assert [i["code"] for i in json.loads(capsys.readouterr().out)] == [
-        "MISSING_HISTORY_MONTH",
-    ]
+    assert [i["code"] for i in json.loads(capsys.readouterr().out)] == []
 
 
 def test_doctor_rejects_invalid_org_name_like_analyze(make_input, capsys):
@@ -1883,7 +1882,7 @@ def test_analyze_nested_v2_writes_the_workspace_column(make_input, tmp_path):
         ("a@x.jp", "main"), ("b@x.jp", "main")]
 
 
-def test_analyze_preview_skips_nested_orgs_in_a_multi_org_run(make_input, tmp_path, capsys):
+def test_analyze_preview_writes_nested_and_single_orgs(make_input, tmp_path, capsys):
     input_dir, config = _nested_ready(make_input, tmp_path)
     make_input({"2026-06": [spend_row("c@y.jp", 10.0)]}, members=["c@y.jp,Premium"],
                org="org-a")
@@ -1891,25 +1890,45 @@ def test_analyze_preview_skips_nested_orgs_in_a_multi_org_run(make_input, tmp_pa
                          "--preview", "--days", "10")
     assert rc == 0
     out = capsys.readouterr().out
-    assert "複数 workspace の組織の速報はまだ対応していないため飛ばしました: org-x" in out
+    assert "人数: 2 名（アカウント 3）" in out
     assert out_file(tmp_path / "reports", PREVIEW).is_file()
-    assert not (tmp_path / "reports" / "org-x" / "2026-06").exists()
+    assert out_file(tmp_path / "reports", PREVIEW, org="org-x").is_file()
 
 
-def test_analyze_preview_stops_for_a_single_nested_org(make_input, tmp_path, capsys):
+def test_analyze_preview_writes_single_nested_org(make_input, tmp_path, capsys):
     input_dir, config = _nested_ready(make_input, tmp_path)
     rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
                          "--preview", "--days", "10")
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "org-x" in err and "速報" in err and "複数 workspace" in err
-    assert not (tmp_path / "reports" / "org-x" / "2026-06").exists()
+    assert rc == 0
+    assert "人数: 2 名（アカウント 3）" in capsys.readouterr().out
+    md = out_file(tmp_path / "reports", PREVIEW, org="org-x").read_text(encoding="utf-8")
+    html = out_file(tmp_path / "reports", PREVIEW_DASHBOARD, org="org-x").read_text(
+        encoding="utf-8")
+    assert "### スペース別" in md and "## 人別の需要（スペース合算）" in md
+    assert "<th>スペース</th>" in html
 
 
-def test_analyze_preview_reports_when_every_org_was_skipped_as_nested(
+def test_preview_multi_without_optional_sections_has_one_blank_line(make_input, tmp_path):
+    input_dir = make_input(
+        {"2026-06": [spend_row("a@x.jp", 5.0, net=0.0)]},
+        members=["a@x.jp,Premium"], org="org-x", workspace="main")
+    make_input(
+        {"2026-06": [spend_row("a@x.jp", 5.0, net=0.0)]},
+        members=["a@x.jp,Premium"], org="org-x", workspace="second")
+    config = _workspace_config(tmp_path, _NESTED_CONFIG.format(org="org-x"))
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", "--days", "10") == 0
+    md = out_file(tmp_path / "reports", PREVIEW, org="org-x").read_text(encoding="utf-8")
+    headings = [line for line in md.splitlines() if line.startswith("## ")]
+    assert headings == ["## サマリ", "## 一次判断テーブル", "## 人別の需要（スペース合算）",
+                        "## 注意事項", "## データ検証・警告", "## 考察"]
+    assert "\n\n\n" not in md
+
+
+def test_analyze_preview_writes_all_nested_orgs(
     make_input, tmp_path, capsys
 ):
-    """書けた組織が0のときの文言は、速報が未対応で飛ばしたという実態と食い違わない。"""
+    """複数の入れ子組織を同じ実行で書く。"""
     input_dir, _ = _nested_ready(make_input, tmp_path, org="org-x")
     _nested_ready(make_input, tmp_path, org="org-y")
     path = tmp_path / "two-nested.yaml"
@@ -1919,10 +1938,214 @@ def test_analyze_preview_reports_when_every_org_was_skipped_as_nested(
         encoding="utf-8", newline="\n")
     rc = _analyze_nested(str(path), input_dir, tmp_path, "--month", "2026-06",
                          "--preview", "--days", "10")
-    assert rc == 1
-    err = capsys.readouterr().err
-    assert "速報を書ける組織がありません" in err
-    assert "データを持つ組織がありません" not in err
+    assert rc == 0
+    assert capsys.readouterr().out.count("人数: 2 名（アカウント 3）") == 2
+    assert out_file(tmp_path / "reports", PREVIEW, org="org-x").is_file()
+    assert out_file(tmp_path / "reports", PREVIEW, org="org-y").is_file()
+
+
+@pytest.mark.parametrize("month", ["2026-07", "2026-08"])
+def test_single_nested_preview_matches_flat_bytes(tmp_path, month):
+    source = REPO_ROOT / "examples" / "input" / "org-b"
+    flat_root = tmp_path / "flat"
+    nested_root = tmp_path / "nested"
+    shutil.copytree(source, flat_root / "org-b")
+    for name in ("spend", "members", "code-analytics"):
+        shutil.copytree(source / name, nested_root / "org-b" / "main" / name)
+    for path in source.glob("members-info*.csv"):
+        shutil.copy2(path, nested_root / "org-b" / path.name)
+    config = tmp_path / "nested.yaml"
+    config.write_text("organizations:\n  org-b:\n    workspaces:\n      main:\n"
+                      "        primary: true\n", encoding="utf-8", newline="\n")
+    outputs = []
+    for root, setting in ((flat_root, CONFIG), (nested_root, str(config))):
+        output = tmp_path / f"out-{root.name}"
+        assert main(["analyze", "--config", setting, "--input-dir", str(root),
+                     "--output-dir", str(output), "--org", "org-b", "--month", month,
+                     "--preview", "--days", "31"]) == 0
+        outputs.append(output)
+    for artifact in (PREVIEW, PREVIEW_DASHBOARD):
+        assert (artifact.path(outputs[0] / "org-b", month, "org-b").read_bytes()
+                == artifact.path(outputs[1] / "org-b", month, "org-b").read_bytes())
+
+
+def test_preview_days_uses_selected_period_and_explicit_days_overrides(make_input, tmp_path,
+                                                                        capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    for name, ends in (("main", ("05", "10")), ("second", ("09",))):
+        spend_dir = input_dir / "org-x" / name / "spend"
+        (spend_dir / "spend_2026-06.csv").unlink()
+        for end in ends:
+            (spend_dir / f"spend-report-uuid-2026-06-01-to-2026-06-{end}.csv").write_text(
+                SPEND_HEADER + "\n" + spend_row("a@x.jp", 10.0) + "\n",
+                encoding="utf-8", newline="\n")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview") == 1
+    assert "main: 10 日 / second: 9 日" in capsys.readouterr().err
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", "--days", "10") == 0
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", "--days", "0") == 1
+    assert "--days は 1〜30" in capsys.readouterr().err
+
+
+def test_preview_started_missing_workspace_stops_multi_org_run(make_input, tmp_path, capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path, second_months=("2026-05",))
+    make_input({"2026-06": [spend_row("c@y.jp", 10.0)]},
+               members=["c@y.jp,Premium"], org="org-a")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", "--days", "10") == 1
+    assert "速報は欠月の workspace を需要 0 として扱わない" in capsys.readouterr().err
+
+
+def test_preview_unstarted_secondary_is_skipped(make_input, tmp_path, capsys):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x", workspace="main")
+    make_input({"2026-07": [spend_row("a@x.jp", 20.0)]},
+               members=["a@x.jp,Premium"], members_month="2026-07",
+               org="org-x", workspace="second")
+    config = tmp_path / "nested.yaml"
+    config.write_text(_NESTED_CONFIG.format(org="org-x"), encoding="utf-8", newline="\n")
+    assert _analyze_nested(str(config), input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", "--days", "10") == 0
+    assert "まだ利用が始まっていない" in capsys.readouterr().out
+    md = out_file(tmp_path / "reports", PREVIEW, org="org-x").read_text(encoding="utf-8")
+    assert "未開始（対象月以前のデータなし）" in md
+
+
+def test_preview_snapshot_section_binds_secondary_only(make_input, tmp_path):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    spend_dir = input_dir / "org-x" / "second" / "spend"
+    (spend_dir / "spend_2026-06.csv").unlink()
+    for end in ("05", "10"):
+        (spend_dir / f"spend-report-uuid-2026-06-01-to-2026-06-{end}.csv").write_text(
+            SPEND_HEADER + "\n" + spend_row("a@x.jp", 20.0) + "\n",
+            encoding="utf-8", newline="\n")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", "--days", "10") == 0
+    md = out_file(tmp_path / "reports", PREVIEW, org="org-x").read_text(encoding="utf-8")
+    html = out_file(tmp_path / "reports", PREVIEW_DASHBOARD, org="org-x").read_text(
+        encoding="utf-8")
+    assert md.count("## 月中の利用推移（スナップショット差分）（副スペース）") == 1
+    assert "## 月中の利用推移（スナップショット差分）（主スペース）" not in md
+    assert html.count("月中の利用推移（スナップショット差分）（副スペース）") == 1
+    assert "月中の利用推移（スナップショット差分）（主スペース）" not in html
+
+
+def test_doctor_json_keeps_other_issues_when_members_info_is_unreadable(
+    make_input, tmp_path, capsys
+):
+    input_dir = make_input({"2026-06": [spend_row("b@y.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x")
+    (input_dir / "org-x" / "members-info.csv").write_text(
+        "department\n架空部\n", encoding="utf-8", newline="\n")
+    assert main(["doctor", "--config", CONFIG, "--input-dir", str(input_dir),
+                 "--month", "2026-06", "--format", "json"]) == 1
+    issues = json.loads(capsys.readouterr().out)
+    assert {item["code"] for item in issues} == {
+        "MEMBERS_INFO_UNREADABLE", "MEMBER_ROW_MISSING"}
+    unreadable = next(item for item in issues if item["code"] == "MEMBERS_INFO_UNREADABLE")
+    assert str(input_dir) not in unreadable["message"]
+
+
+def test_doctor_members_info_ignores_unstarted_workspace(make_input, tmp_path, capsys):
+    input_dir = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                           members=["a@x.jp,Premium"], org="org-x", workspace="main")
+    make_input({"2026-07": [spend_row("b@y.jp", 10.0)]},
+               members=["b@y.jp,Premium"], members_month="2026-07",
+               org="org-x", workspace="second")
+    (input_dir / "org-x" / "members-info.csv").write_text(
+        "email\na@x.jp\n", encoding="utf-8", newline="\n")
+    config = tmp_path / "nested.yaml"
+    config.write_text(_NESTED_CONFIG.format(org="org-x"), encoding="utf-8", newline="\n")
+    assert main(["doctor", "--config", str(config), "--input-dir", str(input_dir),
+                 "--month", "2026-06", "--format", "json"]) == 0
+    codes = [item["code"] for item in json.loads(capsys.readouterr().out)]
+    assert "MEMBERS_INFO_UNREGISTERED" not in codes
+    assert "SECONDARY_ONLY_ACCOUNT" not in codes
+
+
+@pytest.mark.parametrize("unstarted", ["main", "second"])
+def test_doctor_skips_unstarted_workspace_with_one_warning(
+    make_input, tmp_path, capsys, unstarted
+):
+    for name in ("main", "second"):
+        month = "2026-07" if name == unstarted else "2026-06"
+        input_dir = make_input(
+            {month: [spend_row("a@x.jp", 10.0)]}, members=["a@x.jp,Premium"],
+            members_month=month, org="org-x", workspace=name)
+    config = _workspace_config(tmp_path, _NESTED_CONFIG.format(org="org-x"))
+    args = ["doctor", "--config", config, "--input-dir", str(input_dir),
+            "--month", "2026-06", "--format", "json"]
+    assert main(args) == 0
+    output = capsys.readouterr().out
+    issues = json.loads(output)
+    assert len(issues) == 1
+    assert issues[0]["code"] == "MISSING_SPEND"
+    assert issues[0]["severity"] == "warning"
+    assert issues[0]["scope"] == {"org": "org-x", "month": "2026-06", "workspace": unstarted}
+    assert "まだ始まっていない workspace として検査しませんでした" in issues[0]["message"]
+    assert str(input_dir) not in issues[0]["message"]
+    assert main(args) == 0
+    assert capsys.readouterr().out == output
+
+
+def test_doctor_errors_for_started_workspace_with_missing_month(make_input, tmp_path, capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path, second_months=("2026-05",))
+    assert main(["doctor", "--config", config, "--input-dir", str(input_dir),
+                 "--month", "2026-06", "--format", "json"]) == 1
+    issues = json.loads(capsys.readouterr().out)
+    errors = [issue for issue in issues if issue["severity"] == "error"]
+    assert [(issue["code"], issue["scope"]["workspace"]) for issue in errors] == [
+        ("MISSING_SPEND", "second")]
+
+
+def test_doctor_nested_unresolvable_filename_keeps_input_error(make_input, tmp_path, capsys):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    (input_dir / "org-x" / "second" / "spend" /
+     "spend-2026-06-01-to-2026-07-05.csv").write_text(
+        SPEND_HEADER + "\n", encoding="utf-8", newline="\n")
+    assert main(["doctor", "--config", config, "--input-dir", str(input_dir),
+                 "--month", "2026-06", "--format", "json"]) == 1
+    issues = json.loads(capsys.readouterr().out)
+    issue = next(item for item in issues if item["code"] == "MISSING_SPEND")
+    assert issue["severity"] == "error"
+    assert issue["scope"]["workspace"] == "second"
+    assert "ファイル名から解決できません" in issue["message"]
+
+
+def test_doctor_workspace_start_oserror_still_inspects_input(
+    make_input, tmp_path, capsys, monkeypatch
+):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    (input_dir / "org-x" / "second" / "members" / "members_2026-06.csv").unlink()
+    original = ingest.workspace_started
+
+    def fail_for_second(directory, month):
+        if directory.name == "second":
+            raise OSError("読み取り失敗")
+        return original(directory, month)
+
+    monkeypatch.setattr(ingest, "workspace_started", fail_for_second)
+    assert main(["doctor", "--config", config, "--input-dir", str(input_dir),
+                 "--month", "2026-06", "--format", "json"]) == 1
+    issues = json.loads(capsys.readouterr().out)
+    assert [(item["code"], item["scope"]["workspace"]) for item in issues] == [
+        ("MISSING_MEMBERS", "second")]
+
+
+def test_doctor_reports_secondary_only_account_with_workspace_scope(
+    make_input, tmp_path, capsys
+):
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    (input_dir / "org-x" / "second" / "members" / "members_2026-06.csv").write_text(
+        "Email,Seat Type\nc@y.jp,Premium\n", encoding="utf-8", newline="\n")
+    assert main(["doctor", "--config", config, "--input-dir", str(input_dir),
+                 "--month", "2026-06", "--format", "json"]) == 0
+    issues = json.loads(capsys.readouterr().out)
+    person = next(item for item in issues if item["code"] == "SECONDARY_ONLY_ACCOUNT")
+    assert person["scope"]["workspace"] == "second"
+    assert person["scope"]["emails"] == ["c@y.jp"]
 
 
 def test_allow_missing_workspace_rejects_an_unknown_name(make_input, tmp_path, capsys):
@@ -1939,7 +2162,7 @@ def test_allow_missing_workspace_cannot_be_used_with_preview(make_input, tmp_pat
     rc = _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06", "--preview",
                          "--allow-missing-workspace", "second")
     assert rc == 1
-    assert "速報モードでは指定できません" in capsys.readouterr().err
+    assert "速報は欠月の workspace を需要 0 として扱いません" in capsys.readouterr().err
 
 
 def test_allow_missing_workspace_must_name_one_org(make_input, tmp_path, capsys):
@@ -2115,22 +2338,28 @@ def test_discuss_accepts_nested_layout(make_input, tmp_path, capsys):
 
 
 def test_discuss_preview_follows_the_analyze_rule(make_input, tmp_path, capsys):
-    """速報の考察は、複数 workspace の組織を単一対象なら止め、複数組織なら飛ばす。"""
+    """速報の考察は入れ子の組織でも dry-run のプロンプトだけを出す。"""
     input_dir, config = _nested_ready(make_input, tmp_path)
     base = ["discuss", "--config", config, "--input-dir", str(input_dir),
             "--output-dir", str(tmp_path / "reports"), "--month", "2026-06",
             "--preview", "--dry-run"]
-    assert main(base) == 1
-    assert "速報" in capsys.readouterr().err
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", "--days", "10") == 0
+    capsys.readouterr()
+    assert main(base) == 0
+    prompt = capsys.readouterr().out
+    assert "## 人別の需要（スペース合算）" in prompt
+    assert "複数 workspace" not in prompt
 
     make_input({"2026-06": [spend_row("c@y.jp", 10.0)]}, members=["c@y.jp,Premium"],
                org="org-a")
     assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
-                           "--org", "org-a", "--preview", "--days", "10") == 0
+                           "--preview", "--days", "10") == 0
     capsys.readouterr()
     assert main(base) == 0
-    err = capsys.readouterr().err
-    assert "複数 workspace の組織の速報はまだ対応していないため飛ばしました: org-x" in err
+    prompt = capsys.readouterr().out
+    assert "## 人別の需要（スペース合算）" in prompt
+    assert "# Claude Team シート速報プレビュー" in prompt
 
 
 def test_doctor_reports_configured_workspaces_without_an_org_directory(

@@ -1,16 +1,15 @@
 # 実装ステータス
 
-- 最終更新: 2026-10-02
+- 最終更新: 2026-10-03
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Track 9（複数workspace・設計書§26）の Step 48（速報・doctorの人の検査・docs）。
-  Step 43（workspaceの発見と設定）・Step 44（workspace別の分析と結合）・Step 45（人の層と
-  判定）・Step 46（V2の合算）・Step 47（複数workspaceの出力）は完了した（47 は 2026-10-02）。
-  入れ子レイアウトの組織は正式分析・discuss・collect まで通り、速報だけが未対応（複数組織の
-  実行では通知して飛ばし、単一対象では止める）。同一の組織が複数の Team
+- 次のタスク: v1.3.0 のリリース（Track 9 の Phase 1 ＝ Step 43〜48。手順は docs/release.md）。
+  Track 9（複数workspace・設計書§26）は Step 43（workspaceの発見と設定）・Step 44（workspace別の
+  分析と結合）・Step 45（人の層と判定）・Step 46（V2の合算）・Step 47（複数workspaceの出力）・
+  Step 48（速報・doctorの人の検査・docs）が完了した（48 は 2026-10-03）。入れ子レイアウトの
+  組織は正式分析・速報・discuss・collect・doctor まで通る。同一の組織が複数の Team
   スペースを運用し、同じ人が各スペースに1アカウントずつ持って使い分ける運用を、組織1セットの
-  レポートで集計・分析できるようにする。Phase 1（Step 43〜48）を v1.3.0 として出し、
-  2026-09 の分析（10月初旬）に間に合わせることを目標にする（間に合わなければ 2026-10 の
-  分析から）。v1.2.0 はリリース済み（2026-09-05）。
+  レポートで集計・分析できる。Step 49（切替の観測）は両workspaceの週次エクスポートが同じ日に
+  揃ってから着手する。v1.2.0 はリリース済み（2026-09-05）。
   Step 9 はV2のrecent seat change判定材料として先行実装済みで、
   Track 3の残りStepは据え置き（根拠は設計書§12.7）
 - 予定タスク: Track 5（Step 20〜24）と Step 39 を同じ版で出す。Step 39 は変更前後の PR 数と
@@ -113,8 +112,8 @@
 | 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
 | 7 | GitHub | 7 | 0 | 0 | 1 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
-| 9 | 複数workspace | 5 | 0 | 0 | 2 | 0 |
-| **合計** |  | **35** | **0** | **0** | **21** | **0** |
+| 9 | 複数workspace | 6 | 0 | 0 | 1 | 0 |
+| **合計** |  | **36** | **0** | **0** | **20** | **0** |
 
 ## 5. Step一覧
 
@@ -225,10 +224,52 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 45 | 人の層と判定（合算・払い出し・継続） | `完了` | 2026-09-18 |
 | 46 | V2の合算（decision-evidence） | `完了` | 2026-09-30 |
 | 47 | 複数workspaceの出力 | `完了` | 2026-10-02 |
-| 48 | 速報・doctorの人の検査・docs（v1.3.0） | `未着手` |  |
+| 48 | 速報・doctorの人の検査・docs（v1.3.0） | `完了` | 2026-10-03 |
 | 49 | 切替の観測（Phase 2） | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-10-03 — Step 48: 速報・doctorの人の検査・docs
+
+- 速報（`--preview`）を入れ子レイアウトの組織に対応させた。`preview()`は1 workspace分のまま
+  任意引数（`workspace`・`members_info_dir`・`extra_demand`）と未丸めの観測需要`own_demand`を
+  持ち、組織単位は`analyze/workspaces.py`の`preview_org`（`OrgPreviewResult`）が束ねる（正式分析の
+  `analyze`と`analyze_org`と同じ分担。workspaceの発見と設定の突き合わせは`_resolve_contexts`で
+  共用する）。副を先に計算し、主の行の一次判断を全workspaceの合算需要で決める。行の集合は主の
+  membersと主自身のspendのままで、副にだけ居る人の主の行は作らない。観測系の表とサマリの合計は
+  各アカウント自身の需要（行ごとに丸めた値の和で、単一workspaceの合計と同じ計算）
+- 固定シートのworkspaceのStandard / Premiumは「対象外（固定シート）」。観測需要が$1未満なら
+  先に「遊休候補」を付ける。そのworkspaceの付与候補は出さない。`PREVIEW_ORDER`に「対象外
+  （固定シート）」を足した（単一workspaceには現れないので出力は変わらない）
+- 観測日数は`preview_days`で全workspace共通に決める（ファイル名の期間が食い違えば止めて`--days`を
+  求める）。まだ始まっていないworkspaceは警告して飛ばし、始まっているのに対象月のspendが無い
+  workspaceは複数組織の実行でも止める（速報は`--allow-missing-workspace`を受け付けない）
+- 複数workspaceの組織の速報に「スペース別」・連結した一次判断テーブルのスペース列・「人別の需要
+  （スペース合算）」（`analyze/persons.py`の`preview_persons`。払い出し判定・継続判定は置かない）・
+  workspaceごとの節を足した。両形式で共有する行と固定文言は`report/spaces.py`に置いた（正式分析の
+  スペース別の注記も同じ関数から読む）。preview-dashboardはStep 47と同じループの形で、単一
+  workspaceの出力を変えない。新設のpartialは`preview-workspaces.html.j2`と
+  `preview-persons.html.j2`。`dashboard.css`・`dashboard.js`は変えていない。CLIは速報と
+  `discuss --preview`の入れ子レイアウトの拒否を外した
+- doctor: `SECONDARY_ONLY_ACCOUNT`（副のStandard / Premiumのアカウントが主のmembersに居ない・
+  workspace単位のwarning）・`MEMBERS_INFO_UNREGISTERED`（開始済みの全workspaceのmembersと対象月の
+  spendのメールの和集合・組織単位のwarning・両レイアウト）・`MEMBERS_INFO_UNREADABLE`（error。
+  他の検査と`--format json`の出力は続ける）を足した。人の検査は対象月に始まっているworkspaceだけを
+  見る（`ingest.workspace_started`）。`MISSING_HISTORY_MONTH`はその入力の最古のspendの月より前の
+  月を欠月に数えない（両レイアウト）。まだ始まっていないworkspaceは入力を検査せず`MISSING_SPEND`の
+  warningを1件出す（§26.8の「対象月」。これまでは過去の月の検査でerrorになっていた）
+- docs: usage.mdに「複数の Team スペースを運用する組織（入れ子レイアウト）」と既存の組織の移行手順、
+  reference.mdに「複数スペース（workspace）の組織の成果物」と設定の節を足した。`fixed_seat`は
+  副スペース（複数workspaceの組織）のための設定と書いた。README・docs/README・setup・CHANGELOGも
+  更新した
+- golden: 新ケース`preview-multi`（org-cの2026-08・`--preview --days 31`）を足した。既存の5ケースは
+  1バイトも変わらない。workspaceが1つの入れ子組織の速報が従来レイアウトとバイト一致することは、
+  org-bの2026-07・2026-08を2通りに写して比べるテストで固定した
+- テスト: 2339 passed（+25件）、ruff 緑、`check-text --diff`は0件
+- 外部レビュー（codex）: 設計段階で1巡（設計案全体）。14件をすべて採用して設計を直した（人別の
+  シート費の単価の入力・未丸めの需要の受け渡し・副の比率の分母0・`--days 0`・読めないmembers-info・
+  未開始のworkspaceの将来のmembers・LoCの観測時点など）。実装後の受け入れ確認（基準8点に範囲固定）は
+  指摘なし
 
 ### 2026-10-02 — Step 47 追補: 副の未割当アカウントの扱いと人別の利用のトークン
 
