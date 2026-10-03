@@ -1,28 +1,28 @@
 # 変更履歴
 
-## [未リリース]
+## [1.3.0] - 2026-10-03
 
 ### 追加
 
 - `input/<組織名>/<workspace名>/spend/` の入れ子レイアウト（1 つの組織が複数の Team
   スペースを運用する形）を組織として認識するようにした
-- `doctor` に複数 workspace の構造検査（レイアウトの混在・config との不一致・主 workspace）を
-  追加し、入れ子レイアウトの組織では workspace ごとに入力を検査するようにした
-- `organizations.<組織名>.workspaces` に workspace ごとの設定（`primary` / `label` /
-  `fixed_seat` / `credit_limit_default_usd` / `evaluation_months`）と、組織直下の
-  `secondary_breakeven_usd` を書けるようにした
-- `init-org --workspaces main,second` で入れ子レイアウトの雛形を作れるようにした
-- 複数 workspace の組織の decision-evidence で、複数アカウントを持つ人を主 workspace の行1本に
-  まとめ（需要は全 workspace の合算）、`workspace` 列を付けるようにした
 - 入れ子レイアウトの組織を `analyze`（正式分析）・`discuss`・`collect` で扱えるようにした
   （複数 workspace の組織の成果物に、スペース列・workspace ごとの節・人別の利用・
   「複数スペースの利用」・dashboard の「複数スペース」タブが加わる）
 - 速報（`--preview`）で複数 workspace の組織を扱えるようにした（workspace ごとの一次判断・人別の需要）
-- `doctor` に主に居ない副のアカウントの警告と、members-info の検査（未登録・読めないファイル）を追加した
+- `organizations.<組織名>.workspaces` に workspace ごとの設定（`primary` / `label` /
+  `fixed_seat` / `credit_limit_default_usd` / `evaluation_months`）と、組織直下の
+  `secondary_breakeven_usd` を書けるようにした
+- `init-org --workspaces main,second` で入れ子レイアウトの雛形を作れるようにした
 - `analyze --allow-missing-workspace <名前>` で、対象月のスペンドレポートが無い workspace を
   需要 0 として分析できるようにした
 - 複数 workspace の組織の recommendations / usage-summary に `workspace` 列を付けるようにした
+- 複数 workspace の組織の decision-evidence で、複数アカウントを持つ人を主 workspace の行1本に
+  まとめ（需要は全 workspace の合算）、`workspace` 列を付けるようにした
 - 組織横断サマリで、複数 workspace の組織のメンバー数を「人数（アカウント数）」で示すようにした
+- `doctor` に複数 workspace の構造検査（レイアウトの混在・config との不一致・主 workspace）を
+  追加し、入れ子レイアウトの組織では workspace ごとに入力を検査するようにした
+- `doctor` に主に居ない副のアカウントの警告と、members-info の検査（未登録・読めないファイル）を追加した
 - シート種別を固定した workspace に、固定と違う種別のアカウントがあると警告するようにした
 
 ### 変更
@@ -140,6 +140,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.3.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.3.0
 [1.2.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.2.0
 [1.1.2]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.1.2
 [1.1.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.1.1
