@@ -32,7 +32,7 @@
 - シート変更をCSVへ出せる
 - upgrade候補だけをV2で判定できる
 - GitHub認証をdoctorで確認できる
-- Spendだけを通常ブラウザとdownload watcherで取得補助できる
+- 管理画面CSVを専用プロファイルのChromeと同梱拡張機能で取得できる
 
 複数の振る舞いを同じPRへまとめない。
 
@@ -103,7 +103,7 @@ Premium → Standard:
 ### 3.4 データ取得
 
 - Spend、Members、Code Analyticsは公式CSV
-- 管理画面CSVは通常ブラウザとdownload watcherによる取得補助を許容
+- 管理画面CSVは専用プロファイルのChromeと同梱拡張機能による取得を許容（§14）
 - CSVがない管理画面表は小さな手入力CSVを使用する
 - GitHubはローカルの認証済み`gh`を使用
 - GitHubリポジトリはOrganization単位で自動発見
@@ -136,7 +136,7 @@ Premium → Standard:
 - 推奨と実変更を照合できる
 - 変更後2/4/8週を評価できる
 - GitHub PR数・リードタイムを参考表示できる
-- 管理画面CSV取得を通常ブラウザとdownload watcherで補助できる
+- 管理画面CSVを専用プロファイルのChromeと同梱拡張機能で取得できる
 - 既存V1を壊さずV2へ移行できる
 
 ### 4.2 非ゴール
@@ -213,7 +213,8 @@ src/seat_analyzer/
   decision_v2.py        # upgrade/downgrade/credit
   decision_audit.py     # 推奨と実変更の照合・追跡
   admin_inputs.py       # seat/creditの正準入力
-  browser_collect.py    # 通常ブラウザとdownload watcherによる取得補助
+  claude_export.py      # claude.ai の CSV 取得（計画・検証・配置・Chrome の起動と終了）
+  browser_extension/    # Chrome 拡張機能（非 .py の同梱物。ページ操作とダウンロードの振り分け）
   github_collect.py     # ghによるPR metadata
   github_metrics.py     # PR数・lead time
   report_v2.py          # 新規CSV/Markdown
@@ -229,6 +230,7 @@ src/seat_analyzer/
 - 設定の既定は`src/seat_analyzer/default-config.yaml`が唯一の源。リポジトリ直下・ワークスペースの`config.yaml`は差分だけを書く任意の上書きファイルで、gitignore済み。以降のStepで対象として`config.yaml`と書かれている箇所は`default-config.yaml`に読み替える
 - email → GitHub loginの対応表は`members-info.csv`の`GitHub ID`列で持つ。以降のStepで`github-members.csv`と書かれている箇所は`members-info.csv`の`GitHub ID`列に読み替える
 - モジュールを増やすときは`tests/test_module_deps.py`の`LAYERS`へ層を割り当てる。パッケージ内importは自分より厳密に下の層だけを指してよく、同層どうしのimportも認めない。層に無いモジュールを足すとテストが落ちる
+- Track 6 は方式を変更し、Step 25〜30 を見送って Step 50〜51 で実装する（§14）
 
 ## 6. ディレクトリ
 
@@ -245,8 +247,6 @@ input/<org>/
     users-YYYY-MM-DD.csv
   github-cache/
     prs-YYYY-MM.json
-  collection/
-    manifest-YYYY-MM-DDTHHMMSS.json
 ```
 
 ### 6.2 出力
@@ -292,17 +292,18 @@ reports/<org>/<month>/
       source-manifest.json
 ```
 
-### 6.3 Download監視
+### 6.3 取得のstaging
 
 ```text
-OSの通常download directory
+~/.seat-analyzer/exports/<run_id>/
+  manifest.json
+  <dir>/<kind_dir>/<元ファイル名>
 ```
 
-- 監視先はconfigまたはCLIで変更可能にする
-- コマンド開始後に新規作成・更新されたCSVだけを候補にする
+- 置き場所は`claude_export.staging_dir`で変更できる（§14.3・§21）
 - CSV全体を走査せず、種別判定に必要なheaderだけを読む
-- 元ファイルを変更・削除しない
-- browser profile、Cookie、認証情報へアクセスしない
+- stagingのファイルは変更しない（`input/`へはコピーする）
+- 利用者の通常のブラウザプロファイル・認証情報には触れない（使うのはツール専用のプロファイルだけ）
 
 ## 7. 正準データ
 
@@ -966,55 +967,105 @@ Standard化:
 
 ## 14. Browser-assisted collection
 
-### 14.1 実装方式
+入力のCSV 3種（members・支出レポート・Claude Code analytics）を、管理画面から人がダウンロード
+しているのと同じ公式のエクスポートとして`collect --source claude`で取得する。既定では不活性で、
+ワークスペースの`config.yaml`に`claude_export`（`profile`と`org_id`）を書いた組織／workspace
+だけが対象になる（§21。mainへマージするコードは既定で不活性という運用に合わせる）。
+モジュールは`claude_export.py`（層15）と、非.pyの同梱物`browser_extension/`。
 
-- OSの通常ブラウザを開く
-- 既存のログイン状態をそのまま利用する
-- Organization選択、画面遷移、Exportは利用者が手動で行う
-- download directoryでコマンド開始後の新規CSVを監視する
-- headerからSpend、Members、Code Analyticsを判別する
-- 安定したファイルだけを対象Organizationの入力へコピーする
-- ブラウザ画面の操作やDOM取得は行わない
-- Playwright、Chrome remote debugging、非公開APIを利用しない
+### 14.1 方式
 
-### 14.2 セキュリティ
+- ツール専用のプロファイル（アカウントごとに1つ。`~/.seat-analyzer/profiles/<profile>`）で、
+  自動操作の無い素のGoogle Chromeを起動する。同梱の拡張機能（unpacked・MV3）はそのプロファイルへ
+  一度だけ読み込む
+- CLIはChromeの実行ファイルにトリガーURL（`https://claude.ai/#seat-analyzer-run=<URLエンコードした
+  JSON>`）を渡して起動し、stagingディレクトリ（`~/.seat-analyzer/exports/<run_id>/`）に
+  manifest.jsonが出るのを待つ。実行内容はURLのフラグメントに載せるので、claude.aiのサーバーへは
+  送られない
+- 拡張機能は、組織の切替（Cookie）、3ページのエクスポート操作、ダウンロードのstagingへの振り分け、
+  manifestの出力を行う
+- 対象月は2モードだけ: 当月（支出は「月累計」・Claude Codeは表示中の月）と前月（支出は「先月」・
+  Claude Codeは月送り1回）。管理画面にそれ以外の選択肢が無いため。それより前の月は従来どおり
+  手動のダウンロードで置く
+- Playwright・Chrome remote debugging（CDP）・headlessは使わない。自動操作下では外部セキュリティ
+  検証が反復して管理画面へ安定して到達できず、ダウンロード時にブラウザが異常終了することもある
+  ため、素のChromeと拡張機能の組み合わせだけを使う
+- OS依存はChromeの場所（OSごとの既定の場所か`claude_export.chrome_path`）と、プロセスの列挙・
+  終了の2箇所に閉じる。macOSで実機検証し、Linux・Windowsは設計上動く想定（未検証）
 
-- ID、パスワードを受け取らない
-- MFAを自動化・回避しない
-- Cookieを表示しない
-- browser profileを読み取らない
-- internal APIをreverse engineerしない
-- シート・credit設定を変更しない
-- 既存download fileを変更・削除しない
-- 検出した実データの内容や元のfilenameをログ出力しない
+### 14.2 守ること
 
-### 14.3 収集manifest
+- ID・パスワードを受け取らない。ログインと外部セキュリティ検証は人が行い、自動化・回避しない
+  （画面に要操作を表示して待つ）
+- 利用者の通常のブラウザプロファイルには触れず、ツールが作った専用プロファイルだけを使う。
+  専用プロファイルの設定（Preferences）に書くのは、claude.aiからの自動ダウンロードの許可と、
+  ダウンロードの確認を出さないこと・ダウンロード先（staging）だけで、他の項目は保つ
+- claude.ai上で押すのはエクスポート系のボタンだけで、シート・creditの設定を変更する操作を持たない
+- ダウンロード先は専用のstagingで、利用者のDownloadsや既存ファイルを変更・削除しない
+- 別組織のデータを保存しないため、組織切替の確認が取れない組織は丸ごと飛ばす
+
+### 14.3 manifestと配置
+
+stagingの配置（拡張機能が書く）:
+
+```text
+<staging_dir>/<run_id>/manifest.json
+<staging_dir>/<run_id>/<dir>/<kind_dir>/<元ファイル名>
+```
+
+`dir`は`<org>`か`<org>/<workspace>`（区切りはOSによらず`/`）、`kind_dir`は種別の入力
+サブディレクトリ（members→`members`、spend→`spend`、code→`code-analytics`）。`run_id`は
+`<profile>-<mode>-<YYYYMMDD-HHMMSS>`（ローカル時刻）。
 
 ```json
 {
-  "collected_at": "2026-07-29T10:00:00+09:00",
-  "organization": "example",
-  "sources": [
-    {
-      "kind": "spend",
-      "path": "input/example/spend/...",
-      "sha256": "...",
-      "status": "downloaded"
-    }
-  ]
+  "run_id": "corp-previous-20261007-110009",
+  "mode": "previous",
+  "finished_at": "2026-10-07T02:00:49.000Z",
+  "results": [
+    {"dir": "example/main", "kind": "members", "ok": true, "filename": "members-...-2026-10-07.csv"},
+    {"dir": "example/main", "kind": "spend", "ok": true, "filename": "spend-report-...-2026-09-01-to-2026-09-30.csv", "range": "2026-09-01 to 2026-09-30"},
+    {"dir": "example/main", "kind": "code", "ok": false, "reason": "export button not present after 60s"}
+  ],
+  "log": ["..."]
 }
 ```
 
-同一sha256のファイルを重複配置しない。
+- 壊れたJSON・`results`の欠落・オブジェクトでない要素は読み込みを止める。`ok`でもファイル名が
+  無い（またはディレクトリを含む）結果は失敗として扱う
+- manifestの`dir`は計画の (配置先, 種別) と突き合わせるだけで、パスは常に計画の側から組む。
+  計画にあってmanifestに無い組み合わせは「結果なし」の失敗、計画に無い結果は捨てる
+
+検証（最初に外れた理由を表示する）:
+
+1. ファイルが存在し、空でない
+2. 先頭行のヘッダに、種別ごとの必須の正準列がすべてある（照合は`columns.<種別>`のエイリアスと、
+   分析の読み込みと同じ正規化で行い、欠けていれば最初の1列を理由にする）
+   - members・支出レポート: 分析の読み込みが必須にする列（`ingest.REQUIRED_COLUMNS`。membersは
+     email・seat_type、支出レポートはemail・model・prompt_tokens・completion_tokens）
+   - Claude Code analytics: emailと月間のLoC（`loc_with_cc`）。エクスポートはこの2列で、
+     支出レポートとの取り違えをLoCの列の有無で止める
+3. ファイル名の期間が対象月に合う
+   - 支出レポート: 期間付きで、開始が対象月の1日・終了が対象月の末日以前
+   - Claude Code analytics: 期間付きで、開始が対象月の1日（終了日は部分月でも月末日になるので見ない）
+   - members: スナップショットの日付が対象月の1日以降（前月モードでは当日＝翌月の日付になる）
+
+配置:
+
+- 配置先は`input/<org>/[<workspace>/]<kind_dir>/<元ファイル名>`。元のファイル名のまま置くので、
+  分析側の期間の解釈（`ingest.file_period`）がそのまま効く
+- 組織ディレクトリ（入れ子レイアウトならworkspaceのディレクトリ）が無ければ配置しない
+  （`init-org`で作ってから）。設定の綴り違いで新しい組織ができるのを防ぐ。種別のディレクトリは
+  無ければ作る
+- バイトのままコピーし、同じディレクトリの一時名から置き換える。同名は上書きする（同じ日の
+  再取得は新しいスナップショット）
+- 検証に通らないファイルは配置しない
 
 ### 14.4 フォールバック
 
-Browser-assisted collection失敗時:
-
-1. 失敗理由を表示
-2. 手動ダウンロード先を案内
-3. 既存の`analyze`を利用可能にする
-4. 分析自体をbrowser依存にしない
+- 失敗した種別は理由を表示し、ダウンロードしたファイルはstagingに残す
+- 手動でダウンロードして従来どおり`input/`へ置けば分析は動く。分析そのものをブラウザに依存させない
+- タイムアウト時はChromeを終了させず、ブラウザに出ている要操作の表示を確認するよう案内する
 
 ## 15. GitHub collection
 
@@ -1113,10 +1164,25 @@ uv run seat-analyzer collect \
   --source admin
 
 uv run seat-analyzer collect \
+  --source claude \
+  [--month YYYY-MM] \
+  [--org <org> ...] \
+  [--profile <name>] \
+  [--dry-run]
+
+uv run seat-analyzer collect \
+  --source claude \
+  --setup|--login|--list-orgs <profile>    # Step 51
+
+uv run seat-analyzer collect \
   --org <org> \
   --source github \
   --month YYYY-MM
 ```
+
+`--source claude`の`--month`は当月か前月で、省略時は当月（§14.1）。`--org`は複数指定でき、
+省略時は`claude_export`を設定した全組織。`--dry-run`は取得の計画（プロファイルごとのモードと、
+対象・UUID・種別・配置先）を表示して終了する。Step 50の時点では`--dry-run`だけが使える。
 
 V2が安定するまで既定値は`v1`。`--decision-version`を省略した場合は
 `decision_v2.enabled`に従い、明示指定はそれに優先する。`enabled: true`は「V1の成果物に
@@ -1170,7 +1236,9 @@ V2判定の根拠（decision-evidence）を併記する」opt-inで、主判定�
 - `BROWSER_LOGIN_REQUIRED`
 - `ADMIN_PAGE_CHANGED`
 - `DOWNLOAD_FAILED`
-- `DUPLICATE_DOWNLOAD`
+- `BROWSER_TIMEOUT`（manifestが時間内に出ない）
+
+Step 51のCLIが表示する取得の失敗の分類として使う。
 
 ### GitHub issue
 
@@ -2439,6 +2507,8 @@ dashboardで読めるようにする。
 
 #### Step 25: Download watcher基盤
 
+見送り（2026-10-07）: 方式変更のため実装しない。代替は Step 50〜51
+
 依存:
 
 - Step 0C成功
@@ -2468,6 +2538,8 @@ dashboardで読めるようにする。
 - `input/`への配置
 
 #### Step 26: Spend検出・配置
+
+見送り（2026-10-07）: 方式変更のため実装しない。代替は Step 50〜51
 
 依存:
 
@@ -2499,6 +2571,8 @@ dashboardで読めるようにする。
 
 #### Step 27: Members検出・配置
 
+見送り（2026-10-07）: 方式変更のため実装しない。代替は Step 50〜51
+
 依存:
 
 - Step 26
@@ -2514,6 +2588,8 @@ dashboardで読めるようにする。
 
 #### Step 28: Code Analytics検出・配置
 
+見送り（2026-10-07）: 方式変更のため実装しない。代替は Step 50〜51
+
 依存:
 
 - Step 27
@@ -2528,6 +2604,8 @@ dashboardで読めるようにする。
 - export不可ならwarning
 
 #### Step 29: Collection manifest
+
+見送り（2026-10-07）: 方式変更のため実装しない。代替は Step 50〜51
 
 依存:
 
@@ -2545,6 +2623,8 @@ dashboardで読めるようにする。
 - 部分失敗を記録
 
 #### Step 30: collect CLI
+
+見送り（2026-10-07）: 方式変更のため実装しない。代替は Step 50〜51
 
 依存:
 
@@ -2569,7 +2649,7 @@ dashboardで読めるようにする。
 依存:
 
 - Step 17
-- Step 30
+- Step 51
 
 実装:
 
@@ -2590,6 +2670,86 @@ dashboardで読めるようにする。
 - credit変更
 - DOM取得
 - clipboardの自動読取
+
+#### Step 50: claude.aiエクスポート取得の土台（config・計画・検証・配置・--dry-run）
+
+依存:
+
+- §14の方式（2026-10-07の実機検証で確定）
+
+対象:
+
+- `src/seat_analyzer/claude_export.py`（新規・層15。importは`ingest`だけ）
+- `src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`
+- `src/seat_analyzer/cli.py`
+- `tests/test_claude_export.py`・`tests/test_config.py`・`tests/test_cli.py`・
+  `tests/test_module_deps.py`
+
+実装:
+
+- config: トップレベルの`claude_export`（`chrome_path`・`profiles_dir`・`staging_dir`・
+  `timeout_minutes`）と、`organizations.<組織名>.claude_export`・
+  `organizations.<組織名>.workspaces.<workspace名>.claude_export`（`profile`・`org_id`・`kinds`）。
+  ロード時に検証する（UUIDの形式・プロファイル名・`kinds`・`profile`だけの区画・`workspaces`を
+  持つ組織の直下の区画・同じ`org_id`の重複・未知のキー）
+- `claude_export.py`: 対象の列挙（`gated_targets`）、モードの決定と計画（`resolve_mode`・
+  `plan_runs`）、拡張機能へ渡す実行内容とトリガーURL、manifestの読み取りと計画との突き合わせ、
+  検証（`verify_export`）と配置（`place_export`）、Preferencesの更新、Chromeの場所・起動
+  コマンド・プロセスの列挙と終了コマンドの組み立て（ここまで純粋関数）と、プロセスを起動・
+  列挙・終了させる薄いラッパ
+- CLI: `collect --source claude --dry-run`。`--org`を複数指定可にし、`--month`とともに必須を
+  外す（githubは従来どおり`--org`1つと`--month`が必須で、欠ければ終了コード2）。`--profile`・
+  `--dry-run`はclaude専用
+
+受け入れ条件:
+
+- 既定で不活性（`claude_export`未設定なら従来と同じ動き）
+- goldenが不変
+- `--dry-run`が計画を表示する
+- 設定の誤りがロード時に止まる
+- 検証で期間と種別の合わないCSVを配置しない
+- 追加dependencyなし
+
+今回は行わない:
+
+- 拡張機能（`browser_extension/`）
+- ブラウザの起動・待機・終了と配置のCLIへの結線（`--dry-run`の無い`--source claude`は使えない）
+- `--setup`・`--login`・`--list-orgs`・`--keep-browser`・`--timeout`
+- 利用者向けdocs（usage・setup・reference・README・CHANGELOG）
+
+#### Step 51: 拡張機能とcollect --source claudeの結線
+
+依存:
+
+- Step 50
+
+対象:
+
+- `src/seat_analyzer/browser_extension/`（新規・非.pyの同梱物。wheelに入ることを確かめる）
+- `src/seat_analyzer/claude_export.py`・`src/seat_analyzer/cli.py`
+- `docs/usage.md`・`docs/setup.md`・`docs/reference.md`・`README.md`・`CHANGELOG.md`
+- `tests/`
+
+実装:
+
+- 拡張機能: トリガーURLの受け取り、組織の切替と切替後の確認、3ページのエクスポート操作、
+  ダウンロードのstagingへの振り分け、manifestの出力、ログインや外部セキュリティ検証が要るときの
+  要操作の表示
+- CLI: Preferencesの更新 → Chromeの起動 → manifestの待機 → 検証・配置 → Chromeの終了。
+  `--setup`・`--login`・`--list-orgs`・`--keep-browser`・`--timeout`
+- 利用者向けの手順（初回のセットアップ・月次の取得・手動のフォールバック）
+
+受け入れ条件:
+
+- 実機で2プロファイル×当月／前月の3種×全スペースを無操作で取得
+- ログイン期限切れを安全に扱う（要操作の表示と待機）
+- シート／creditの変更操作が存在しない
+- 手動フォールバックが動く
+
+今回は行わない:
+
+- 当月・前月以外の月の取得
+- 管理画面のcredit設定の取得（Step 31）
 
 ### Track 7: GitHub
 
@@ -3151,11 +3311,11 @@ Step 9〜24
 
 ### Milestone C: Collection automation
 
-Step 25〜31
+Step 31・50〜51
 
-- 通常ブラウザ
-- download watcher
-- 公式CSV
+- 専用プロファイルのChromeと同梱拡張機能
+- 公式のエクスポートCSV
+- 2モード（当月・前月）
 - credit入力補助
 
 ### Milestone D: GitHub reference
@@ -3219,7 +3379,7 @@ uv run pytest
 - GitHubなしでも分析できる
 - browserなしでも分析できる
 - GitHub本文・コードを保存しない
-- browser-assisted取得は管理画面を操作しない
+- browser-assisted取得はエクスポート以外の管理画面の操作をしない（シート・creditの設定変更を行わない）
 - 不明値を0として扱わない
 
 ### 20.3 Security
@@ -3243,12 +3403,25 @@ organizations:
       main:
         primary: true
         label: 主スペース
+        # claude.aiからのCSV取得（§14）。複数スペースの組織はworkspaceごとに書く
+        claude_export:
+          profile: corp
+          org_id: 00000000-0000-4000-8000-000000000002
       second:
         label: 副スペース
         fixed_seat: premium
         credit_limit_default_usd: 0
         evaluation_months: 2
+        claude_export:
+          profile: corp
+          org_id: 00000000-0000-4000-8000-000000000003
     secondary_breakeven_usd: 125.0
+  example-single:
+    # 単一スペースの組織は組織の直下に書く
+    claude_export:
+      profile: corp
+      org_id: 00000000-0000-4000-8000-000000000001
+      kinds: [members, spend, code]
 
 product_policy:
   primary: ["Claude Code"]
@@ -3284,11 +3457,11 @@ github:
   exclude_templates: true
   repository_denylist: []
 
-browser:
-  enabled: false
-  open_url: "https://claude.ai/"
-  download_dir: null
-  timeout_seconds: 300
+claude_export:
+  chrome_path: ""                           # 空文字 = OSごとの既定の場所を自動検出
+  profiles_dir: ~/.seat-analyzer/profiles   # 専用プロファイルの置き場
+  staging_dir: ~/.seat-analyzer/exports     # ブラウザがダウンロードする一時置き場
+  timeout_minutes: 15                       # manifestを待つ上限
 ```
 
 新しいセクションはすべて省略可能とする。`decision_v2.enabled=false`が既定。
@@ -3337,11 +3510,11 @@ V1のallowanceモデルに依存する出力（込み枠推定の3scenario、⚠
 
 ### Browser-assisted collection release
 
-- Step 0C成功
-- 3回連続でCSV取得成功
-- login期限切れを安全に扱える
-- browser画面操作とシート・credit変更操作が存在しない
-- 手動fallbackが動く
+- Step 50〜51完了
+- 3回連続で全スペースのCSV取得に成功
+- ログイン期限切れを安全に扱える
+- シート・credit変更操作が存在しない
+- 手動フォールバックが動く
 
 ### GitHub integration release
 

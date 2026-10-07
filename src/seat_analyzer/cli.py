@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import importlib.metadata
+import os
 import re
 import sys
 from collections.abc import Sequence
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from . import (
     analyze,
+    claude_export,
     data_quality,
     decision_evidence,
     discussion,
@@ -225,16 +227,30 @@ def main(argv: list[str] | None = None) -> int:
     pcol = sub.add_parser(
         "collect", help="外部データを収集してローカルのキャッシュへ保存する")
     pcol.add_argument(
-        "--org", required=True, metavar="組織名",
-        help="対象組織（input/ 直下のディレクトリ名）。1組織ずつ指定する",
+        "--org", action="append", metavar="組織名",
+        help="対象組織（input/ 直下のディレクトリ名）。github は1組織ずつ指定する（必須）。"
+             "claude は複数指定可で、省略時は claude_export を設定した全組織",
     )
     pcol.add_argument(
-        "--source", required=True, choices=["github"],
+        "--source", required=True, choices=["github", "claude"],
         help="収集元。github は merged PR のメタデータを取得する"
              f"（{WORKSPACE_CONFIG_NAME} の organizations.<組織名>.github_org を"
+             "設定した組織のみ）。claude は claude.ai の CSV（メンバー一覧・支出レポート・"
+             "Claude Code analytics）を取得する（organizations.<組織名>.claude_export を"
              "設定した組織のみ）",
     )
-    pcol.add_argument("--month", required=True, help="対象月 (YYYY-MM)")
+    pcol.add_argument(
+        "--month",
+        help="対象月 (YYYY-MM)。github は必須。claude は当月か前月で、省略時は当月",
+    )
+    pcol.add_argument(
+        "--profile", metavar="名前",
+        help="claude のみ: 使うブラウザのプロファイルで対象を絞る",
+    )
+    pcol.add_argument(
+        "--dry-run", action="store_true",
+        help="claude のみ: 取得の計画を表示して終了する（ブラウザを起動しない）",
+    )
     pcol.add_argument("--config", default=None, help=_CONFIG_HELP)
     _add_dir_options(pcol, output=False)   # レポートを書かないコマンド
     pcol.set_defaults(func=_run_collect)
@@ -287,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     pi.set_defaults(func=_run_init_org)
 
     args = parser.parse_args(argv)
+    if args.command == "collect":
+        _check_collect_args(pcol, args)
     try:
         return args.func(args)
     except (OSError, ValueError, LeakCheckError, DiscussionError) as e:
@@ -1012,20 +1030,40 @@ def _discovery_reason(repos: github_collect.RepoDiscovery) -> str:
     return "・".join(parts)
 
 
-def _run_collect(args: argparse.Namespace) -> int:
-    """外部データを収集してローカルのキャッシュへ保存する（設計書 §16.2）。
+def _check_collect_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """収集元ごとのオプションの組み合わせを確かめる（誤りは argparse と同じ終了コード 2）。
 
-    対象は GitHub 分析を有効にした組織だけで、保存するのは merged PR のメタデータ
-    （設計書 §7.6 の9項目）と、そのとき参照できた repository の一覧。レポートは書かず、
-    判定にも影響しない。
+    必須かどうかが収集元で変わるので、argparse の required ではなくここで見る。
+    """
+    if args.source == "github":
+        if not args.org or len(args.org) != 1:
+            parser.error("--source github では --org を1つだけ指定してください")
+        if args.month is None:
+            parser.error("--source github では --month が必要です")
+        for flag, given in (("--profile", args.profile is not None),
+                            ("--dry-run", args.dry_run)):
+            if given:
+                parser.error(f"{flag} は --source claude でだけ使えます")
+    elif not args.dry_run:
+        parser.error("--source claude は現時点では --dry-run のみ使えます")
+
+
+def _run_collect(args: argparse.Namespace) -> int:
+    """外部データを収集してローカルへ保存する（設計書 §16.2）。
+
+    github の対象は GitHub 分析を有効にした組織だけで、保存するのは merged PR の
+    メタデータ（設計書 §7.6 の9項目）と、そのとき参照できた repository の一覧。claude は
+    `_run_collect_claude` が受け持つ。どちらもレポートは書かず、判定にも影響しない。
     """
     cfg = load_config(args.config)
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
+    if args.source == "claude":
+        return _run_collect_claude(args, cfg, input_dir)
     month = _validate_month(args.month)
     # 組織の存在は doctor と同じ経路で確かめる（このコマンドだけが受理する形を作らない）
     # 入れ子レイアウトの組織も受け付ける（キャッシュと対応表は組織直下に置くため、
     # workspace の分け方に依らない）
-    org, org_input = _resolve_input_targets(input_dir, [args.org])[0]
+    org, org_input = _resolve_input_targets(input_dir, args.org)[0]
 
     enabled = github_collect.gated_orgs(cfg)
     if org not in enabled:
@@ -1072,6 +1110,79 @@ def _run_collect(args: argparse.Namespace) -> int:
         print("  対象月の直近の期間は次回の実行で再取得します"
               "（期間の終わりから1日が過ぎるまで完了にしないため）")
     return 0
+
+
+# 取得のモードの表示名
+_CLAUDE_MODE_TEXT = {
+    claude_export.MODE_CURRENT: "当月モード",
+    claude_export.MODE_PREVIOUS: "前月モード",
+}
+
+
+def _run_collect_claude(args: argparse.Namespace, cfg: dict, input_dir: Path) -> int:
+    """claude.ai の CSV 取得（設計書 §14）。
+
+    対象は claude_export を設定した組織／workspace だけ。いまは計画の表示（--dry-run）
+    だけを行い、ブラウザの起動・待機・配置はまだ結線していない（--dry-run の無い呼び出しは
+    main が引数の段階で止める）。
+    """
+    targets = claude_export.gated_targets(cfg["organizations"])
+    if not targets:
+        print(
+            "claude_export を設定した組織がありません"
+            f"（{WORKSPACE_CONFIG_NAME} の organizations.<組織名>.claude_export に"
+            " profile と org_id を書く）",
+            file=sys.stderr,
+        )
+        return 1
+    month = None if args.month is None else _validate_month(args.month)
+    runs = claude_export.plan_runs(
+        targets, month=month, today=claude_export.local_today(),
+        orgs=args.org, profile=args.profile,
+    )
+    if not runs:
+        # 組織名の誤りは plan_runs が止めるので、空になるのはプロファイルで絞ったときだけ
+        print(
+            f"--profile {args.profile} を使う claude_export の対象がありません"
+            "（対象組織の claude_export.profile を確認してください）",
+            file=sys.stderr,
+        )
+        return 1
+    _print_claude_plan(runs, cfg["claude_export"], input_dir)
+    return 0
+
+
+def _print_claude_plan(
+    runs: list[claude_export.ProfileRun], settings: dict, input_dir: Path
+) -> None:
+    """取得の計画を表示する（手元で確かめるための表示なので、UUID とパスをそのまま出す）。"""
+    configured = settings["chrome_path"]
+    chrome = claude_export.find_chrome(configured)
+    if chrome is not None:
+        print(f"Chrome: {chrome}")
+    elif configured:
+        print(f"Chrome: {configured} が見つかりません（claude_export.chrome_path を確認してください）")
+    else:
+        print("Chrome: 見つかりません。claude_export.chrome_path を設定してください")
+    print(f"staging: {claude_export.expand_setting_path(settings['staging_dir'])}")
+    profiles_dir = claude_export.expand_setting_path(settings["profiles_dir"])
+    width = max(len(target.dir) for run in runs for target in run.targets)
+    for run in runs:
+        profile_dir = claude_export.profile_path(profiles_dir, run.profile)
+        state = "" if profile_dir.is_dir() else f"（未作成。--setup {run.profile} が必要）"
+        print(
+            f"profile {run.profile}: {_CLAUDE_MODE_TEXT[run.mode]}（{run.month}）"
+            f"  プロファイル {profile_dir}{state}"
+        )
+        for target in run.targets:
+            dest = claude_export.target_dir(input_dir, target)
+            dirs = [claude_export.KIND_DIRS[kind] for kind in target.kinds]
+            shown = dirs[0] if len(dirs) == 1 else "{" + ",".join(dirs) + "}"
+            note = "" if dest.is_dir() else "  組織ディレクトリがありません（init-org で作成）"
+            print(
+                f"  {target.dir.ljust(width)}  {target.org_id}  {', '.join(target.kinds)}"
+                f"  → {dest}{os.sep}{shown}{os.sep}{note}"
+            )
 
 
 def _check_text_sources(name: str) -> list[tuple[str, str]]:

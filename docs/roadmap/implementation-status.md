@@ -1,8 +1,10 @@
 # 実装ステータス
 
-- 最終更新: 2026-10-03
+- 最終更新: 2026-10-07
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: 未定。候補は Step 49（切替の観測。両workspaceの週次エクスポートが同じ日に
+- 次のタスク: Step 51（拡張機能と collect --source claude の結線）。Step 50 で config・計画・
+  検証・配置と`--dry-run`が入り、拡張機能とブラウザの起動・待機・終了の結線が残っている。
+  ほかの候補は Step 49（切替の観測。両workspaceの週次エクスポートが同じ日に
   揃ってから着手する）、V2判定の既定の有効化（2026-10 の分析で V1 と並走比較した後）、予定
   タスクの Track 5（Step 20〜24）と Step 39・admin/ の結線。v1.3.0（Track 9 の Phase 1 ＝
   Step 43〜48）はリリース済み（2026-10-03）で、入れ子レイアウトの組織は正式分析・速報・discuss・
@@ -107,11 +109,11 @@
 | 3 | シート変更履歴 | 1 | 0 | 0 | 3 | 0 |
 | 4 | V2判定 | 7 | 0 | 0 | 0 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
-| 6 | Browser-assisted取得 | 0 | 0 | 0 | 7 | 0 |
+| 6 | Browser-assisted取得 | 1 | 0 | 0 | 2 | 6 |
 | 7 | GitHub | 7 | 0 | 0 | 1 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
 | 9 | 複数workspace | 6 | 0 | 0 | 1 | 0 |
-| **合計** |  | **36** | **0** | **0** | **20** | **0** |
+| **合計** |  | **37** | **0** | **0** | **15** | **6** |
 
 ## 5. Step一覧
 
@@ -182,15 +184,17 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 
 ### Track 6: Browser-assisted取得
 
-| Step | タスク | ステータス | 完了日 |
-|---|---|---|---|
-| 25 | Download watcher基盤 | `未着手` |  |
-| 26 | Spend検出・配置 | `未着手` |  |
-| 27 | Members検出・配置 | `未着手` |  |
-| 28 | Code Analytics検出・配置 | `未着手` |  |
-| 29 | Collection manifest | `未着手` |  |
-| 30 | collect CLI | `未着手` |  |
-| 31 | Admin credit入力補助 | `未着手` |  |
+| Step | タスク | ステータス | 完了日 | 備考 |
+|---|---|---|---|---|
+| 25 | Download watcher基盤 | `見送り` |  | 方式変更。Step 50〜51 で代替 |
+| 26 | Spend検出・配置 | `見送り` |  | 方式変更。Step 50〜51 で代替 |
+| 27 | Members検出・配置 | `見送り` |  | 方式変更。Step 50〜51 で代替 |
+| 28 | Code Analytics検出・配置 | `見送り` |  | 方式変更。Step 50〜51 で代替 |
+| 29 | Collection manifest | `見送り` |  | 方式変更。Step 50〜51 で代替 |
+| 30 | collect CLI | `見送り` |  | 方式変更。Step 50〜51 で代替 |
+| 31 | Admin credit入力補助 | `未着手` |  |  |
+| 50 | claude.ai エクスポート取得の土台（config・計画・検証・配置・--dry-run） | `完了` | 2026-10-07 |  |
+| 51 | 拡張機能と collect --source claude の結線 | `未着手` |  |  |
 
 ### Track 7: GitHub
 
@@ -226,6 +230,44 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 49 | 切替の観測（Phase 2） | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-10-07 — Step 50: claude.ai エクスポート取得の土台
+
+- 方式を変更した。Track 6 の旧方式（利用者の通常ブラウザで人がエクスポートし、download
+  directory を監視して拾う）を Step 25〜30 ごと見送り、専用プロファイルの素の Google Chrome に
+  同梱の拡張機能を読み込み、CLI がトリガー URL で起動して staging の manifest を待つ方式にした
+  （設計書 §14）。Playwright・Chrome remote debugging（CDP）は、自動操作下では外部セキュリティ
+  検証が反復して管理画面へ安定して到達できず、ダウンロード時にブラウザが異常終了することも
+  あったため使わない。自動操作の無い Chrome と拡張機能の組み合わせなら、停止状態から複数組織・
+  前月の 3 種まで無操作で取得できることを事前の実機検証で確かめてから Step を切った
+- config: トップレベルの`claude_export`（`chrome_path`・`profiles_dir`・`staging_dir`・
+  `timeout_minutes`）と、組織直下・workspace ごとの`claude_export`（`profile`・`org_id`・`kinds`）を
+  足した。既定は不活性で、`org_id`を書いた区画だけが対象になる。ロード時に、UUID の形式・
+  プロファイル名（ディレクトリ名として使える字句）・`kinds`・`profile`だけの区画・`workspaces`を
+  持つ組織の直下の区画・同じ`org_id`の重複（大文字小文字を区別しない）・未知のキーを止める。
+  組織・workspace の雛形は入れ子の辞書とリストを持つので、エントリごとに複製して共有しない
+  ようにした
+- `claude_export.py`（新規・層15。import は`ingest`だけ）: 対象の列挙・当月／前月のモードの決定・
+  プロファイルごとの計画・拡張機能へ渡す実行内容とトリガー URL・manifest の読み取りと計画との
+  突き合わせ（パスは計画の側から組む）・検証（中身・種別ごとの必須列のヘッダ・ファイル名の
+  期間。Claude Code analytics は LoC の列も要求して支出レポートとの取り違えを止める）・配置
+  （元のファイル名のまま。組織ディレクトリが無ければ作らずに止める）・Preferences の更新（自動
+  ダウンロードの許可・確認の抑止・ダウンロード先だけ。冪等で、変更時は元の内容を`.bak`に残す。
+  Preferences の無いプロファイルには作らずに止める）・Chrome の場所・起動コマンド・プロセスの
+  列挙と終了コマンドの組み立てを純粋関数にした。プロセスを実際に起動・列挙・終了させる薄い
+  ラッパはテストの対象外
+- CLI: `collect --source claude --dry-run`で計画（プロファイルごとのモードと月、対象・UUID・
+  種別・配置先、未作成のプロファイルと組織ディレクトリ）を表示する。`--org`を複数指定可にし、
+  `--month`とともに必須を外した（github は従来どおり`--org`1つと`--month`が必須で、欠ければ終了
+  コード 2）。`--profile`・`--dry-run`は claude 専用。`--dry-run`の無い`--source claude`は Step 51 で
+  結線するまで引数の段階で止める
+- OS 依存の箇所: Chrome の場所（macOS は /Applications、Windows は ProgramFiles・
+  ProgramFiles(x86)・LOCALAPPDATA、それ以外は PATH 上の google-chrome 等）、起動（Windows は
+  切り離したプロセスグループ、それ以外は新しいセッション）、プロセスの列挙（ps と PowerShell の
+  Get-CimInstance）と終了（SIGTERM / SIGKILL と taskkill）。解析と組み立ては 3 OS 分をどの OS の
+  上でもテストする。実機確認は Step 51 で行う
+- golden は不変（出力を変える変更は無い）。利用者向け docs は Step 51 で書く
+- テスト: 2492 passed（+153件）、ruff 緑、`check-text --diff`は0件
 
 ### 2026-10-03 — Step 48: 速報・doctorの人の検査・docs
 
