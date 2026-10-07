@@ -110,8 +110,9 @@ decision_v2:
 # （組織ごとの opt-in。書かない組織は取得の対象にならない）。単一スペースの組織は組織の
 # 直下、複数スペースの組織は workspace ごとに書く（workspaces を持つ組織の直下には書けない）。
 #   profile  ブラウザのプロファイル名（claude_export.profiles_dir 配下のディレクトリ名。
-#            英数字と . _ -。--setup / --login に渡す名前と揃える）
-#   org_id   claude.ai の組織 UUID。空のままなら不活性（そのときは profile・kinds も書かない）
+#            英数字と . _ -。--setup / --finish-setup / --login / --list-orgs に渡す名前と揃える）
+#   org_id   claude.ai の組織 UUID（--list-orgs で調べる）。空のままなら不活性（そのときは
+#            profile・kinds も書かない）
 #   kinds    取得する種別（members / spend / code。省略時は3種すべて）
 # 同じ org_id を2か所に書くことはできない。
 #   organizations:
@@ -135,9 +136,10 @@ organizations: {}
 
 # claude.ai からの CSV 取得（collect --source claude）。ブラウザは専用プロファイルの
 # Google Chrome で、既定は不活性（organizations.<組織名>.claude_export を書いた組織だけが
-# 対象）。パスの `~` はホームディレクトリに展開する。
+# 対象）。パスの `~` はホームディレクトリに展開する。profiles_dir・staging_dir の相対パスの
+# 基準は paths と同じくそれを書いた設定ファイルの置き場所で、chrome_path は絶対パスで書く。
 claude_export:
-  chrome_path: ""                           # 空文字 = OS ごとの既定の場所を自動検出。別の場所なら実行ファイルのパス
+  chrome_path: ""                           # 空文字 = OS ごとの既定の場所を自動検出。別の場所なら実行ファイルの絶対パス
   profiles_dir: ~/.seat-analyzer/profiles   # 専用プロファイルの置き場（配下の <profile> ディレクトリが 1 アカウント）
   staging_dir: ~/.seat-analyzer/exports     # ブラウザがダウンロードする一時置き場（検証後に input/ へコピーする）
   timeout_minutes: 15                       # manifest を待つ上限

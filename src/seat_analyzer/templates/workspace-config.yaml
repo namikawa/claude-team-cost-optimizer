@@ -33,6 +33,25 @@
 # decision:
 #   hysteresis_months: 3
 
+# claude.ai からの CSV 取得（collect --source claude）。使う場合だけ書く
+#   profiles_dir / staging_dir: 専用プロファイルとダウンロードの一時置き場。既定から
+#     変えるときだけ書く（相対パスはこのファイルの置き場所が基準。`~` も書ける）
+#   chrome_path: Chrome が既定の場所に無いときだけ、実行ファイルの絶対パスを書く
+#   organizations.<組織名>.claude_export: 取得する組織。複数スペースの組織は
+#     organizations.<組織名>.workspaces.<workspace名>.claude_export に書く。org_id は
+#     collect --source claude --list-orgs <profile> で調べる。organizations は他の設定
+#     （github_org・workspaces）と同じ1箇所にまとめて書く
+# claude_export:
+#   profiles_dir: ~/.seat-analyzer/profiles
+#   staging_dir: ~/.seat-analyzer/exports
+#   chrome_path: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+# organizations:
+#   <組織名>:
+#     claude_export:
+#       profile: corp
+#       org_id: 00000000-0000-4000-8000-000000000001
+#       kinds: [members, spend, code]
+
 # この組織で使わせない product。既定は空で、組織のポリシーに応じてここに書く
 # （リストは丸ごと置き換わるので、必要な product 名をすべて並べる。既定の primary /
 # supplementary に載っている product 名もそのまま書ける）

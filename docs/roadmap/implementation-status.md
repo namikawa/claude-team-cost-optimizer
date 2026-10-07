@@ -1,12 +1,12 @@
 # 実装ステータス
 
-- 最終更新: 2026-10-07
+- 最終更新: 2026-10-08
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
-- 次のタスク: Step 51（拡張機能と collect --source claude の結線）。Step 50 で config・計画・
-  検証・配置と`--dry-run`が入り、拡張機能とブラウザの起動・待機・終了の結線が残っている。
-  ほかの候補は Step 49（切替の観測。両workspaceの週次エクスポートが同じ日に
+- 次のタスク: 候補は Step 49（切替の観測。両workspaceの週次エクスポートが同じ日に
   揃ってから着手する）、V2判定の既定の有効化（2026-10 の分析で V1 と並走比較した後）、予定
-  タスクの Track 5（Step 20〜24）と Step 39・admin/ の結線。v1.3.0（Track 9 の Phase 1 ＝
+  タスクの Track 5（Step 20〜24）と Step 39・admin/ の結線。Track 6 の残りは Step 31 と
+  Step 52（定期実行の前提になるセッション期限の確認）。Step 50〜51 で claude.ai からの CSV
+  取得が通った。v1.3.0（Track 9 の Phase 1 ＝
   Step 43〜48）はリリース済み（2026-10-03）で、入れ子レイアウトの組織は正式分析・速報・discuss・
   collect・doctor まで通る。同一の組織が複数の Team スペースを運用し、同じ人が各スペースに
   1アカウントずつ持って使い分ける運用を、組織1セットのレポートで集計・分析できる。
@@ -109,11 +109,11 @@
 | 3 | シート変更履歴 | 1 | 0 | 0 | 3 | 0 |
 | 4 | V2判定 | 7 | 0 | 0 | 0 | 0 |
 | 5 | 変更後評価 | 0 | 0 | 0 | 5 | 0 |
-| 6 | Browser-assisted取得 | 1 | 0 | 0 | 2 | 6 |
+| 6 | Browser-assisted取得 | 2 | 0 | 0 | 2 | 6 |
 | 7 | GitHub | 7 | 0 | 0 | 1 | 0 |
 | 8 | Billingと表示 | 0 | 0 | 0 | 3 | 0 |
 | 9 | 複数workspace | 6 | 0 | 0 | 1 | 0 |
-| **合計** |  | **37** | **0** | **0** | **15** | **6** |
+| **合計** |  | **38** | **0** | **0** | **15** | **6** |
 
 ## 5. Step一覧
 
@@ -194,7 +194,8 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 30 | collect CLI | `見送り` |  | 方式変更。Step 50〜51 で代替 |
 | 31 | Admin credit入力補助 | `未着手` |  |  |
 | 50 | claude.ai エクスポート取得の土台（config・計画・検証・配置・--dry-run） | `完了` | 2026-10-07 |  |
-| 51 | 拡張機能と collect --source claude の結線 | `未着手` |  |  |
+| 51 | 拡張機能と collect --source claude の結線 | `完了` | 2026-10-08 |  |
+| 52 | ログインセッションの期限の確認 | `未着手` |  | 定期実行の前提 |
 
 ### Track 7: GitHub
 
@@ -230,6 +231,58 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 49 | 切替の観測（Phase 2） | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-10-08 — Step 51: 拡張機能と collect --source claude の結線
+
+- 拡張機能`src/seat_analyzer/browser_extension/`（MV3。manifest.json・background.js・trigger.js・
+  run.html・run.js）を同梱した。事前の実機検証で動いた拡張機能を土台に、実行内容（組織ごとの
+  kinds）・staging（Chrome の既定のダウンロード先＝staging の`<run_id>/`以下）・manifest の形を
+  Step 50 の読み取りに合わせた。manifest の`key`に公開鍵を入れて ID を固定する
+  （`claude_export.EXTENSION_ID`。秘密鍵は置かない）。権限は cookies・downloads・tabs・storage・
+  scripting・webRequest と claude.ai の host だけで、claude.ai 上で押すのはエクスポート系の
+  ボタンと、支出レポートのダイアログの期間の選択・ダウンロードだけ
+- 拡張機能の流れ: トリガー URL を 2 経路（document_start のコンテンツスクリプトとタブの URL
+  更新）で受けて実行ページへ遷移し、組織ごとに Cookie で切り替えてメンバー一覧のページで切替を
+  確かめる（組織の API の直近の呼び出しが対象の UUID に揃うまで最大 15 秒。揃わなければその
+  組織を丸ごと飛ばす）。種別ごとに独立してエクスポートし、支出レポートは期間の開始が 1 日で
+  あることを確かめてからダウンロード、Claude Code はダウンロードが始まらなければ最大 3 回
+  押し直す。ログイン・外部セキュリティ検証の画面では実行ページに「要操作」を出して最大 10 分
+  待つ。各手順の後に progress.json、最後に manifest.json を書く。組織一覧（`action: "list-orgs"`）は
+  `/api/organizations`を読んで orgs.json を書く。同じ run_id は 2 度実行しない（タブの
+  再読み込みや復元で取得をやり直さない）
+- CLI: `collect --source claude`の実行を結線した。プロファイルごとに順に、Preferences の確認
+  （ダウンロード先が staging。`preferences_ready`）→ run.json → Chrome の起動 → manifest の待機
+  （2 秒間隔。progress.json に増えた結果を表示し、進捗が 60 秒止まったらブラウザの要操作の
+  確認を促す）→ run_id の照合・検証・配置 → Chrome の終了（見つからなければ警告だけ）。
+  時間切れでは Chrome を残して`--import <run_id>`を案内する。全 (組織, 種別) を配置できたとき
+  だけ終了コード 0。`--keep-browser`・`--timeout`・`--import`（run.json から計画を組み直し、
+  その実行の対象月で検証する）・`--setup`（プロファイルを作って Chrome をログイン画面で起動し、
+  手順を表示して待たずに終わる）・`--finish-setup`（そのプロファイルの Chrome を終了させ、
+  拡張機能が同梱の場所から読み込まれていることを Secure Preferences・Preferences で確かめて
+  から Preferences を書く。Chrome が 30 秒で終了しきらなければ書かずに止める）・`--login`・
+  `--list-orgs`を足した。`--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--import`は
+  単独で使い（`--list-orgs`だけは`--timeout`・`--keep-browser`を併用できる）、claude 専用の
+  オプションを github に付けると終了コード 2
+- config: `claude_export.profiles_dir`・`staging_dir`の相対パスを`paths`と同じく設定ファイルの
+  置き場所を基準に解決する（`_rebase_paths`）。`chrome_path`は絶対パスか空文字に限る（相対パスは
+  ロード時にエラー）
+- OS 依存の箇所: Windows のプロセスの列挙で PowerShell の出力を UTF-8 にした（ASCII 以外を含む
+  プロファイルのパスを照合するため）。Preferences のダウンロード先の比較は`os.path.normcase`
+  （Windows は大文字小文字を区別しない）。そのほかは Step 50 の関数（Chrome の場所・起動・列挙・
+  終了）を使う。拡張機能は OS に依存しない。実機確認は macOS だけで、Windows・Linux は未検証
+- テスト: 2651 passed・1 skipped（+144件）。拡張機能は`node --check`（node が無ければ skip）・manifest の
+  検査・key から導いた ID・通信先が claude.ai だけであること・コマンドとの取り決め（トリガー・
+  staging のファイル名・種別のディレクトリ）を見る。CLI は起動・列挙・終了を差し替えた偽の
+  拡張機能で E2E を通す（全件成功・一部失敗・検証で落ちる CSV・run_id の不一致・時間切れ・
+  進捗が続く間の案内の抑制・`--keep-browser`・未設定のプロファイル・`--import`・`--setup`・
+  `--finish-setup`・`--login`・`--list-orgs`・オプションの排他）。ruff 緑、`check-text --diff`は
+  0 件、wheel に`browser_extension/`の 5 ファイルが入ることを確かめた。golden は不変
+- 実機（macOS）で受け入れ確認を行った。2 つのプロファイルで`--setup`（拡張機能の読み込み直しを
+  含む）→`--list-orgs`→ 当月モード → 前月モードを実行し、全スペース × 3 種 = 24 件をすべて
+  配置した。所要はプロファイルごとに 40〜65 秒で、ブラウザの操作は不要だった（ログインは
+  残っていた）。Preferences に書いた download.default_directory は Chrome の起動と終了を挟んでも
+  保たれた。実機で分かった点として、ウィンドウを閉じても Chrome 本体が残るため`--setup`を
+  起動と`--finish-setup`に分けた
 
 ### 2026-10-07 — Step 50: claude.ai エクスポート取得の土台
 

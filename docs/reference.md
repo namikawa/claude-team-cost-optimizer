@@ -478,6 +478,146 @@ repository 名の大文字小文字は区別せず同じ1つとして扱う。
 足したファイルをそのまま集計へ渡さないため）。エラーが出た場合はそのファイルを別の場所へ
 移してから収集し直す。
 
+## claude.ai からの CSV 取得（config.yaml > claude_export）
+
+`seat-analyzer collect --source claude` の設定と、取得したファイルの扱い。使い方は
+[usage.md](./usage.md) の「claude.ai からの CSV 取得」、初回の設定は [setup.md](./setup.md) の
+「claude.ai からの CSV 取得を設定する」。既定は不活性で、組織（または workspace）の区画に
+`org_id` を書いたものだけが取得の対象になる。
+
+### 共通の設定（トップレベルの claude_export）
+
+| キー | 既定 | 内容 |
+|---|---|---|
+| `chrome_path` | `""` | Chrome の実行ファイル。空文字なら OS ごとの既定の場所を探す。書くときは絶対パス（`~` 可） |
+| `profiles_dir` | `~/.seat-analyzer/profiles` | 専用プロファイルの置き場。配下の `<profile>` ディレクトリが 1 アカウント |
+| `staging_dir` | `~/.seat-analyzer/exports` | Chrome のダウンロード先（取得の一時置き場）。検証の後に `input/` へコピーする |
+| `timeout_minutes` | `15` | 取得の完了を待つ上限（分）。`--timeout` を付けた実行ではそちらが優先 |
+
+`profiles_dir`・`staging_dir` の相対パスは、`paths` と同じくそれを書いた設定ファイルの
+置き場所が基準になる（`~` はホームディレクトリに展開し、絶対パスはそのまま使う）。
+`chrome_path` は設定ファイルの置き場所で解決しないので、絶対パスか空文字で書く（相対パスは
+設定の読み込みでエラーになる）。空文字のときに探す場所は、macOS が
+`/Applications/Google Chrome.app`、Windows が Program Files・Program Files (x86)・
+LocalAppData の下の `Google\Chrome\Application\chrome.exe`、それ以外が PATH 上の
+`google-chrome`・`google-chrome-stable`・`chromium`・`chromium-browser`。
+
+### 組織・workspace の区画
+
+単一スペースの組織は `organizations.<組織名>.claude_export`、複数スペースの組織は
+`organizations.<組織名>.workspaces.<workspace名>.claude_export` に書く。
+
+| キー | 内容 |
+|---|---|
+| `profile` | 使うプロファイル名（英数字と `.` `_` `-`。`.` と `..` は使えない）。`--setup`・`--finish-setup`・`--login`・`--list-orgs` に渡す名前と揃える |
+| `org_id` | claude.ai の組織 UUID（8-4-4-4-12 桁の16進。`--list-orgs` で調べる） |
+| `kinds` | 取得する種別（`members` / `spend` / `code` から重複なく 1 つ以上。省略時は 3 種すべて） |
+
+```yaml
+organizations:
+  example:
+    claude_export:
+      profile: corp
+      org_id: 00000000-0000-4000-8000-000000000001
+      kinds: [members, spend, code]
+  example2:
+    workspaces:
+      main:
+        primary: true
+        claude_export:
+          profile: corp
+          org_id: 00000000-0000-4000-8000-000000000002
+      second:
+        claude_export:
+          profile: corp
+          org_id: 00000000-0000-4000-8000-000000000003
+```
+
+設定の読み込みで次をエラーにする。
+
+- `org_id` が UUID の形でない、`profile` が名前の規則に合わない
+- `kinds` に 3 種以外の値や重複がある、空のリストである（`org_id` を書かない区画でも検査する）
+- `org_id` を書かずに `profile` や既定と違う `kinds` を書いた区画（有効にしたつもりの設定を
+  黙って不活性にしない）
+- `workspaces` を持つ組織の直下の区画（どの workspace へ置くかが決まらない）
+- 同じ `org_id` を 2 か所に書いた（大文字小文字の違いも同じ UUID とみなす）
+- 未知のキー
+
+取得の計画を作る時点で、大文字小文字や文字の合成の違いだけの組織名（同じ組織の workspace
+名どうしも）を止める。それを区別しないファイルシステムでは同じディレクトリになるため。
+
+### コマンドのオプション（collect --source claude）
+
+| オプション | 内容 |
+|---|---|
+| `--month YYYY-MM` | 当月か前月（それ以外はエラー）。省略時は当月 |
+| `--org <組織名>` | 取得する組織（複数指定可）。省略時は設定した全組織 |
+| `--profile <名前>` | 使うプロファイルで対象を絞る |
+| `--dry-run` | 計画を表示して終了する（ブラウザを起動しない） |
+| `--keep-browser` | 取得の後も Chrome を終了させない |
+| `--timeout <分>` | 取得を待つ上限 |
+| `--import <run_id>` | staging に残った実行の検証と配置だけをやり直す（ブラウザを起動しない） |
+| `--setup <名前>` | 専用プロファイルを作って Chrome をログイン画面で起動し、人が行う手順（ログイン・拡張機能の読み込み）を表示して終わる（待たない） |
+| `--finish-setup <名前>` | `--setup` の後、人の操作が終わってから実行する。そのプロファイルの Chrome を終了させ、同梱の拡張機能が表示した場所から読み込まれていることを確かめてからプロファイルの設定を書く |
+| `--login <名前>` | プロファイルの Chrome で claude.ai のログイン画面を開く（終了は待たない） |
+| `--list-orgs <名前>` | アカウントが参加している組織の uuid・name・rate_limit_tier・plan を表示する |
+
+`--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--import` は単独で使う（`--list-orgs` だけは
+`--timeout`・`--keep-browser` を併用できる）。これらと `--profile`・`--dry-run`・
+`--keep-browser`・`--timeout` は `--source github` では使えない。組み合わせの誤りは終了コード 2。
+
+終了コードは、対象のすべての (組織, 種別) を配置できたときだけ 0。1 件でも失敗・時間切れが
+あれば 1。
+
+### staging の配置
+
+1 回の取得（プロファイル 1 つ）ごとに `<staging_dir>/<run_id>/` を作る。`run_id` は
+`<profile>-<current|previous>-<YYYYMMDD-HHMMSS>`（組織一覧は `<profile>-list-orgs-<...>`。
+ローカル時刻）。
+
+```text
+<run_id>/run.json                           コマンドが起動の前に書く、その実行の計画（--import が使う）
+<run_id>/progress.json                      拡張機能が各手順の後に上書きする途中経過
+<run_id>/manifest.json                      拡張機能が最後に書く結果（コマンドはこれを待つ）
+<run_id>/<dir>/<kind_dir>/<元のファイル名>  ダウンロードした CSV
+<run_id>/orgs.json                          --list-orgs のときの組織一覧
+```
+
+`dir` は `<組織名>` か `<組織名>/<workspace名>`、`kind_dir` は `members`・`spend`・
+`code-analytics`。manifest の結果は計画の (配置先, 種別) と突き合わせるだけで、配置先の
+パスは常に設定から組む（計画に無い結果は捨て、計画にあって結果の無い組み合わせは失敗に
+する）。`--import` は run.json から計画を組み直し、その実行の対象月で検証する。run.json の
+対象が設定に無いか、UUID が設定と違えば配置しない。
+
+専用プロファイルの設定（`Default/Preferences`）に `--finish-setup` が書くのは、claude.ai からの
+自動ダウンロードの許可・ダウンロードの確認を出さないこと・ダウンロード先（staging）だけで、
+他の項目は保つ（書き換えるときは元の内容を `Preferences.bak` に残す）。書く前にその
+プロファイルの Chrome を終了させ、動いている間は書かない。拡張機能の読み込みは
+`Default/Secure Preferences` と `Default/Preferences` の拡張機能の設定で確かめ、同梱の場所と
+違う場所から読み込まれていれば書かずに止める。取得の前にはダウンロード先が staging を指して
+いることを確かめ、違えば `--setup` と `--finish-setup` を案内して起動しない。
+
+### 配置前の検証
+
+ダウンロードしたファイルごとに次を確かめ、最初に外れた理由を表示して配置しない（ファイルは
+staging に残る）。
+
+1. ファイルがあり、空でない
+2. 先頭行（64 KiB まで）のヘッダに、種別ごとの必須の列がある。照合は `columns.<種別>` の
+   エイリアスと、分析の読み込みと同じ正規化で行う
+   - メンバー一覧: email・シート種別
+   - 支出レポート: email・model・prompt_tokens・completion_tokens
+   - Claude Code analytics: email と月間の LoC（支出レポートとの取り違えを止める）
+3. ファイル名の期間が対象月に合う
+   - 支出レポート: 期間付きで、開始が対象月の 1 日、終了が対象月の末日以前
+   - Claude Code analytics: 期間付きで、開始が対象月の 1 日（終了日は部分月でも月末日に
+     なるので見ない）
+   - メンバー一覧: スナップショットの日付が対象月の 1 日以降（前月モードでは取得した日＝
+     翌月の日付になる）
+
+通ったファイルは元のファイル名のまま入力の種別ディレクトリへコピーする（同名は上書き）。
+組織ディレクトリ（入れ子レイアウトなら workspace のディレクトリ）が無ければ作らずに配置しない。
+
 ## モデル単価（config.yaml > model_prices）
 
 API 換算需要は、モデル名の部分一致で引いた単価（USD per 1M tokens）で計算する。単価表は

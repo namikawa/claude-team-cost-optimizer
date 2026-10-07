@@ -7,6 +7,7 @@
 ワークスペースの雛形を作る `init` / `init-org` も対象にする。
 """
 
+import json
 import os
 import re
 import shutil
@@ -160,8 +161,9 @@ def test_comment_only_override_is_a_noop(tmp_path):
 def test_full_config_as_override_is_accepted(tmp_path):
     """既定と同内容の完全版を上書きに指定しても通る（従来の使い方の後方互換）。
 
-    入出力先だけは、上書きファイルに書かれた値としてその置き場所を基準に解決される
-    （相対パスの基準は下の「入出力ディレクトリ」の節を参照）。
+    入出力先と claude_export のディレクトリだけは、上書きファイルに書かれた値として
+    その置き場所を基準に解決される（相対パスの基準は下の「入出力ディレクトリ」の節を
+    参照。`~` は展開される）。
     """
     path = _write(tmp_path / "full.yaml", PACKAGE_CONFIG_PATH.read_text(encoding="utf-8"))
     cfg, default = load_config(path), load_config(PACKAGE_CONFIG_PATH)
@@ -169,10 +171,18 @@ def test_full_config_as_override_is_accepted(tmp_path):
     assert _without_paths(cfg) == _without_paths(default)
     assert cfg["paths"] == {
         "input": str(tmp_path / "input"), "output": str(tmp_path / "reports")}
+    assert cfg["claude_export"]["profiles_dir"] == str(Path.home() / ".seat-analyzer" / "profiles")
+    assert cfg["claude_export"]["staging_dir"] == str(Path.home() / ".seat-analyzer" / "exports")
 
 
 def _without_paths(cfg: dict) -> dict:
-    return {key: value for key, value in cfg.items() if key != "paths"}
+    """設定から、置き場所を基準に解決されるディレクトリの値を除いたもの。"""
+    rest = {key: value for key, value in cfg.items() if key != "paths"}
+    rest["claude_export"] = {
+        key: value for key, value in cfg["claude_export"].items()
+        if key not in ("profiles_dir", "staging_dir")
+    }
+    return rest
 
 
 # ------------------------------------------------------- 誤記を黙って無視しない
@@ -1705,12 +1715,61 @@ def test_claude_export_settings_are_validated(tmp_path, text, fragment):
 
 
 def test_claude_export_settings_can_be_overridden(tmp_path):
+    chrome = tmp_path / "opt" / "chrome"
     path = _override(tmp_path, (
         "claude_export:\n"
-        "  chrome_path: /opt/chrome/chrome\n"
+        f"  chrome_path: {json.dumps(str(chrome))}\n"
         "  timeout_minutes: 30\n"
     ))
     section = load_config(path)["claude_export"]
-    assert section["chrome_path"] == "/opt/chrome/chrome"
+    assert section["chrome_path"] == str(chrome)
     assert section["timeout_minutes"] == 30
     assert section["staging_dir"] == "~/.seat-analyzer/exports"
+
+
+def test_claude_export_dirs_in_the_override_are_resolved_from_its_location(tmp_path):
+    """profiles_dir・staging_dir の相対パスは paths と同じく設定ファイルの置き場所が基準。"""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    path = _write(ws / "config.yaml", (
+        "claude_export:\n"
+        "  profiles_dir: browser/profiles\n"
+        "  staging_dir: ../exports\n"
+    ))
+    section = load_config(path)["claude_export"]
+    assert section["profiles_dir"] == str(ws / "browser" / "profiles")
+    assert Path(section["staging_dir"]) == ws / ".." / "exports"
+    assert section["chrome_path"] == ""
+
+
+def test_claude_export_dirs_keep_absolute_paths_and_expand_home(tmp_path):
+    target = tmp_path / "elsewhere" / "exports"
+    path = _override(tmp_path, (
+        "claude_export:\n"
+        "  profiles_dir: ~/seat-analyzer-profiles\n"
+        f'  staging_dir: "{target.as_posix()}"\n'
+    ))
+    section = load_config(path)["claude_export"]
+    assert section["profiles_dir"] == str(Path.home() / "seat-analyzer-profiles")
+    assert section["staging_dir"] == str(target)
+
+
+def test_claude_export_default_dirs_are_left_for_expansion_at_use(tmp_path, monkeypatch):
+    """既定の `~` はパッケージの置き場所で解決せず、そのまま残す（使う時点で展開する）。"""
+    monkeypatch.chdir(tmp_path)
+    section = load_config()["claude_export"]
+    assert section["profiles_dir"] == "~/.seat-analyzer/profiles"
+    assert section["staging_dir"] == "~/.seat-analyzer/exports"
+
+
+@pytest.mark.parametrize("value", ["chrome/chrome", "chrome.exe"])
+def test_claude_export_chrome_path_must_be_absolute(tmp_path, value):
+    """Chrome の実行ファイルは設定ファイルの置き場所で解決しないので、絶対パスで書く。"""
+    path = _override(tmp_path, f"claude_export:\n  chrome_path: {value}\n")
+    with pytest.raises(ValueError, match="claude_export.chrome_path は Chrome の実行ファイルの絶対パス"):
+        load_config(path)
+
+
+def test_claude_export_chrome_path_accepts_a_home_relative_path(tmp_path):
+    path = _override(tmp_path, "claude_export:\n  chrome_path: ~/bin/chrome\n")
+    assert load_config(path)["claude_export"]["chrome_path"] == "~/bin/chrome"

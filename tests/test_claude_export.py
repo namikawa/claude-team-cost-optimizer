@@ -8,6 +8,7 @@
 
 import datetime as dt
 import json
+import os
 import re
 import urllib.parse
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -23,28 +24,47 @@ from seat_analyzer.claude_export import (
     TRIGGER_PREFIX,
     ExportRecord,
     ExportTarget,
+    OrgEntry,
     ProfileRun,
     chrome_pids,
     chrome_time_us,
+    extension_install_state,
     find_chrome,
     gated_targets,
+    is_profile_name,
+    is_run_id,
     launch_command,
+    list_orgs_run_id,
+    list_orgs_spec,
     manifest_path,
     match_results,
     new_run_id,
+    orgs_path,
     place_export,
     plan_runs,
+    preferences_ready,
     process_listing_command,
     profile_preferences_path,
+    progress_path,
     read_manifest,
+    read_orgs,
+    read_preferences,
+    read_run_record,
     resolve_mode,
+    restore_run,
+    run_dir,
+    run_record,
+    run_record_path,
     run_spec,
+    secure_preferences_path,
     staged_file,
     terminate_commands,
     trigger_url,
     update_preferences,
+    validate_profile_name,
     verify_export,
     write_preferences,
+    write_run_record,
 )
 from seat_analyzer.config import PACKAGE_CONFIG_PATH, load_config
 
@@ -443,17 +463,168 @@ def test_match_results_follows_the_plan():
 
 def test_staging_paths_follow_the_plan(tmp_path):
     staging = tmp_path / "exports"
+    assert run_dir(staging, "run-1") == staging / "run-1"
     assert manifest_path(staging, "run-1") == staging / "run-1" / "manifest.json"
+    assert progress_path(staging, "run-1") == staging / "run-1" / "progress.json"
+    assert orgs_path(staging, "run-1") == staging / "run-1" / "orgs.json"
+    assert run_record_path(staging, "run-1") == staging / "run-1" / "run.json"
     assert staged_file(staging, "run-1", _target("example"), "code", "a.csv") \
         == staging / "run-1" / "example" / "code-analytics" / "a.csv"
     assert staged_file(staging, "run-1", _target("example2", "main"), "members", "b.csv") \
         == staging / "run-1" / "example2" / "main" / "members" / "b.csv"
 
 
+@pytest.mark.parametrize("value,ok", [
+    ("corp-current-20261007-110009", True),
+    ("corp-list-orgs-20261007-110009", True),
+    ("../corp", False),
+    ("a/b", False),
+    ("a\\b", False),
+    ("..", False),
+    ("", False),
+    (None, False),
+])
+def test_is_run_id(value, ok):
+    """--import に渡された名前で staging の外を指させない。"""
+    assert is_run_id(value) is ok
+
+
+# ------------------------------------------------------------------ run.json と --import
+
+
+CREATED = dt.datetime(2026, 10, 7, 11, 0, 9, tzinfo=dt.timezone(dt.timedelta(hours=9)))
+RUN_ID = "corp-previous-20261007-110009"
+
+
+def test_run_record_round_trips(tmp_path):
+    record = run_record(RUN, RUN_ID, CREATED)
+    assert record == {
+        "run_id": RUN_ID,
+        "profile": "corp",
+        "mode": "previous",
+        "month": "2026-09",
+        "created_at": "2026-10-07T11:00:09+09:00",
+        "spec": run_spec(RUN, RUN_ID),
+    }
+    path = tmp_path / "run.json"
+    write_run_record(path, record)
+    assert b"\r" not in path.read_bytes()
+    assert read_run_record(path) == record
+    assert restore_run(read_run_record(path), RUN.targets) == RUN
+
+
+def test_restore_run_builds_paths_from_the_configured_targets():
+    """対象は設定の側から組む（run.json の名前をそのままパスにしない）。種別は spec のもの。"""
+    record = run_record(RUN, RUN_ID, CREATED)
+    record["spec"]["orgs"][0]["kinds"] = ["code", "members"]
+    record["spec"]["orgs"][1]["uuid"] = UUID2.upper()
+    configured = [
+        _target("example", profile="other", org_id=UUID1, kinds=("spend",)),
+        _target("example2", "main", org_id=UUID2),
+        _target("org-a", org_id=UUID4),
+    ]
+    run = restore_run(record, configured)
+    assert run == ProfileRun("corp", MODE_PREVIOUS, "2026-09", (
+        _target("example", org_id=UUID1, kinds=("members", "code")),
+        _target("example2", "main", org_id=UUID2, kinds=("members", "spend")),
+    ))
+
+
+def _broken_record(**changes) -> dict:
+    record = run_record(RUN, RUN_ID, CREATED)
+    for key, value in changes.items():
+        if key.startswith("org_"):
+            record["spec"]["orgs"][0][key[4:]] = value
+        else:
+            record[key] = value
+    return record
+
+
+@pytest.mark.parametrize("record,fragment", [
+    (_broken_record(profile="a/b"), "profile"),
+    (_broken_record(mode="later"), "mode"),
+    (_broken_record(month="2026-9"), "month"),
+    (_broken_record(spec=[]), "対象（orgs）がありません"),
+    (_broken_record(spec={"run_id": RUN_ID, "mode": "previous", "orgs": []}),
+     "対象（orgs）がありません"),
+    (_broken_record(run_id="corp-previous-20000101-000000"), "run_id・mode と一致しません"),
+    (_broken_record(org_kinds=[]), r"spec.orgs\[0\].kinds"),
+    (_broken_record(org_kinds=["members", "admin"]), r"spec.orgs\[0\].kinds"),
+    (_broken_record(org_dir=None), r"spec.orgs\[0\].dir が文字列ではありません"),
+    (_broken_record(org_dir="org-x"), "対象 org-x は claude_export の設定にありません"),
+    (_broken_record(org_uuid=UUID4), "対象 example の UUID が設定の org_id と違います"),
+])
+def test_restore_run_rejects_a_record_that_does_not_match(record, fragment):
+    with pytest.raises(ValueError, match=fragment):
+        restore_run(record, RUN.targets)
+
+
+def test_read_run_record_rejects_a_broken_file(tmp_path):
+    path = tmp_path / "run.json"
+    path.write_text("{", encoding="utf-8")
+    with pytest.raises(ValueError, match="JSON として読めません"):
+        read_run_record(path)
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="オブジェクトではありません"):
+        read_run_record(path)
+
+
+# ------------------------------------------------------------------ 組織一覧（--list-orgs）
+
+
+def test_list_orgs_run_id_and_spec():
+    run_id = list_orgs_run_id("corp", CREATED)
+    assert run_id == "corp-list-orgs-20261007-110009"
+    assert list_orgs_spec(run_id) == {"run_id": run_id, "action": "list-orgs"}
+
+
+def test_read_orgs(tmp_path):
+    path = tmp_path / "orgs.json"
+    path.write_text(json.dumps([
+        {"uuid": UUID1, "name": "Example Org", "rate_limit_tier": "tier_a", "plan": "Team"},
+        {"uuid": UUID2, "name": "Sample", "rate_limit_tier": None},
+    ]), encoding="utf-8")
+    assert read_orgs(path) == ([
+        OrgEntry(UUID1, "Example Org", "tier_a", "Team"),
+        OrgEntry(UUID2, "Sample", None, None),
+    ], None)
+
+
+def test_read_orgs_returns_the_error_the_extension_reported(tmp_path):
+    path = tmp_path / "orgs.json"
+    path.write_text('{"error": "HTTP 403"}', encoding="utf-8")
+    assert read_orgs(path) == ([], "HTTP 403")
+
+
+@pytest.mark.parametrize("text", ["[", '{"orgs": []}', '["x"]'])
+def test_read_orgs_rejects_other_shapes(tmp_path, text):
+    path = tmp_path / "orgs.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_orgs(path)
+
+
+# ------------------------------------------------------------------ プロファイル名
+
+
+@pytest.mark.parametrize("name,ok", [
+    ("corp", True), ("profile.v2", True), ("corp_main", True), ("Corp-1", True),
+    ("..", False), (".", False), ("a/b", False), ("a b", False), ("", False),
+    ("プロファイル", False), (None, False),
+])
+def test_is_profile_name(name, ok):
+    assert is_profile_name(name) is ok
+    if ok:
+        validate_profile_name(name)
+    else:
+        with pytest.raises(ValueError, match="は使えません"):
+            validate_profile_name(name)
+
+
 # ------------------------------------------------------------------ 検証
 
 
-SPEND_HEADER = "user_email,model,product,total_prompt_tokens,total_completion_tokens"
+SPEND_HEADER ="user_email,model,product,total_prompt_tokens,total_completion_tokens"
 MEMBERS_HEADER = "Email,Seat Tier,Status"
 CODE_HEADER = "User,Lines this month,PRs with CC"
 
@@ -807,6 +978,84 @@ def test_write_preferences_rejects_a_broken_file(tmp_path):
     assert path.read_bytes() == b"{broken"
 
 
+def test_preferences_ready_after_the_update(tmp_path):
+    """--setup が書いた Preferences は取得の前の検査に通る。"""
+    staging = tmp_path / "exports"
+    prefs: dict = {}
+    assert not preferences_ready(prefs, staging)
+    update_preferences(prefs, staging_dir=staging, now_chrome_us=NOW_US)
+    assert preferences_ready(prefs, staging)
+
+
+@pytest.mark.parametrize("prefs", [
+    {},
+    {"download": "x"},
+    {"download": {}},
+    {"download": {"default_directory": ""}},
+    {"download": {"default_directory": 1}},
+])
+def test_preferences_ready_without_a_download_directory(tmp_path, prefs):
+    assert not preferences_ready(prefs, tmp_path / "exports")
+
+
+def test_preferences_ready_compares_normalized_paths(tmp_path):
+    staging = tmp_path / "exports"
+    assert preferences_ready(
+        {"download": {"default_directory": str(staging) + os.sep}}, staging)
+    assert preferences_ready(
+        {"download": {"default_directory": str(tmp_path / "x" / ".." / "exports")}}, staging)
+    assert not preferences_ready(
+        {"download": {"default_directory": str(tmp_path / "exports2")}}, staging)
+
+
+def _extension_prefs(path) -> dict:
+    return {"extensions": {"settings": {claude_export.EXTENSION_ID: {"path": str(path)}}}}
+
+
+def test_secure_preferences_path(tmp_path):
+    assert secure_preferences_path(tmp_path, "corp") \
+        == tmp_path / "corp" / "Default" / "Secure Preferences"
+
+
+def test_extension_install_state(tmp_path):
+    expected = tmp_path / "pkg" / "browser_extension"
+    other = _extension_prefs(tmp_path / "old" / "extension")
+    assert extension_install_state([_extension_prefs(expected)], expected) == "ok"
+    # どちらのファイルにあってもよく、区切りの重なりや `.` は畳んで比べる
+    assert extension_install_state(
+        [{}, _extension_prefs(str(expected) + os.sep)], expected) == "ok"
+    assert extension_install_state(
+        [_extension_prefs(tmp_path / "x" / ".." / "pkg" / "browser_extension")], expected) == "ok"
+    # 同じ ID が別の場所から読み込まれている
+    assert extension_install_state([other], expected) == "other_path"
+    assert extension_install_state([other, _extension_prefs(expected)], expected) == "ok"
+
+
+@pytest.mark.parametrize("prefs", [
+    [],
+    [{}],
+    [{"extensions": "x"}],
+    [{"extensions": {"settings": []}}],
+    [{"extensions": {"settings": {"abcdefghijklmnopabcdefghijklmnop": {"path": "/x"}}}}],
+    [{"extensions": {"settings": {claude_export.EXTENSION_ID: {}}}}],
+    [{"extensions": {"settings": {claude_export.EXTENSION_ID: {"path": ""}}}}],
+    ["not a dict"],
+])
+def test_extension_install_state_missing(tmp_path, prefs):
+    assert extension_install_state(prefs, tmp_path / "browser_extension") == "missing"
+
+
+def test_read_preferences(tmp_path):
+    path = tmp_path / "Preferences"
+    with pytest.raises(FileNotFoundError):
+        read_preferences(path)
+    path.write_text('{"download": {}}', encoding="utf-8")
+    assert read_preferences(path) == {"download": {}}
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="オブジェクトではありません"):
+        read_preferences(path)
+
+
 # ------------------------------------------------------------------ Chrome の場所
 
 
@@ -913,10 +1162,12 @@ def test_launch_command(tmp_path):
 def test_process_listing_command():
     assert process_listing_command("darwin") == ["ps", "-axo", "pid=,command="]
     assert process_listing_command("linux") == ["ps", "-axo", "pid=,command="]
+    # 出力を UTF-8 にしてから列挙する（ASCII 以外を含むプロファイルのパスも照合できる）
     assert process_listing_command("win32") == [
         "powershell", "-NoProfile", "-Command",
         (
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine"
+            "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+            " Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine"
             " | ConvertTo-Csv -NoTypeInformation"
         ),
     ]

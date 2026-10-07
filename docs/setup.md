@@ -14,6 +14,7 @@ Claude Code を想定している。macOS / Windows / Linux の差異は、Claud
 - 必須なのは [uv](https://docs.astral.sh/uv/) のみ。Python（3.11 以上）は uv が用意するため、
   システムに Python が無くてもよい
 - 任意で Claude Code CLI。レポートの考察を自動執筆する機能にだけ使う。分析そのものには不要
+- 任意で Google Chrome。claude.ai からの CSV 取得（`collect --source claude`）にだけ使う
 
 ## 人が行うこと
 
@@ -355,6 +356,180 @@ seat-analyzer discuss --org <組織名> --month YYYY-MM --dry-run
 
 ---
 
+## claude.ai からの CSV 取得を設定する（任意）
+
+claude.ai の管理画面からダウンロードしている 3 種の CSV（メンバー一覧・支出レポート・
+Claude Code analytics）を、`seat-analyzer collect --source claude` で取得して `input/` へ
+置けるようにする。使わなければこの節は飛ばしてよい。手動でダウンロードして置く運用は
+そのまま使える。
+
+取得は、このツール専用の Chrome プロファイルに同梱の拡張機能を読み込み、その拡張機能が
+管理画面のエクスポートボタンを押す形で行う。ID・パスワードはツールに渡さない。ログインと
+外部セキュリティ検証の確認は人がブラウザで行う。claude.ai 上で押すのはエクスポート系の
+ボタンだけで、シートや設定を変える操作は持たない。普段使いの Chrome のプロファイルには
+触れない。
+
+### 前提
+
+- Google Chrome が入っていること
+- 取得する組織の管理画面を開けるアカウントでログインできること（支出レポートのエクスポートには
+  Owner / Primary Owner 権限が要る）
+- 実機での動作確認は macOS で行っている。Windows / Linux は設計上動く想定だが未検証
+
+### 手順
+
+各手順は「ターミナル（Claude Code）で実行するコマンド」と「人がブラウザで行う操作」に
+分けて書く。コマンドは Claude Code が代行できる。ブラウザの操作（ログイン・拡張機能の
+読み込み）は代行できないので、ユーザに依頼し、終わったと伝えられてから次のコマンドへ進む。
+コマンドはワークスペースのルートで実行する。
+
+1. プロファイル名を決める
+
+   ログインするアカウントごとに 1 つ、英数字と `.` `_` `-` からなる名前をユーザと決める
+   （例: `corp`）。1 つのアカウントで参加している複数の組織（スペース）を取得できる。
+   アカウントが分かれているときは名前も分ける。
+
+2. プロファイルを作る
+
+   ターミナル:
+
+   ```sh
+   seat-analyzer collect --source claude --setup <プロファイル名>
+   ```
+
+   専用プロファイルの Chrome が claude.ai のログイン画面で開き、人が行う手順を表示して
+   コマンドはすぐ終わる（Chrome は開いたまま）。
+
+   人がブラウザで行う操作:
+
+   1. claude.ai にログインする（メールに届くワンタイムコードを使う）
+   2. アドレスバーに `chrome://extensions` を入力して開き、右上の「デベロッパーモード」を
+      有効にして、「パッケージ化されていない拡張機能を読み込む」でコマンドが表示した
+      フォルダを選ぶ
+   3. 終わったことを伝える（Chrome は閉じなくてよい）
+
+   ターミナル（人の操作が終わってから）:
+
+   ```sh
+   seat-analyzer collect --source claude --finish-setup <プロファイル名>
+   ```
+
+   コマンドがそのプロファイルの Chrome を終了させ、拡張機能が表示したフォルダから
+   読み込まれていることを確かめてから、プロファイルの設定（claude.ai からの自動ダウンロードの
+   許可と、ダウンロード先）を書く。どちらのコマンドも、何度実行しても同じ設定になるだけで
+   プロファイルを壊さない。
+
+   検証: 「プロファイル <名前> の設定を書きました」（2 回目以降は「設定は済んでいます」）と
+   表示され、終了コード 0。
+
+3. 取得する組織の UUID を調べる
+
+   ターミナル:
+
+   ```sh
+   seat-analyzer collect --source claude --list-orgs <プロファイル名>
+   ```
+
+   Chrome が開き、アカウントが参加している組織の一覧（uuid・name・rate_limit_tier・plan）を
+   表示してから Chrome を終了させる。ログインを求める画面が出たら、人がブラウザで
+   ログインする（コマンドは待っている）。
+
+4. `config.yaml` に取得する組織を書く
+
+   取得する組織（スペース）と UUID の対応をユーザに確認してから書く。単一スペースの組織は
+   組織の直下、複数スペースの組織は workspace ごとに書く（キーの意味は
+   [reference.md](./reference.md) の「claude.ai からの CSV 取得」）。
+
+   ```yaml
+   organizations:
+     example:
+       claude_export:
+         profile: corp
+         org_id: 00000000-0000-4000-8000-000000000001
+     example2:
+       workspaces:
+         main:
+           primary: true
+           claude_export:
+             profile: corp
+             org_id: 00000000-0000-4000-8000-000000000002
+         second:
+           claude_export:
+             profile: corp
+             org_id: 00000000-0000-4000-8000-000000000003
+   ```
+
+   配置先の組織ディレクトリ（入れ子レイアウトなら workspace のディレクトリ）が無ければ、
+   先に `seat-analyzer init-org` で作る。無いディレクトリへは配置しない。
+
+5. 計画を確かめる
+
+   ターミナル:
+
+   ```sh
+   seat-analyzer collect --source claude --dry-run
+   ```
+
+   プロファイルごとのモードと対象月、対象・UUID・種別・配置先が表示される。ブラウザは
+   起動しない。
+
+6. 初回の取得
+
+   ターミナル:
+
+   ```sh
+   seat-analyzer collect --source claude
+   ```
+
+   Chrome が開いて実行ページ（seat-analyzer export）に進み具合が表示され、組織を切り替え
+   ながら 3 種の CSV をダウンロードする。終わるとコマンドが検証して `input/` に配置し、
+   Chrome を終了させる。
+
+   人がブラウザで行う操作: 実行ページに「要操作」が出たら（ログインや外部セキュリティ検証の
+   確認）、その画面で操作を済ませる。済めば取得は続く。
+
+   検証: 各行が「配置: <パス>」で、最後に「配置 N 件・失敗 0 件」と表示され、終了コード 0。
+
+### 運用中に必要になること
+
+- セッションの期限切れ（数週間に 1 度）: 取得中の実行ページに「要操作」が出るので、その場で
+  ログインすれば取得は続く。前もって済ませておく場合は、ターミナルで
+  `seat-analyzer collect --source claude --login <プロファイル名>` を実行するとログイン画面が
+  開く。人がログインしたら Chrome を閉じる（次回の取得から有効）
+- 外部セキュリティ検証の確認が出た: 人がチェックを入れれば取得は続く
+- 既にプロファイルがある（seat-analyzer を入れ直して拡張機能のフォルダが変わった、別の手順で
+  作ったプロファイルを使う等）: 手順 2 をもう一度行う（`--setup` → ブラウザで拡張機能を
+  読み込み直す → `--finish-setup`）。ログインが残っていればログインは不要で、
+  `chrome://extensions` に seat-analyzer export が既にあれば削除してから、コマンドが表示した
+  フォルダを読み込み直す
+
+### トラブル
+
+- 「Chrome が見つかりません」: 既定の場所に Chrome が無い。`config.yaml` の
+  `claude_export.chrome_path` に実行ファイルの絶対パスを書く
+- 「プロファイル <名前> の設定が済んでいません」: 手順 2（`--setup` と、ブラウザの操作の後の
+  `--finish-setup`）を行う
+- `--finish-setup` が「拡張機能の読み込みを確認できませんでした」で止まる: 拡張機能が
+  読み込まれていない。`--setup` で Chrome を開き、`chrome://extensions` で表示された
+  フォルダを読み込んでから、もう一度 `--finish-setup` を実行する
+- `--finish-setup` が「拡張機能が別の場所から読み込まれています」で止まる: 以前の場所から
+  読み込んだ拡張機能が残っている。`chrome://extensions` で seat-analyzer export を削除し、
+  表示されたフォルダを読み込み直してから、もう一度 `--finish-setup` を実行する
+- 「N 分待っても取得が終わりませんでした」（manifest が出ない）: Chrome は開いたまま残る。
+  実行ページの表示（「要操作」やログ）を確認して必要な操作を済ませ、実行ページが「完了」に
+  なったら、表示された `seat-analyzer collect --source claude --import <run_id>` で配置だけを
+  やり直す。時間が足りないだけなら `--timeout <分>` で待ち時間を延ばす
+- 「失敗: <組織> <種別> <理由>（<パス>）」: その種別は配置していない。他の種別は配置される
+  - 英語の理由は拡張機能が管理画面の操作で失敗したもの（例: `spend report unavailable`）。
+    `organization switch not confirmed` は組織の切替を確かめられず、その組織を丸ごと
+    飛ばしたもの。括弧のパス（staging の実行ディレクトリ）の `manifest.json` の `log` に
+    経過が残る
+  - 日本語の理由（ヘッダ・期間）は、ダウンロードしたファイルが種別や対象月に合わず配置
+    しなかったもの。括弧のパスにファイルが残っているので中身を確かめる
+  - 「配置先のディレクトリがありません」は、`init-org` で組織ディレクトリを作ってから
+    `--import` で配置し直す
+  - どの場合も、その CSV を手動でダウンロードして従来どおり `input/` に置けば分析は動く
+
 ## アップデート
 
 導入と同じ手順で行う。最新リリースの wheel の URL をステップ 2 のコマンドで調べ、
@@ -432,6 +607,8 @@ uv tool install "seat-analyzer @ <最新リリースの wheel の URL>"
   スペンドレポートのエクスポートには Owner / Primary Owner 権限が必要で、
   90 日より前には遡れない
 - 入力データの事前検査: `seat-analyzer doctor`
+- claude.ai からの CSV 取得をコマンドで行う場合（任意・組織ごと）: 上の「claude.ai からの
+  CSV 取得を設定する」。取得の運用は [usage.md](./usage.md) の「claude.ai からの CSV 取得」
 - GitHub の PR 数とリードタイムを参考値として使う場合（任意・組織ごと）: ワークスペースの
   `config.yaml` に対象組織の GitHub Organization 名を書き、`members-info.csv` の
   `GitHub ID` 列を記入する（[reference.md](./reference.md) の「GitHub 分析の有効化」）。

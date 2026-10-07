@@ -6,13 +6,15 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
+import urllib.parse
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from seat_analyzer import analyze, github_collect, ingest, seat_changes
+from seat_analyzer import analyze, claude_export, github_collect, ingest, seat_changes
 from seat_analyzer.analyze import pipeline
 from seat_analyzer.cli import main
 from seat_analyzer.github_collect import (
@@ -1750,7 +1752,44 @@ def test_collect_rejects_a_bad_month(make_input, tmp_path, monkeypatch, capsys, 
      "--month", COLLECT_MONTH, "--dry-run"],                           # claude 専用
     ["collect", "--source", "github", "--org", "org-a",
      "--month", COLLECT_MONTH, "--profile", "corp"],                   # claude 専用
-    ["collect", "--source", "claude"],                                  # 実行はまだ結線しない
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--keep-browser"],                      # claude 専用
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--timeout", "5"],                      # claude 専用
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--import", "corp-current-20261007-110009"],  # claude 専用
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--setup", "corp"],                     # claude 専用
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--finish-setup", "corp"],              # claude 専用
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--login", "corp"],                     # claude 専用
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--list-orgs", "corp"],                 # claude 専用
+    ["collect", "--source", "claude", "--timeout", "0"],               # 1 分以上
+    ["collect", "--source", "claude", "--timeout", "x"],               # 整数
+    # --setup・--finish-setup・--login・--list-orgs・--import は単独で使う
+    ["collect", "--source", "claude", "--setup", "corp", "--login", "corp"],
+    ["collect", "--source", "claude", "--setup", "corp", "--org", "org-a"],
+    ["collect", "--source", "claude", "--setup", "corp", "--month", "2026-10"],
+    ["collect", "--source", "claude", "--setup", "corp", "--dry-run"],
+    ["collect", "--source", "claude", "--setup", "corp", "--keep-browser"],
+    ["collect", "--source", "claude", "--setup", "corp", "--timeout", "5"],
+    ["collect", "--source", "claude", "--setup", "corp", "--profile", "corp"],
+    ["collect", "--source", "claude", "--setup", "corp", "--finish-setup", "corp"],
+    ["collect", "--source", "claude", "--finish-setup", "corp", "--org", "org-a"],
+    ["collect", "--source", "claude", "--finish-setup", "corp", "--dry-run"],
+    ["collect", "--source", "claude", "--finish-setup", "corp", "--keep-browser"],
+    ["collect", "--source", "claude", "--finish-setup", "corp", "--timeout", "5"],
+    ["collect", "--source", "claude", "--finish-setup", "corp", "--import", "x"],
+    ["collect", "--source", "claude", "--login", "corp", "--keep-browser"],
+    ["collect", "--source", "claude", "--list-orgs", "corp", "--org", "org-a"],
+    ["collect", "--source", "claude", "--list-orgs", "corp", "--dry-run"],
+    ["collect", "--source", "claude", "--list-orgs", "corp", "--import", "x"],
+    ["collect", "--source", "claude", "--import", "x", "--dry-run"],
+    ["collect", "--source", "claude", "--import", "x", "--org", "org-a"],
+    ["collect", "--source", "claude", "--import", "x", "--month", "2026-10"],
+    ["collect", "--source", "claude", "--import", "x", "--keep-browser"],
 ])
 def test_collect_requires_its_options(args):
     """必須オプションと収集元の選択肢は argparse が弾く（収集元ごとの組み合わせも同じ扱い）。"""
@@ -1957,6 +1996,654 @@ def test_collect_claude_rejects_a_month_it_cannot_fetch(
     config = _claude_config(tmp_path)
     assert _dry_run(config, _claude_input(tmp_path), monkeypatch, "--month", month) == 1
     assert fragment in capsys.readouterr().err
+
+
+# --- collect --source claude（Chrome の起動 → manifest の待機 → 検証・配置 → 終了） ---
+#
+# 実際の Chrome は起動しない。起動・プロセスの列挙・終了の関数を差し替え、偽の拡張機能
+# （_FakeExtension）が起動のコマンドから実行内容を読んで staging に結果を書く。待機の時計と
+# sleep も差し替え、待ち時間を実時間に依らせない。
+
+CLAUDE_PID = 4242
+CLAUDE_HEADERS = {
+    "members": "Email,Seat Tier,Status",
+    "spend": "user_email,model,product,total_prompt_tokens,total_completion_tokens",
+    "code": "User,Lines this month,PRs with CC",
+}
+CLAUDE_KIND_DIRS = {"members": "members", "spend": "spend", "code": "code-analytics"}
+
+
+def _claude_filename(kind: str, uuid: str) -> str:
+    """当月（2026-10・今日 2026-10-07）に取得したときの元のファイル名。"""
+    return {
+        "members": f"members-{uuid}-2026-10-07.csv",
+        "spend": f"spend-report-{uuid}-2026-10-01-to-2026-10-06.csv",
+        "code": f"claude-code-{uuid}-2026-10-01-to-2026-10-31.csv",
+    }[kind]
+
+
+class _FakeClock:
+    """待機に使う時計。sleep で進み、そのたびに登録した処理を呼ぶ。"""
+
+    def __init__(self):
+        self.now = 0.0
+        self.on_sleep = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+        for hook in list(self.on_sleep):
+            hook()
+
+
+class _FakeExtension:
+    """偽の拡張機能。起動のコマンドの URL から実行内容を読み、staging に結果を書く。
+
+    outcomes は (dir, kind) → "ok"（正しい CSV）・{"ok": False, "reason": ...}（拡張機能の
+    失敗）・{"header": ...}（ok だが中身の違う CSV）。manifest="later" なら最初の sleep で
+    manifest を書き（起動時は progress だけ）、manifest=None なら書かない。
+    """
+
+    def __init__(self, staging: Path, clock: _FakeClock):
+        self.staging = staging
+        self.clock = clock
+        self.commands: list[list[str]] = []
+        self.specs: list[dict] = []
+        self.outcomes: dict = {}
+        self.manifest: str | None = "now"
+        self.manifest_run_id: str | None = None
+        self.orgs: object = None
+
+    def launch(self, command, **kwargs) -> None:
+        self.commands.append(list(command))
+        url = command[-1]
+        if not url.startswith(claude_export.TRIGGER_PREFIX):
+            return
+        spec = json.loads(urllib.parse.unquote(url[len(claude_export.TRIGGER_PREFIX):]))
+        self.specs.append(spec)
+        run_dir = self.staging / spec["run_id"]
+        if spec.get("action") == "list-orgs":
+            if self.orgs is not None:
+                (run_dir / "orgs.json").write_text(json.dumps(self.orgs), encoding="utf-8")
+            return
+        results = [self._export(run_dir, org, kind) for org in spec["orgs"] for kind in org["kinds"]]
+        body = {"run_id": self.manifest_run_id or spec["run_id"], "mode": spec["mode"],
+                "finished_at": "2026-10-07T02:00:49.000Z", "results": results, "log": []}
+        (run_dir / "progress.json").write_text(
+            json.dumps({**body, "status": "running"}), encoding="utf-8")
+        if self.manifest == "now":
+            (run_dir / "manifest.json").write_text(json.dumps(body), encoding="utf-8")
+        elif self.manifest == "later":
+            def finish():
+                (run_dir / "manifest.json").write_text(json.dumps(body), encoding="utf-8")
+                self.clock.on_sleep.remove(finish)
+            self.clock.on_sleep.append(finish)
+
+    def _export(self, run_dir: Path, org: dict, kind: str) -> dict:
+        outcome = self.outcomes.get((org["dir"], kind), "ok")
+        if isinstance(outcome, dict) and outcome.get("ok") is False:
+            return {"dir": org["dir"], "kind": kind, **outcome}
+        header = outcome["header"] if isinstance(outcome, dict) else CLAUDE_HEADERS[kind]
+        name = _claude_filename(kind, org["uuid"])
+        target = run_dir.joinpath(*org["dir"].split("/"), CLAUDE_KIND_DIRS[kind], name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"{header}\nuser1@example.com,x,y\n", encoding="utf-8")
+        return {"dir": org["dir"], "kind": kind, "ok": True, "filename": name}
+
+
+@pytest.fixture
+def claude_env(tmp_path, monkeypatch):
+    """合成の設定・入力・プロファイル（corp は設定済み）と、偽の Chrome・拡張機能。"""
+    chrome = tmp_path / "chrome-bin"
+    chrome.write_bytes(b"")
+    config = _claude_config(tmp_path, chrome=chrome)
+    input_dir = _claude_input(tmp_path)
+    staging = tmp_path / "exports"
+    profiles = tmp_path / "profiles"
+    _write_preferences(profiles / "corp", staging)
+
+    clock = _FakeClock()
+    ext = _FakeExtension(staging, clock)
+    env = SimpleNamespace(
+        tmp_path=tmp_path, chrome=chrome, config=config, input_dir=input_dir,
+        staging=staging, profiles=profiles, clock=clock, ext=ext,
+        pids=[CLAUDE_PID], listed=[], terminated=[],
+    )
+
+    def list_pids(profile_dir, **kwargs):
+        env.listed.append(Path(profile_dir))
+        return list(env.pids) if not callable(env.pids) else env.pids()
+
+    monkeypatch.setattr("seat_analyzer.claude_export.local_today", lambda: CLAUDE_TODAY)
+    monkeypatch.setattr("seat_analyzer.claude_export.launch_chrome", ext.launch)
+    monkeypatch.setattr("seat_analyzer.claude_export.list_chrome_pids", list_pids)
+    monkeypatch.setattr("seat_analyzer.claude_export.terminate_chrome",
+                        lambda pids, **kwargs: env.terminated.append(list(pids)))
+    monkeypatch.setattr("seat_analyzer.cli._monotonic", clock.monotonic)
+    monkeypatch.setattr("seat_analyzer.cli._sleep", clock.sleep)
+    return env
+
+
+def _write_preferences(profile_dir: Path, staging: Path) -> None:
+    """--setup を済ませたプロファイルの Preferences（ダウンロード先が staging）。"""
+    prefs = profile_dir / "Default" / "Preferences"
+    prefs.parent.mkdir(parents=True, exist_ok=True)
+    prefs.write_text(
+        json.dumps({"download": {"default_directory": str(staging)}, "other": 1}),
+        encoding="utf-8",
+    )
+
+
+def _collect_claude(env, *extra: str) -> int:
+    return main([
+        "collect", "--source", "claude", "--config", env.config,
+        "--input-dir", str(env.input_dir), *extra,
+    ])
+
+
+def _placed(env, rel: str, kind: str) -> Path:
+    uuid = {"example": CLAUDE_UUID1, "example2/main": CLAUDE_UUID2,
+            "example2/second": CLAUDE_UUID3, "org-a": CLAUDE_UUID4}[rel]
+    return env.input_dir.joinpath(*rel.split("/"), CLAUDE_KIND_DIRS[kind],
+                                  _claude_filename(kind, uuid))
+
+
+def test_collect_claude_places_every_file_and_closes_chrome(claude_env, capsys):
+    env = claude_env
+    assert _collect_claude(env, "--org", "example") == 0
+
+    # 起動: 専用プロファイルの Chrome にトリガー URL を渡す
+    [command] = env.ext.commands
+    [spec] = env.ext.specs
+    run_id = spec["run_id"]
+    assert command[:2] == [str(env.chrome), f"--user-data-dir={env.profiles / 'corp'}"]
+    assert command[-1].startswith(claude_export.TRIGGER_PREFIX)
+    assert re.fullmatch(r"corp-current-\d{8}-\d{6}", run_id)
+    assert spec == {"run_id": run_id, "mode": "current", "orgs": [
+        {"uuid": CLAUDE_UUID1, "dir": "example", "kinds": ["members", "spend", "code"]}]}
+
+    # run.json: --import が計画を組み直すための記録
+    record = json.loads((env.staging / run_id / "run.json").read_text(encoding="utf-8"))
+    assert {key: record[key] for key in ("run_id", "profile", "mode", "month", "spec")} == {
+        "run_id": run_id, "profile": "corp", "mode": "current", "month": "2026-10",
+        "spec": spec}
+    assert dt.datetime.fromisoformat(record["created_at"]).tzinfo is not None
+
+    # 配置: 元のファイル名のまま入力の種別ディレクトリへ
+    for kind in ("members", "spend", "code"):
+        assert _placed(env, "example", kind).read_text(encoding="utf-8").startswith(
+            CLAUDE_HEADERS[kind])
+    # 終了: そのプロファイルの Chrome だけを終了させる
+    assert env.listed == [env.profiles / "corp"]
+    assert env.terminated == [[CLAUDE_PID]]
+
+    out = capsys.readouterr().out
+    assert "profile corp: 当月モード（2026-10）" in out
+    assert f"  配置: {_placed(env, 'example', 'spend')}" in out.splitlines()
+    assert "  配置 3 件・失敗 0 件" in out
+    assert "Chrome を終了しました" in out
+
+
+def test_collect_claude_reports_each_failure_and_places_the_rest(claude_env, capsys):
+    env = claude_env
+    env.ext.outcomes = {
+        ("example", "spend"): {"ok": False, "reason": "spend report unavailable"},
+        # 支出レポートのヘッダの CSV を Claude Code analytics として受け取った
+        ("example", "code"): {"header": CLAUDE_HEADERS["spend"]},
+    }
+    # example2/second の組織ディレクトリは無い（配置先を作らない）
+    assert _collect_claude(env, "--profile", "corp") == 1
+
+    run_id = env.ext.specs[0]["run_id"]
+    run_dir = env.staging / run_id
+    staged_code = run_dir / "example" / "code-analytics" / _claude_filename("code", CLAUDE_UUID1)
+    staged_second = (run_dir / "example2" / "second" / "members"
+                     / _claude_filename("members", CLAUDE_UUID3))
+    lines = capsys.readouterr().out.splitlines()
+    assert f"  失敗: example spend spend report unavailable（{run_dir}）" in lines
+    [code_line] = [line for line in lines if line.startswith("  失敗: example code ")]
+    assert "Claude Code analyticsのヘッダに loc_with_cc に当たる列がありません" in code_line
+    assert code_line.endswith(f"（{staged_code}）")
+    [second_line] = [line for line in lines
+                     if line.startswith("  失敗: example2/second members ")]
+    assert "配置先のディレクトリがありません" in second_line
+    assert "  配置 4 件・失敗 5 件" in lines
+
+    # 通ったものは配置し、落ちたものは配置せず staging に残す
+    assert _placed(env, "example", "members").is_file()
+    assert _placed(env, "example2/main", "code").is_file()
+    assert not _placed(env, "example", "spend").exists()
+    assert not _placed(env, "example", "code").exists()
+    assert staged_code.is_file() and staged_second.is_file()
+    assert not (env.input_dir / "example2" / "second").exists()
+    # 失敗があっても取得は終わっているので Chrome は終了させる
+    assert env.terminated == [[CLAUDE_PID]]
+
+
+def test_collect_claude_runs_each_profile_in_turn(claude_env, capsys):
+    """プロファイルごとに順に起動し、設定の済んでいないプロファイルはその実行だけ失敗にする。"""
+    env = claude_env
+    assert _collect_claude(env) == 1
+    # corp だけが起動し、group は Preferences が無いので起動しない
+    assert [spec["run_id"].split("-")[0] for spec in env.ext.specs] == ["corp"]
+    captured = capsys.readouterr()
+    assert "profile group: 当月モード（2026-10）" in captured.out
+    assert ("プロファイル group の設定が済んでいません。先に collect --source claude "
+            "--setup group を実行し、ブラウザの操作の後に --finish-setup group を"
+            "実行してください") in captured.err
+
+
+def test_collect_claude_shows_progress_while_waiting(claude_env, capsys):
+    env = claude_env
+    env.ext.manifest = "later"
+    env.ext.outcomes = {("example", "spend"): {"ok": False, "reason": "spend report unavailable"}}
+    assert _collect_claude(env, "--org", "example") == 1
+
+    lines = capsys.readouterr().out.splitlines()
+    progress = ["  example members: ok", "  example spend: 失敗 spend report unavailable",
+                "  example code: ok"]
+    assert [line for line in lines if line in progress] == progress
+    # 途中経過は配置の前に出る
+    assert lines.index(progress[-1]) < next(
+        index for index, line in enumerate(lines) if line.startswith("  配置: "))
+
+
+def test_collect_claude_rejects_a_manifest_of_another_run(claude_env, capsys):
+    env = claude_env
+    env.ext.manifest_run_id = "corp-current-20000101-000000"
+    assert _collect_claude(env, "--org", "example") == 1
+    err = capsys.readouterr().err
+    assert "manifest の run_id（corp-current-20000101-000000）がこの実行" in err
+    assert not (env.input_dir / "example" / "members").exists()
+
+
+def test_collect_claude_times_out_and_leaves_chrome_open(claude_env, capsys):
+    env = claude_env
+    env.ext.manifest = None
+    assert _collect_claude(env, "--org", "example", "--timeout", "2") == 1
+
+    run_id = env.ext.specs[0]["run_id"]
+    captured = capsys.readouterr()
+    assert "待機中（1 分経過）: ブラウザに「要操作」の表示が出ていないか確認してください" \
+        in captured.out
+    assert "2 分待っても取得が終わりませんでした" in captured.err
+    assert f"collect --source claude --import {run_id} で配置できます" in captured.err
+    # 人の操作で取得が続くかもしれないので、Chrome は終了させない
+    assert env.listed == [] and env.terminated == []
+    assert env.clock.now >= 120
+    assert not (env.input_dir / "example" / "members").exists()
+
+
+def test_collect_claude_does_not_prompt_while_the_export_progresses(claude_env, capsys):
+    """進捗（結果の増加）が続いている間は、ブラウザの表示を確かめる案内を出さない。
+
+    結果は 120 秒まで 20 秒ごとに 1 件増え、そこで止まる。案内は最後の進捗から 60 秒が
+    過ぎた 180 秒に初めて出る。
+    """
+    env = claude_env
+    env.ext.manifest = None
+
+    def grow():
+        if env.clock.now > 120 or env.clock.now % 20:
+            return
+        path = env.staging / env.ext.specs[0]["run_id"] / "progress.json"
+        body = json.loads(path.read_text(encoding="utf-8"))
+        body["results"].append(body["results"][0])
+        path.write_text(json.dumps(body), encoding="utf-8")
+
+    env.clock.on_sleep.append(grow)
+    assert _collect_claude(env, "--org", "example", "--timeout", "4") == 1
+    notices = [line for line in capsys.readouterr().out.splitlines()
+               if line.startswith("  待機中（")]
+    assert notices == [
+        "  待機中（3 分経過）: ブラウザに「要操作」の表示が出ていないか確認してください"]
+
+
+def test_collect_claude_waits_for_the_configured_minutes(claude_env):
+    """--timeout を省くと claude_export.timeout_minutes（既定 15 分）まで待つ。"""
+    env = claude_env
+    env.ext.manifest = None
+    assert _collect_claude(env, "--org", "example") == 1
+    assert 15 * 60 <= env.clock.now < 15 * 60 + 5
+
+
+def test_collect_claude_keep_browser_leaves_chrome_running(claude_env, capsys):
+    env = claude_env
+    assert _collect_claude(env, "--org", "example", "--keep-browser") == 0
+    assert env.listed == [] and env.terminated == []
+    assert "Chrome を終了しました" not in capsys.readouterr().out
+
+
+def test_collect_claude_warns_when_chrome_has_already_gone(claude_env, capsys):
+    """終了させる Chrome が見つからなくても、配置が済んでいれば成功のまま。"""
+    env = claude_env
+    env.pids = []
+    assert _collect_claude(env, "--org", "example") == 0
+    assert env.terminated == []
+    assert "このプロファイルの Chrome のプロセスが見つかりませんでした" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("prefs", [
+    None,                                                     # --setup をしていない
+    {"download": {"default_directory": "/somewhere/else"}},   # 別のダウンロード先
+    "{broken",
+])
+def test_collect_claude_requires_the_setup(claude_env, capsys, prefs):
+    env = claude_env
+    path = env.profiles / "corp" / "Default" / "Preferences"
+    if prefs is None:
+        path.unlink()
+    else:
+        path.write_text(prefs if isinstance(prefs, str) else json.dumps(prefs), encoding="utf-8")
+
+    assert _collect_claude(env, "--org", "example") == 1
+    assert env.ext.commands == []
+    assert ("先に collect --source claude --setup corp を実行し、ブラウザの操作の後に "
+            "--finish-setup corp を実行してください") in capsys.readouterr().err
+
+
+def test_collect_claude_requires_chrome(claude_env, capsys):
+    env = claude_env
+    env.chrome.unlink()
+    assert _collect_claude(env, "--org", "example") == 1
+    assert env.ext.commands == []
+    assert f"Chrome が見つかりません: {env.chrome}" in capsys.readouterr().err
+
+
+def test_collect_claude_import_places_a_run_that_timed_out(claude_env, capsys):
+    """時間切れの後に拡張機能が書き終えた manifest を、Chrome に触れずに配置する。"""
+    env = claude_env
+    env.ext.manifest = None
+    assert _collect_claude(env, "--org", "example", "--timeout", "1") == 1
+    run_id = env.ext.specs[0]["run_id"]
+    run_dir = env.staging / run_id
+    body = json.loads((run_dir / "progress.json").read_text(encoding="utf-8"))
+    (run_dir / "manifest.json").write_text(json.dumps(body), encoding="utf-8")
+    capsys.readouterr()
+
+    assert _collect_claude(env, "--import", run_id) == 0
+    assert len(env.ext.commands) == 1          # 起動しない
+    assert env.listed == [] and env.terminated == []
+    for kind in ("members", "spend", "code"):
+        assert _placed(env, "example", kind).is_file()
+    out = capsys.readouterr().out
+    assert f"profile corp: 当月モード（2026-10）run_id {run_id}" in out
+    assert "  配置 3 件・失敗 0 件" in out
+
+
+def test_collect_claude_import_verifies_against_the_month_of_the_run(claude_env, capsys):
+    """取り込む日の当月ではなく、run.json に記録したその実行の対象月で検証する。"""
+    env = claude_env
+    env.ext.manifest = None
+    assert _collect_claude(env, "--org", "example", "--timeout", "1") == 1
+    run_id = env.ext.specs[0]["run_id"]
+    run_dir = env.staging / run_id
+    record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    (run_dir / "run.json").write_text(json.dumps({**record, "month": "2026-09"}),
+                                      encoding="utf-8")
+    body = json.loads((run_dir / "progress.json").read_text(encoding="utf-8"))
+    (run_dir / "manifest.json").write_text(json.dumps(body), encoding="utf-8")
+    capsys.readouterr()
+
+    assert _collect_claude(env, "--import", run_id) == 1
+    out = capsys.readouterr().out
+    assert "支出レポートの期間 2026-10-01〜2026-10-06 が対象月 2026-09 の1日から" in out
+
+
+def test_collect_claude_import_without_a_run_record(claude_env, capsys):
+    env = claude_env
+    assert _collect_claude(env, "--import", "corp-current-20261007-110009") == 1
+    err = capsys.readouterr().err
+    assert str(env.staging / "corp-current-20261007-110009" / "run.json") in err
+    assert "がありません" in err
+
+
+def test_collect_claude_import_without_a_manifest(claude_env, capsys):
+    env = claude_env
+    env.ext.manifest = None
+    assert _collect_claude(env, "--org", "example", "--timeout", "1") == 1
+    run_id = env.ext.specs[0]["run_id"]
+    capsys.readouterr()
+    assert _collect_claude(env, "--import", run_id) == 1
+    assert "manifest.json がまだありません" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("run_id", ["../corp-current-20261007-110009", "a/b", ".."])
+def test_collect_claude_import_rejects_a_path(claude_env, capsys, run_id):
+    assert _collect_claude(claude_env, "--import", run_id) == 1
+    assert "staging の実行ディレクトリ名ではありません" in capsys.readouterr().err
+
+
+def test_collect_claude_import_rejects_a_target_no_longer_configured(claude_env, capsys):
+    env = claude_env
+    env.ext.manifest = None
+    assert _collect_claude(env, "--org", "example", "--timeout", "1") == 1
+    run_id = env.ext.specs[0]["run_id"]
+    run_dir = env.staging / run_id
+    record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    record["spec"]["orgs"][0]["dir"] = "org-x"
+    (run_dir / "run.json").write_text(json.dumps(record), encoding="utf-8")
+    capsys.readouterr()
+
+    assert _collect_claude(env, "--import", run_id) == 1
+    assert "run.json の対象 org-x は claude_export の設定にありません" in capsys.readouterr().err
+
+
+def test_collect_claude_setup_launches_chrome_and_returns(claude_env, capsys):
+    """--setup はプロファイルと staging を作り、Chrome を起動して手順を表示したら待たずに終わる。"""
+    env = claude_env
+    profile_dir = env.profiles / "new"
+    assert _collect_claude(env, "--setup", "new") == 0
+
+    assert env.ext.commands == [[
+        str(env.chrome), f"--user-data-dir={profile_dir}", "--no-first-run",
+        "--no-default-browser-check", "https://claude.ai/login"]]
+    assert profile_dir.is_dir() and env.staging.is_dir()
+    # Chrome の終了を待たず、設定も書かない（--finish-setup が書く）
+    assert env.listed == [] and env.terminated == []
+    assert not (profile_dir / "Default" / "Preferences").exists()
+
+    lines = capsys.readouterr().out.splitlines()
+    assert f"     {claude_export.extension_dir().resolve()}" in lines
+    assert any("chrome://extensions" in line for line in lines)
+    assert any("collect --source claude --finish-setup new を実行する" in line for line in lines)
+
+
+@pytest.mark.parametrize("name", ["..", "a/b", "corp main"])
+def test_collect_claude_setup_rejects_a_bad_profile_name(claude_env, capsys, name):
+    assert _collect_claude(claude_env, "--setup", name) == 1
+    assert f"プロファイル名 '{name}' は使えません" in capsys.readouterr().err
+    assert claude_env.ext.commands == []
+
+
+def _write_raw_preferences(profile_dir: Path, prefs: dict,
+                           name: str = "Preferences") -> None:
+    path = profile_dir / "Default" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(prefs), encoding="utf-8")
+
+
+def _loaded_extension(path: Path | str) -> dict:
+    """拡張機能を path から読み込んだプロファイルの設定（Chrome が書く形の一部）。"""
+    return {"extensions": {"settings": {claude_export.EXTENSION_ID: {"path": str(path)}}}}
+
+
+def _prepared_profile(env, name: str = "new") -> Path:
+    """--setup の後、人がログインと拡張機能の読み込みを済ませたプロファイル。"""
+    profile_dir = env.profiles / name
+    _write_raw_preferences(profile_dir, {"keep": True})
+    _write_raw_preferences(profile_dir, _loaded_extension(claude_export.extension_dir().resolve()),
+                           "Secure Preferences")
+    return profile_dir
+
+
+def test_collect_claude_finish_setup_stops_chrome_and_writes_preferences(claude_env, capsys):
+    env = claude_env
+    profile_dir = _prepared_profile(env)
+    # Chrome が動いていて、終了を求めると次の見回りで消える
+    listing = iter([[CLAUDE_PID], [CLAUDE_PID]])
+    env.pids = lambda: next(listing, [])
+
+    assert _collect_claude(env, "--finish-setup", "new") == 0
+
+    assert env.terminated == [[CLAUDE_PID]]
+    assert env.ext.commands == []             # Chrome は起動しない
+    prefs = json.loads((profile_dir / "Default" / "Preferences").read_text(encoding="utf-8"))
+    assert prefs["keep"] is True
+    assert prefs["download"]["default_directory"] == str(env.staging)
+    assert prefs["download"]["prompt_for_download"] is False
+    assert prefs["profile"]["content_settings"]["exceptions"]["automatic_downloads"][
+        "https://claude.ai:443,*"]["setting"] == 1
+    out = capsys.readouterr().out
+    assert "Chrome を終了しました" in out
+    assert "プロファイル new の設定を書きました" in out
+    assert "collect --source claude --dry-run で計画を確認できます" in out
+
+    # 再実行しても同じ設定のまま（変更なし）
+    before = (profile_dir / "Default" / "Preferences").read_bytes()
+    assert _collect_claude(env, "--finish-setup", "new") == 0
+    assert (profile_dir / "Default" / "Preferences").read_bytes() == before
+    assert "プロファイル new の設定は済んでいます（変更なし）" in capsys.readouterr().out
+
+
+def test_collect_claude_finish_setup_when_chrome_is_not_running(claude_env, capsys):
+    env = claude_env
+    profile_dir = _prepared_profile(env)
+    env.pids = []
+    assert _collect_claude(env, "--finish-setup", "new") == 0
+    assert env.terminated == []
+    prefs = json.loads((profile_dir / "Default" / "Preferences").read_text(encoding="utf-8"))
+    assert prefs["download"]["default_directory"] == str(env.staging)
+    assert "Chrome を終了しました" not in capsys.readouterr().out
+
+
+def test_collect_claude_finish_setup_reads_the_extension_from_preferences(claude_env):
+    """拡張機能の設定は Secure Preferences と Preferences のどちらにあってもよい。"""
+    env = claude_env
+    profile_dir = env.profiles / "new"
+    _write_raw_preferences(
+        profile_dir, _loaded_extension(claude_export.extension_dir().resolve()))
+    env.pids = []
+    assert _collect_claude(env, "--finish-setup", "new") == 0
+
+
+@pytest.mark.parametrize("secure,fragment", [
+    (None, "拡張機能の読み込みを確認できませんでした"),
+    ("{broken", "拡張機能の読み込みを確認できませんでした"),
+    (_loaded_extension("/somewhere/else/browser_extension"),
+     "拡張機能が別の場所から読み込まれています"),
+])
+def test_collect_claude_finish_setup_requires_the_extension(claude_env, capsys, secure, fragment):
+    env = claude_env
+    profile_dir = env.profiles / "new"
+    _write_raw_preferences(profile_dir, {"keep": True})
+    if isinstance(secure, dict):
+        _write_raw_preferences(profile_dir, secure, "Secure Preferences")
+    elif secure is not None:
+        (profile_dir / "Default" / "Secure Preferences").write_text(secure, encoding="utf-8")
+    env.pids = []
+
+    assert _collect_claude(env, "--finish-setup", "new") == 1
+    err = capsys.readouterr().err
+    assert fragment in err
+    assert str(claude_export.extension_dir().resolve()) in err
+    # 設定は書かない
+    assert json.loads((profile_dir / "Default" / "Preferences")
+                      .read_text(encoding="utf-8")) == {"keep": True}
+
+
+def test_collect_claude_finish_setup_without_preferences(claude_env, capsys):
+    """Preferences が無い（Chrome が一度も起動していない）ときは書かずに失敗する。"""
+    env = claude_env
+    profile_dir = env.profiles / "new"
+    _write_raw_preferences(profile_dir, _loaded_extension(claude_export.extension_dir().resolve()),
+                           "Secure Preferences")
+    env.pids = []
+    assert _collect_claude(env, "--finish-setup", "new") == 1
+    assert "プロファイルを Chrome で一度起動してから実行してください" in capsys.readouterr().err
+    assert not (profile_dir / "Default" / "Preferences").exists()
+
+
+def test_collect_claude_finish_setup_when_chrome_does_not_exit(claude_env, capsys):
+    """Chrome が終了しきらなければ設定を書かない（動いている間に書くと上書きされる）。"""
+    env = claude_env
+    profile_dir = _prepared_profile(env)
+    assert _collect_claude(env, "--finish-setup", "new") == 1
+    assert env.terminated == [[CLAUDE_PID]]
+    assert "30 秒待っても Chrome が終了しませんでした" in capsys.readouterr().err
+    assert json.loads((profile_dir / "Default" / "Preferences")
+                      .read_text(encoding="utf-8")) == {"keep": True}
+    assert 30 <= env.clock.now < 35
+
+
+def test_collect_claude_finish_setup_requires_the_profile(claude_env, capsys):
+    assert _collect_claude(claude_env, "--finish-setup", "new") == 1
+    assert "先に collect --source claude --setup new を実行してください" \
+        in capsys.readouterr().err
+
+
+def test_collect_claude_login_opens_the_login_page(claude_env, capsys):
+    env = claude_env
+    assert _collect_claude(env, "--login", "corp") == 0
+    assert env.ext.commands == [[
+        str(env.chrome), f"--user-data-dir={env.profiles / 'corp'}", "--no-first-run",
+        "--no-default-browser-check", "https://claude.ai/login"]]
+    assert env.listed == []           # 終了は待たない
+    assert "ログインしたら Chrome を閉じてください" in capsys.readouterr().out
+
+
+def test_collect_claude_login_requires_the_profile(claude_env, capsys):
+    env = claude_env
+    assert _collect_claude(env, "--login", "group") == 1
+    assert env.ext.commands == []
+    assert "先に collect --source claude --setup group を実行してください" \
+        in capsys.readouterr().err
+
+
+def test_collect_claude_list_orgs_prints_a_table(claude_env, capsys):
+    env = claude_env
+    env.ext.orgs = [
+        {"uuid": CLAUDE_UUID1, "name": "Example Org", "rate_limit_tier": "tier_a",
+         "plan": "Team"},
+        {"uuid": CLAUDE_UUID2, "name": "Sample", "rate_limit_tier": None, "plan": None},
+    ]
+    assert _collect_claude(env, "--list-orgs", "corp") == 0
+
+    [spec] = env.ext.specs
+    assert spec == {"run_id": spec["run_id"], "action": "list-orgs"}
+    assert re.fullmatch(r"corp-list-orgs-\d{8}-\d{6}", spec["run_id"])
+    lines = capsys.readouterr().out.splitlines()
+    table = lines[lines.index(next(line for line in lines if line.startswith("uuid"))):][:3]
+    assert table == [
+        "uuid                                  name         rate_limit_tier  plan",
+        f"{CLAUDE_UUID1}  Example Org  tier_a           Team",
+        f"{CLAUDE_UUID2}  Sample       -                -",
+    ]
+    assert env.terminated == [[CLAUDE_PID]]
+
+
+def test_collect_claude_list_orgs_reports_the_extension_error(claude_env, capsys):
+    env = claude_env
+    env.ext.orgs = {"error": "HTTP 403"}
+    assert _collect_claude(env, "--list-orgs", "corp", "--keep-browser") == 1
+    assert "組織の一覧を取得できませんでした: HTTP 403" in capsys.readouterr().err
+    assert env.terminated == []
+
+
+def test_collect_claude_list_orgs_times_out(claude_env, capsys):
+    env = claude_env
+    assert _collect_claude(env, "--list-orgs", "corp", "--timeout", "1") == 1
+    assert "1 分待っても組織の一覧が届きませんでした" in capsys.readouterr().err
+    assert env.terminated == []
+
+
+def test_collect_claude_list_orgs_requires_the_setup(claude_env, capsys):
+    env = claude_env
+    assert _collect_claude(env, "--list-orgs", "group") == 1
+    assert env.ext.commands == []
+    assert "--setup group" in capsys.readouterr().err
 
 
 # --- 複数 workspace のレイアウト ---

@@ -25,6 +25,14 @@ claude.ai からの自動ダウンロードの許可と、ダウンロード先�
 起動・終了させる薄いラッパ（`launch_chrome`・`list_chrome_pids`・`terminate_chrome`）だけを
 テストの対象外にする。
 
+staging の実行ディレクトリ（`<staging>/<run_id>/`）には、拡張機能が書く manifest.json・
+progress.json（途中経過）・orgs.json（組織一覧）と、コマンドが起動の前に書く run.json
+（その実行の計画）が並ぶ。run.json があるので、Chrome の待機が時間切れになった実行も、
+拡張機能が manifest を書き終えた後に検証と配置だけをやり直せる（`restore_run`）。
+
+拡張機能の実体はパッケージに同梱した `browser_extension/`（`extension_dir`）。manifest.json の
+key に公開鍵を入れて ID を固定している（`EXTENSION_ID`）。
+
 このモジュールは設定（層 20）を import しない。設定値は呼び出し側（cli）が辞書やパスで渡す。
 """
 
@@ -36,6 +44,7 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -78,6 +87,27 @@ _KIND_LABELS = {
 # Claude Code が月送り 1 回（管理画面の選択肢がこの 2 つしか無い）
 MODE_CURRENT = "current"
 MODE_PREVIOUS = "previous"
+
+# プロファイル名の規則（profiles_dir 配下のディレクトリ名になる。`.` と `..` は除く）
+_PROFILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def is_profile_name(name: object) -> bool:
+    """プロファイル名として使えるか（英数字と . _ - からなり、. と .. ではない）。"""
+    return (
+        isinstance(name, str)
+        and _PROFILE_NAME_RE.fullmatch(name) is not None
+        and name not in (".", "..")
+    )
+
+
+def validate_profile_name(name: str) -> None:
+    """プロファイル名として使えなければ ValueError（設定の claude_export.profile と同じ規則）。"""
+    if not is_profile_name(name):
+        raise ValueError(
+            f"プロファイル名 '{name}' は使えません（英数字と . _ - からなる名前が必要です。"
+            ". と .. は使えません）"
+        )
 
 
 @dataclass(frozen=True)
@@ -282,9 +312,43 @@ def trigger_url(spec: dict) -> str:
     return TRIGGER_PREFIX + urllib.parse.quote(payload, safe="")
 
 
+# 組織一覧（`--list-orgs`）の実行内容の action。拡張機能は参加している組織の一覧を
+# orgs.json に書いて終わる
+ACTION_LIST_ORGS = "list-orgs"
+
+
+def list_orgs_run_id(profile: str, now: dt.datetime) -> str:
+    """組織一覧の実行の識別子（`<profile>-list-orgs-<YYYYmmdd-HHMMSS>`）。now はローカル時刻。"""
+    return f"{profile}-{ACTION_LIST_ORGS}-{now:%Y%m%d-%H%M%S}"
+
+
+def list_orgs_spec(run_id: str) -> dict:
+    """組織一覧を拡張機能へ頼む実行内容。"""
+    return {"run_id": run_id, "action": ACTION_LIST_ORGS}
+
+
+# ログインと再ログイン（`--setup`・`--login`）で開くページ
+LOGIN_URL = "https://claude.ai/login"
+
+# 同梱の拡張機能の ID。manifest.json の key（公開鍵）から決まるので、読み込んだ場所に
+# よらず同じになる
+EXTENSION_ID = "bgjnbcmfhbmefbabaecmnolmgeeocejn"
+
+
+def extension_dir() -> Path:
+    """同梱の拡張機能のディレクトリ（`--setup` で Chrome に読み込ませる場所）。"""
+    return Path(__file__).parent / "browser_extension"
+
+
 # ------------------------------------------------------------------ manifest と staging
 
 MANIFEST_NAME = "manifest.json"
+# 拡張機能が各手順の後に上書きする途中経過（manifest と同じ形に status が付く）
+PROGRESS_NAME = "progress.json"
+# 拡張機能が組織一覧の実行で書く一覧
+ORGS_NAME = "orgs.json"
+# コマンドが起動の前に書くその実行の計画（`--import` が計画を組み直すのに使う）
+RUN_RECORD_NAME = "run.json"
 
 
 @dataclass(frozen=True)
@@ -298,9 +362,29 @@ class ExportRecord:
     reason: str | None
 
 
+def run_dir(staging_dir: Path, run_id: str) -> Path:
+    """実行ディレクトリ（`<staging>/<run_id>`。拡張機能のダウンロードはすべてこの下に入る）。"""
+    return staging_dir / run_id
+
+
 def manifest_path(staging_dir: Path, run_id: str) -> Path:
     """実行の manifest の置き場所（`<staging>/<run_id>/manifest.json`）。"""
-    return staging_dir / run_id / MANIFEST_NAME
+    return run_dir(staging_dir, run_id) / MANIFEST_NAME
+
+
+def progress_path(staging_dir: Path, run_id: str) -> Path:
+    """途中経過の置き場所（`<staging>/<run_id>/progress.json`）。"""
+    return run_dir(staging_dir, run_id) / PROGRESS_NAME
+
+
+def orgs_path(staging_dir: Path, run_id: str) -> Path:
+    """組織一覧の置き場所（`<staging>/<run_id>/orgs.json`）。"""
+    return run_dir(staging_dir, run_id) / ORGS_NAME
+
+
+def run_record_path(staging_dir: Path, run_id: str) -> Path:
+    """実行の計画の置き場所（`<staging>/<run_id>/run.json`）。"""
+    return run_dir(staging_dir, run_id) / RUN_RECORD_NAME
 
 
 def staged_file(
@@ -403,6 +487,150 @@ def match_results(
             )
             paired.append((target, kind, record))
     return paired
+
+
+def is_run_id(value: object) -> bool:
+    """実行ディレクトリの名前として使えるか（区切りもドライブも含まない単一の名前）。
+
+    `--import` に渡された識別子を staging の外を指す名前として受け付けないために使う。
+    """
+    return _is_plain_name(value)
+
+
+def _write_json(path: Path, data: object) -> None:
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+
+
+def _read_json(path: Path) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{path.name} を JSON として読めません: {exc}") from None
+
+
+def run_record(run: ProfileRun, run_id: str, created_at: dt.datetime) -> dict:
+    """run.json の内容（その実行のプロファイル・モード・対象月と、拡張機能へ渡した実行内容）。"""
+    return {
+        "run_id": run_id,
+        "profile": run.profile,
+        "mode": run.mode,
+        "month": run.month,
+        "created_at": created_at.isoformat(timespec="seconds"),
+        "spec": run_spec(run, run_id),
+    }
+
+
+def write_run_record(path: Path, record: dict) -> None:
+    """run.json を書く。"""
+    _write_json(path, record)
+
+
+def read_run_record(path: Path) -> dict:
+    """run.json を読む（中身の検査は `restore_run` が行う）。"""
+    data = _read_json(path)
+    if isinstance(data, dict):
+        return data
+    raise ValueError(f"{path.name} の内容がオブジェクトではありません")
+
+
+_MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
+
+
+def _spec_item_problem(item: object) -> str | None:
+    """run.json の spec.orgs の要素の形が取り決めと違えば、その説明。"""
+    if not isinstance(item, dict):
+        return "がオブジェクトではありません"
+    for key in ("uuid", "dir"):
+        if not isinstance(item.get(key), str):
+            return f".{key} が文字列ではありません"
+    kinds = item.get("kinds")
+    if not (isinstance(kinds, list) and kinds and all(kind in KINDS for kind in kinds)):
+        return f".kinds は {' / '.join(KINDS)} の一覧が必要です"
+    return None
+
+
+def restore_run(record: dict, targets: Sequence[ExportTarget]) -> ProfileRun:
+    """run.json の内容から、その実行の計画を組み直す（`--import` が検証・配置に使う）。
+
+    対象は spec の (dir, uuid) を設定の対象（`gated_targets`）と突き合わせて決め、配置先は
+    設定の側から組む（run.json に書かれた名前をそのままパスにしない）。設定に無い dir や、
+    設定と UUID が違う dir があれば ValueError（設定が変わった後の取り込みで、別の
+    スペースの CSV を置かないため）。種別はその実行で頼んだもの（spec の kinds）、対象月は
+    その実行のもの（取り込む日の当月ではない）。
+    """
+    profile, mode, month = record.get("profile"), record.get("mode"), record.get("month")
+    spec = record.get("spec")
+    if not is_profile_name(profile):
+        raise ValueError("run.json の profile がプロファイル名ではありません")
+    if mode not in (MODE_CURRENT, MODE_PREVIOUS):
+        raise ValueError(f"run.json の mode は {MODE_CURRENT} か {MODE_PREVIOUS} が必要です")
+    if not (isinstance(month, str) and _MONTH_RE.fullmatch(month)):
+        raise ValueError("run.json の month は YYYY-MM が必要です")
+    if not (isinstance(spec, dict) and isinstance(spec.get("orgs"), list) and spec["orgs"]):
+        raise ValueError("run.json の spec に対象（orgs）がありません")
+    if spec.get("run_id") != record.get("run_id") or spec.get("mode") != mode:
+        raise ValueError("run.json の spec が実行の run_id・mode と一致しません")
+
+    by_dir = {target.dir: target for target in targets}
+    restored = []
+    for index, item in enumerate(spec["orgs"]):
+        problem = _spec_item_problem(item)
+        if problem is not None:
+            raise ValueError(f"run.json の spec.orgs[{index}]{problem}")
+        target = by_dir.get(item["dir"])
+        if target is None:
+            raise ValueError(
+                f"run.json の対象 {item['dir']} は claude_export の設定にありません"
+                "（設定を変えた後は、取り込まずに取得し直してください）"
+            )
+        if target.org_id != item["uuid"].lower():
+            raise ValueError(
+                f"run.json の対象 {item['dir']} の UUID が設定の org_id と違います"
+                "（設定を変えた後は、取り込まずに取得し直してください）"
+            )
+        restored.append(ExportTarget(
+            org=target.org,
+            workspace=target.workspace,
+            profile=profile,
+            org_id=target.org_id,
+            kinds=tuple(kind for kind in KINDS if kind in item["kinds"]),
+        ))
+    return ProfileRun(profile=profile, mode=mode, month=month, targets=tuple(restored))
+
+
+@dataclass(frozen=True)
+class OrgEntry:
+    """組織一覧の 1 件（claude.ai の値のまま。無い項目は None）。"""
+
+    uuid: str | None
+    name: str | None
+    rate_limit_tier: str | None
+    plan: str | None
+
+
+def _org_value(item: dict, key: str) -> str | None:
+    value = item.get(key)
+    return None if value is None else str(value)
+
+
+def read_orgs(path: Path) -> tuple[list[OrgEntry], str | None]:
+    """orgs.json を読み、(組織の一覧, 拡張機能が報告した失敗の理由) を返す。
+
+    拡張機能は取得できれば一覧（配列）を、できなければ `{"error": 理由}` を書く。壊れた
+    JSON やそれ以外の形は ValueError。
+    """
+    data = _read_json(path)
+    if isinstance(data, dict) and isinstance(data.get("error"), str):
+        return [], data["error"]
+    if not (isinstance(data, list) and all(isinstance(item, dict) for item in data)):
+        raise ValueError(f"{path.name} の内容が組織の一覧ではありません")
+    entries = [
+        OrgEntry(*(_org_value(item, key) for key in ("uuid", "name", "rate_limit_tier", "plan")))
+        for item in data
+    ]
+    return entries, None
 
 
 # ------------------------------------------------------------------ 検証と配置
@@ -646,6 +874,67 @@ def update_preferences(prefs: dict, *, staging_dir: Path, now_chrome_us: int) ->
     return changed
 
 
+def preferences_ready(prefs: dict, staging_dir: Path) -> bool:
+    """Preferences のダウンロード先が staging を指しているか（`--finish-setup` が済んでいるか）。
+
+    比較は区切りの重なりや `.` を畳んでから行う（Windows は大文字小文字も区別しない）。
+    """
+    download = prefs.get("download")
+    value = download.get("default_directory") if isinstance(download, dict) else None
+    if not isinstance(value, str) or not value:
+        return False
+
+    def key(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
+    return key(value) == key(str(staging_dir))
+
+
+def read_preferences(path: Path) -> dict:
+    """プロファイルの Preferences を読む（無ければ FileNotFoundError、壊れていれば ValueError）。"""
+    return _parse_preferences(path, path.read_bytes())
+
+
+def secure_preferences_path(profiles_dir: Path, profile: str) -> Path:
+    """プロファイルの Secure Preferences（`<profiles_dir>/<profile>/Default/Secure Preferences`）。
+
+    Chrome は拡張機能の設定をこちらに書くことがある（`extension_install_state` が読む）。
+    """
+    return profile_path(profiles_dir, profile) / "Default" / "Secure Preferences"
+
+
+# 拡張機能の読み込みの状態（`extension_install_state` の戻り）
+EXTENSION_OK = "ok"
+EXTENSION_OTHER_PATH = "other_path"
+EXTENSION_MISSING = "missing"
+
+
+def extension_install_state(prefs_dicts: Iterable[object], expected_dir: Path) -> str:
+    """同梱の拡張機能がプロファイルに読み込まれているか。
+
+    prefs_dicts は Secure Preferences と Preferences の内容（読めなかったものは渡さない）。
+    どちらかの `extensions.settings[EXTENSION_ID].path` が expected_dir（同梱の拡張機能の
+    場所）と一致すれば `EXTENSION_OK`、同じ ID が別の場所から読み込まれていれば
+    `EXTENSION_OTHER_PATH`、どちらにも無ければ `EXTENSION_MISSING`。パスの比較は区切りの
+    重なりや `.` を畳んでから行う（Windows は大文字小文字も区別しない）。
+    """
+    def key(path: str) -> str:
+        return os.path.normcase(os.path.normpath(path))
+
+    found_elsewhere = False
+    for prefs in prefs_dicts:
+        extensions = prefs.get("extensions") if isinstance(prefs, dict) else None
+        settings = extensions.get("settings") if isinstance(extensions, dict) else None
+        entry = settings.get(EXTENSION_ID) if isinstance(settings, dict) else None
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not path:
+            continue
+        if key(path) == key(str(expected_dir)):
+            return EXTENSION_OK
+        found_elsewhere = True
+    return EXTENSION_OTHER_PATH if found_elsewhere else EXTENSION_MISSING
+
+
 def _parse_preferences(path: Path, raw: bytes) -> dict:
     """Preferences の中身を辞書として読む（JSON のオブジェクトでなければ ValueError）。"""
     try:
@@ -694,7 +983,12 @@ _UNIX_CHROME_NAMES = ("google-chrome", "google-chrome-stable", "chromium", "chro
 
 
 def expand_setting_path(value: str) -> Path:
-    """設定に書かれたパス。`~` を展開する（相対パスはカレントディレクトリ基準のまま）。"""
+    """設定に書かれたパス。`~` を展開する。
+
+    上書きファイルに書いた profiles_dir・staging_dir の相対パスは、ロード時に設定ファイルの
+    置き場所を基準に解決済み（config の `_rebase_paths`）。chrome_path は絶対パスか空文字に
+    限る（ロード時に検査する）。
+    """
     try:
         return Path(value).expanduser()
     except RuntimeError:
@@ -769,12 +1063,17 @@ def launch_chrome(command: Sequence[str], *, platform: str = sys.platform) -> No
 
 
 def process_listing_command(platform: str) -> list[str]:
-    """全プロセスの pid とコマンドラインを列挙するコマンド。"""
+    """全プロセスの pid とコマンドラインを列挙するコマンド。
+
+    Windows は出力の文字コードを UTF-8 にしてから列挙する（読む側は UTF-8 で読むので、
+    ASCII 以外を含むプロファイルのパスも照合できるようにする）。
+    """
     if platform == "win32":
         return [
             "powershell", "-NoProfile", "-Command",
             (
-                "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine"
+                "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+                " Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine"
                 " | ConvertTo-Csv -NoTypeInformation"
             ),
         ]

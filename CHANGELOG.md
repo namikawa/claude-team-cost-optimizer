@@ -1,5 +1,16 @@
 # 変更履歴
 
+## [未リリース]
+
+### 追加
+
+- `collect --source claude` で claude.ai から 3 種の CSV（メンバー一覧・支出レポート・
+  Claude Code analytics）を取得して `input/` へ配置できるようにした（当月・前月の 2 モード。
+  専用プロファイルの準備は `--setup` / `--finish-setup` / `--login` / `--list-orgs`）
+- config に `claude_export`（Chrome・プロファイル・staging の場所と、組織／workspace ごとの
+  取得対象）を追加した
+- `collect --source claude` では `--org` を複数指定でき、`--month` を省略できるようにした
+
 ## [1.3.0] - 2026-10-03
 
 ### 追加
