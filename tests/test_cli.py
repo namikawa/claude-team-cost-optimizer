@@ -1744,9 +1744,16 @@ def test_collect_rejects_a_bad_month(make_input, tmp_path, monkeypatch, capsys, 
      "--month", COLLECT_MONTH],                                        # 未対応の収集元
     ["collect", "--source", "github", "--month", COLLECT_MONTH],        # --org なし
     ["collect", "--source", "github", "--org", "org-a"],                # --month なし
+    ["collect", "--source", "github", "--org", "org-a", "--org", "org-b",
+     "--month", COLLECT_MONTH],                                        # github は1組織ずつ
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--dry-run"],                           # claude 専用
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--profile", "corp"],                   # claude 専用
+    ["collect", "--source", "claude"],                                  # 実行はまだ結線しない
 ])
 def test_collect_requires_its_options(args):
-    """必須オプションと収集元の選択肢は argparse が弾く。"""
+    """必須オプションと収集元の選択肢は argparse が弾く（収集元ごとの組み合わせも同じ扱い）。"""
     with pytest.raises(SystemExit) as excinfo:
         main(args)
     assert excinfo.value.code == 2
@@ -1758,6 +1765,198 @@ def test_collect_failure_text_covers_every_failure():
     from seat_analyzer.github_collect import GhFailure
 
     assert set(_COLLECT_FAILURE_TEXT) == set(GhFailure)
+
+
+# --- collect --source claude --dry-run（claude.ai の CSV 取得の計画） ---
+#
+# ブラウザは起動しない。ここで見るのは opt-in の判定・絞り込み・計画の表示と終了コードで、
+# 計画そのものは tests/test_claude_export.py。
+
+CLAUDE_UUID1 = "00000000-0000-4000-8000-000000000001"
+CLAUDE_UUID2 = "00000000-0000-4000-8000-000000000002"
+CLAUDE_UUID3 = "00000000-0000-4000-8000-000000000003"
+CLAUDE_UUID4 = "00000000-0000-4000-8000-000000000004"
+
+# 当月 2026-10・前月 2026-09 になる「今日」
+CLAUDE_TODAY = dt.date(2026, 10, 7)
+
+
+def _claude_config(tmp_path: Path, *, organizations: str | None = None,
+                   chrome: Path | None = None) -> str:
+    """Chrome・プロファイル・staging を tmp_path に向けた上書き設定を作り、そのパスを返す。
+
+    organizations を省くと、単一スペースの example（corp）・org-a（group）と、
+    入れ子レイアウトの example2（main・second とも corp）を書く。
+    """
+    if organizations is None:
+        organizations = (
+            "organizations:\n"
+            "  example:\n"
+            "    claude_export:\n"
+            "      profile: corp\n"
+            f"      org_id: {CLAUDE_UUID1}\n"
+            "  org-a:\n"
+            "    claude_export:\n"
+            "      profile: group\n"
+            f"      org_id: {CLAUDE_UUID4}\n"
+            "      kinds: [spend]\n"
+            "  example2:\n"
+            "    workspaces:\n"
+            "      main:\n"
+            "        primary: true\n"
+            "        claude_export:\n"
+            "          profile: corp\n"
+            f"          org_id: {CLAUDE_UUID2}\n"
+            "      second:\n"
+            "        claude_export:\n"
+            "          profile: corp\n"
+            f"          org_id: {CLAUDE_UUID3}\n"
+        )
+    chrome = tmp_path / "chrome-bin" if chrome is None else chrome
+    path = tmp_path / "claude-config.yaml"
+    path.write_text(
+        organizations
+        + "claude_export:\n"
+        f"  chrome_path: {json.dumps(str(chrome))}\n"
+        f"  profiles_dir: {json.dumps(str(tmp_path / 'profiles'))}\n"
+        f"  staging_dir: {json.dumps(str(tmp_path / 'exports'))}\n",
+        encoding="utf-8", newline="\n",
+    )
+    return str(path)
+
+
+def _claude_input(tmp_path: Path) -> Path:
+    """example・org-a・example2/main の組織ディレクトリだけを作る（second は未作成）。"""
+    input_dir = tmp_path / "input"
+    for rel in ("example", "org-a", "example2/main"):
+        (input_dir / rel).mkdir(parents=True)
+    return input_dir
+
+
+def _dry_run(config: str, input_dir: Path, monkeypatch, *extra: str) -> int:
+    monkeypatch.setattr(
+        "seat_analyzer.claude_export.local_today", lambda: CLAUDE_TODAY)
+    return main([
+        "collect", "--source", "claude", "--dry-run", "--config", config,
+        "--input-dir", str(input_dir), *extra,
+    ])
+
+
+def test_collect_claude_dry_run_prints_the_plan(tmp_path, monkeypatch, capsys):
+    chrome = tmp_path / "chrome-bin"
+    chrome.write_bytes(b"")
+    config = _claude_config(tmp_path, chrome=chrome)
+    input_dir = _claude_input(tmp_path)
+    (tmp_path / "profiles" / "group").mkdir(parents=True)
+
+    assert _dry_run(config, input_dir, monkeypatch, "--month", "2026-09") == 0
+
+    sep = os.sep
+    all_dirs = "{members,spend,code-analytics}"
+    missing = "  組織ディレクトリがありません（init-org で作成）"
+    assert capsys.readouterr().out.splitlines() == [
+        f"Chrome: {chrome}",
+        f"staging: {tmp_path / 'exports'}",
+        (f"profile corp: 前月モード（2026-09）  プロファイル {tmp_path / 'profiles' / 'corp'}"
+         "（未作成。--setup corp が必要）"),
+        (f"  example          {CLAUDE_UUID1}  members, spend, code"
+         f"  → {input_dir / 'example'}{sep}{all_dirs}{sep}"),
+        (f"  example2/main    {CLAUDE_UUID2}  members, spend, code"
+         f"  → {input_dir / 'example2' / 'main'}{sep}{all_dirs}{sep}"),
+        (f"  example2/second  {CLAUDE_UUID3}  members, spend, code"
+         f"  → {input_dir / 'example2' / 'second'}{sep}{all_dirs}{sep}{missing}"),
+        f"profile group: 前月モード（2026-09）  プロファイル {tmp_path / 'profiles' / 'group'}",
+        f"  org-a            {CLAUDE_UUID4}  spend  → {input_dir / 'org-a'}{sep}spend{sep}",
+    ]
+    # 計画を表示するだけで、何も作らない
+    assert not (tmp_path / "exports").exists()
+    assert not (tmp_path / "profiles" / "corp").exists()
+    assert not (input_dir / "example" / "spend").exists()
+
+
+def test_collect_claude_dry_run_defaults_to_the_current_month(tmp_path, monkeypatch, capsys):
+    config = _claude_config(tmp_path)
+    assert _dry_run(config, _claude_input(tmp_path), monkeypatch) == 0
+    assert "profile corp: 当月モード（2026-10）" in capsys.readouterr().out
+
+
+def test_collect_claude_dry_run_narrows_by_org_and_profile(tmp_path, monkeypatch, capsys):
+    config = _claude_config(tmp_path)
+    input_dir = _claude_input(tmp_path)
+
+    assert _dry_run(config, input_dir, monkeypatch, "--org", "example2",
+                    "--org", "org-a") == 0
+    out = capsys.readouterr().out
+    assert "example2/main" in out and "example2/second" in out and "org-a" in out
+    assert "  example  " not in out and CLAUDE_UUID1 not in out
+
+    assert _dry_run(config, input_dir, monkeypatch, "--profile", "group") == 0
+    out = capsys.readouterr().out
+    assert "profile group:" in out and "profile corp:" not in out
+
+
+def test_collect_claude_dry_run_names_a_missing_chrome(tmp_path, monkeypatch, capsys):
+    missing = tmp_path / "no-chrome"
+    config = _claude_config(tmp_path, chrome=missing)
+    assert _dry_run(config, _claude_input(tmp_path), monkeypatch) == 0
+    assert capsys.readouterr().out.splitlines()[0] == (
+        f"Chrome: {missing} が見つかりません（claude_export.chrome_path を確認してください）")
+
+
+def test_collect_claude_requires_the_opt_in(tmp_path, monkeypatch, capsys):
+    """claude_export を書いた組織が無ければ何もせず終了コード 1。"""
+    config = _claude_config(tmp_path, organizations="")
+    assert _dry_run(config, _claude_input(tmp_path), monkeypatch) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "claude_export を設定した組織がありません" in captured.err
+    assert "organizations.<組織名>.claude_export" in captured.err
+
+
+def test_collect_claude_rejects_an_org_without_the_opt_in(tmp_path, monkeypatch, capsys):
+    config = _claude_config(tmp_path)
+    assert _dry_run(config, _claude_input(tmp_path), monkeypatch, "--org", "org-x") == 1
+    assert "組織 org-x は claude_export が設定されていません" in capsys.readouterr().err
+
+
+def test_collect_claude_rejects_an_unknown_profile(tmp_path, monkeypatch, capsys):
+    config = _claude_config(tmp_path)
+    assert _dry_run(config, _claude_input(tmp_path), monkeypatch,
+                    "--org", "org-a", "--profile", "corp") == 1
+    assert "--profile corp を使う claude_export の対象がありません" in capsys.readouterr().err
+
+
+def test_collect_claude_rejects_org_names_that_differ_only_in_case(
+    tmp_path, monkeypatch, capsys
+):
+    """大文字小文字だけが違う組織名は計画の段階で止め、何も表示しない。"""
+    config = _claude_config(tmp_path, organizations=(
+        "organizations:\n"
+        "  org-a:\n"
+        "    claude_export:\n"
+        "      profile: corp\n"
+        f"      org_id: {CLAUDE_UUID1}\n"
+        "  Org-A:\n"
+        "    claude_export:\n"
+        "      profile: corp\n"
+        f"      org_id: {CLAUDE_UUID2}\n"
+    ))
+    assert _dry_run(config, _claude_input(tmp_path), monkeypatch) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "claude_export を設定した組織名が衝突しています" in captured.err
+
+
+@pytest.mark.parametrize("month,fragment", [
+    ("2026-08", "取得できるのは当月と前月だけです（当月 2026-10・前月 2026-09）"),
+    ("2026-9", "対象月の形式が不正です"),
+])
+def test_collect_claude_rejects_a_month_it_cannot_fetch(
+    tmp_path, monkeypatch, capsys, month, fragment
+):
+    config = _claude_config(tmp_path)
+    assert _dry_run(config, _claude_input(tmp_path), monkeypatch, "--month", month) == 1
+    assert fragment in capsys.readouterr().err
 
 
 # --- 複数 workspace のレイアウト ---

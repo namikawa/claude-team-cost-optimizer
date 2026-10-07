@@ -1025,6 +1025,10 @@ def test_version_flag_prints_version(capsys):
 # ------------------------------------------- GitHub 分析の有効化（organizations）
 
 
+# claude_export を書かなかった組織・workspace の区画（不活性を表す雛形の既定）
+UNSET_CLAUDE_EXPORT = {"profile": "", "org_id": "", "kinds": ["members", "spend", "code"]}
+
+
 def test_organizations_accepts_names_that_are_not_in_the_default(tmp_path):
     """organizations の直下だけは利用者が決めるキー（組織名）を書ける。"""
     path = _override(tmp_path, (
@@ -1041,11 +1045,13 @@ def test_organizations_accepts_names_that_are_not_in_the_default(tmp_path):
             "github_org": "example-org",
             "workspaces": {},
             "secondary_breakeven_usd": None,
+            "claude_export": UNSET_CLAUDE_EXPORT,
         },
         "another-example": {
             "github_org": "Another-Example-1",
             "workspaces": {},
             "secondary_breakeven_usd": None,
+            "claude_export": UNSET_CLAUDE_EXPORT,
         },
     }
 
@@ -1151,6 +1157,7 @@ def test_workspaces_accepts_one_entry(tmp_path):
             "fixed_seat": "",
             "credit_limit_default_usd": None,
             "evaluation_months": None,
+            "claude_export": UNSET_CLAUDE_EXPORT,
         },
     }
 
@@ -1426,3 +1433,284 @@ def test_valid_workspace_names_are_accepted(tmp_path):
     ))
     assert sorted(
         load_config(path)["organizations"]["example"]["workspaces"]) == ["main", "副スペース"]
+
+
+# ----------------------------------------- claude.ai からの CSV 取得（claude_export）
+
+
+# 合成の組織 UUID（実在の組織を指さない）
+CLAUDE_UUID1 = "00000000-0000-4000-8000-000000000001"
+CLAUDE_UUID2 = "00000000-0000-4000-8000-000000000002"
+CLAUDE_UUID3 = "00000000-0000-4000-8000-000000000003"
+
+
+def _claude_org(body: str, org: str = "example") -> str:
+    """organizations.<org>.claude_export に body（区画の中身の行）を書いた上書き。"""
+    lines = "".join(f"      {line}\n" for line in body.splitlines())
+    return f"organizations:\n  {org}:\n    claude_export:\n{lines}"
+
+
+def _claude_workspaces(main: str, second: str = "") -> str:
+    """main / second の2 workspace に claude_export の区画を書いた上書き。"""
+    def block(body: str) -> str:
+        if not body:
+            return ""
+        return "        claude_export:\n" + "".join(
+            f"          {line}\n" for line in body.splitlines())
+
+    return (
+        "organizations:\n"
+        "  example2:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        + block(main)
+        + "      second:\n"
+        "        label: 副スペース\n"
+        + block(second)
+    )
+
+
+def test_claude_export_defaults():
+    """既定では共通設定だけがあり、どの組織も取得の対象になっていない。"""
+    cfg = load_config(PACKAGE_CONFIG_PATH)
+    assert cfg["claude_export"] == {
+        "chrome_path": "",
+        "profiles_dir": "~/.seat-analyzer/profiles",
+        "staging_dir": "~/.seat-analyzer/exports",
+        "timeout_minutes": 15,
+    }
+
+
+def test_claude_export_at_the_organization_level(tmp_path):
+    path = _override(tmp_path, _claude_org(
+        f"profile: corp\norg_id: {CLAUDE_UUID1}\nkinds: [spend, code]"))
+    assert load_config(path)["organizations"]["example"]["claude_export"] == {
+        "profile": "corp", "org_id": CLAUDE_UUID1, "kinds": ["spend", "code"],
+    }
+
+
+def test_claude_export_kinds_default_to_all_three(tmp_path):
+    path = _override(tmp_path, _claude_org(f"profile: corp\norg_id: {CLAUDE_UUID1}"))
+    assert load_config(path)["organizations"]["example"]["claude_export"]["kinds"] == [
+        "members", "spend", "code"]
+
+
+def test_claude_export_per_workspace(tmp_path):
+    path = _override(tmp_path, _claude_workspaces(
+        f"profile: corp\norg_id: {CLAUDE_UUID2}",
+        f"profile: corp\norg_id: {CLAUDE_UUID3}\nkinds: [members]",
+    ))
+    workspaces = load_config(path)["organizations"]["example2"]["workspaces"]
+    assert workspaces["main"]["claude_export"]["org_id"] == CLAUDE_UUID2
+    assert workspaces["second"]["claude_export"]["kinds"] == ["members"]
+
+
+def test_claude_export_accepts_an_upper_case_uuid(tmp_path):
+    path = _override(tmp_path, _claude_org(
+        "profile: corp\norg_id: 00000000-0000-4ABC-8DEF-000000000001"))
+    load_config(path)
+
+
+def test_claude_export_entries_do_not_share_the_template(tmp_path):
+    """書かなかった区画は組織ごとの複製で、雛形そのものや他の組織と共有しない。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    github_org: example-org\n"
+        "  example2:\n"
+        "    github_org: example-org2\n"
+    ))
+    organizations = load_config(path)["organizations"]
+    organizations["example"]["claude_export"]["kinds"].append("x")
+    assert organizations["example2"]["claude_export"]["kinds"] == ["members", "spend", "code"]
+    assert load_config(path)["organizations"]["example"]["claude_export"]["kinds"] == [
+        "members", "spend", "code"]
+
+
+# org_id の無い区画に値を書いたときのエラー
+_NO_ORG_ID = "organizations.example.claude_export に org_id がありません"
+_BAD_KINDS = "organizations.example.claude_export.kinds は members / spend / code"
+
+
+def test_claude_export_profile_without_org_id_is_rejected(tmp_path):
+    """profile だけを書いた区画を黙って不活性にしない。"""
+    path = _override(tmp_path, _claude_org("profile: corp"))
+    with pytest.raises(ValueError, match=_NO_ORG_ID) as excinfo:
+        load_config(path)
+    assert "使わない組織では claude_export を書かないでください" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("value,kinds_error", [
+    ("[]", True),
+    ("[spend]", False),
+    ("[code, spend, members]", False),   # 既定と並びだけが違う
+    ("[null]", True),
+])
+def test_claude_export_kinds_without_org_id_are_rejected(tmp_path, value, kinds_error):
+    """kinds だけを書いた区画も不活性にせず止める。kinds の中身は不活性でも検査する。"""
+    path = _override(tmp_path, _claude_org(f"kinds: {value}"))
+    with pytest.raises(ValueError, match=_NO_ORG_ID) as excinfo:
+        load_config(path)
+    assert (_BAD_KINDS in str(excinfo.value)) is kinds_error
+
+
+def test_claude_export_without_values_is_inactive(tmp_path):
+    """既定のままの区画（空の辞書・空の org_id・既定の kinds）は不活性で、エラーにしない。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    claude_export: {}\n"
+        "  example2:\n"
+        "    claude_export:\n"
+        '      org_id: ""\n'
+        "      kinds: [members, spend, code]\n"
+    ))
+    assert load_config(path)["organizations"]["example2"]["claude_export"]["org_id"] == ""
+
+
+@pytest.mark.parametrize("value", [
+    "00000000-0000-4000-8000-00000000000",      # 桁が足りない
+    "00000000000040008000000000000001",         # 区切りが無い
+    "0000000g-0000-4000-8000-000000000001",     # 16進でない
+    '" 00000000-0000-4000-8000-000000000001"',
+])
+def test_claude_export_org_id_must_be_a_uuid(tmp_path, value):
+    path = _override(tmp_path, _claude_org(f"profile: corp\norg_id: {value}"))
+    with pytest.raises(
+        ValueError, match="organizations.example.claude_export.org_id は claude.ai の組織 UUID"
+    ):
+        load_config(path)
+
+
+def test_claude_export_org_id_must_be_a_string(tmp_path):
+    path = _override(tmp_path, _claude_org("profile: corp\norg_id: 123"))
+    with pytest.raises(ValueError, match="claude_export.org_id は文字列が必要です"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", ['""', "a/b", '"a b"', ".", "..", "日本", '"..\\\\x"'])
+def test_claude_export_profile_must_be_a_directory_name(tmp_path, value):
+    path = _override(tmp_path, _claude_org(f"profile: {value}\norg_id: {CLAUDE_UUID1}"))
+    with pytest.raises(
+        ValueError, match="organizations.example.claude_export.profile は英数字と"
+    ):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", ["profile.v2", "corp_main", "Corp-1"])
+def test_claude_export_profile_accepts_directory_names(tmp_path, value):
+    path = _override(tmp_path, _claude_org(f"profile: {value}\norg_id: {CLAUDE_UUID1}"))
+    assert load_config(path)["organizations"]["example"]["claude_export"]["profile"] == value
+
+
+@pytest.mark.parametrize("value", ["[]", "[members, foo]", "[members, members]", "[1]"])
+def test_claude_export_kinds_are_validated(tmp_path, value):
+    path = _override(tmp_path, _claude_org(
+        f"profile: corp\norg_id: {CLAUDE_UUID1}\nkinds: {value}"))
+    with pytest.raises(
+        ValueError, match="organizations.example.claude_export.kinds は members / spend / code"
+    ):
+        load_config(path)
+
+
+def test_claude_export_in_a_workspace_is_validated(tmp_path):
+    path = _override(tmp_path, _claude_workspaces("profile: corp\norg_id: x"))
+    with pytest.raises(
+        ValueError,
+        match="organizations.example2.workspaces.main.claude_export.org_id は claude.ai",
+    ):
+        load_config(path)
+
+
+def test_claude_export_at_the_organization_level_of_a_nested_org_is_rejected(tmp_path):
+    """入れ子レイアウトの組織は workspace ごとに書く（組織直下からは配置先が決まらない）。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example2:\n"
+        "    claude_export:\n"
+        "      profile: corp\n"
+        f"      org_id: {CLAUDE_UUID1}\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+    ))
+    with pytest.raises(
+        ValueError,
+        match="organizations.example2.claude_export は workspaces を持つ組織には書けません",
+    ):
+        load_config(path)
+
+
+def test_claude_export_same_org_id_twice_is_rejected(tmp_path):
+    """同じスペースを2つの配置先へ落とさない（大文字小文字の違いも同じ UUID）。"""
+    path = _override(tmp_path, (
+        _claude_org(f"profile: corp\norg_id: {CLAUDE_UUID1}")
+        + "  example2:\n"
+        "    workspaces:\n"
+        "      main:\n"
+        "        primary: true\n"
+        "        claude_export:\n"
+        "          profile: corp\n"
+        f"          org_id: {CLAUDE_UUID1.replace('-4000-', '-4AAA-')}\n"
+        "      second:\n"
+        "        claude_export:\n"
+        "          profile: corp\n"
+        f"          org_id: {CLAUDE_UUID1.replace('-4000-', '-4aaa-')}\n"
+    ))
+    with pytest.raises(ValueError, match="複数の区画に書かれています") as excinfo:
+        load_config(path)
+    assert ("organizations.example2.workspaces.main.claude_export / "
+            "organizations.example2.workspaces.second.claude_export") in str(excinfo.value)
+
+
+@pytest.mark.parametrize("text,where", [
+    (_claude_org(f"profile: corp\norg_id: {CLAUDE_UUID1}\norgid: x"),
+     "organizations.example.claude_export.orgid"),
+    (_claude_workspaces(f"profile: corp\norg_id: {CLAUDE_UUID2}\nkind: [spend]"),
+     "organizations.example2.workspaces.main.claude_export.kind"),
+    ("claude_export:\n  chrome: x\n", "claude_export.chrome"),
+])
+def test_claude_export_unknown_key_is_rejected(tmp_path, text, where):
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=f"'{re.escape(where)}' は既定に存在しないキー"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("text,where,want", [
+    ("organizations:\n  example:\n    claude_export: corp\n",
+     "organizations.example.claude_export", "辞書"),
+    (_claude_org(f"profile: corp\norg_id: {CLAUDE_UUID1}\nkinds: members"),
+     "organizations.example.claude_export.kinds", "リスト"),
+    ("claude_export: x\n", "claude_export", "辞書"),
+])
+def test_claude_export_kind_mismatch_is_rejected(tmp_path, text, where, want):
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=f"'{re.escape(where)}' は{want}で指定してください"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("text,fragment", [
+    ("claude_export:\n  chrome_path: 1\n", "claude_export.chrome_path は文字列が必要です"),
+    ('claude_export:\n  profiles_dir: ""\n', "claude_export.profiles_dir は空でない文字列"),
+    ('claude_export:\n  staging_dir: " "\n', "claude_export.staging_dir は空でない文字列"),
+    ("claude_export:\n  timeout_minutes: 0\n", "claude_export.timeout_minutes は 1 以上の整数"),
+    ("claude_export:\n  timeout_minutes: 1.5\n", "claude_export.timeout_minutes は 1 以上の整数"),
+    ("claude_export:\n  timeout_minutes: true\n", "claude_export.timeout_minutes は 1 以上の整数"),
+])
+def test_claude_export_settings_are_validated(tmp_path, text, fragment):
+    path = _override(tmp_path, text)
+    with pytest.raises(ValueError, match=re.escape(fragment)):
+        load_config(path)
+
+
+def test_claude_export_settings_can_be_overridden(tmp_path):
+    path = _override(tmp_path, (
+        "claude_export:\n"
+        "  chrome_path: /opt/chrome/chrome\n"
+        "  timeout_minutes: 30\n"
+    ))
+    section = load_config(path)["claude_export"]
+    assert section["chrome_path"] == "/opt/chrome/chrome"
+    assert section["timeout_minutes"] == 30
+    assert section["staging_dir"] == "~/.seat-analyzer/exports"

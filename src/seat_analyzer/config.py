@@ -7,12 +7,15 @@ config.yaml は差分だけを書く上書きファイルとして扱う。モ�
 
 from __future__ import annotations
 
+import copy
 import math
 import os
+import re
 from pathlib import Path, PurePath
 
 import yaml
 
+from . import claude_export
 from .admin_inputs import ORGANIZATION_OPTIONAL_COLUMNS, USERS_OPTIONAL_COLUMNS
 from .github_collect import is_github_org_name
 from .ingest import (
@@ -252,6 +255,15 @@ def _kind(value) -> str:
 # どんな名前とも一致し、他の階層のキーは既定との突き合わせで従来どおり閉じたままにする。
 _ANY_NAME = "*"
 
+# claude.ai からの CSV 取得（collect --source claude）の区画。単一スペースの組織は組織直下、
+# 複数スペースの組織は workspace ごとに書く。org_id が空のままなら取得の対象にならない
+# （書いた組織／workspace だけが対象）。kinds は省略時に 3 種すべて。
+_CLAUDE_EXPORT_ENTRY = {
+    "profile": "",
+    "org_id": "",
+    "kinds": list(claude_export.KINDS),
+}
+
 # organizations.<組織名> に書けるキーと、未指定を表す既定値。
 # github_org は任意で、空のままなら GitHub 分析は無効（設定を書いた組織だけが対象）。
 # secondary_breakeven_usd は副 workspace の損益分岐で、未指定は None で表す。
@@ -259,6 +271,7 @@ _ORGANIZATION_ENTRY = {
     "github_org": "",
     "workspaces": {},
     "secondary_breakeven_usd": None,
+    "claude_export": _CLAUDE_EXPORT_ENTRY,
 }
 
 # organizations.<組織名>.workspaces.<workspace名> に書けるキーと、未指定を表す既定値。
@@ -270,6 +283,7 @@ _WORKSPACE_ENTRY = {
     "fixed_seat": "",
     "credit_limit_default_usd": None,
     "evaluation_months": None,
+    "claude_export": _CLAUDE_EXPORT_ENTRY,
 }
 
 # 既定に列挙できないキー（利用者ごとの組織名・workspace 名）を書けるセクションと、その
@@ -315,7 +329,9 @@ def _merge_override(base: dict, override: dict, *, label: str, path: tuple[str, 
             if template is None:
                 raise ValueError(
                     f"{label} の '{where}' は既定に存在しないキーです（綴りを確認してください）")
-            current = template
+            # 雛形は入れ子の辞書とリストを持つ。エントリごとに複製し、書かなかった項目が
+            # 組織どうし・雛形そのものと同じオブジェクトを共有しないようにする
+            current = copy.deepcopy(template)
         else:
             current = base[key]
         if value is None:
@@ -488,11 +504,91 @@ def _validate_usage_credits(cfg: dict, errors: list[str]) -> None:
             errors.append(f"usage_credits.{key} は 0 以上の有限な数値が必要です")
 
 
+def _validate_claude_export(cfg: dict, errors: list[str]) -> None:
+    # claude.ai からの CSV 取得の共通設定。既定設定が必ず持ち、上書きはキーを消せないため
+    # 常に検査する（取得を使わない組織しかなくても、編集ミスは編集した実行で検出する）
+    section = cfg["claude_export"]
+    if not isinstance(section, dict):
+        errors.append("claude_export セクションが辞書ではありません")
+        return
+    if not isinstance(section.get("chrome_path"), str):
+        errors.append("claude_export.chrome_path は文字列が必要です（空文字で自動検出）")
+    # 空文字はカレントディレクトリとして解決され、プロファイルやダウンロードを意図しない
+    # 場所へ置く
+    for key in ("profiles_dir", "staging_dir"):
+        if not _is_text(section.get(key)):
+            errors.append(f"claude_export.{key} は空でない文字列が必要です")
+    minutes = section.get("timeout_minutes")
+    if not _is_integer(minutes) or minutes < 1:
+        errors.append("claude_export.timeout_minutes は 1 以上の整数が必要です")
+
+
+# claude.ai の組織 UUID（8-4-4-4-12 桁の16進。大文字小文字は問わない）
+_CLAUDE_ORG_ID_RE = re.compile(
+    r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+# プロファイル名（profiles_dir 配下のディレクトリ名になる）
+_CLAUDE_PROFILE_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _validate_claude_export_entry(
+    where: str, section: object, errors: list[str], org_ids: dict[str, list[str]]
+) -> None:
+    """組織または workspace の claude_export 区画を検査する。
+
+    org_id が空なら不活性。ただし profile や既定と違う kinds が書かれている形は
+    エラーにする（有効にしたつもりの設定を黙って不活性にしない）。kinds の型・値・重複は
+    不活性の区画でも検査する。有効な区画の org_id は org_ids へ集め、同じスペースを
+    2か所に書いた設定を呼び出し側が検出できるようにする。
+    """
+    where = f"{where}.claude_export"
+    if not isinstance(section, dict):
+        errors.append(f"{where} は辞書が必要です")
+        return
+    kinds = section.get("kinds")
+    if not (
+        isinstance(kinds, list)
+        and kinds
+        and all(isinstance(kind, str) and kind in claude_export.KINDS for kind in kinds)
+        and len(set(kinds)) == len(kinds)
+    ):
+        errors.append(
+            f"{where}.kinds は {' / '.join(claude_export.KINDS)} から重複なく1つ以上を"
+            "並べたリストが必要です"
+        )
+    org_id, profile = section.get("org_id", ""), section.get("profile", "")
+    if not isinstance(org_id, str):
+        errors.append(f"{where}.org_id は文字列が必要です")
+        return
+    if not isinstance(profile, str):
+        errors.append(f"{where}.profile は文字列が必要です")
+        return
+    if not org_id:
+        if profile or kinds != _CLAUDE_EXPORT_ENTRY["kinds"]:
+            errors.append(
+                f"{where} に org_id がありません。取得を有効にするには org_id"
+                "（claude.ai の組織 UUID）が必要です。使わない組織では claude_export を"
+                "書かないでください"
+            )
+        return
+    if _CLAUDE_ORG_ID_RE.fullmatch(org_id):
+        org_ids.setdefault(org_id.lower(), []).append(where)
+    else:
+        errors.append(
+            f"{where}.org_id は claude.ai の組織 UUID（8-4-4-4-12 桁の16進）が必要です")
+    if not _CLAUDE_PROFILE_RE.fullmatch(profile) or profile in (".", ".."):
+        errors.append(
+            f"{where}.profile は英数字と . _ - からなる名前が必要です"
+            "（プロファイルのディレクトリ名になります。. と .. は使えません）"
+        )
+
+
 # fixed_seat に書けるシート種別（空文字は「固定なし」）
 _FIXED_SEATS = ("standard", "premium")
 
 
-def _validate_workspaces(name: str, entry: dict, errors: list[str]) -> None:
+def _validate_workspaces(
+    name: str, entry: dict, errors: list[str], org_ids: dict[str, list[str]]
+) -> None:
     """組織の workspaces と、それに付随する損益分岐の設定を検査する。
 
     workspaces を書いた組織は主 workspace がちょうど1つに決まる必要がある。主が
@@ -560,6 +656,7 @@ def _validate_workspaces(name: str, entry: dict, errors: list[str]) -> None:
         months = settings.get("evaluation_months")
         if months is not None and (not _is_integer(months) or months < 1):
             errors.append(f"{where}.evaluation_months は 1 以上の整数が必要です")
+        _validate_claude_export_entry(where, settings.get("claude_export", {}), errors, org_ids)
 
     # 同じ入力ディレクトリを指しうる名前の組み合わせ（大文字小文字・文字の合成の違い）
     # は、どちらの workspace の設定なのかが環境によって変わるため拒否する
@@ -601,11 +698,15 @@ def _validate_organizations(cfg: dict, errors: list[str]) -> None:
 
     github_org は任意で、空のままなら GitHub 分析は無効（workspaces だけを書く組織が
     あるため、エントリの存在ではなく github_org の有無で有効・無効が決まる）。
+    claude_export も同じく任意で、org_id を書いた組織／workspace だけが取得の対象になる。
     """
     organizations = cfg["organizations"]
     if not isinstance(organizations, dict):
         errors.append("organizations セクションが辞書ではありません")
         return
+    # claude.ai の組織 UUID（小文字）→ それを書いた区画。同じスペースを2つの配置先へ
+    # 落とすと、どちらの入力にも同じ CSV が入り、別々のスペースとして集計される
+    org_ids: dict[str, list[str]] = {}
     for name, entry in organizations.items():
         if not _is_text(name):
             errors.append(f"organizations のキーには組織名が必要です: {name!r}")
@@ -620,7 +721,27 @@ def _validate_organizations(cfg: dict, errors: list[str]) -> None:
                 "必要です（英数字とハイフンの1〜39文字。先頭と末尾は英数字で、"
                 "ハイフンは連続しません）"
             )
-        _validate_workspaces(name, entry, errors)
+        workspaces = entry.get("workspaces", {})
+        section = entry.get("claude_export", _CLAUDE_EXPORT_ENTRY)
+        if isinstance(workspaces, dict) and workspaces and section != _CLAUDE_EXPORT_ENTRY:
+            # 入れ子レイアウトの組織は配置先が workspace ごとに分かれるので、組織直下の
+            # 区画からはどの workspace へ置くかが決まらない
+            errors.append(
+                f"organizations.{name}.claude_export は workspaces を持つ組織には書けません"
+                f"（organizations.{name}.workspaces.<workspace名>.claude_export に"
+                " workspace ごとに書いてください）"
+            )
+        else:
+            _validate_claude_export_entry(
+                f"organizations.{name}", section, errors, org_ids)
+        _validate_workspaces(name, entry, errors, org_ids)
+
+    for org_id, owners in org_ids.items():
+        if len(owners) > 1:
+            errors.append(
+                f"claude_export.org_id {org_id} が複数の区画に書かれています"
+                f"（{' / '.join(owners)}）。1つのスペースは1か所にだけ書いてください"
+            )
 
 
 def _validate_cost_basis(cfg: dict, errors: list[str]) -> None:
@@ -854,6 +975,7 @@ def _validate(cfg: dict) -> None:
     _validate_decision_v2(cfg, errors)
     _validate_usage_credits(cfg, errors)
     _validate_organizations(cfg, errors)
+    _validate_claude_export(cfg, errors)
     _validate_cost_basis(cfg, errors)
     _validate_product_policy(cfg, errors)
     _validate_discussion(cfg, errors)
