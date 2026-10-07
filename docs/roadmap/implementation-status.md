@@ -243,14 +243,17 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 - config: トップレベルの`claude_export`（`chrome_path`・`profiles_dir`・`staging_dir`・
   `timeout_minutes`）と、組織直下・workspace ごとの`claude_export`（`profile`・`org_id`・`kinds`）を
   足した。既定は不活性で、`org_id`を書いた区画だけが対象になる。ロード時に、UUID の形式・
-  プロファイル名（ディレクトリ名として使える字句）・`kinds`・`profile`だけの区画・`workspaces`を
+  プロファイル名（ディレクトリ名として使える字句）・`kinds`（不活性の区画でも検査する）・
+  `org_id`の無い区画に書いた`profile`や既定と違う`kinds`（黙って不活性にしない）・`workspaces`を
   持つ組織の直下の区画・同じ`org_id`の重複（大文字小文字を区別しない）・未知のキーを止める。
   組織・workspace の雛形は入れ子の辞書とリストを持つので、エントリごとに複製して共有しない
   ようにした
 - `claude_export.py`（新規・層15。import は`ingest`だけ）: 対象の列挙・当月／前月のモードの決定・
-  プロファイルごとの計画・拡張機能へ渡す実行内容とトリガー URL・manifest の読み取りと計画との
-  突き合わせ（パスは計画の側から組む）・検証（中身・種別ごとの必須列のヘッダ・ファイル名の
-  期間。Claude Code analytics は LoC の列も要求して支出レポートとの取り違えを止める）・配置
+  プロファイルごとの計画（大文字小文字や文字の合成の違いだけの組織名・workspace 名はここで
+  止める）・拡張機能へ渡す実行内容とトリガー URL・manifest の読み取りと計画との突き合わせ
+  （パスは計画の側から組み、ディレクトリ・ドライブ・`:`を含むファイル名は失敗に倒す）・検証
+  （中身・種別ごとの必須列のヘッダ・ファイル名の期間。Claude Code analytics は LoC の列も要求
+  して支出レポートとの取り違えを止める。64 KiB を超えるヘッダは途中で切れたものとして失敗）・配置
   （元のファイル名のまま。組織ディレクトリが無ければ作らずに止める）・Preferences の更新（自動
   ダウンロードの許可・確認の抑止・ダウンロード先だけ。冪等で、変更時は元の内容を`.bak`に残す。
   Preferences の無いプロファイルには作らずに止める）・Chrome の場所・起動コマンド・プロセスの
@@ -267,7 +270,7 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
   Get-CimInstance）と終了（SIGTERM / SIGKILL と taskkill）。解析と組み立ては 3 OS 分をどの OS の
   上でもテストする。実機確認は Step 51 で行う
 - golden は不変（出力を変える変更は無い）。利用者向け docs は Step 51 で書く
-- テスト: 2492 passed（+153件）、ruff 緑、`check-text --diff`は0件
+- テスト: 2507 passed（+168件）、ruff 緑、`check-text --diff`は0件
 
 ### 2026-10-03 — Step 48: 速報・doctorの人の検査・docs
 

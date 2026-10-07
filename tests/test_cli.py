@@ -1926,6 +1926,27 @@ def test_collect_claude_rejects_an_unknown_profile(tmp_path, monkeypatch, capsys
     assert "--profile corp を使う claude_export の対象がありません" in capsys.readouterr().err
 
 
+def test_collect_claude_rejects_org_names_that_differ_only_in_case(
+    tmp_path, monkeypatch, capsys
+):
+    """大文字小文字だけが違う組織名は計画の段階で止め、何も表示しない。"""
+    config = _claude_config(tmp_path, organizations=(
+        "organizations:\n"
+        "  org-a:\n"
+        "    claude_export:\n"
+        "      profile: corp\n"
+        f"      org_id: {CLAUDE_UUID1}\n"
+        "  Org-A:\n"
+        "    claude_export:\n"
+        "      profile: corp\n"
+        f"      org_id: {CLAUDE_UUID2}\n"
+    ))
+    assert _dry_run(config, _claude_input(tmp_path), monkeypatch) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "claude_export を設定した組織名が衝突しています" in captured.err
+
+
 @pytest.mark.parametrize("month,fragment", [
     ("2026-08", "取得できるのは当月と前月だけです（当月 2026-10・前月 2026-09）"),
     ("2026-9", "対象月の形式が不正です"),

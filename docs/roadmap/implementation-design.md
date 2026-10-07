@@ -1032,7 +1032,7 @@ stagingの配置（拡張機能が書く）:
 ```
 
 - 壊れたJSON・`results`の欠落・オブジェクトでない要素は読み込みを止める。`ok`でもファイル名が
-  無い（またはディレクトリを含む）結果は失敗として扱う
+  無い（またはディレクトリ・ドライブ・`:`を含む）結果は失敗として扱う
 - manifestの`dir`は計画の (配置先, 種別) と突き合わせるだけで、パスは常に計画の側から組む。
   計画にあってmanifestに無い組み合わせは「結果なし」の失敗、計画に無い結果は捨てる
 
@@ -1040,7 +1040,8 @@ stagingの配置（拡張機能が書く）:
 
 1. ファイルが存在し、空でない
 2. 先頭行のヘッダに、種別ごとの必須の正準列がすべてある（照合は`columns.<種別>`のエイリアスと、
-   分析の読み込みと同じ正規化で行い、欠けていれば最初の1列を理由にする）
+   分析の読み込みと同じ正規化で行い、欠けていれば最初の1列を理由にする）。先頭行は64 KiBまで
+   読み、それを超えるものは途中で切れたヘッダとして失敗にする
    - members・支出レポート: 分析の読み込みが必須にする列（`ingest.REQUIRED_COLUMNS`。membersは
      email・seat_type、支出レポートはemail・model・prompt_tokens・completion_tokens）
    - Claude Code analytics: emailと月間のLoC（`loc_with_cc`）。エクスポートはこの2列で、
@@ -2690,8 +2691,10 @@ dashboardで読めるようにする。
 - config: トップレベルの`claude_export`（`chrome_path`・`profiles_dir`・`staging_dir`・
   `timeout_minutes`）と、`organizations.<組織名>.claude_export`・
   `organizations.<組織名>.workspaces.<workspace名>.claude_export`（`profile`・`org_id`・`kinds`）。
-  ロード時に検証する（UUIDの形式・プロファイル名・`kinds`・`profile`だけの区画・`workspaces`を
-  持つ組織の直下の区画・同じ`org_id`の重複・未知のキー）
+  ロード時に検証する（UUIDの形式・プロファイル名・`kinds`（不活性の区画でも）・`org_id`の無い
+  区画に書いた`profile`や既定と違う`kinds`・`workspaces`を持つ組織の直下の区画・同じ`org_id`の
+  重複・未知のキー）。計画を作る時点で、大文字小文字や文字の合成の違いだけの組織名・
+  workspace名も止める
 - `claude_export.py`: 対象の列挙（`gated_targets`）、モードの決定と計画（`resolve_mode`・
   `plan_runs`）、拡張機能へ渡す実行内容とトリガーURL、manifestの読み取りと計画との突き合わせ、
   検証（`verify_export`）と配置（`place_export`）、Preferencesの更新、Chromeの場所・起動

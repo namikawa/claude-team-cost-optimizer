@@ -44,7 +44,7 @@ import time
 import urllib.parse
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PureWindowsPath
 
 from . import ingest
 
@@ -188,6 +188,32 @@ def resolve_mode(month: str | None, today: dt.date) -> tuple[str, str]:
     )
 
 
+def check_target_names(targets: Iterable[ExportTarget]) -> None:
+    """配置先が同じディレクトリになりうる名前の組み合わせを ValueError にする。
+
+    大文字小文字や文字の合成の違いだけの組織名は、それを区別しないファイルシステムでは
+    同じ入力ディレクトリになり、別のスペースの CSV が1つの組織へ混ざる。組織名どうしと、
+    同じ組織の workspace 名どうしを分析と同じ規則（`ingest.check_org_name_collisions`）で
+    見る。一部の組織だけを選んだ実行でも、もう一方の配置先と重なりうるので全対象で見る。
+    """
+    targets = list(targets)
+    try:
+        ingest.check_org_name_collisions([target.org for target in targets])
+    except ValueError as exc:
+        raise ValueError(f"claude_export を設定した組織名が衝突しています: {exc}") from None
+    workspaces: dict[str, list[str]] = {}
+    for target in targets:
+        if target.workspace is not None:
+            workspaces.setdefault(target.org, []).append(target.workspace)
+    for org, names in workspaces.items():
+        try:
+            ingest.check_org_name_collisions(names)
+        except ValueError as exc:
+            raise ValueError(
+                f"組織 {org} の claude_export を設定した workspace 名が衝突しています: {exc}"
+            ) from None
+
+
 def plan_runs(
     targets: Sequence[ExportTarget],
     *,
@@ -201,7 +227,11 @@ def plan_runs(
     orgs・profile を渡すとその範囲へ絞る。orgs に claude_export の無い組織名があれば
     ValueError（綴り違いを黙って無視しない）。絞った結果が空なら空のリストを返す
     （案内と終了コードは呼び出し側が決める）。
+
+    大文字小文字や文字の合成の違いだけの組織名（同じ組織の workspace 名どうしも）は、
+    絞り込みの前に全対象で ValueError にする（`check_target_names`）。
     """
+    check_target_names(targets)
     mode, resolved = resolve_mode(month, today)
     selected = list(targets)
     if orgs:
@@ -285,12 +315,17 @@ def staged_file(
 
 
 def _is_plain_name(value: object) -> bool:
-    """ディレクトリを含まない単一のファイル名か（staging の外を指す名前を受け付けない）。"""
-    return (
-        isinstance(value, str)
-        and value not in ("", ".", "..")
-        and not any(sep in value for sep in ("/", "\\", "\x00"))
-    )
+    """ディレクトリもドライブも含まない単一のファイル名か（staging の外を指す名前を受け付けない）。
+
+    区切り（`/`・`\\`）と NUL に加えて `:` も拒否する。Windows では `D:x.csv` が D ドライブの
+    カレントディレクトリを指し、`x.csv:y` は別のデータストリームになるため。
+    """
+    if not isinstance(value, str) or value in ("", ".", ".."):
+        return False
+    if any(sep in value for sep in ("/", "\\", "\x00", ":")):
+        return False
+    windows = PureWindowsPath(value)
+    return not windows.anchor and windows.name == value
 
 
 def _manifest_problem(data: object) -> str | None:
@@ -380,23 +415,33 @@ class Verdict:
     reason: str | None
 
 
-# ヘッダとして読む先頭行の上限（1 行目に改行が無い巨大なファイルを丸ごと読まない）
+# ヘッダとして読む先頭行の上限（1 行目に改行が無い巨大なファイルを丸ごと読まない）。
+# これを超えるヘッダは途中で切れたものとして検証を失敗にする
 _HEADER_LIMIT = 64 * 1024
 
 
-def _read_header(path: Path) -> list[str] | None:
+# ヘッダを読めなかった理由（_read_header の戻り）
+_HEADER_TOO_LONG = "too_long"
+_HEADER_UNDECODABLE = "undecodable"
+
+
+def _read_header(path: Path) -> tuple[list[str], str | None]:
     """先頭行を CSV の 1 行として読み、各セルの引用符と前後の空白を落とす。
 
-    UTF-8 として読めなければ None。本文は読まない（種別の判定に要るのはヘッダだけ）。
+    戻りは (セルの一覧, 読めなかった理由)。上限まで読んでも行が終わらなければ
+    `_HEADER_TOO_LONG`（途中で切れたヘッダで照合しない）、UTF-8 として読めなければ
+    `_HEADER_UNDECODABLE`。本文は読まない（種別の判定に要るのはヘッダだけ）。
     """
     with path.open("rb") as f:
         raw = f.readline(_HEADER_LIMIT)
+    if len(raw) >= _HEADER_LIMIT and not raw.endswith(b"\n"):
+        return [], _HEADER_TOO_LONG
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        return None
+        return [], _HEADER_UNDECODABLE
     row = next(csv.reader([text.rstrip("\r\n")]), [])
-    return [cell.strip().strip('"').strip() for cell in row]
+    return [cell.strip().strip('"').strip() for cell in row], None
 
 
 def _month_bounds(month: str) -> tuple[dt.date, dt.date]:
@@ -435,8 +480,9 @@ def verify_export(
 ) -> Verdict:
     """ダウンロードした CSV が種別と対象月に合うかを確かめる（最初に外れた理由を返す）。
 
-    確かめる順は、中身があること → ヘッダに種別ごとの正準列（`_KIND_COLUMNS`）がすべて
-    あること（欠けていれば最初の 1 列を理由にする） → ファイル名の期間が対象月に合うこと。
+    確かめる順は、中身があること → ヘッダ（先頭行。`_HEADER_LIMIT` 以内）に種別ごとの
+    正準列（`_KIND_COLUMNS`）がすべてあること（欠けていれば最初の 1 列を理由にする） →
+    ファイル名の期間が対象月に合うこと。
     ヘッダの照合は分析の読み込み（`ingest.map_columns`）と同じ正規化で行う。
     columns_aliases は設定の columns。
     """
@@ -452,8 +498,11 @@ def verify_export(
     if size == 0:
         return Verdict(False, f"{label}のファイルが空です")
 
-    header = _read_header(path)
-    if header is None:
+    header, problem = _read_header(path)
+    if problem == _HEADER_TOO_LONG:
+        return Verdict(
+            False, f"{label}のヘッダが長すぎます（{_HEADER_LIMIT // 1024} KiB 以内）")
+    if problem == _HEADER_UNDECODABLE:
         return Verdict(False, f"{label}のヘッダを UTF-8 として読めません")
     section, required = _KIND_COLUMNS[kind]
     present = {ingest.normalize_header(cell) for cell in header}
@@ -760,18 +809,31 @@ def _windows_rows(listing: str) -> list[tuple[int, str]]:
 
 
 def _uses_profile(command: str, profile: str) -> bool:
-    """コマンドラインが `--user-data-dir=<profile>`（引用符つきも可）を含むか。
+    """コマンドラインが `--user-data-dir=<profile>` をその引数として含むか。
 
-    パスの直後が区切り（空白・引用符・行末）であることまで見る（`corp` のプロファイルで
-    `corp2` を拾わないため）。
+    パスの直後が引数の終わりであることまで見る（`corp` のプロファイルで `corp2` や
+    `corp backup` を拾わないため）。引数の終わりとみなすのは次の場合だけ:
+
+    - 値を引用符で囲む形（`--user-data-dir="<path>"`）と、引数全体を引用符で囲む形
+      （`"--user-data-dir=<path>"`。Windows で空白を含む引数を渡すとこの形になる）は、
+      直後が閉じの `"` のとき
+    - 引用符の無い形は、直後が行末か、空白の後に次のフラグ（`-`）が続くとき。空白を含む
+      パスは needle に含まれるので、このままで一致する
     """
-    for prefix in ("--user-data-dir=", '--user-data-dir="'):
-        needle = prefix + profile
+    for needle, value_quoted in (
+        (f'--user-data-dir="{profile}', True),
+        (f"--user-data-dir={profile}", False),
+    ):
         start = command.find(needle)
         while start != -1:
             end = start + len(needle)
-            if end == len(command) or command[end] in ' \t"':
-                return True
+            if value_quoted or (start > 0 and command[start - 1] == '"'):
+                if command[end:end + 1] == '"':
+                    return True
+            else:
+                rest = command[end:]
+                if not rest or (rest[0].isspace() and rest.lstrip().startswith("-")):
+                    return True
             start = command.find(needle, start + 1)
     return False
 

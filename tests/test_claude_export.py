@@ -249,6 +249,46 @@ def test_plan_runs_returns_nothing_when_the_filters_leave_nothing():
     assert plan_runs([], month=None, today=TODAY) == []
 
 
+def test_plan_runs_rejects_org_names_that_differ_only_in_case(tmp_path):
+    """大文字小文字だけが違う組織名は、同じ入力ディレクトリになる環境があるので止める。"""
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "organizations:\n"
+        "  org-a:\n"
+        "    claude_export:\n"
+        "      profile: corp\n"
+        f"      org_id: {UUID1}\n"
+        "  Org-A:\n"
+        "    claude_export:\n"
+        "      profile: corp\n"
+        f"      org_id: {UUID2}\n",
+        encoding="utf-8", newline="\n",
+    )
+    targets = gated_targets(load_config(path)["organizations"])
+    # 片方だけを選んだ実行でも止める（もう一方の配置先と重なりうるため）
+    for orgs in (None, ["org-a"]):
+        with pytest.raises(ValueError, match="組織名が衝突しています") as excinfo:
+            plan_runs(targets, month=None, today=TODAY, orgs=orgs)
+        assert "'org-a'" in str(excinfo.value) and "'Org-A'" in str(excinfo.value)
+
+
+def test_plan_runs_rejects_workspace_names_that_differ_only_in_case():
+    targets = [
+        _target("example2", "main", org_id=UUID2),
+        _target("example2", "Main", org_id=UUID3),
+    ]
+    with pytest.raises(ValueError, match="組織 example2 の claude_export を設定した workspace 名"):
+        plan_runs(targets, month=None, today=TODAY)
+
+
+def test_plan_runs_allows_the_same_workspace_name_in_different_orgs():
+    targets = [
+        _target("example", "main", org_id=UUID1),
+        _target("example2", "Main", org_id=UUID2),
+    ]
+    assert len(plan_runs(targets, month=None, today=TODAY)[0].targets) == 2
+
+
 def test_plan_runs_rejects_a_month_it_cannot_fetch():
     with pytest.raises(ValueError, match="取得できるのは当月と前月だけです"):
         plan_runs(TARGETS, month="2026-07", today=TODAY)
@@ -363,6 +403,11 @@ def test_read_manifest_rejects_a_broken_manifest(tmp_path, payload, fragment):
     ({"filename": "../spend.csv"}, "invalid filename"),
     ({"filename": "a\\b.csv"}, "invalid filename"),
     ({"filename": ".."}, "invalid filename"),
+    # Windows のドライブ相対・絶対パス
+    ({"filename": "D:spend-2026-09-01-to-2026-09-30.csv"}, "invalid filename"),
+    ({"filename": "C:\\x.csv"}, "invalid filename"),
+    # 別のデータストリーム
+    ({"filename": "spend.csv:extra"}, "invalid filename"),
 ])
 def test_read_manifest_fails_an_ok_result_without_a_usable_filename(tmp_path, item, reason):
     """ok でも使えるファイル名が無ければ失敗に倒す（staging の外を指す名前も読まない）。"""
@@ -498,6 +543,22 @@ def test_verify_export_rejects_a_spend_csv_as_code_analytics(tmp_path):
     assert not verdict.ok
     assert "Claude Code analyticsのヘッダに loc_with_cc に当たる列がありません" \
         in verdict.reason
+
+
+def test_verify_export_rejects_a_header_longer_than_the_limit(tmp_path):
+    """上限を超えたヘッダは途中で切れたものとして扱い、照合しない。"""
+    header = SPEND_HEADER + "," + "x" * (64 * 1024)
+    path = _csv(tmp_path, "spend-2026-09-01-to-2026-09-30.csv", header,
+                "user1@example.com,claude-sonnet-4-6,Chat,10,20\n")
+    verdict = _verify(path, "spend", "2026-09")
+    assert verdict == claude_export.Verdict(False, "支出レポートのヘッダが長すぎます（64 KiB 以内）")
+
+
+def test_verify_export_accepts_a_header_just_under_the_limit(tmp_path):
+    header = SPEND_HEADER + "," + "x" * (64 * 1024 - len(SPEND_HEADER) - 2)
+    path = _csv(tmp_path, "spend-2026-09-01-to-2026-09-30.csv", header)
+    assert len(header) + 1 == 64 * 1024   # 改行まで含めてちょうど上限
+    assert _verify(path, "spend", "2026-09").ok
 
 
 def test_verify_export_rejects_a_header_that_is_not_utf8(tmp_path):
@@ -921,6 +982,27 @@ WIN_LISTING = "\r\n".join([
 def test_chrome_pids_from_powershell_csv():
     """引用符つき・大文字小文字の違いも同じプロファイルとして拾い、子と別プロファイルは除く。"""
     assert chrome_pids(WIN_LISTING, WIN_PROFILE, platform="win32") == [2001, 2004, 2005]
+
+
+def test_chrome_pids_ignore_a_profile_whose_path_extends_the_target_with_a_space():
+    """`corp backup` のように対象のパスに空白と別名が続くプロファイルは拾わない。"""
+    listing = "\n".join([
+        f"  301 {CHROME_BIN} --user-data-dir={UNIX_PROFILE} backup --no-first-run",
+        f"  302 {CHROME_BIN} --user-data-dir={UNIX_PROFILE} backup",
+        # 値の後に次のフラグではなく別の語が来る形は、引数の終わりとみなさない
+        f"  303 {CHROME_BIN} --user-data-dir={UNIX_PROFILE} {TRIGGER_PREFIX}x",
+        f"  304 {CHROME_BIN} --user-data-dir={UNIX_PROFILE}\t--no-first-run",
+    ])
+    assert chrome_pids(listing, UNIX_PROFILE, platform="linux") == [304]
+
+    windows = "\r\n".join([
+        '"ProcessId","CommandLine"',
+        f'"2101","{WIN_CHROME} --user-data-dir=""{WIN_PROFILE} backup"" --no-first-run"',
+        f'"2102","{WIN_CHROME} ""--user-data-dir={WIN_PROFILE} backup"" --no-first-run"',
+        f'"2103","{WIN_CHROME} --user-data-dir={WIN_PROFILE} backup --no-first-run"',
+        f'"2104","{WIN_CHROME} --user-data-dir=""{WIN_PROFILE}"" --no-first-run"',
+    ])
+    assert chrome_pids(windows, WIN_PROFILE, platform="win32") == [2104]
 
 
 def test_chrome_pids_without_a_powershell_header():

@@ -535,14 +535,26 @@ def _validate_claude_export_entry(
 ) -> None:
     """組織または workspace の claude_export 区画を検査する。
 
-    org_id が空なら不活性で、値の中身は問わない。ただし profile だけが書かれている形は
-    エラーにする（有効にしたつもりの設定を黙って不活性にしない）。有効な区画の org_id は
-    org_ids へ集め、同じスペースを2か所に書いた設定を呼び出し側が検出できるようにする。
+    org_id が空なら不活性。ただし profile や既定と違う kinds が書かれている形は
+    エラーにする（有効にしたつもりの設定を黙って不活性にしない）。kinds の型・値・重複は
+    不活性の区画でも検査する。有効な区画の org_id は org_ids へ集め、同じスペースを
+    2か所に書いた設定を呼び出し側が検出できるようにする。
     """
     where = f"{where}.claude_export"
     if not isinstance(section, dict):
         errors.append(f"{where} は辞書が必要です")
         return
+    kinds = section.get("kinds")
+    if not (
+        isinstance(kinds, list)
+        and kinds
+        and all(isinstance(kind, str) and kind in claude_export.KINDS for kind in kinds)
+        and len(set(kinds)) == len(kinds)
+    ):
+        errors.append(
+            f"{where}.kinds は {' / '.join(claude_export.KINDS)} から重複なく1つ以上を"
+            "並べたリストが必要です"
+        )
     org_id, profile = section.get("org_id", ""), section.get("profile", "")
     if not isinstance(org_id, str):
         errors.append(f"{where}.org_id は文字列が必要です")
@@ -551,10 +563,11 @@ def _validate_claude_export_entry(
         errors.append(f"{where}.profile は文字列が必要です")
         return
     if not org_id:
-        if profile:
+        if profile or kinds != _CLAUDE_EXPORT_ENTRY["kinds"]:
             errors.append(
-                f"{where} に profile だけが書かれています。有効にするには org_id"
-                "（claude.ai の組織 UUID）が必要です"
+                f"{where} に org_id がありません。取得を有効にするには org_id"
+                "（claude.ai の組織 UUID）が必要です。使わない組織では claude_export を"
+                "書かないでください"
             )
         return
     if _CLAUDE_ORG_ID_RE.fullmatch(org_id):
@@ -566,17 +579,6 @@ def _validate_claude_export_entry(
         errors.append(
             f"{where}.profile は英数字と . _ - からなる名前が必要です"
             "（プロファイルのディレクトリ名になります。. と .. は使えません）"
-        )
-    kinds = section.get("kinds")
-    if not (
-        isinstance(kinds, list)
-        and kinds
-        and all(isinstance(kind, str) and kind in claude_export.KINDS for kind in kinds)
-        and len(set(kinds)) == len(kinds)
-    ):
-        errors.append(
-            f"{where}.kinds は {' / '.join(claude_export.KINDS)} から重複なく1つ以上を"
-            "並べたリストが必要です"
         )
 
 

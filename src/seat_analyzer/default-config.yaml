@@ -111,7 +111,7 @@ decision_v2:
 # 直下、複数スペースの組織は workspace ごとに書く（workspaces を持つ組織の直下には書けない）。
 #   profile  ブラウザのプロファイル名（claude_export.profiles_dir 配下のディレクトリ名。
 #            英数字と . _ -。--setup / --login に渡す名前と揃える）
-#   org_id   claude.ai の組織 UUID。空のままなら不活性
+#   org_id   claude.ai の組織 UUID。空のままなら不活性（そのときは profile・kinds も書かない）
 #   kinds    取得する種別（members / spend / code。省略時は3種すべて）
 # 同じ org_id を2か所に書くことはできない。
 #   organizations:

@@ -1528,13 +1528,45 @@ def test_claude_export_entries_do_not_share_the_template(tmp_path):
         "members", "spend", "code"]
 
 
+# org_id の無い区画に値を書いたときのエラー
+_NO_ORG_ID = "organizations.example.claude_export に org_id がありません"
+_BAD_KINDS = "organizations.example.claude_export.kinds は members / spend / code"
+
+
 def test_claude_export_profile_without_org_id_is_rejected(tmp_path):
     """profile だけを書いた区画を黙って不活性にしない。"""
     path = _override(tmp_path, _claude_org("profile: corp"))
-    with pytest.raises(
-        ValueError, match="organizations.example.claude_export に profile だけが書かれています"
-    ):
+    with pytest.raises(ValueError, match=_NO_ORG_ID) as excinfo:
         load_config(path)
+    assert "使わない組織では claude_export を書かないでください" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("value,kinds_error", [
+    ("[]", True),
+    ("[spend]", False),
+    ("[code, spend, members]", False),   # 既定と並びだけが違う
+    ("[null]", True),
+])
+def test_claude_export_kinds_without_org_id_are_rejected(tmp_path, value, kinds_error):
+    """kinds だけを書いた区画も不活性にせず止める。kinds の中身は不活性でも検査する。"""
+    path = _override(tmp_path, _claude_org(f"kinds: {value}"))
+    with pytest.raises(ValueError, match=_NO_ORG_ID) as excinfo:
+        load_config(path)
+    assert (_BAD_KINDS in str(excinfo.value)) is kinds_error
+
+
+def test_claude_export_without_values_is_inactive(tmp_path):
+    """既定のままの区画（空の辞書・空の org_id・既定の kinds）は不活性で、エラーにしない。"""
+    path = _override(tmp_path, (
+        "organizations:\n"
+        "  example:\n"
+        "    claude_export: {}\n"
+        "  example2:\n"
+        "    claude_export:\n"
+        '      org_id: ""\n'
+        "      kinds: [members, spend, code]\n"
+    ))
+    assert load_config(path)["organizations"]["example2"]["claude_export"]["org_id"] == ""
 
 
 @pytest.mark.parametrize("value", [
