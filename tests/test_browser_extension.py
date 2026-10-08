@@ -27,6 +27,12 @@ def _text(name: str) -> str:
     return (EXT / name).read_text(encoding="utf-8")
 
 
+def _function(source: str, name: str) -> str:
+    """source にある関数 name の定義（閉じ括弧の行の手前まで）。"""
+    start = source.index(f"function {name}(")
+    return source[start:source.index("\n}\n", start)]
+
+
 def test_extension_dir_is_inside_the_package():
     assert EXT == Path(claude_export.__file__).parent / "browser_extension"
     assert (EXT / "manifest.json").is_file()
@@ -150,11 +156,18 @@ def test_run_page_varies_the_pauses_between_operations():
     assert "click: [500, 1500]," in run_js
     assert "min + Math.floor(Math.random() * (max - min + 1))" in run_js
     assert "WAIT.settle" not in run_js
-    navigate = run_js[run_js.index("async function navigate("):]
-    navigate = navigate[:navigate.index("\n}\n")]
+    navigate = _function(run_js, "navigate")
     assert "const wait = pauseMs(PAUSE.settle);" in navigate
     assert "waiting ${(wait / 1000).toFixed(1)}s" in navigate
     assert navigate.endswith("await sleep(wait);")
+    # 押す前の待ちは PAUSE.click の範囲から選ぶ
+    assert _function(run_js, "pauseBeforeClick") == (
+        "function pauseBeforeClick() {\n  await sleep(pauseMs(PAUSE.click));")
+    # Claude Code の月送りを押すのは前月モードだけなので、その前の待ちも前月モードだけ
+    export_code = _function(run_js, "exportCode")
+    assert 'const previous = runMode === "previous";' in export_code
+    assert "if (previous) await pauseBeforeClick();" in export_code
+    assert "await exec(tabId, codeMonth, [previous])" in export_code
     # タブ内でボタンや選択肢を押す処理（clickButton・spendDialog・codeMonth）を呼ぶ箇所には、
     # すべて直前に待ちがある
     clicks = re.findall(r"await exec\(tabId, (?:clickButton|spendDialog|codeMonth),", run_js)
