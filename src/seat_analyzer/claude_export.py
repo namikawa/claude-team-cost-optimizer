@@ -43,10 +43,12 @@ from __future__ import annotations
 import contextlib
 import csv
 import datetime as dt
+import errno
 import io
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -1362,17 +1364,140 @@ def pid_alive(pid: int, *, platform: str = sys.platform) -> bool:
     return True
 
 
-def _lock_holder(path: Path) -> tuple[int | None, str | None]:
-    """ロックファイルの持ち主（pid, run_id）。読めない・壊れていれば (None, None)。"""
+# 中身を読めないロックを、書き込みの途中かもしれないとして使用中とみなす期間（秒）
+_LOCK_FRESH_SECONDS = 60.0
+
+# os.link で本体を作れない（ハードリンクを持てないファイルシステム等）ときの errno。この
+# ときは排他的に作ってから書く手順へ切り替える
+_LINK_UNSUPPORTED = frozenset(
+    code for code in (
+        getattr(errno, name, None)
+        for name in ("EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "ENOSYS", "EINVAL")
+    ) if code is not None
+)
+
+
+@dataclass(frozen=True)
+class _LockSeen:
+    """ロックを見たときの様子（どのファイルを見たかと、その持ち主）。"""
+
+    identity: tuple[int, int, int, int]   # (st_dev, st_ino, st_mtime_ns, st_size)
+    mtime: float
+    pid: int | None
+    run_id: str | None
+
+
+def _stat_identity(st: os.stat_result) -> tuple[int, int, int, int]:
+    return st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size
+
+
+def _parse_lock(raw: bytes) -> tuple[int | None, str | None]:
+    """ロックの中身から（pid, run_id）。読めない・壊れていれば (None, None)。"""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return None, None
     if not isinstance(data, dict):
         return None, None
     pid, run_id = data.get("pid"), data.get("run_id")
     valid_pid = isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
     return (pid if valid_pid else None), (run_id if isinstance(run_id, str) else None)
+
+
+def _see_lock(path: Path) -> _LockSeen | None:
+    """ロックを開いて様子を見る。もう無ければ None（他者が引き取った）。"""
+    try:
+        with path.open("rb") as f:
+            st = os.fstat(f.fileno())
+            raw = f.read()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        # 中身を読めない（権限等）。作られた時刻だけで判断する
+        try:
+            st = path.stat()
+        except FileNotFoundError:
+            return None
+        raw = b""
+    holder_pid, holder_run = _parse_lock(raw)
+    return _LockSeen(_stat_identity(st), st.st_mtime, holder_pid, holder_run)
+
+
+def _is_stale(seen: _LockSeen, alive: Callable[[int], bool], now: float) -> bool:
+    """引き取ってよい古いロックか。
+
+    持ち主の pid を読めればその生死で決める。読めない・壊れたロックは、作られてから
+    `_LOCK_FRESH_SECONDS` 以内なら書き込みの途中かもしれないので使用中とし、それより古ければ
+    壊れた古いロックとする。
+    """
+    if seen.pid is not None:
+        return not alive(seen.pid)
+    return now - seen.mtime > _LOCK_FRESH_SECONDS
+
+
+def _create_lock(path: Path, payload: str, pid: int) -> None:
+    """ロックの本体を、中身を書いた状態で排他的に作る（既にあれば FileExistsError）。
+
+    同じディレクトリの一時名に中身を書いてから `os.link` で本体の名前を付けるので、本体は
+    現れた時点で中身を持つ。一時ファイルは成否によらず消す。`os.link` を使えない環境
+    （`_LINK_UNSUPPORTED`）では、排他的に作ってから書く手順へ切り替える（書き込みの途中を
+    読んだ側は `_LOCK_FRESH_SECONDS` の規則で使用中とみなす）。
+    """
+    tmp = path.with_name(f".{path.name}.{pid}.tmp")
+    tmp.write_text(payload, encoding="utf-8", newline="\n")
+    try:
+        os.link(tmp, path)
+        return
+    except FileExistsError:
+        raise
+    except AttributeError:
+        pass
+    except OSError as exc:
+        if exc.errno not in _LINK_UNSUPPORTED:
+            raise
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            tmp.unlink()
+    path.touch(mode=0o644, exist_ok=False)
+    path.write_text(payload, encoding="utf-8", newline="\n")
+
+
+def _put_back(stale: Path, path: Path) -> None:
+    """引き取ってしまった他者のロックを元の名前へ戻す（その間に作られたロックは上書きしない）。"""
+    try:
+        os.link(stale, path)
+    except FileExistsError:
+        pass
+    except (AttributeError, OSError):
+        with contextlib.suppress(OSError):
+            if not path.exists():
+                os.rename(stale, path)
+
+
+def _retire_stale_lock(path: Path, seen: _LockSeen, pid: int) -> bool:
+    """古いロックを名前の変更で引き取って消す。引き取れたら True。
+
+    同じファイルの名前の変更に成功するのは 1 者だけなので、古いロックを 2 者が同時に
+    見つけても引き取るのは片方になる。他者が先に引き取っていれば（FileNotFoundError）False。
+    引き取ったファイルが判定した古いロックと違えば（判定の後に他者が引き取って作り直した
+    ロック）、元の名前へ戻して False を返す。
+    """
+    stale = path.with_name(f"{path.name}.stale-{pid}-{secrets.token_hex(4)}")
+    try:
+        os.rename(path, stale)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            same = _stat_identity(stale.stat()) == seen.identity
+        except FileNotFoundError:
+            return False
+        if not same:
+            _put_back(stale, path)
+        return same
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            stale.unlink()
 
 
 def acquire_profile_lock(
@@ -1385,29 +1510,37 @@ def acquire_profile_lock(
 ) -> None:
     """プロファイルのロックを取る（中身は pid と run_id）。使用中なら ProfileBusyError。
 
-    排他的に作成する（既にあれば作らない）。既にあれば中の pid が動いているかを見て、
-    動いていれば使用中、動いていなければ（読めない・壊れたロックも）古いロックとして
-    消して取り直す。取り直しでも先を越されたら使用中とする。
+    手順は次のとおりで、取り直しは 1 回まで（2 回目も取れなければ使用中）。
+
+    1. 中身を書いた状態で本体を排他的に作る（`_create_lock`）。作れたら取得
+    2. 既にあれば中を見る。持ち主の pid が動いていれば使用中。読めない・壊れたロックは、
+       作られてから `_LOCK_FRESH_SECONDS` 以内なら書き込みの途中かもしれないので使用中
+    3. 古いロック（持ち主が動いていない、または読めないまま古い）は名前の変更で引き取って
+       消し（`_retire_stale_lock`）、1 へ戻る。他者が先に引き取っていても 1 へ戻り、そこで
+       作れなければ使用中になる
     """
     pid = os.getpid() if pid is None else pid
     alive = pid_alive if is_alive is None else is_alive
     payload = json.dumps({"pid": pid, "run_id": run_id}) + "\n"
+    holder_run: str | None = None
     for attempt in range(2):
         try:
-            # 既にあれば FileExistsError（作成は排他的で、先に作った側だけが成功する）
-            path.touch(mode=0o644, exist_ok=False)
+            _create_lock(path, payload, pid)
+            return
         except FileExistsError:
-            holder_pid, holder_run = _lock_holder(path)
-            if attempt == 0 and not (holder_pid is not None and alive(holder_pid)):
-                with contextlib.suppress(FileNotFoundError):
-                    path.unlink()
-                continue
-            raise ProfileBusyError(
-                f"プロファイル {profile} は別の実行（run_id {holder_run or '不明'}）が"
-                f"使用中です（使われていないことが確かなら {path} を削除してください）"
-            ) from None
-        path.write_text(payload, encoding="utf-8", newline="\n")
-        return
+            pass
+        seen = _see_lock(path)
+        if seen is None:
+            continue    # 見る前に他者が引き取った。もう一度作ってみる
+        holder_run = seen.run_id
+        if attempt == 0 and _is_stale(seen, alive, time.time()):
+            _retire_stale_lock(path, seen, pid)
+            continue
+        break
+    raise ProfileBusyError(
+        f"プロファイル {profile} は別の実行（run_id {holder_run or '不明'}）が"
+        f"使用中です（使われていないことが確かなら {path} を削除してください）"
+    )
 
 
 @contextlib.contextmanager

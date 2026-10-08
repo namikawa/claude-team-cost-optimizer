@@ -7,11 +7,13 @@
 """
 
 import datetime as dt
+import errno
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -1448,34 +1450,139 @@ def test_profile_lock_refuses_while_the_holder_is_alive(tmp_path):
     assert issubclass(ProfileBusyError, ValueError)
 
 
-@pytest.mark.parametrize("content", [
-    json.dumps({"pid": 77, "run_id": "corp-current-x"}),   # 持ち主が終わっている
-    "{broken",
-    "",
-    json.dumps({"pid": "77"}),
-])
-def test_profile_lock_replaces_a_stale_lock(tmp_path, content):
+def _age(path: Path, seconds: float) -> None:
+    """ファイルの更新時刻を seconds 秒前にする。"""
+    when = time.time() - seconds
+    os.utime(path, (when, when))
+
+
+def _lock_dir_names(directory: Path) -> list[str]:
+    return sorted(entry.name for entry in directory.iterdir())
+
+
+def test_profile_lock_takes_over_the_lock_of_a_dead_holder(tmp_path):
+    """持ち主の pid が動いていないロックは、新しくても引き取る。"""
+    path = lock_path(tmp_path, "corp")
+    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
+    with profile_lock(tmp_path, "corp", "corp-current-y", pid=1, is_alive=lambda pid: False):
+        assert _holder(path) == {"pid": 1, "run_id": "corp-current-y"}
+        assert _lock_dir_names(tmp_path) == ["corp.lock"]   # 引き取った古いロックは残さない
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("content", ["", "{broken", json.dumps({"pid": "77"})])
+def test_profile_lock_refuses_a_fresh_unreadable_lock(tmp_path, content):
+    """中身を読めないロックは、新しければ書き込みの途中かもしれないので使用中とみなす。"""
     path = lock_path(tmp_path, "corp")
     path.write_text(content, encoding="utf-8")
+    with pytest.raises(ProfileBusyError, match="run_id 不明"), profile_lock(
+        tmp_path, "corp", "corp-current-y", pid=1, is_alive=lambda pid: False
+    ):
+        raise AssertionError("ロックを取れてはいけない")
+    assert path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.parametrize("content", ["", "{broken", json.dumps({"pid": "77"})])
+def test_profile_lock_takes_over_an_old_unreadable_lock(tmp_path, content):
+    path = lock_path(tmp_path, "corp")
+    path.write_text(content, encoding="utf-8")
+    _age(path, 120)
     with profile_lock(tmp_path, "corp", "corp-current-y", pid=1, is_alive=lambda pid: False):
         assert _holder(path) == {"pid": 1, "run_id": "corp-current-y"}
     assert not path.exists()
 
 
-def test_acquire_profile_lock_gives_up_when_the_retry_is_taken(tmp_path, monkeypatch):
-    """古いロックを消して取り直す間に先を越されたら、使用中として止める。"""
+def test_acquire_profile_lock_writes_the_holder_without_leaving_a_temporary_file(tmp_path):
     path = lock_path(tmp_path, "corp")
-    path.write_text("{broken", encoding="utf-8")
-    real_unlink = Path.unlink
+    acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=4242)
+    assert _holder(path) == {"pid": 4242, "run_id": "corp-current-y"}
+    assert _lock_dir_names(tmp_path) == ["corp.lock"]
 
-    def unlink_then_taken(self, missing_ok=False):
-        real_unlink(self, missing_ok=missing_ok)
-        self.write_text("{also broken", encoding="utf-8")
 
-    monkeypatch.setattr(Path, "unlink", unlink_then_taken)
-    with pytest.raises(ProfileBusyError, match="run_id 不明"):
+@pytest.mark.parametrize("error", [
+    OSError(errno.EPERM, "operation not permitted"),
+    AttributeError("link"),
+])
+def test_acquire_profile_lock_without_hard_links(tmp_path, monkeypatch, error):
+    """os.link を使えない環境では、排他的に作ってから書く手順で取る。"""
+    def no_link(src, dst):
+        raise error
+
+    monkeypatch.setattr(claude_export.os, "link", no_link)
+    path = lock_path(tmp_path, "corp")
+    acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=4242)
+    assert _holder(path) == {"pid": 4242, "run_id": "corp-current-y"}
+    assert _lock_dir_names(tmp_path) == ["corp.lock"]
+
+    # 既にあれば作らない（排他的な作成のまま）
+    with pytest.raises(ProfileBusyError):
+        acquire_profile_lock(path, profile="corp", run_id="corp-current-z", pid=1,
+                             is_alive=lambda pid: pid == 4242)
+
+
+def test_acquire_profile_lock_does_not_take_over_when_the_rename_loses(tmp_path, monkeypatch):
+    """古いロックの引き取り（名前の変更）を他者に先を越されたら、取り直して使用中で止まる。"""
+    path = lock_path(tmp_path, "corp")
+    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
+
+    def lost(src, dst):
+        raise FileNotFoundError(src)
+
+    monkeypatch.setattr(claude_export.os, "rename", lost)
+    with pytest.raises(ProfileBusyError, match="run_id corp-current-x"):
         acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=1,
                              is_alive=lambda pid: False)
+    assert _holder(path) == {"pid": 77, "run_id": "corp-current-x"}
+
+
+def test_acquire_profile_lock_gives_up_when_the_retry_is_taken(tmp_path, monkeypatch):
+    """古いロックを引き取った後、作り直す前に他者がロックを作ったら使用中で止まる。"""
+    path = lock_path(tmp_path, "corp")
+    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
+    real_rename = os.rename
+
+    def rename_then_taken(src, dst):
+        real_rename(src, dst)
+        Path(src).write_text(json.dumps({"pid": 88, "run_id": "corp-current-b"}),
+                             encoding="utf-8")
+
+    monkeypatch.setattr(claude_export.os, "rename", rename_then_taken)
+    with pytest.raises(ProfileBusyError, match="run_id corp-current-b"):
+        acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=1,
+                             is_alive=lambda pid: pid == 88)
+    assert _holder(path) == {"pid": 88, "run_id": "corp-current-b"}
+    assert _lock_dir_names(tmp_path) == ["corp.lock"]
+
+
+def test_acquire_profile_lock_puts_back_a_lock_recreated_after_the_check(tmp_path, monkeypatch):
+    """古いと判定した後に他者が引き取って作り直したロックは、引き取らずに元へ戻す。
+
+    古いロックを 2 者が同時に見つけたとき、一方が作り直したロックを他方が消さない。
+    """
+    path = lock_path(tmp_path, "corp")
+    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
+    _age(path, 120)
+    real_rename = os.rename
+    calls = []
+
+    def other_took_it_first(src, dst):
+        if not calls:
+            # 判定の後、名前の変更の前に、他者が古いロックを引き取って新しいロックを作った
+            calls.append("other")
+            real_rename(src, tmp_path / "others-stale")
+            (tmp_path / "others-stale").unlink()
+            fresh = tmp_path / "fresh"
+            fresh.write_text(json.dumps({"pid": 88, "run_id": "corp-current-b"}),
+                             encoding="utf-8")
+            real_rename(fresh, src)
+        real_rename(src, dst)
+
+    monkeypatch.setattr(claude_export.os, "rename", other_took_it_first)
+    with pytest.raises(ProfileBusyError, match="run_id corp-current-b"):
+        acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=1,
+                             is_alive=lambda pid: pid == 88)
+    assert _holder(path) == {"pid": 88, "run_id": "corp-current-b"}
+    assert _lock_dir_names(tmp_path) == ["corp.lock"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="シグナル 0 での確認は Unix の経路")
