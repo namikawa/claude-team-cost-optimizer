@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "seat-analyzer export",
+  "version": "1.0",
+  "description": "claude.ai の管理画面から seat-analyzer 用の CSV をエクスポートする",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzqma7hZUdkEDmXGYtYWJDxjJidXVMUgsiqQm/cZsKO+KC+zDqUB/kiXP1pjNfXddac2sZTuh7A/bqBYhEnEKxvL5QMAQb2C9/InggbZtwMa9I6pLy1sh0oNOkoqYX12i/wu45FxdvvqMD5QNNXOU09C9WAWXOajuuY3biv6xQn7O6FzYJ8rZRsIhxKI2UIIlnc6M/PRkfcfxGUKt85po05dvmQzJJlwprEeXLc5dY+wsgTKpxBlDS5RDcukIYmxWDXlP+R6V2Se6OZV+iYUM+D8MFfWxMqqVs+233RDLAkdCWBuLZA7XAteUIimGiWAAE7Dzu6hDepJIYKVRoOc8eQIDAQAB",
+  "permissions": [
+    "cookies",
+    "downloads",
+    "tabs",
+    "storage",
+    "scripting",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "https://claude.ai/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://claude.ai/*"
+      ],
+      "js": [
+        "trigger.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "run.html"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

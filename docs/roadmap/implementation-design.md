@@ -1002,20 +1002,41 @@ Standard化:
   ダウンロードの確認を出さないこと・ダウンロード先（staging）だけで、他の項目は保つ
 - claude.ai上で押すのはエクスポート系のボタンだけで、シート・creditの設定を変更する操作を持たない
 - ダウンロード先は専用のstagingで、利用者のDownloadsや既存ファイルを変更・削除しない
-- 別組織のデータを保存しないため、組織切替の確認が取れない組織は丸ごと飛ばす
+- 別組織のデータを保存しないため、組織切替の確認が取れない組織は丸ごと飛ばす。切替の直後
+  だけでなく支出レポートとClaude Codeのページを開くたびにも確かめ、取れなければその種別を
+  飛ばす（ログインし直すと表示する組織が変わることがあるため）。配置の前にはファイル名の
+  組織UUIDも設定の`org_id`と照合する（§14.3の検証）
+- 同じプロファイルを2つの実行が同時に使わない。CLIは取得・`--list-orgs`・`--finish-setup`の
+  間、`<staging_dir>/<profile>.lock`にOSのファイルロック（Unixはflock、Windowsは
+  msvcrt.locking）を取り、別の実行が持っていれば止める。ロックは実行が終わると（異常終了を
+  含めて）OSが外すので、取り残されたロックという状態は無く、ファイルは消さず空のまま残る。
+  ロックを掛けられない環境（ネットワークのファイルシステム等）ではロック無しで進めずに止める。
+  拡張機能もsessionストレージの`activeRun`で、同じChromeで進行中の別の実行があれば新しい
+  実行を始めない（開始から1時間を超えた記録は無視する）
+- 終了させるのは、プロファイル（`--user-data-dir`）が一致し、実行ファイルが起動に使ったものと
+  一致するか名前にchrome / chromiumを含むプロセスだけ（Linuxの`google-chrome`はラッパー
+  スクリプトで、プロセスには実体のパスが見えるため）。強制終了の前に列挙し直し、まだ一致して
+  いるものだけを対象にする（待つ間に終わったpidが別のプロセスに再利用されていても終了させない）
 
 ### 14.3 manifestと配置
 
-stagingの配置（拡張機能が書く）:
+stagingの配置（run.jsonはCLI、それ以外は拡張機能が書く）:
 
 ```text
-<staging_dir>/<run_id>/manifest.json
+<staging_dir>/<run_id>/run.json                   起動の前に書くその実行の計画
+<staging_dir>/<run_id>/progress.json              各手順の後に上書きする途中経過
+<staging_dir>/<run_id>/manifest.json              最後に書く結果（CLIはこれを待つ）
 <staging_dir>/<run_id>/<dir>/<kind_dir>/<元ファイル名>
+<staging_dir>/<run_id>/orgs.json                  組織一覧（--list-orgs）のとき
+<staging_dir>/<profile>.lock                      OSのファイルロックの対象（空のまま残る）
 ```
 
 `dir`は`<org>`か`<org>/<workspace>`（区切りはOSによらず`/`）、`kind_dir`は種別の入力
 サブディレクトリ（members→`members`、spend→`spend`、code→`code-analytics`）。`run_id`は
-`<profile>-<mode>-<YYYYMMDD-HHMMSS>`（ローカル時刻）。
+`<profile>-<mode>-<YYYYMMDD-HHMMSS>`（ローカル時刻）。拡張機能はダウンロードを、stagingを
+既定のダウンロード先にしたうえで`<run_id>/`以下へ振り分ける。manifest.json・progress.json・
+orgs.jsonの固定名は拡張機能自身が始めたダウンロードにだけ付け、ページが始めたダウンロードは
+元のファイル名のまま置く（押し直しの後に遅れて届いたCSVが固定名を奪わないため）。
 
 ```json
 {
@@ -1035,6 +1056,20 @@ stagingの配置（拡張機能が書く）:
   無い（またはディレクトリ・ドライブ・`:`を含む）結果は失敗として扱う
 - manifestの`dir`は計画の (配置先, 種別) と突き合わせるだけで、パスは常に計画の側から組む。
   計画にあってmanifestに無い組み合わせは「結果なし」の失敗、計画に無い結果は捨てる
+- 拡張機能は`results`をspecの全 (org, kind) について1件ずつ書く。組織の切替を確認できずに
+  飛ばした組織は、そのすべてのkindを`organization switch not confirmed`の失敗にする。支出
+  レポートやClaude Codeのページで組織を確認できなければ、そのkindだけを同じ理由の失敗にする。
+  `filename`はChromeが保存したファイルのbasename
+- progress.jsonはmanifestと同じ形に`"status": "running"`を付けたもの。CLIは待機中に読めた
+  ものから、増えた結果を1行ずつ表示する（書きかけで読めないmanifestは待ち続ける）
+- run.jsonは`{run_id, profile, mode, month, created_at, spec}`。`--import <run_id>`はこれから
+  計画を組み直し、Chromeに触れずに検証・配置だけを行う。対象はspecの (dir, uuid) を設定の
+  対象と突き合わせて決め（設定に無いdirや、設定とUUIDが違うdirがあれば止める）、配置先は
+  設定から組む。検証はその実行の対象月で行う（取り込む日の当月ではない）
+- 組織一覧（`--list-orgs`）のrun_idは`<profile>-list-orgs-<YYYYMMDD-HHMMSS>`、specは
+  `{run_id, action: "list-orgs"}`。拡張機能はclaude.aiのタブで`/api/organizations`を読み、
+  orgs.jsonに`[{uuid, name, rate_limit_tier, plan}]`（planは`plan_display_name`。無い値は
+  null）を書く。取得できなければ`{"error": 理由}`を書く
 
 検証（最初に外れた理由を表示する）:
 
@@ -1046,7 +1081,9 @@ stagingの配置（拡張機能が書く）:
      email・seat_type、支出レポートはemail・model・prompt_tokens・completion_tokens）
    - Claude Code analytics: emailと月間のLoC（`loc_with_cc`）。エクスポートはこの2列で、
      支出レポートとの取り違えをLoCの列の有無で止める
-3. ファイル名の期間が対象月に合う
+3. membersと支出レポートは、ファイル名に組織UUIDの形が含まれていれば設定の`org_id`と同じ
+   （大文字小文字は区別しない）。Claude Code analyticsのファイル名にはUUIDが入らないので見ない
+4. ファイル名の期間が対象月に合う
    - 支出レポート: 期間付きで、開始が対象月の1日・終了が対象月の末日以前
    - Claude Code analytics: 期間付きで、開始が対象月の1日（終了日は部分月でも月末日になるので見ない）
    - members: スナップショットの日付が対象月の1日以降（前月モードでは当日＝翌月の日付になる）
@@ -1066,7 +1103,8 @@ stagingの配置（拡張機能が書く）:
 
 - 失敗した種別は理由を表示し、ダウンロードしたファイルはstagingに残す
 - 手動でダウンロードして従来どおり`input/`へ置けば分析は動く。分析そのものをブラウザに依存させない
-- タイムアウト時はChromeを終了させず、ブラウザに出ている要操作の表示を確認するよう案内する
+- タイムアウト時はChromeを終了させず、ブラウザに出ている要操作の表示を確認するよう案内する。
+  人の操作で取得が続いてmanifestが書かれたら、`--import <run_id>`で検証・配置だけをやり直す
 
 ## 15. GitHub collection
 
@@ -1169,11 +1207,17 @@ uv run seat-analyzer collect \
   [--month YYYY-MM] \
   [--org <org> ...] \
   [--profile <name>] \
-  [--dry-run]
+  [--dry-run] \
+  [--keep-browser] \
+  [--timeout <分>]
 
 uv run seat-analyzer collect \
   --source claude \
-  --setup|--login|--list-orgs <profile>    # Step 51
+  --import <run_id>
+
+uv run seat-analyzer collect \
+  --source claude \
+  --setup|--finish-setup|--login|--list-orgs <profile>
 
 uv run seat-analyzer collect \
   --org <org> \
@@ -1183,7 +1227,16 @@ uv run seat-analyzer collect \
 
 `--source claude`の`--month`は当月か前月で、省略時は当月（§14.1）。`--org`は複数指定でき、
 省略時は`claude_export`を設定した全組織。`--dry-run`は取得の計画（プロファイルごとのモードと、
-対象・UUID・種別・配置先）を表示して終了する。Step 50の時点では`--dry-run`だけが使える。
+対象・UUID・種別・配置先）を表示して終了する。`--keep-browser`は取得の後もChromeを終了させず、
+`--timeout`は待機の上限（分。省略時は`claude_export.timeout_minutes`）を決める。`--import`は
+stagingに残った実行の検証・配置だけをやり直す（§14.3）。`--setup`はプロファイルを作って
+Chromeをログイン画面で起動し、人が行う手順（ログイン・拡張機能の読み込み）を表示して待たずに
+終わる。人の操作が終わったら`--finish-setup`がChromeを終了させ、拡張機能が同梱の場所から
+読み込まれていることを確かめてからPreferencesを書く（ウィンドウを閉じてもChrome本体が残る
+環境があり、人による終了を待つと完了を判定できないため、締めの操作をコマンドに分ける）。
+`--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--import`は単独で使う（`--list-orgs`
+だけは`--timeout`・`--keep-browser`を併用できる）。claude専用のオプションを`--source github`に
+付けると終了コード2。
 
 V2が安定するまで既定値は`v1`。`--decision-version`を省略した場合は
 `decision_v2.enabled`に従い、明示指定はそれに優先する。`enabled: true`は「V1の成果物に
@@ -2729,17 +2782,33 @@ dashboardで読めるようにする。
 対象:
 
 - `src/seat_analyzer/browser_extension/`（新規・非.pyの同梱物。wheelに入ることを確かめる）
-- `src/seat_analyzer/claude_export.py`・`src/seat_analyzer/cli.py`
-- `docs/usage.md`・`docs/setup.md`・`docs/reference.md`・`README.md`・`CHANGELOG.md`
+- `src/seat_analyzer/claude_export.py`・`src/seat_analyzer/cli.py`・`src/seat_analyzer/config.py`・
+  `src/seat_analyzer/default-config.yaml`・`src/seat_analyzer/templates/workspace-config.yaml`
+- `docs/usage.md`・`docs/setup.md`・`docs/reference.md`・`docs/README.md`・`README.md`・
+  `CHANGELOG.md`
 - `tests/`
 
 実装:
 
-- 拡張機能: トリガーURLの受け取り、組織の切替と切替後の確認、3ページのエクスポート操作、
-  ダウンロードのstagingへの振り分け、manifestの出力、ログインや外部セキュリティ検証が要るときの
-  要操作の表示
-- CLI: Preferencesの更新 → Chromeの起動 → manifestの待機 → 検証・配置 → Chromeの終了。
-  `--setup`・`--login`・`--list-orgs`・`--keep-browser`・`--timeout`
+- 拡張機能（manifestの`key`に公開鍵を入れてIDを固定する。秘密鍵は置かない）: トリガーURLの
+  受け取り（コンテンツスクリプトとタブのURL更新の2経路。同じタブは1回だけ起動し、同じ
+  run_idは2度実行しない。同じChromeで進行中の別の実行があれば始めない）、組織の切替（Cookie）と
+  切替後の確認（組織のAPIの直近の呼び出しが対象のUUIDに揃うこと。支出レポートとClaude Codeの
+  ページでも確かめる）、3ページのエクスポート操作（種別ごとに独立。支出レポートは期間の
+  開始が1日であることを確かめてからダウンロードし、Claude Codeはダウンロードが始まらなければ
+  押し直す）、ダウンロードのstagingへの振り分け（固定名は拡張機能自身のダウンロードにだけ
+  付ける）、progress.json・manifest.json・orgs.jsonの出力、ログインや外部セキュリティ検証が
+  要るときの要操作の表示と待機（最大10分）
+- CLI: Preferencesの確認（ダウンロード先がstaging）→ プロファイルのロック（OSのファイルロック）→ run.jsonの
+  書き出し → Chromeの起動 → manifestの待機（途中経過の表示。進捗が60秒止まったらブラウザの
+  要操作の確認を促し、時間切れではChromeを残して`--import`を案内）→ 検証（ファイル名の組織
+  UUIDの照合を含む）・配置 → Chromeの終了（プロファイルが一致し、実行ファイルが起動に使った
+  ものと一致するか名前にchrome / chromiumを含むプロセスだけ。見つからなければ警告だけ）→ ロックの解放。`--setup`（プロファイルを作ってChromeを起動し、手順を表示して待たずに終わる）・
+  `--finish-setup`（Chromeを終了させ、拡張機能が同梱の場所から読み込まれていることを
+  Secure Preferences・Preferencesで確かめてからPreferencesを書く）・`--login`・`--list-orgs`・
+  `--import`・`--keep-browser`・`--timeout`
+- config: `claude_export.profiles_dir`・`staging_dir`の相対パスの基準を設定ファイルの置き場所に
+  する（`paths`と同じ）。`chrome_path`は絶対パスか空文字に限る（§21）
 - 利用者向けの手順（初回のセットアップ・月次の取得・手動のフォールバック）
 
 受け入れ条件:
@@ -2753,6 +2822,91 @@ dashboardで読めるようにする。
 
 - 当月・前月以外の月の取得
 - 管理画面のcredit設定の取得（Step 31）
+
+#### Step 52: ログインセッションの期限の確認
+
+依存:
+
+- Step 51
+
+対象:
+
+- `src/seat_analyzer/browser_extension/`・`src/seat_analyzer/claude_export.py`・
+  `src/seat_analyzer/cli.py`・`src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`
+- `docs/usage.md`・`docs/setup.md`・`docs/reference.md`
+- `tests/`
+
+目的:
+
+- 取得の定期実行（日次・週次）を見据え、専用プロファイルのログインセッションがあと何日で
+  切れるかを確かめ、期限が近づいたら知らせる。切れたときの再ログインは既存の
+  `--login <profile>`を使う
+
+実装:
+
+- 拡張機能に`action: "check-login"`を足し、claude.aiのCookie（セッション用のCookieの
+  `expirationDate`）と、実際にAPIを1つ読めるか（`/api/organizations`）を`session.json`に書く
+- CLI: `collect --source claude --check-login [<profile>]`で、全プロファイル（または指定した
+  プロファイル）を順に確かめ、プロファイル名・有効か・残り日数を表示する。残り日数が
+  `claude_export.login_warning_days`（既定3）を下回るプロファイルがあれば終了コード1にする
+  （cron・launchdから呼んで通知につなげられるように）
+- 通常の取得の最後にも、そのプロファイルの残り日数を1行添える
+
+注意:
+
+- Cookieの有効期限は目安で、サーバー側のセッションの実際の寿命とは一致しないことがある。
+  実際にAPIを読めたかどうかを併記する
+- 通知の手段（OSの通知・チャット）はこのStepの範囲外で、終了コードと表示までにする
+
+受け入れ条件:
+
+- 実機で残り日数が表示される
+- 期限切れのプロファイルで「無効」と`--login`の案内が出る
+- 既定で不活性（`claude_export`を書いた組織が無ければ何もしない）
+
+今回は行わない:
+
+- 定期実行の仕組みそのもの（launchd・cronの設定）
+- 通知の送信
+
+#### Step 53: ページ遷移の間の待ち時間に揺らぎを入れる
+
+依存:
+
+- Step 51
+
+対象:
+
+- `src/seat_analyzer/browser_extension/run.js`
+- `tests/test_browser_extension.py`
+
+目的:
+
+- 取得の操作が一定の間隔で並ばないよう、ページ遷移の間に2〜4秒の揺らぎを入れる。現状は
+  ページの読み込みが終わってから固定の待ち（2秒）を置いて操作に移るので、遷移の間隔が
+  ほぼ一定になる
+
+実装:
+
+- ページ遷移の間に、2〜4秒の一様乱数の待ちを足す（遷移の前に置くか、遷移後の固定の待ちを
+  置き換えるかは実装時に決める）
+- ボタンを押す前にも小さな揺らぎを入れるかは実装時に決める
+
+影響:
+
+- 遷移は組織ごとに3回（メンバー一覧・支出レポート・Claude Code）なので、2組織を持つ
+  プロファイルでは取得が12〜24秒ほど延びる。待機の上限（`claude_export.timeout_minutes`、
+  既定15分）には収まる
+
+受け入れ条件:
+
+- 実機で、実行ページのログの時刻から遷移の間隔がばらついていることを確かめる
+- 全スペースの取得が従来どおり通る
+
+今回は行わない:
+
+- 操作の順序の入れ替え
+- マウス操作の模倣
 
 ### Track 7: GitHub
 
@@ -3469,6 +3623,12 @@ claude_export:
 
 新しいセクションはすべて省略可能とする。`decision_v2.enabled=false`が既定。
 
+`claude_export.profiles_dir`・`staging_dir`の相対パスは、`paths`と同じくそれを書いた設定
+ファイルの置き場所が基準になる（`~`は展開し、絶対パスはそのまま使う）。パッケージの既定
+（`~/.seat-analyzer/...`）は使う時点で`~`を展開する。`chrome_path`は実行ファイルの場所なので
+設定ファイルの置き場所で解決せず、絶対パスか空文字（自動検出）に限る（相対パスはロード時に
+エラー）。
+
 ## 22. Migration
 
 ### 22.1 V1/V2並行
@@ -3588,6 +3748,11 @@ docs/roadmap/implementation-design.md の「Step N: <名称>」だけを実装�
 ### Enterprise
 
 Teamの公式CSV・管理画面で不足が明確になった場合にのみ検討する。
+
+### 取得の定期実行
+
+`collect --source claude`の定期実行（日次・週次）と、その前提になるログインセッションの期限の
+確認（Step 52）。
 
 ## 26. 複数workspace
 

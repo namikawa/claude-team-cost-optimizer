@@ -6,9 +6,15 @@
 上でも 3 OS 分を検査する。
 """
 
+import contextlib
 import datetime as dt
+import errno
 import json
+import os
 import re
+import subprocess
+import sys
+import time
 import urllib.parse
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -23,28 +29,50 @@ from seat_analyzer.claude_export import (
     TRIGGER_PREFIX,
     ExportRecord,
     ExportTarget,
+    OrgEntry,
+    ProfileBusyError,
     ProfileRun,
     chrome_pids,
     chrome_time_us,
+    extension_install_state,
     find_chrome,
     gated_targets,
+    is_profile_name,
+    is_run_id,
     launch_command,
+    list_orgs_run_id,
+    list_orgs_spec,
+    lock_path,
     manifest_path,
     match_results,
     new_run_id,
+    orgs_path,
     place_export,
     plan_runs,
+    preferences_ready,
     process_listing_command,
+    profile_lock,
     profile_preferences_path,
+    progress_path,
     read_manifest,
+    read_orgs,
+    read_preferences,
+    read_run_record,
     resolve_mode,
+    restore_run,
+    run_dir,
+    run_record,
+    run_record_path,
     run_spec,
+    secure_preferences_path,
     staged_file,
     terminate_commands,
     trigger_url,
     update_preferences,
+    validate_profile_name,
     verify_export,
     write_preferences,
+    write_run_record,
 )
 from seat_analyzer.config import PACKAGE_CONFIG_PATH, load_config
 
@@ -443,17 +471,176 @@ def test_match_results_follows_the_plan():
 
 def test_staging_paths_follow_the_plan(tmp_path):
     staging = tmp_path / "exports"
+    assert run_dir(staging, "run-1") == staging / "run-1"
     assert manifest_path(staging, "run-1") == staging / "run-1" / "manifest.json"
+    assert progress_path(staging, "run-1") == staging / "run-1" / "progress.json"
+    assert orgs_path(staging, "run-1") == staging / "run-1" / "orgs.json"
+    assert run_record_path(staging, "run-1") == staging / "run-1" / "run.json"
     assert staged_file(staging, "run-1", _target("example"), "code", "a.csv") \
         == staging / "run-1" / "example" / "code-analytics" / "a.csv"
     assert staged_file(staging, "run-1", _target("example2", "main"), "members", "b.csv") \
         == staging / "run-1" / "example2" / "main" / "members" / "b.csv"
 
 
+@pytest.mark.parametrize("value,ok", [
+    ("corp-current-20261007-110009", True),
+    ("corp-list-orgs-20261007-110009", True),
+    ("../corp", False),
+    ("a/b", False),
+    ("a\\b", False),
+    ("..", False),
+    ("", False),
+    (None, False),
+])
+def test_is_run_id(value, ok):
+    """--import に渡された名前で staging の外を指させない。"""
+    assert is_run_id(value) is ok
+
+
+# ------------------------------------------------------------------ run.json と --import
+
+
+CREATED = dt.datetime(2026, 10, 7, 11, 0, 9, tzinfo=dt.timezone(dt.timedelta(hours=9)))
+RUN_ID = "corp-previous-20261007-110009"
+
+
+def test_run_record_round_trips(tmp_path):
+    record = run_record(RUN, RUN_ID, CREATED)
+    assert record == {
+        "run_id": RUN_ID,
+        "profile": "corp",
+        "mode": "previous",
+        "month": "2026-09",
+        "created_at": "2026-10-07T11:00:09+09:00",
+        "spec": run_spec(RUN, RUN_ID),
+    }
+    path = tmp_path / "run.json"
+    write_run_record(path, record)
+    assert b"\r" not in path.read_bytes()
+    assert read_run_record(path) == record
+    assert restore_run(read_run_record(path), RUN.targets) == RUN
+
+
+def test_restore_run_builds_paths_from_the_configured_targets():
+    """対象は設定の側から組む（run.json の名前をそのままパスにしない）。種別は spec のもの。"""
+    record = run_record(RUN, RUN_ID, CREATED)
+    record["spec"]["orgs"][0]["kinds"] = ["code", "members"]
+    record["spec"]["orgs"][1]["uuid"] = UUID2.upper()
+    configured = [
+        _target("example", profile="other", org_id=UUID1, kinds=("spend",)),
+        _target("example2", "main", org_id=UUID2),
+        _target("org-a", org_id=UUID4),
+    ]
+    run = restore_run(record, configured)
+    assert run == ProfileRun("corp", MODE_PREVIOUS, "2026-09", (
+        _target("example", org_id=UUID1, kinds=("members", "code")),
+        _target("example2", "main", org_id=UUID2, kinds=("members", "spend")),
+    ))
+
+
+def _broken_record(**changes) -> dict:
+    record = run_record(RUN, RUN_ID, CREATED)
+    for key, value in changes.items():
+        if key.startswith("org_"):
+            record["spec"]["orgs"][0][key[4:]] = value
+        else:
+            record[key] = value
+    return record
+
+
+@pytest.mark.parametrize("record,fragment", [
+    (_broken_record(profile="a/b"), "profile"),
+    (_broken_record(mode="later"), "mode"),
+    (_broken_record(month="2026-9"), "month"),
+    (_broken_record(spec=[]), "対象（orgs）がありません"),
+    (_broken_record(spec={"run_id": RUN_ID, "mode": "previous", "orgs": []}),
+     "対象（orgs）がありません"),
+    (_broken_record(run_id="corp-previous-20000101-000000"), "run_id・mode と一致しません"),
+    (_broken_record(org_kinds=[]), r"spec.orgs\[0\].kinds"),
+    (_broken_record(org_kinds=["members", "admin"]), r"spec.orgs\[0\].kinds"),
+    (_broken_record(org_dir=None), r"spec.orgs\[0\].dir が文字列ではありません"),
+    (_broken_record(org_dir="org-x"), "対象 org-x は claude_export の設定にありません"),
+    (_broken_record(org_uuid=UUID4), "対象 example の UUID が設定の org_id と違います"),
+])
+def test_restore_run_rejects_a_record_that_does_not_match(record, fragment):
+    with pytest.raises(ValueError, match=fragment):
+        restore_run(record, RUN.targets)
+
+
+def test_restore_run_rejects_org_names_that_differ_only_in_case():
+    """取得の計画と同じく、突き合わせの前に全対象で名前の衝突を止める。"""
+    record = run_record(RUN, RUN_ID, CREATED)
+    configured = [*RUN.targets, _target("Example", org_id=UUID4)]
+    with pytest.raises(ValueError, match="claude_export を設定した組織名が衝突しています"):
+        restore_run(record, configured)
+
+
+def test_read_run_record_rejects_a_broken_file(tmp_path):
+    path = tmp_path / "run.json"
+    path.write_text("{", encoding="utf-8")
+    with pytest.raises(ValueError, match="JSON として読めません"):
+        read_run_record(path)
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="オブジェクトではありません"):
+        read_run_record(path)
+
+
+# ------------------------------------------------------------------ 組織一覧（--list-orgs）
+
+
+def test_list_orgs_run_id_and_spec():
+    run_id = list_orgs_run_id("corp", CREATED)
+    assert run_id == "corp-list-orgs-20261007-110009"
+    assert list_orgs_spec(run_id) == {"run_id": run_id, "action": "list-orgs"}
+
+
+def test_read_orgs(tmp_path):
+    path = tmp_path / "orgs.json"
+    path.write_text(json.dumps([
+        {"uuid": UUID1, "name": "Example Org", "rate_limit_tier": "tier_a", "plan": "Team"},
+        {"uuid": UUID2, "name": "Sample", "rate_limit_tier": None},
+    ]), encoding="utf-8")
+    assert read_orgs(path) == ([
+        OrgEntry(UUID1, "Example Org", "tier_a", "Team"),
+        OrgEntry(UUID2, "Sample", None, None),
+    ], None)
+
+
+def test_read_orgs_returns_the_error_the_extension_reported(tmp_path):
+    path = tmp_path / "orgs.json"
+    path.write_text('{"error": "HTTP 403"}', encoding="utf-8")
+    assert read_orgs(path) == ([], "HTTP 403")
+
+
+@pytest.mark.parametrize("text", ["[", '{"orgs": []}', '["x"]'])
+def test_read_orgs_rejects_other_shapes(tmp_path, text):
+    path = tmp_path / "orgs.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_orgs(path)
+
+
+# ------------------------------------------------------------------ プロファイル名
+
+
+@pytest.mark.parametrize("name,ok", [
+    ("corp", True), ("profile.v2", True), ("corp_main", True), ("Corp-1", True),
+    ("..", False), (".", False), ("a/b", False), ("a b", False), ("", False),
+    ("プロファイル", False), (None, False),
+])
+def test_is_profile_name(name, ok):
+    assert is_profile_name(name) is ok
+    if ok:
+        validate_profile_name(name)
+    else:
+        with pytest.raises(ValueError, match="は使えません"):
+            validate_profile_name(name)
+
+
 # ------------------------------------------------------------------ 検証
 
 
-SPEND_HEADER = "user_email,model,product,total_prompt_tokens,total_completion_tokens"
+SPEND_HEADER ="user_email,model,product,total_prompt_tokens,total_completion_tokens"
 MEMBERS_HEADER = "Email,Seat Tier,Status"
 CODE_HEADER = "User,Lines this month,PRs with CC"
 
@@ -566,6 +753,40 @@ def test_verify_export_rejects_a_header_that_is_not_utf8(tmp_path):
     path.write_bytes("メール,model\n".encode("cp932"))
     verdict = _verify(path, "spend", "2026-09")
     assert not verdict.ok and "UTF-8" in verdict.reason
+
+
+@pytest.mark.parametrize("kind,name,header", [
+    ("spend", f"spend-report-{UUID2}-2026-09-01-to-2026-09-30.csv", SPEND_HEADER),
+    ("members", f"members-{UUID2}-2026-10-07.csv", MEMBERS_HEADER),
+    # 大文字の UUID でも別組織は別組織
+    ("members", f"members-{UUID2.upper()}-2026-10-07.csv", MEMBERS_HEADER),
+])
+def test_verify_export_rejects_a_file_of_another_org(tmp_path, kind, name, header):
+    """ファイル名の組織 UUID が設定の org_id と違えば配置しない。"""
+    path = _csv(tmp_path, name, header, "user1@example.com,x\n")
+    verdict = verify_export(path, kind, "2026-09", columns_aliases=COLUMNS, org_id=UUID1)
+    assert not verdict.ok
+    assert "ファイル名の組織 UUID が設定の org_id と違います" in verdict.reason
+
+
+@pytest.mark.parametrize("kind,name,header", [
+    # 同じ UUID（大文字小文字は問わない）
+    ("spend", f"spend-report-{UUID1.upper()}-2026-09-01-to-2026-09-30.csv", SPEND_HEADER),
+    ("members", f"members-{UUID1}-2026-10-07.csv", MEMBERS_HEADER),
+    # UUID の無い名前は見ない
+    ("spend", "spend-report-2026-09-01-to-2026-09-30.csv", SPEND_HEADER),
+    ("members", "members-2026-10-07.csv", MEMBERS_HEADER),
+    # Claude Code analytics の名前は見ない
+    ("code", f"claude-code-{UUID2}-2026-09-01-to-2026-09-30.csv", CODE_HEADER),
+])
+def test_verify_export_accepts_the_org_of_the_target(tmp_path, kind, name, header):
+    path = _csv(tmp_path, name, header, "user1@example.com,x\n")
+    assert verify_export(path, kind, "2026-09", columns_aliases=COLUMNS, org_id=UUID1).ok
+
+
+def test_verify_export_without_org_id_does_not_look_at_the_uuid(tmp_path):
+    path = _csv(tmp_path, f"members-{UUID2}-2026-10-07.csv", MEMBERS_HEADER, "user1@example.com,x\n")
+    assert verify_export(path, "members", "2026-09", columns_aliases=COLUMNS).ok
 
 
 @pytest.mark.parametrize("kind,name,header,month,fragment", [
@@ -807,6 +1028,84 @@ def test_write_preferences_rejects_a_broken_file(tmp_path):
     assert path.read_bytes() == b"{broken"
 
 
+def test_preferences_ready_after_the_update(tmp_path):
+    """--setup が書いた Preferences は取得の前の検査に通る。"""
+    staging = tmp_path / "exports"
+    prefs: dict = {}
+    assert not preferences_ready(prefs, staging)
+    update_preferences(prefs, staging_dir=staging, now_chrome_us=NOW_US)
+    assert preferences_ready(prefs, staging)
+
+
+@pytest.mark.parametrize("prefs", [
+    {},
+    {"download": "x"},
+    {"download": {}},
+    {"download": {"default_directory": ""}},
+    {"download": {"default_directory": 1}},
+])
+def test_preferences_ready_without_a_download_directory(tmp_path, prefs):
+    assert not preferences_ready(prefs, tmp_path / "exports")
+
+
+def test_preferences_ready_compares_normalized_paths(tmp_path):
+    staging = tmp_path / "exports"
+    assert preferences_ready(
+        {"download": {"default_directory": str(staging) + os.sep}}, staging)
+    assert preferences_ready(
+        {"download": {"default_directory": str(tmp_path / "x" / ".." / "exports")}}, staging)
+    assert not preferences_ready(
+        {"download": {"default_directory": str(tmp_path / "exports2")}}, staging)
+
+
+def _extension_prefs(path) -> dict:
+    return {"extensions": {"settings": {claude_export.EXTENSION_ID: {"path": str(path)}}}}
+
+
+def test_secure_preferences_path(tmp_path):
+    assert secure_preferences_path(tmp_path, "corp") \
+        == tmp_path / "corp" / "Default" / "Secure Preferences"
+
+
+def test_extension_install_state(tmp_path):
+    expected = tmp_path / "pkg" / "browser_extension"
+    other = _extension_prefs(tmp_path / "old" / "extension")
+    assert extension_install_state([_extension_prefs(expected)], expected) == "ok"
+    # どちらのファイルにあってもよく、区切りの重なりや `.` は畳んで比べる
+    assert extension_install_state(
+        [{}, _extension_prefs(str(expected) + os.sep)], expected) == "ok"
+    assert extension_install_state(
+        [_extension_prefs(tmp_path / "x" / ".." / "pkg" / "browser_extension")], expected) == "ok"
+    # 同じ ID が別の場所から読み込まれている
+    assert extension_install_state([other], expected) == "other_path"
+    assert extension_install_state([other, _extension_prefs(expected)], expected) == "ok"
+
+
+@pytest.mark.parametrize("prefs", [
+    [],
+    [{}],
+    [{"extensions": "x"}],
+    [{"extensions": {"settings": []}}],
+    [{"extensions": {"settings": {"abcdefghijklmnopabcdefghijklmnop": {"path": "/x"}}}}],
+    [{"extensions": {"settings": {claude_export.EXTENSION_ID: {}}}}],
+    [{"extensions": {"settings": {claude_export.EXTENSION_ID: {"path": ""}}}}],
+    ["not a dict"],
+])
+def test_extension_install_state_missing(tmp_path, prefs):
+    assert extension_install_state(prefs, tmp_path / "browser_extension") == "missing"
+
+
+def test_read_preferences(tmp_path):
+    path = tmp_path / "Preferences"
+    with pytest.raises(FileNotFoundError):
+        read_preferences(path)
+    path.write_text('{"download": {}}', encoding="utf-8")
+    assert read_preferences(path) == {"download": {}}
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(ValueError, match="オブジェクトではありません"):
+        read_preferences(path)
+
+
 # ------------------------------------------------------------------ Chrome の場所
 
 
@@ -913,10 +1212,12 @@ def test_launch_command(tmp_path):
 def test_process_listing_command():
     assert process_listing_command("darwin") == ["ps", "-axo", "pid=,command="]
     assert process_listing_command("linux") == ["ps", "-axo", "pid=,command="]
+    # 出力を UTF-8 にしてから列挙する（ASCII 以外を含むプロファイルのパスも照合できる）
     assert process_listing_command("win32") == [
         "powershell", "-NoProfile", "-Command",
         (
-            "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine"
+            "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+            " Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine"
             " | ConvertTo-Csv -NoTypeInformation"
         ),
     ]
@@ -1009,3 +1310,228 @@ def test_chrome_pids_without_a_powershell_header():
     """ヘッダの無い出力（PowerShell が動かなかった等）からは何も拾わない。"""
     listing = f'"2001","{WIN_CHROME} --user-data-dir={WIN_PROFILE}"\r\n'
     assert chrome_pids(listing, WIN_PROFILE, platform="win32") == []
+
+
+MAC_CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+def test_chrome_pids_from_ps_only_for_the_chrome_executable():
+    """実行ファイルを渡すと、同じ --user-data-dir を引数に持つ別のプログラムを拾わない。
+
+    先頭の実行ファイルが渡したものと一致するか、名前に chrome / chromium を含むものだけを
+    Chrome とみなす（Linux の google-chrome はラッパースクリプトで、プロセスには実体の
+    パスが見えるため）。
+    """
+    listing = "\n".join([
+        f"  401 {CHROME_BIN} --user-data-dir={UNIX_PROFILE} --no-first-run",
+        f"  402 python3 wrapper.py --user-data-dir={UNIX_PROFILE} --no-first-run",
+        f"  403 {CHROME_BIN}2 --user-data-dir={UNIX_PROFILE} --no-first-run",
+        f'  404 "{CHROME_BIN}" --user-data-dir={UNIX_PROFILE} --no-first-run',
+        f"  405 /usr/bin/python3 /home/user/chrome-tools/watch.py --user-data-dir={UNIX_PROFILE}",
+        f"  406 /usr/lib/chromium/chromium --user-data-dir={UNIX_PROFILE} --no-first-run",
+    ])
+    assert chrome_pids(listing, UNIX_PROFILE, platform="linux") == [401, 402, 403, 404, 405, 406]
+    # 403 は名前に chrome を含む別の実行ファイル、406 は chromium。どちらも同じプロファイルで
+    # 動く Chrome として扱う。402・405 はパスの途中に chrome があっても実行ファイルは python
+    expected = [401, 403, 404, 406]
+    assert chrome_pids(listing, UNIX_PROFILE, platform="linux", chrome=CHROME_BIN) == expected
+    assert chrome_pids(listing, UNIX_PROFILE, platform="linux",
+                       chrome=PurePosixPath(CHROME_BIN)) == expected
+    # 設定の実行ファイルがラッパースクリプト（/usr/bin/google-chrome）でも実体の Chrome を拾う
+    assert chrome_pids(listing, UNIX_PROFILE, platform="linux",
+                       chrome="/usr/bin/google-chrome") == expected
+
+
+def test_chrome_pids_with_a_space_in_the_chrome_path():
+    """空白を含む実行ファイルのパス（macOS の既定の場所）でも、引用符なしの ps の出力から拾う。"""
+    listing = "\n".join([
+        f"  501 {MAC_CHROME_BIN} --user-data-dir={UNIX_PROFILE} --no-first-run",
+        f"  502 /Applications/Google --user-data-dir={UNIX_PROFILE} --no-first-run",
+    ])
+    assert chrome_pids(listing, UNIX_PROFILE, platform="darwin", chrome=MAC_CHROME_BIN) == [501]
+
+
+def test_chrome_pids_from_powershell_only_for_the_chrome_executable():
+    chrome = PureWindowsPath(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+    listing = "\r\n".join([
+        '"ProcessId","CommandLine"',
+        # 引用符つきの実行ファイル
+        f'"2201","{WIN_CHROME} --user-data-dir={WIN_PROFILE} --no-first-run"',
+        # 同じ --user-data-dir を持つ別のプログラム
+        f'"2202","python.exe wrapper.py --user-data-dir={WIN_PROFILE} --no-first-run"',
+        # 引用符なし・大文字小文字の違い
+        rf'"2203","c:\program files\google\chrome\application\chrome.exe --user-data-dir={WIN_PROFILE} --x"',
+        # 別の場所の chrome.exe（名前が chrome なので同じプロファイルの Chrome として扱う）
+        rf'"2204","""D:\portable\chrome.exe"" --user-data-dir={WIN_PROFILE} --x"',
+    ])
+    assert chrome_pids(listing, WIN_PROFILE, platform="win32") == [2201, 2202, 2203, 2204]
+    assert chrome_pids(listing, WIN_PROFILE, platform="win32", chrome=chrome) == [2201, 2203, 2204]
+
+
+def _recording_signal(monkeypatch):
+    sent: list[tuple[list[int], bool]] = []
+    monkeypatch.setattr(
+        claude_export, "_signal",
+        lambda pids, *, platform, force: sent.append((list(pids), force)))
+    return sent
+
+
+def test_terminate_chrome_forces_only_processes_still_listed(monkeypatch, tmp_path):
+    """強制終了の前に列挙し直し、まだそのプロファイルの Chrome として見えるものだけを対象にする。"""
+    sent = _recording_signal(monkeypatch)
+    monkeypatch.setattr(claude_export, "_alive", lambda pids, *, platform: list(pids))
+    relisted: list[tuple[Path, object]] = []
+
+    def relist(profile_dir, *, chrome=None, platform=None):
+        relisted.append((profile_dir, chrome))
+        return [11, 99]   # 10 は終わって pid が別のプロセスに再利用された
+
+    monkeypatch.setattr(claude_export, "list_chrome_pids", relist)
+    chrome = Path("/opt/google/chrome/chrome")
+    claude_export.terminate_chrome([10, 11], profile_dir=tmp_path, chrome=chrome,
+                                   grace_seconds=0, platform="linux")
+    assert sent == [([10, 11], False), ([11], True)]
+    assert relisted == [(tmp_path, chrome)]
+
+
+def test_terminate_chrome_does_not_force_when_nothing_is_listed(monkeypatch, tmp_path):
+    sent = _recording_signal(monkeypatch)
+    monkeypatch.setattr(claude_export, "_alive", lambda pids, *, platform: list(pids))
+    monkeypatch.setattr(claude_export, "list_chrome_pids", lambda *args, **kwargs: [])
+    claude_export.terminate_chrome([10], profile_dir=tmp_path, grace_seconds=0, platform="linux")
+    assert sent == [([10], False)]
+
+
+def test_terminate_chrome_stops_when_the_processes_exit(monkeypatch, tmp_path):
+    sent = _recording_signal(monkeypatch)
+    monkeypatch.setattr(claude_export, "_alive", lambda pids, *, platform: [])
+
+    def no_relist(*args, **kwargs):
+        raise AssertionError("終了したら列挙し直さない")
+
+    monkeypatch.setattr(claude_export, "list_chrome_pids", no_relist)
+    claude_export.terminate_chrome([10], profile_dir=tmp_path, grace_seconds=0, platform="linux")
+    assert sent == [([10], False)]
+
+
+# ------------------------------------------------------------------ プロファイルの排他
+
+
+BUSY = "プロファイル corp は別の実行が使用中です"
+
+
+def test_profile_lock_refuses_a_second_holder_and_frees_on_exit(tmp_path):
+    """持っている間は同じプロセスの 2 回目も取れず、抜けると取れる。ファイルは空のまま残る。"""
+    staging = tmp_path / "exports"
+    with profile_lock(staging, "corp") as path:
+        assert path == lock_path(staging, "corp") == staging / "corp.lock"
+        with pytest.raises(ProfileBusyError, match=BUSY), profile_lock(staging, "corp"):
+            raise AssertionError("ロックを取れてはいけない")
+    assert path.read_bytes() == b""
+    with profile_lock(staging, "corp"):
+        pass
+    assert issubclass(ProfileBusyError, ValueError)
+
+
+def test_profile_lock_is_released_after_an_exception(tmp_path):
+    with pytest.raises(RuntimeError), profile_lock(tmp_path, "corp"):
+        raise RuntimeError("boom")
+    with profile_lock(tmp_path, "corp"):
+        pass
+    assert lock_path(tmp_path, "corp").exists()
+
+
+def test_profile_lock_ignores_the_content_of_an_old_lock_file(tmp_path):
+    """中身のある古い形式のロックファイルが残っていても、誰もロックを持っていなければ取れる。"""
+    path = lock_path(tmp_path, "corp")
+    old = json.dumps({"pid": 12345, "run_id": "x"})
+    path.write_text(old, encoding="utf-8")
+    with profile_lock(tmp_path, "corp"):
+        pass
+    assert path.read_text(encoding="utf-8") == old   # 中身を読まず、書き換えない
+
+
+def test_profile_lock_reports_a_lock_held_by_others_as_busy(tmp_path, monkeypatch):
+    """他者が持っているときの errno（Windows の EACCES を含む）は使用中として扱う。"""
+    def held(f):
+        raise OSError(errno.EACCES, "locked")
+
+    monkeypatch.setattr(claude_export, "_lock_file", held)
+    with pytest.raises(ProfileBusyError, match=BUSY), profile_lock(tmp_path, "corp"):
+        raise AssertionError("ロックを取れてはいけない")
+
+
+def test_profile_lock_refuses_to_run_without_a_lock(tmp_path, monkeypatch):
+    """ロックを掛けられない環境（ENOLCK 等）では、ロック無しで進めずに止める。"""
+    def unsupported(f):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(claude_export, "_lock_file", unsupported)
+    with pytest.raises(ValueError) as excinfo, profile_lock(tmp_path, "corp"):
+        raise AssertionError("進めてはいけない")
+    assert type(excinfo.value) is ValueError
+    assert "プロファイル corp のロックを取れません" in str(excinfo.value)
+    assert "claude_export.staging_dir をこのマシンのディスクに置いてください" in str(excinfo.value)
+
+
+# 別のプロセスでロックを取り、"locked" を出してから標準入力が閉じるまで持ち続ける
+_HOLDER = """
+import sys
+from pathlib import Path
+from seat_analyzer.claude_export import profile_lock
+with profile_lock(Path(sys.argv[1]), "corp"):
+    print("locked", flush=True)
+    sys.stdin.readline()
+"""
+
+
+@contextlib.contextmanager
+def _other_process_holding_the_lock(staging: Path):
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _HOLDER, str(staging)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        line = proc.stdout.readline()
+        assert line == "locked\n", f"子プロセスがロックを取れませんでした: {line!r}"
+        yield proc
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=30)
+        for stream in (proc.stdin, proc.stdout):
+            with contextlib.suppress(OSError):
+                stream.close()
+
+
+def _acquire_soon(staging: Path, seconds: float = 5.0) -> None:
+    """ロックを取る。外れるのが遅れる OS に備え、seconds の間 0.2 秒間隔で取り直す。"""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            with profile_lock(staging, "corp"):
+                return
+        except ProfileBusyError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
+
+
+def test_profile_lock_excludes_another_process_until_it_ends(tmp_path):
+    with _other_process_holding_the_lock(tmp_path) as holder:
+        with pytest.raises(ProfileBusyError, match=BUSY), profile_lock(tmp_path, "corp"):
+            raise AssertionError("ロックを取れてはいけない")
+        holder.stdin.close()
+        assert holder.wait(timeout=30) == 0
+    _acquire_soon(tmp_path)
+
+
+def test_profile_lock_is_freed_when_the_holder_is_killed(tmp_path):
+    """持ち主のプロセスが異常終了しても、ロックは OS が外す（取り残されない）。"""
+    with _other_process_holding_the_lock(tmp_path) as holder:
+        with pytest.raises(ProfileBusyError, match=BUSY), profile_lock(tmp_path, "corp"):
+            raise AssertionError("ロックを取れてはいけない")
+        holder.kill()
+        holder.wait(timeout=30)
+    _acquire_soon(tmp_path)
+    assert lock_path(tmp_path, "corp").read_bytes() == b""

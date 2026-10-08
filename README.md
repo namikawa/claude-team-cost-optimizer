@@ -66,6 +66,9 @@ seat-analyzer --version
 3. claude.ai からエクスポートした CSV を `input/<組織名>/` 配下に置く。
    スペンドレポートとメンバー一覧が必須、Claude Code 分析は任意。エクスポート手順と
    ファイル名の解釈ルールは [docs/usage.md](docs/usage.md) の月次運用手順。
+   `config.yaml` に設定した組織では、`seat-analyzer collect --source claude` で 3 種の CSV の
+   取得と配置をまとめて行えます（任意。専用プロファイルの Google Chrome を使う。設定は
+   [docs/setup.md](docs/setup.md) の「claude.ai からの CSV 取得を設定する」）。
 
 4. 分析を実行する
 
@@ -101,9 +104,9 @@ seat-analyzer --version
 
 | ドキュメント | 内容 |
 | --- | --- |
-| [docs/setup.md](docs/setup.md) | ゼロから動く状態にするまでのセットアップ手順（Claude Code に実行させる形式） |
-| [docs/usage.md](docs/usage.md) | 入力データの構成、複数スペースの組織、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、速報モード |
-| [docs/reference.md](docs/reference.md) | レポート各セクションと複数スペースの組織の読み方、追加クレジットの上限、GitHub 分析の有効化、判定ロジックの前提 |
+| [docs/setup.md](docs/setup.md) | ゼロから動く状態にするまでのセットアップ手順（Claude Code に実行させる形式）、claude.ai からの CSV 取得の設定 |
+| [docs/usage.md](docs/usage.md) | 入力データの構成、複数スペースの組織、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、claude.ai からの CSV 取得、速報モード |
+| [docs/reference.md](docs/reference.md) | レポート各セクションと複数スペースの組織の読み方、追加クレジットの上限、GitHub 分析の有効化、claude.ai からの CSV 取得の設定、判定ロジックの前提 |
 | [docs/tooling.md](docs/tooling.md) | 考察の自動執筆（`discuss`）と公開テキストの検査（`check-text`） |
 | [CHANGELOG.md](CHANGELOG.md) | バージョンごとの変更履歴 |
 

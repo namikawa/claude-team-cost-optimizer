@@ -177,29 +177,47 @@ def _same_lexical_path(a: Path, b: Path) -> bool:
     return key(a) == key(b)
 
 
-def _rebase_paths(override: dict, config_path: Path) -> dict:
-    """上書きファイルの paths を、その設定ファイルの置き場所を基準に解決した上書きを返す。
+# 設定ファイルの置き場所を基準に解決するディレクトリの設定（セクション → キー。None は
+# セクションのすべてのキー）
+_REBASED_PATHS: dict[str, tuple[str, ...] | None] = {
+    "paths": None,
+    "claude_export": ("profiles_dir", "staging_dir"),
+}
 
-    ワークスペースの config.yaml に書いた入出力先は、どのディレクトリから実行しても
-    同じ場所を指す（--config で別の場所の設定を読んだときは、その設定の隣を見る）。
-    基準を与えるのは上書きファイルに書かれた値だけで、パッケージ内の既定
-    （input / reports）と CLI のフラグはカレントディレクトリ基準のままにする。
+
+def _rebase_paths(override: dict, config_path: Path) -> dict:
+    """上書きファイルのディレクトリの設定を、その設定ファイルの置き場所を基準に解決した上書きを返す。
+
+    対象は paths（入出力先）と claude_export の profiles_dir・staging_dir
+    （`_REBASED_PATHS`）。ワークスペースの config.yaml に書いたディレクトリは、どの
+    ディレクトリから実行しても同じ場所を指す（--config で別の場所の設定を読んだときは、
+    その設定の隣を見る）。基準を与えるのは上書きファイルに書かれた値だけで、パッケージ内の
+    既定（input / reports）と CLI のフラグはカレントディレクトリ基準のままにする。
     重ねたあとの設定からは値の出所が分からなくなるため、マージの前に解決する。
+    claude_export.chrome_path は実行ファイルの場所なので解決しない（絶対パスか空文字に
+    限ることを _validate_claude_export が確かめる）。
 
     --config でパッケージ内の既定そのものを指した場合も既定として扱う
     （指した場所がパッケージの中なので、解決するとそこを入力先にしてしまう）。
     同じファイルかどうかは書き方に依らせない（相対指定でも既定は既定）。
     """
-    paths = override.get("paths")
-    if not isinstance(paths, dict) or _is_package_config(config_path):
-        return override    # 種別の誤りは _merge_override が既定と突き合わせて報告する
+    if _is_package_config(config_path):
+        return override
     base = config_path.parent
-    resolved = dict(paths)
-    for key, value in paths.items():
-        # 文字列でない値と空文字は解決せずに通し、_merge_override と _validate に報告させる
-        if isinstance(value, str) and value.strip():
-            resolved[key] = _resolve_path_value(value, base, label=f"{config_path} の paths.{key}")
-    return {**override, "paths": resolved}
+    rebased = dict(override)
+    for section_name, keys in _REBASED_PATHS.items():
+        section = override.get(section_name)
+        if not isinstance(section, dict):
+            continue    # 種別の誤りは _merge_override が既定と突き合わせて報告する
+        resolved = dict(section)
+        for key in section if keys is None else keys:
+            value = section.get(key)
+            # 文字列でない値と空文字は解決せずに通し、_merge_override と _validate に報告させる
+            if isinstance(value, str) and value.strip():
+                resolved[key] = _resolve_path_value(
+                    value, base, label=f"{config_path} の {section_name}.{key}")
+        rebased[section_name] = resolved
+    return rebased
 
 
 def _resolve_path_value(value: str, base: Path, *, label: str) -> str:
@@ -511,8 +529,16 @@ def _validate_claude_export(cfg: dict, errors: list[str]) -> None:
     if not isinstance(section, dict):
         errors.append("claude_export セクションが辞書ではありません")
         return
-    if not isinstance(section.get("chrome_path"), str):
+    chrome_path = section.get("chrome_path")
+    if not isinstance(chrome_path, str):
         errors.append("claude_export.chrome_path は文字列が必要です（空文字で自動検出）")
+    elif chrome_path and not _is_absolute_setting(chrome_path):
+        # 実行ファイルの場所は設定ファイルの置き場所を基準に解決しない（どこから実行しても
+        # 同じ Chrome を指すよう、絶対パスで書いてもらう）
+        errors.append(
+            "claude_export.chrome_path は Chrome の実行ファイルの絶対パスか、空文字"
+            "（自動検出）が必要です"
+        )
     # 空文字はカレントディレクトリとして解決され、プロファイルやダウンロードを意図しない
     # 場所へ置く
     for key in ("profiles_dir", "staging_dir"):
@@ -523,11 +549,17 @@ def _validate_claude_export(cfg: dict, errors: list[str]) -> None:
         errors.append("claude_export.timeout_minutes は 1 以上の整数が必要です")
 
 
+def _is_absolute_setting(value: str) -> bool:
+    """`~` を展開したうえで絶対パスか（展開できなければ False）。"""
+    try:
+        return Path(value).expanduser().is_absolute()
+    except RuntimeError:
+        return False
+
+
 # claude.ai の組織 UUID（8-4-4-4-12 桁の16進。大文字小文字は問わない）
 _CLAUDE_ORG_ID_RE = re.compile(
     r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
-# プロファイル名（profiles_dir 配下のディレクトリ名になる）
-_CLAUDE_PROFILE_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def _validate_claude_export_entry(
@@ -575,7 +607,7 @@ def _validate_claude_export_entry(
     else:
         errors.append(
             f"{where}.org_id は claude.ai の組織 UUID（8-4-4-4-12 桁の16進）が必要です")
-    if not _CLAUDE_PROFILE_RE.fullmatch(profile) or profile in (".", ".."):
+    if not claude_export.is_profile_name(profile):
         errors.append(
             f"{where}.profile は英数字と . _ - からなる名前が必要です"
             "（プロファイルのディレクトリ名になります。. と .. は使えません）"
