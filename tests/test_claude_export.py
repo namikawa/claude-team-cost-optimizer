@@ -6,6 +6,7 @@
 上でも 3 OS 分を検査する。
 """
 
+import contextlib
 import datetime as dt
 import errno
 import json
@@ -31,7 +32,6 @@ from seat_analyzer.claude_export import (
     OrgEntry,
     ProfileBusyError,
     ProfileRun,
-    acquire_profile_lock,
     chrome_pids,
     chrome_time_us,
     extension_install_state,
@@ -47,7 +47,6 @@ from seat_analyzer.claude_export import (
     match_results,
     new_run_id,
     orgs_path,
-    pid_alive,
     place_export,
     plan_runs,
     preferences_ready,
@@ -1418,185 +1417,121 @@ def test_terminate_chrome_stops_when_the_processes_exit(monkeypatch, tmp_path):
 # ------------------------------------------------------------------ プロファイルの排他
 
 
-def _holder(path: Path) -> dict:
-    return json.loads(path.read_text(encoding="utf-8"))
+BUSY = "プロファイル corp は別の実行が使用中です"
 
 
-def test_profile_lock_holds_the_pid_and_run_id_and_is_removed(tmp_path):
+def test_profile_lock_refuses_a_second_holder_and_frees_on_exit(tmp_path):
+    """持っている間は同じプロセスの 2 回目も取れず、抜けると取れる。ファイルは空のまま残る。"""
     staging = tmp_path / "exports"
-    with profile_lock(staging, "corp", "corp-current-1", pid=4242,
-                      is_alive=lambda pid: True) as path:
+    with profile_lock(staging, "corp") as path:
         assert path == lock_path(staging, "corp") == staging / "corp.lock"
-        assert _holder(path) == {"pid": 4242, "run_id": "corp-current-1"}
-    assert not path.exists()
-
-
-def test_profile_lock_is_removed_after_an_exception(tmp_path):
-    with pytest.raises(RuntimeError), profile_lock(tmp_path, "corp", "corp-current-1", pid=1):
-        raise RuntimeError("boom")
-    assert not lock_path(tmp_path, "corp").exists()
-
-
-def test_profile_lock_refuses_while_the_holder_is_alive(tmp_path):
-    path = lock_path(tmp_path, "corp")
-    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
-    busy = r"プロファイル corp は別の実行（run_id corp-current-x）が使用中です"
-    with pytest.raises(ProfileBusyError, match=busy), profile_lock(
-        tmp_path, "corp", "corp-current-y", pid=1, is_alive=lambda pid: pid == 77
-    ):
-        raise AssertionError("ロックを取れてはいけない")
-    # 他の実行のロックには触れない
-    assert _holder(path) == {"pid": 77, "run_id": "corp-current-x"}
+        with pytest.raises(ProfileBusyError, match=BUSY), profile_lock(staging, "corp"):
+            raise AssertionError("ロックを取れてはいけない")
+    assert path.read_bytes() == b""
+    with profile_lock(staging, "corp"):
+        pass
     assert issubclass(ProfileBusyError, ValueError)
 
 
-def _age(path: Path, seconds: float) -> None:
-    """ファイルの更新時刻を seconds 秒前にする。"""
-    when = time.time() - seconds
-    os.utime(path, (when, when))
+def test_profile_lock_is_released_after_an_exception(tmp_path):
+    with pytest.raises(RuntimeError), profile_lock(tmp_path, "corp"):
+        raise RuntimeError("boom")
+    with profile_lock(tmp_path, "corp"):
+        pass
+    assert lock_path(tmp_path, "corp").exists()
 
 
-def _lock_dir_names(directory: Path) -> list[str]:
-    return sorted(entry.name for entry in directory.iterdir())
-
-
-def test_profile_lock_takes_over_the_lock_of_a_dead_holder(tmp_path):
-    """持ち主の pid が動いていないロックは、新しくても引き取る。"""
+def test_profile_lock_ignores_the_content_of_an_old_lock_file(tmp_path):
+    """中身のある古い形式のロックファイルが残っていても、誰もロックを持っていなければ取れる。"""
     path = lock_path(tmp_path, "corp")
-    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
-    with profile_lock(tmp_path, "corp", "corp-current-y", pid=1, is_alive=lambda pid: False):
-        assert _holder(path) == {"pid": 1, "run_id": "corp-current-y"}
-        assert _lock_dir_names(tmp_path) == ["corp.lock"]   # 引き取った古いロックは残さない
-    assert not path.exists()
+    old = json.dumps({"pid": 12345, "run_id": "x"})
+    path.write_text(old, encoding="utf-8")
+    with profile_lock(tmp_path, "corp"):
+        pass
+    assert path.read_text(encoding="utf-8") == old   # 中身を読まず、書き換えない
 
 
-@pytest.mark.parametrize("content", ["", "{broken", json.dumps({"pid": "77"})])
-def test_profile_lock_refuses_a_fresh_unreadable_lock(tmp_path, content):
-    """中身を読めないロックは、新しければ書き込みの途中かもしれないので使用中とみなす。"""
-    path = lock_path(tmp_path, "corp")
-    path.write_text(content, encoding="utf-8")
-    with pytest.raises(ProfileBusyError, match="run_id 不明"), profile_lock(
-        tmp_path, "corp", "corp-current-y", pid=1, is_alive=lambda pid: False
-    ):
+def test_profile_lock_reports_a_lock_held_by_others_as_busy(tmp_path, monkeypatch):
+    """他者が持っているときの errno（Windows の EACCES を含む）は使用中として扱う。"""
+    def held(f):
+        raise OSError(errno.EACCES, "locked")
+
+    monkeypatch.setattr(claude_export, "_lock_file", held)
+    with pytest.raises(ProfileBusyError, match=BUSY), profile_lock(tmp_path, "corp"):
         raise AssertionError("ロックを取れてはいけない")
-    assert path.read_text(encoding="utf-8") == content
 
 
-@pytest.mark.parametrize("content", ["", "{broken", json.dumps({"pid": "77"})])
-def test_profile_lock_takes_over_an_old_unreadable_lock(tmp_path, content):
-    path = lock_path(tmp_path, "corp")
-    path.write_text(content, encoding="utf-8")
-    _age(path, 120)
-    with profile_lock(tmp_path, "corp", "corp-current-y", pid=1, is_alive=lambda pid: False):
-        assert _holder(path) == {"pid": 1, "run_id": "corp-current-y"}
-    assert not path.exists()
+def test_profile_lock_refuses_to_run_without_a_lock(tmp_path, monkeypatch):
+    """ロックを掛けられない環境（ENOLCK 等）では、ロック無しで進めずに止める。"""
+    def unsupported(f):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(claude_export, "_lock_file", unsupported)
+    with pytest.raises(ValueError) as excinfo, profile_lock(tmp_path, "corp"):
+        raise AssertionError("進めてはいけない")
+    assert type(excinfo.value) is ValueError
+    assert "プロファイル corp のロックを取れません" in str(excinfo.value)
+    assert "claude_export.staging_dir をこのマシンのディスクに置いてください" in str(excinfo.value)
 
 
-def test_acquire_profile_lock_writes_the_holder_without_leaving_a_temporary_file(tmp_path):
-    path = lock_path(tmp_path, "corp")
-    acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=4242)
-    assert _holder(path) == {"pid": 4242, "run_id": "corp-current-y"}
-    assert _lock_dir_names(tmp_path) == ["corp.lock"]
+# 別のプロセスでロックを取り、"locked" を出してから標準入力が閉じるまで持ち続ける
+_HOLDER = """
+import sys
+from pathlib import Path
+from seat_analyzer.claude_export import profile_lock
+with profile_lock(Path(sys.argv[1]), "corp"):
+    print("locked", flush=True)
+    sys.stdin.readline()
+"""
 
 
-@pytest.mark.parametrize("error", [
-    OSError(errno.EPERM, "operation not permitted"),
-    AttributeError("link"),
-])
-def test_acquire_profile_lock_without_hard_links(tmp_path, monkeypatch, error):
-    """os.link を使えない環境では、排他的に作ってから書く手順で取る。"""
-    def no_link(src, dst):
-        raise error
-
-    monkeypatch.setattr(claude_export.os, "link", no_link)
-    path = lock_path(tmp_path, "corp")
-    acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=4242)
-    assert _holder(path) == {"pid": 4242, "run_id": "corp-current-y"}
-    assert _lock_dir_names(tmp_path) == ["corp.lock"]
-
-    # 既にあれば作らない（排他的な作成のまま）
-    with pytest.raises(ProfileBusyError):
-        acquire_profile_lock(path, profile="corp", run_id="corp-current-z", pid=1,
-                             is_alive=lambda pid: pid == 4242)
+@contextlib.contextmanager
+def _other_process_holding_the_lock(staging: Path):
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _HOLDER, str(staging)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        line = proc.stdout.readline()
+        assert line == "locked\n", f"子プロセスがロックを取れませんでした: {line!r}"
+        yield proc
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=30)
+        for stream in (proc.stdin, proc.stdout):
+            with contextlib.suppress(OSError):
+                stream.close()
 
 
-def test_acquire_profile_lock_does_not_take_over_when_the_rename_loses(tmp_path, monkeypatch):
-    """古いロックの引き取り（名前の変更）を他者に先を越されたら、取り直して使用中で止まる。"""
-    path = lock_path(tmp_path, "corp")
-    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
-
-    def lost(src, dst):
-        raise FileNotFoundError(src)
-
-    monkeypatch.setattr(claude_export.os, "rename", lost)
-    with pytest.raises(ProfileBusyError, match="run_id corp-current-x"):
-        acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=1,
-                             is_alive=lambda pid: False)
-    assert _holder(path) == {"pid": 77, "run_id": "corp-current-x"}
+def _acquire_soon(staging: Path, seconds: float = 5.0) -> None:
+    """ロックを取る。外れるのが遅れる OS に備え、seconds の間 0.2 秒間隔で取り直す。"""
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            with profile_lock(staging, "corp"):
+                return
+        except ProfileBusyError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.2)
 
 
-def test_acquire_profile_lock_gives_up_when_the_retry_is_taken(tmp_path, monkeypatch):
-    """古いロックを引き取った後、作り直す前に他者がロックを作ったら使用中で止まる。"""
-    path = lock_path(tmp_path, "corp")
-    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
-    real_rename = os.rename
-
-    def rename_then_taken(src, dst):
-        real_rename(src, dst)
-        Path(src).write_text(json.dumps({"pid": 88, "run_id": "corp-current-b"}),
-                             encoding="utf-8")
-
-    monkeypatch.setattr(claude_export.os, "rename", rename_then_taken)
-    with pytest.raises(ProfileBusyError, match="run_id corp-current-b"):
-        acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=1,
-                             is_alive=lambda pid: pid == 88)
-    assert _holder(path) == {"pid": 88, "run_id": "corp-current-b"}
-    assert _lock_dir_names(tmp_path) == ["corp.lock"]
+def test_profile_lock_excludes_another_process_until_it_ends(tmp_path):
+    with _other_process_holding_the_lock(tmp_path) as holder:
+        with pytest.raises(ProfileBusyError, match=BUSY), profile_lock(tmp_path, "corp"):
+            raise AssertionError("ロックを取れてはいけない")
+        holder.stdin.close()
+        assert holder.wait(timeout=30) == 0
+    _acquire_soon(tmp_path)
 
 
-def test_acquire_profile_lock_puts_back_a_lock_recreated_after_the_check(tmp_path, monkeypatch):
-    """古いと判定した後に他者が引き取って作り直したロックは、引き取らずに元へ戻す。
-
-    古いロックを 2 者が同時に見つけたとき、一方が作り直したロックを他方が消さない。
-    """
-    path = lock_path(tmp_path, "corp")
-    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
-    _age(path, 120)
-    real_rename = os.rename
-    calls = []
-
-    def other_took_it_first(src, dst):
-        if not calls:
-            # 判定の後、名前の変更の前に、他者が古いロックを引き取って新しいロックを作った
-            calls.append("other")
-            real_rename(src, tmp_path / "others-stale")
-            (tmp_path / "others-stale").unlink()
-            fresh = tmp_path / "fresh"
-            fresh.write_text(json.dumps({"pid": 88, "run_id": "corp-current-b"}),
-                             encoding="utf-8")
-            real_rename(fresh, src)
-        real_rename(src, dst)
-
-    monkeypatch.setattr(claude_export.os, "rename", other_took_it_first)
-    with pytest.raises(ProfileBusyError, match="run_id corp-current-b"):
-        acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=1,
-                             is_alive=lambda pid: pid == 88)
-    assert _holder(path) == {"pid": 88, "run_id": "corp-current-b"}
-    assert _lock_dir_names(tmp_path) == ["corp.lock"]
-
-
-@pytest.mark.skipif(os.name == "nt", reason="シグナル 0 での確認は Unix の経路")
-def test_pid_alive_on_unix():
-    assert pid_alive(os.getpid()) is True
-    proc = subprocess.Popen([sys.executable, "-c", ""])
-    proc.wait()
-    assert pid_alive(proc.pid) is False
-
-
-def test_pid_alive_on_windows_reads_the_process_listing(monkeypatch):
-    listing = b'"ProcessId","CommandLine"\r\n"2001","x.exe"\r\n'
-    monkeypatch.setattr(
-        claude_export.subprocess, "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=listing))
-    assert pid_alive(2001, platform="win32") is True
-    assert pid_alive(2002, platform="win32") is False
+def test_profile_lock_is_freed_when_the_holder_is_killed(tmp_path):
+    """持ち主のプロセスが異常終了しても、ロックは OS が外す（取り残されない）。"""
+    with _other_process_holding_the_lock(tmp_path) as holder:
+        with pytest.raises(ProfileBusyError, match=BUSY), profile_lock(tmp_path, "corp"):
+            raise AssertionError("ロックを取れてはいけない")
+        holder.kill()
+        holder.wait(timeout=30)
+    _acquire_soon(tmp_path)
+    assert lock_path(tmp_path, "corp").read_bytes() == b""

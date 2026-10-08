@@ -1512,7 +1512,7 @@ def _claude_collect_run(
     now = dt.datetime.now().astimezone()
     run_id = claude_export.new_run_id(run, now)
     try:
-        with claude_export.profile_lock(staging_dir, run.profile, run_id):
+        with claude_export.profile_lock(staging_dir, run.profile):
             return _claude_collect_locked(
                 run, run_id, now, chrome, profiles_dir, staging_dir, cfg, input_dir,
                 timeout_minutes=timeout_minutes, keep_browser=keep_browser,
@@ -1682,7 +1682,7 @@ def _claude_finish_setup(profile: str, settings: dict) -> int:
     chrome = _claude_chrome(settings)
     if chrome is None:
         return 1
-    with claude_export.profile_lock(staging_dir, profile, f"{profile}-finish-setup"):
+    with claude_export.profile_lock(staging_dir, profile):
         return _claude_finish_setup_locked(profile, profiles_dir, staging_dir, chrome)
 
 
@@ -1780,7 +1780,7 @@ def _claude_list_orgs(
     if not _claude_profile_ready(profile, profiles_dir, staging_dir):
         return 1
     run_id = claude_export.list_orgs_run_id(profile, dt.datetime.now().astimezone())
-    with claude_export.profile_lock(staging_dir, profile, run_id):
+    with claude_export.profile_lock(staging_dir, profile):
         return _claude_list_orgs_locked(
             profile, run_id, chrome, profiles_dir, staging_dir,
             timeout_minutes=timeout_minutes, keep_browser=keep_browser,

@@ -2188,8 +2188,9 @@ def test_collect_claude_places_every_file_and_closes_chrome(claude_env, capsys):
         ("list", {"chrome": env.chrome}),
         ("terminate", {"profile_dir": env.profiles / "corp", "chrome": env.chrome}),
     ]
-    # プロファイルのロックは終わったら消える
-    assert not claude_export.lock_path(env.staging, "corp").exists()
+    # プロファイルのロックは終わったら外れる（もう一度取れる）
+    with claude_export.profile_lock(env.staging, "corp"):
+        pass
 
     out = capsys.readouterr().out
     assert "profile corp: 当月モード（2026-10）" in out
@@ -2218,35 +2219,31 @@ def test_collect_claude_does_not_place_a_file_of_another_org(claude_env, capsys)
 def test_collect_claude_refuses_a_profile_in_use(claude_env, capsys, command):
     """同じプロファイルを別の実行が使っていれば、Chrome に触れずに止める。"""
     env = claude_env
-    lock = claude_export.lock_path(env.staging, "corp")
-    lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text(json.dumps({"pid": os.getpid(), "run_id": "corp-current-20261007-090000"}),
-                    encoding="utf-8")
-
-    assert _collect_claude(env, *command) == 1
-    assert ("プロファイル corp は別の実行（run_id corp-current-20261007-090000）が使用中です"
-            in capsys.readouterr().err)
+    with claude_export.profile_lock(env.staging, "corp"):
+        assert _collect_claude(env, *command) == 1
+    err = capsys.readouterr().err
+    assert ("プロファイル corp は別の実行が使用中です（同じプロファイルの取得・組織一覧・"
+            "--finish-setup のいずれか）。その実行が終わってから再実行してください") in err
     assert env.ext.commands == [] and env.listed == [] and env.terminated == []
-    # 他の実行のロックはそのまま
-    assert json.loads(lock.read_text(encoding="utf-8"))["run_id"] == \
-        "corp-current-20261007-090000"
 
 
-def test_collect_claude_replaces_a_stale_lock(claude_env, monkeypatch):
+def test_collect_claude_runs_with_an_old_lock_file_left(claude_env):
+    """中身の残った古い形式のロックファイルがあっても取得できる（ファイルは残る）。"""
     env = claude_env
     lock = claude_export.lock_path(env.staging, "corp")
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(json.dumps({"pid": 12345, "run_id": "corp-current-old"}), encoding="utf-8")
-    monkeypatch.setattr("seat_analyzer.claude_export.pid_alive", lambda pid, **kwargs: False)
     assert _collect_claude(env, "--org", "example") == 0
-    assert not lock.exists()
+    assert lock.exists()
 
 
 def test_collect_claude_releases_the_lock_after_a_timeout(claude_env):
+    """時間切れで終わった後も、プロファイルのロックを取り直せる。"""
     env = claude_env
     env.ext.manifest = None
     assert _collect_claude(env, "--org", "example", "--timeout", "1") == 1
-    assert not claude_export.lock_path(env.staging, "corp").exists()
+    with claude_export.profile_lock(env.staging, "corp"):
+        pass
 
 
 def test_collect_claude_reports_each_failure_and_places_the_rest(claude_env, capsys):
