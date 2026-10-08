@@ -43,12 +43,16 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 });
 
 // 2. ダウンロードの保存先の振り分け。実行ページが chrome.storage.session の routing に
-//    {prefix, name} を置いている間だけ、既定のダウンロード先（staging）の下の
-//    prefix/（name か、サイトが付けた元のファイル名）に保存する。同名は上書きする。
+//    {prefix, name} を置いている間だけ、既定のダウンロード先（staging）の下の prefix/ に
+//    保存する。固定名の name は拡張機能自身が始めたダウンロード（manifest.json 等の blob）に
+//    だけ付け、ページが始めたダウンロードはサイトが付けた元のファイル名のまま置く（遅れて
+//    届いた CSV が固定名を奪わないため）。同名は上書きする。
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   chrome.storage.session.get("routing").then(({ routing }) => {
     if (routing && routing.prefix) {
-      suggest({ filename: `${routing.prefix}/${routing.name || item.filename}`, conflictAction: "overwrite" });
+      const own = item.byExtensionId === chrome.runtime.id;
+      const name = own && routing.name ? routing.name : item.filename;
+      suggest({ filename: `${routing.prefix}/${name}`, conflictAction: "overwrite" });
     } else {
       suggest();
     }

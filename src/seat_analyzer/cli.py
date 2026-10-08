@@ -1361,9 +1361,12 @@ def _claude_launch(chrome: Path, profile_dir: Path, url: str) -> None:
     claude_export.launch_chrome(claude_export.launch_command(chrome, profile_dir, url))
 
 
-def _claude_close(profile_dir: Path) -> None:
-    """そのプロファイルの Chrome を終了させる。見つからなければ警告だけ（失敗にしない）。"""
-    pids = claude_export.list_chrome_pids(profile_dir)
+def _claude_close(profile_dir: Path, chrome: Path) -> None:
+    """そのプロファイルの Chrome を終了させる。見つからなければ警告だけ（失敗にしない）。
+
+    対象は起動に使った実行ファイル（chrome）とプロファイルの両方が一致するプロセスだけ。
+    """
+    pids = claude_export.list_chrome_pids(profile_dir, chrome=chrome)
     if not pids:
         print(
             "  警告: このプロファイルの Chrome のプロセスが見つかりませんでした"
@@ -1371,7 +1374,7 @@ def _claude_close(profile_dir: Path) -> None:
             file=sys.stderr,
         )
         return
-    claude_export.terminate_chrome(pids)
+    claude_export.terminate_chrome(pids, profile_dir=profile_dir, chrome=chrome)
     print("  Chrome を終了しました")
 
 
@@ -1469,7 +1472,7 @@ def _claude_place(
             continue
         src = claude_export.staged_file(staging_dir, run_id, target, kind, record.filename)
         verdict = claude_export.verify_export(
-            src, kind, run.month, columns_aliases=cfg["columns"])
+            src, kind, run.month, columns_aliases=cfg["columns"], org_id=target.org_id)
         if not verdict.ok:
             print(f"  失敗: {where} {verdict.reason}（{src}）")
             failed += 1
@@ -1499,15 +1502,41 @@ def _claude_collect_run(
 ) -> bool:
     """1 つのプロファイルの取得（起動 → manifest の待機 → 検証・配置 → 終了）。成功なら True。
 
-    時間切れのときは Chrome を終了させない（ログインや外部セキュリティ検証を人が済ませれば
-    取得は続くので、その後に --import で配置できる）。
+    取得から後始末までプロファイルのロックを持つ（同じプロファイルの実行が動いていれば
+    その実行だけを失敗にする）。時間切れのときは Chrome を終了させない（ログインや外部
+    セキュリティ検証を人が済ませれば取得は続くので、その後に --import で配置できる）。
     """
     print(f"profile {run.profile}: {_CLAUDE_MODE_TEXT[run.mode]}（{run.month}）", flush=True)
     if not _claude_profile_ready(run.profile, profiles_dir, staging_dir):
         return False
-    profile_dir = claude_export.profile_path(profiles_dir, run.profile)
     now = dt.datetime.now().astimezone()
     run_id = claude_export.new_run_id(run, now)
+    try:
+        with claude_export.profile_lock(staging_dir, run.profile, run_id):
+            return _claude_collect_locked(
+                run, run_id, now, chrome, profiles_dir, staging_dir, cfg, input_dir,
+                timeout_minutes=timeout_minutes, keep_browser=keep_browser,
+            )
+    except claude_export.ProfileBusyError as exc:
+        print(f"  {exc}", file=sys.stderr)
+        return False
+
+
+def _claude_collect_locked(
+    run: claude_export.ProfileRun,
+    run_id: str,
+    now: dt.datetime,
+    chrome: Path,
+    profiles_dir: Path,
+    staging_dir: Path,
+    cfg: dict,
+    input_dir: Path,
+    *,
+    timeout_minutes: int,
+    keep_browser: bool,
+) -> bool:
+    """ロックを取った後の 1 回の取得（`_claude_collect_run` から呼ぶ）。"""
+    profile_dir = claude_export.profile_path(profiles_dir, run.profile)
     record = claude_export.run_record(run, run_id, now)
     claude_export.run_dir(staging_dir, run_id).mkdir(parents=True)
     claude_export.write_run_record(claude_export.run_record_path(staging_dir, run_id), record)
@@ -1533,7 +1562,7 @@ def _claude_collect_run(
         return False
     ok = _claude_place(run, run_id, manifest, staging_dir, cfg, input_dir)
     if not keep_browser:
-        _claude_close(profile_dir)
+        _claude_close(profile_dir, chrome)
     return ok
 
 
@@ -1607,18 +1636,19 @@ def _claude_read_optional_preferences(path: Path) -> dict | None:
         return None
 
 
-def _claude_stop(profile_dir: Path) -> bool:
+def _claude_stop(profile_dir: Path, chrome: Path) -> bool:
     """そのプロファイルの Chrome が動いていれば終了させ、消えるまで待つ（最大 _CLAUDE_STOP_SECONDS）。
 
-    動いていなければ何もしない。終了しきらなければ案内して False（Chrome が動いている間に
-    書いた設定は終了時に上書きされるため、書かずに止める）。
+    対象は実行ファイル（chrome）とプロファイルの両方が一致するプロセスだけ。動いていなければ
+    何もしない。終了しきらなければ案内して False（Chrome が動いている間に書いた設定は
+    終了時に上書きされるため、書かずに止める）。
     """
-    pids = claude_export.list_chrome_pids(profile_dir)
+    pids = claude_export.list_chrome_pids(profile_dir, chrome=chrome)
     if not pids:
         return True
-    claude_export.terminate_chrome(pids)
+    claude_export.terminate_chrome(pids, profile_dir=profile_dir, chrome=chrome)
     deadline = _monotonic() + _CLAUDE_STOP_SECONDS
-    while claude_export.list_chrome_pids(profile_dir):
+    while claude_export.list_chrome_pids(profile_dir, chrome=chrome):
         if _monotonic() >= deadline:
             print(
                 f"エラー: {int(_CLAUDE_STOP_SECONDS)} 秒待っても Chrome が終了しませんでした。"
@@ -1636,7 +1666,8 @@ def _claude_finish_setup(profile: str, settings: dict) -> int:
 
     設定（Preferences）は Chrome が終了してから書く（Chrome は終了時に Preferences を
     書き戻すため）。拡張機能が同梱の場所から読み込まれていなければ書かずに止める。何度
-    実行しても同じ設定になるだけで、既存のプロファイルを壊さない。
+    実行しても同じ設定になるだけで、既存のプロファイルを壊さない。取得と同じプロファイルの
+    ロックを持って行う（取得中の Chrome を終了させない）。
     """
     claude_export.validate_profile_name(profile)
     profiles_dir, staging_dir = _claude_dirs(settings)
@@ -1648,7 +1679,19 @@ def _claude_finish_setup(profile: str, settings: dict) -> int:
             file=sys.stderr,
         )
         return 1
-    if not _claude_stop(profile_dir):
+    chrome = _claude_chrome(settings)
+    if chrome is None:
+        return 1
+    with claude_export.profile_lock(staging_dir, profile, f"{profile}-finish-setup"):
+        return _claude_finish_setup_locked(profile, profiles_dir, staging_dir, chrome)
+
+
+def _claude_finish_setup_locked(
+    profile: str, profiles_dir: Path, staging_dir: Path, chrome: Path
+) -> int:
+    """ロックを取った後の --finish-setup（`_claude_finish_setup` から呼ぶ）。"""
+    profile_dir = claude_export.profile_path(profiles_dir, profile)
+    if not _claude_stop(profile_dir, chrome):
         return 1
     expected = claude_export.extension_dir().resolve()
     prefs = [
@@ -1736,8 +1779,26 @@ def _claude_list_orgs(
     profiles_dir, staging_dir = _claude_dirs(settings)
     if not _claude_profile_ready(profile, profiles_dir, staging_dir):
         return 1
-    profile_dir = claude_export.profile_path(profiles_dir, profile)
     run_id = claude_export.list_orgs_run_id(profile, dt.datetime.now().astimezone())
+    with claude_export.profile_lock(staging_dir, profile, run_id):
+        return _claude_list_orgs_locked(
+            profile, run_id, chrome, profiles_dir, staging_dir,
+            timeout_minutes=timeout_minutes, keep_browser=keep_browser,
+        )
+
+
+def _claude_list_orgs_locked(
+    profile: str,
+    run_id: str,
+    chrome: Path,
+    profiles_dir: Path,
+    staging_dir: Path,
+    *,
+    timeout_minutes: int,
+    keep_browser: bool,
+) -> int:
+    """ロックを取った後の組織一覧（`_claude_list_orgs` から呼ぶ）。"""
+    profile_dir = claude_export.profile_path(profiles_dir, profile)
     claude_export.run_dir(staging_dir, run_id).mkdir(parents=True)
     _claude_launch(
         chrome, profile_dir, claude_export.trigger_url(claude_export.list_orgs_spec(run_id)))
@@ -1760,7 +1821,7 @@ def _claude_list_orgs(
     else:
         print(f"エラー: 組織の一覧を取得できませんでした: {error}", file=sys.stderr)
     if not keep_browser:
-        _claude_close(profile_dir)
+        _claude_close(profile_dir, chrome)
     return 0 if error is None else 1
 
 

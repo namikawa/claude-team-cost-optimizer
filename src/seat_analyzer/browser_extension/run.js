@@ -105,8 +105,24 @@ async function claimRun(id) {
   const { started = [] } = await chrome.storage.local.get("started");
   if (started.includes(id)) return false;
   started.push(id);
-  await chrome.storage.local.set({ started: started.slice(-50) });
+  await chrome.storage.local.set({ started: started.slice(-500) });
   return true;
+}
+
+// 同じブラウザで進行中の別の実行（chrome.storage.session の activeRun）。開始から
+// 1 時間を超えた記録は、結果を保存できずに残ったものとみなして無視する
+const ACTIVE_RUN_TTL_MS = 60 * 60 * 1000;
+
+async function otherActiveRun(id) {
+  const { activeRun } = await chrome.storage.session.get("activeRun");
+  if (!activeRun || activeRun.run_id === id) return null;
+  if (!(Date.now() - activeRun.started_at < ACTIVE_RUN_TTL_MS)) return null;
+  return activeRun.run_id;
+}
+
+async function releaseActiveRun(id) {
+  const { activeRun } = await chrome.storage.session.get("activeRun");
+  if (activeRun && activeRun.run_id === id) await chrome.storage.session.remove("activeRun");
 }
 
 // ---- タブ内で実行する関数（直列化されて渡るので外側の変数を参照しない） ----
@@ -490,12 +506,19 @@ function prefixFor(org, kind) {
   return `${runId}/${org.dir}/${KIND_DIRS[kind]}`;
 }
 
+// 開いたページが対象の組織を表示していることを確かめる（揃わなければ投げる）。組織の
+// 切替の直後だけでなく、ページを開くたびに確かめる（ログインし直すと表示する組織が
+// 変わることがあるため）
+async function ensureOrg(tabId, org, where) {
+  const active = await confirmActiveOrg(tabId, org.uuid);
+  log(`[${org.dir}] ${where} organizations seen: ${active.seen.map((u) => u.slice(0, 8)).join(",") || "none"}`);
+  if (!active.ok) throw new Error("organization switch not confirmed");
+}
+
 async function switchOrg(tabId, org) {
   await setOrgCookie(org.uuid);
   await openPage(tabId, PAGES.members);
-  const active = await confirmActiveOrg(tabId, org.uuid);
-  log(`[${org.dir}] organizations seen: ${active.seen.map((u) => u.slice(0, 8)).join(",") || "none"}`);
-  if (!active.ok) throw new Error("organization switch not confirmed");
+  await ensureOrg(tabId, org, "members");
 }
 
 // メンバー一覧（組織の切替でメンバー一覧のページにいる）
@@ -509,6 +532,7 @@ async function exportMembers(tabId, org) {
 // 確かめてからダウンロードする
 async function exportSpend(tabId, org) {
   await openPage(tabId, PAGES.spend);
+  await ensureOrg(tabId, org, "spend");
   const present = await exec(tabId, waitForButton, [LABEL.spendExport, WAIT.button]);
   if (!present) throw new Error("spend report unavailable");
   const previous = runMode === "previous";
@@ -531,6 +555,7 @@ async function exportSpend(tabId, org) {
 // Claude Code analytics。当月は表示中の月、前月は月送りを 1 回押した月
 async function exportCode(tabId, org) {
   await openPage(tabId, PAGES.code);
+  await ensureOrg(tabId, org, "code");
   const month = expectOk(await exec(tabId, codeMonth, [runMode === "previous"]), "month control");
   const ready = await exec(tabId, waitForCodeData);
   log(`[${org.dir}] code month ${JSON.stringify(month)} data ${JSON.stringify(ready)}`);
@@ -633,19 +658,28 @@ async function main() {
     setStatus(`実行内容が不正です（${problem}）`, true);
     return;
   }
+  const other = await otherActiveRun(spec.run_id);
+  if (other) {
+    setStatus(`別の実行（${other}）が進行中です`, true);
+    return;
+  }
   if (!(await claimRun(spec.run_id))) {
     setStatus(`${spec.run_id} は開始済みです（再読み込みでは実行しません）`);
     return;
   }
   runId = spec.run_id;
   runMode = spec.mode || null;
+  await chrome.storage.session.set({ activeRun: { run_id: runId, started_at: Date.now() } });
   log(spec.action === "list-orgs" ? `run ${runId} list-orgs` : `run ${runId} mode=${runMode} orgs=${spec.orgs.length}`);
   const tab = await chrome.tabs.create({ url: "about:blank", active: true });
   if (spec.action === "list-orgs") await runListOrgs(tab.id);
   else await runExport(spec, tab.id);
+  // manifest.json・orgs.json を保存し終えてから外す
+  await releaseActiveRun(runId);
 }
 
-main().catch((e) => {
+main().catch(async (e) => {
   log("FATAL " + (e && e.stack ? e.stack : e));
   setStatus("失敗（ログを確認してください）", true);
+  if (runId) await releaseActiveRun(runId).catch(() => {});
 });

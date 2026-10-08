@@ -1002,7 +1002,19 @@ Standard化:
   ダウンロードの確認を出さないこと・ダウンロード先（staging）だけで、他の項目は保つ
 - claude.ai上で押すのはエクスポート系のボタンだけで、シート・creditの設定を変更する操作を持たない
 - ダウンロード先は専用のstagingで、利用者のDownloadsや既存ファイルを変更・削除しない
-- 別組織のデータを保存しないため、組織切替の確認が取れない組織は丸ごと飛ばす
+- 別組織のデータを保存しないため、組織切替の確認が取れない組織は丸ごと飛ばす。切替の直後
+  だけでなく支出レポートとClaude Codeのページを開くたびにも確かめ、取れなければその種別を
+  飛ばす（ログインし直すと表示する組織が変わることがあるため）。配置の前にはファイル名の
+  組織UUIDも設定の`org_id`と照合する（§14.3の検証）
+- 同じプロファイルを2つの実行が同時に使わない。CLIはプロファイルのロックファイル
+  （`<staging_dir>/<profile>.lock`。中身はpidとrun_id）を取得・`--list-orgs`・`--finish-setup`の
+  間だけ持ち、持ち主のpidが動いていれば止める（動いていないロックは古いものとして取り直す）。
+  拡張機能もsessionストレージの`activeRun`で、同じChromeで進行中の別の実行があれば新しい
+  実行を始めない（開始から1時間を超えた記録は無視する）
+- 終了させるのは、プロファイル（`--user-data-dir`）が一致し、実行ファイルが起動に使ったものと
+  一致するか名前にchrome / chromiumを含むプロセスだけ（Linuxの`google-chrome`はラッパー
+  スクリプトで、プロセスには実体のパスが見えるため）。強制終了の前に列挙し直し、まだ一致して
+  いるものだけを対象にする（待つ間に終わったpidが別のプロセスに再利用されていても終了させない）
 
 ### 14.3 manifestと配置
 
@@ -1014,12 +1026,15 @@ stagingの配置（run.jsonはCLI、それ以外は拡張機能が書く）:
 <staging_dir>/<run_id>/manifest.json              最後に書く結果（CLIはこれを待つ）
 <staging_dir>/<run_id>/<dir>/<kind_dir>/<元ファイル名>
 <staging_dir>/<run_id>/orgs.json                  組織一覧（--list-orgs）のとき
+<staging_dir>/<profile>.lock                      プロファイルのロック（実行の間だけ。CLIが書く）
 ```
 
 `dir`は`<org>`か`<org>/<workspace>`（区切りはOSによらず`/`）、`kind_dir`は種別の入力
 サブディレクトリ（members→`members`、spend→`spend`、code→`code-analytics`）。`run_id`は
 `<profile>-<mode>-<YYYYMMDD-HHMMSS>`（ローカル時刻）。拡張機能はダウンロードを、stagingを
-既定のダウンロード先にしたうえで`<run_id>/`以下へ振り分ける。
+既定のダウンロード先にしたうえで`<run_id>/`以下へ振り分ける。manifest.json・progress.json・
+orgs.jsonの固定名は拡張機能自身が始めたダウンロードにだけ付け、ページが始めたダウンロードは
+元のファイル名のまま置く（押し直しの後に遅れて届いたCSVが固定名を奪わないため）。
 
 ```json
 {
@@ -1040,7 +1055,8 @@ stagingの配置（run.jsonはCLI、それ以外は拡張機能が書く）:
 - manifestの`dir`は計画の (配置先, 種別) と突き合わせるだけで、パスは常に計画の側から組む。
   計画にあってmanifestに無い組み合わせは「結果なし」の失敗、計画に無い結果は捨てる
 - 拡張機能は`results`をspecの全 (org, kind) について1件ずつ書く。組織の切替を確認できずに
-  飛ばした組織は、そのすべてのkindを`organization switch not confirmed`の失敗にする。
+  飛ばした組織は、そのすべてのkindを`organization switch not confirmed`の失敗にする。支出
+  レポートやClaude Codeのページで組織を確認できなければ、そのkindだけを同じ理由の失敗にする。
   `filename`はChromeが保存したファイルのbasename
 - progress.jsonはmanifestと同じ形に`"status": "running"`を付けたもの。CLIは待機中に読めた
   ものから、増えた結果を1行ずつ表示する（書きかけで読めないmanifestは待ち続ける）
@@ -1063,7 +1079,9 @@ stagingの配置（run.jsonはCLI、それ以外は拡張機能が書く）:
      email・seat_type、支出レポートはemail・model・prompt_tokens・completion_tokens）
    - Claude Code analytics: emailと月間のLoC（`loc_with_cc`）。エクスポートはこの2列で、
      支出レポートとの取り違えをLoCの列の有無で止める
-3. ファイル名の期間が対象月に合う
+3. membersと支出レポートは、ファイル名に組織UUIDの形が含まれていれば設定の`org_id`と同じ
+   （大文字小文字は区別しない）。Claude Code analyticsのファイル名にはUUIDが入らないので見ない
+4. ファイル名の期間が対象月に合う
    - 支出レポート: 期間付きで、開始が対象月の1日・終了が対象月の末日以前
    - Claude Code analytics: 期間付きで、開始が対象月の1日（終了日は部分月でも月末日になるので見ない）
    - members: スナップショットの日付が対象月の1日以降（前月モードでは当日＝翌月の日付になる）
@@ -2772,15 +2790,18 @@ dashboardで読めるようにする。
 
 - 拡張機能（manifestの`key`に公開鍵を入れてIDを固定する。秘密鍵は置かない）: トリガーURLの
   受け取り（コンテンツスクリプトとタブのURL更新の2経路。同じタブは1回だけ起動し、同じ
-  run_idは2度実行しない）、組織の切替（Cookie）と切替後の確認（組織のAPIの直近の呼び出しが
-  対象のUUIDに揃うこと）、3ページのエクスポート操作（種別ごとに独立。支出レポートは期間の
+  run_idは2度実行しない。同じChromeで進行中の別の実行があれば始めない）、組織の切替（Cookie）と
+  切替後の確認（組織のAPIの直近の呼び出しが対象のUUIDに揃うこと。支出レポートとClaude Codeの
+  ページでも確かめる）、3ページのエクスポート操作（種別ごとに独立。支出レポートは期間の
   開始が1日であることを確かめてからダウンロードし、Claude Codeはダウンロードが始まらなければ
-  押し直す）、ダウンロードのstagingへの振り分け、progress.json・manifest.json・orgs.jsonの
-  出力、ログインや外部セキュリティ検証が要るときの要操作の表示と待機（最大10分）
-- CLI: Preferencesの確認（ダウンロード先がstaging）→ run.jsonの書き出し → Chromeの起動 →
-  manifestの待機（途中経過の表示。進捗が60秒止まったらブラウザの要操作の確認を促し、時間切れ
-  ではChromeを残して`--import`を案内）→ 検証・配置 → Chromeの終了（見つからなければ警告
-  だけ）。`--setup`（プロファイルを作ってChromeを起動し、手順を表示して待たずに終わる）・
+  押し直す）、ダウンロードのstagingへの振り分け（固定名は拡張機能自身のダウンロードにだけ
+  付ける）、progress.json・manifest.json・orgs.jsonの出力、ログインや外部セキュリティ検証が
+  要るときの要操作の表示と待機（最大10分）
+- CLI: Preferencesの確認（ダウンロード先がstaging）→ プロファイルのロック → run.jsonの
+  書き出し → Chromeの起動 → manifestの待機（途中経過の表示。進捗が60秒止まったらブラウザの
+  要操作の確認を促し、時間切れではChromeを残して`--import`を案内）→ 検証（ファイル名の組織
+  UUIDの照合を含む）・配置 → Chromeの終了（プロファイルが一致し、実行ファイルが起動に使った
+  ものと一致するか名前にchrome / chromiumを含むプロセスだけ。見つからなければ警告だけ）→ ロックの解放。`--setup`（プロファイルを作ってChromeを起動し、手順を表示して待たずに終わる）・
   `--finish-setup`（Chromeを終了させ、拡張機能が同梱の場所から読み込まれていることを
   Secure Preferences・Preferencesで確かめてからPreferencesを書く）・`--login`・`--list-orgs`・
   `--import`・`--keep-browser`・`--timeout`

@@ -110,3 +110,31 @@ def test_staging_names_match_the_cli():
     assert (f'const MODE_TEXT = {{ {claude_export.MODE_CURRENT}: "当月", '
             f'{claude_export.MODE_PREVIOUS}: "前月" }};') in run_js
     assert f'spec.action === "{claude_export.ACTION_LIST_ORGS}"' in run_js
+
+
+def test_fixed_names_apply_only_to_the_extensions_own_downloads():
+    """固定名（manifest.json 等）は拡張機能自身が始めたダウンロードにだけ付ける。
+
+    ページが始めたダウンロード（押し直しの後に遅れて届いた CSV 等）が固定名を奪わない。
+    """
+    background = _text("background.js")
+    assert "item.byExtensionId === chrome.runtime.id" in background
+    assert "own && routing.name ? routing.name : item.filename" in background
+
+
+def test_run_page_confirms_the_org_on_every_page():
+    """組織の切替の直後だけでなく、支出レポートと Claude Code のページでも組織を確かめる。"""
+    run_js = _text("run.js")
+    for page in ("members", "spend", "code"):
+        assert f"await openPage(tabId, PAGES.{page});\n  await ensureOrg(tabId, org, \"{page}\");" \
+            in run_js
+    assert 'throw new Error("organization switch not confirmed")' in run_js
+
+
+def test_run_page_guards_against_other_runs():
+    """同じ run_id を繰り返さず（履歴 500 件）、進行中の別の実行があれば何もしない。"""
+    run_js = _text("run.js")
+    assert "started.slice(-500)" in run_js
+    assert "chrome.storage.session.get(\"activeRun\")" in run_js
+    assert "ACTIVE_RUN_TTL_MS = 60 * 60 * 1000" in run_js
+    assert "await releaseActiveRun(runId);" in run_js

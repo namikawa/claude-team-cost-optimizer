@@ -28,7 +28,9 @@ claude.ai からの自動ダウンロードの許可と、ダウンロード先�
 staging の実行ディレクトリ（`<staging>/<run_id>/`）には、拡張機能が書く manifest.json・
 progress.json（途中経過）・orgs.json（組織一覧）と、コマンドが起動の前に書く run.json
 （その実行の計画）が並ぶ。run.json があるので、Chrome の待機が時間切れになった実行も、
-拡張機能が manifest を書き終えた後に検証と配置だけをやり直せる（`restore_run`）。
+拡張機能が manifest を書き終えた後に検証と配置だけをやり直せる（`restore_run`）。staging の
+直下にはプロファイルごとのロックファイルも置き、同じプロファイルを 2 つの実行が同時に
+使わないようにする（`profile_lock`）。
 
 拡張機能の実体はパッケージに同梱した `browser_extension/`（`extension_dir`）。manifest.json の
 key に公開鍵を入れて ID を固定している（`EXTENSION_ID`）。
@@ -51,7 +53,7 @@ import subprocess
 import sys
 import time
 import urllib.parse
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PureWindowsPath
 
@@ -559,7 +561,11 @@ def restore_run(record: dict, targets: Sequence[ExportTarget]) -> ProfileRun:
     設定と UUID が違う dir があれば ValueError（設定が変わった後の取り込みで、別の
     スペースの CSV を置かないため）。種別はその実行で頼んだもの（spec の kinds）、対象月は
     その実行のもの（取り込む日の当月ではない）。
+
+    取得の計画（`plan_runs`）と同じく、突き合わせの前に全対象で名前の衝突
+    （`check_target_names`）を止める。
     """
+    check_target_names(targets)
     profile, mode, month = record.get("profile"), record.get("mode"), record.get("month")
     spec = record.get("spec")
     if not is_profile_name(profile):
@@ -703,16 +709,37 @@ def _period_reason(
     return None
 
 
+# ファイル名に含まれる組織 UUID（8-4-4-4-12 桁の16進）
+_UUID_RE = re.compile(
+    r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+# エクスポートのファイル名に組織 UUID が入る種別（Claude Code analytics の名前には入らない）
+_KINDS_WITH_ORG_IN_NAME = ("members", "spend")
+
+
+def _org_id_reason(path: Path, kind: str, org_id: str | None) -> str | None:
+    """ファイル名の組織 UUID が org_id と違えば、その理由（UUID が無い名前は見ない）。"""
+    if org_id is None or kind not in _KINDS_WITH_ORG_IN_NAME:
+        return None
+    found = _UUID_RE.findall(path.name)
+    if found and any(uuid.lower() != org_id.lower() for uuid in found):
+        return f"{_KIND_LABELS[kind]}のファイル名の組織 UUID が設定の org_id と違います"
+    return None
+
+
 def verify_export(
-    path: Path, kind: str, month: str, *, columns_aliases: dict
+    path: Path, kind: str, month: str, *, columns_aliases: dict, org_id: str | None = None
 ) -> Verdict:
     """ダウンロードした CSV が種別と対象月に合うかを確かめる（最初に外れた理由を返す）。
 
     確かめる順は、中身があること → ヘッダ（先頭行。`_HEADER_LIMIT` 以内）に種別ごとの
     正準列（`_KIND_COLUMNS`）がすべてあること（欠けていれば最初の 1 列を理由にする） →
-    ファイル名の期間が対象月に合うこと。
+    ファイル名の組織 UUID が org_id と同じこと → ファイル名の期間が対象月に合うこと。
     ヘッダの照合は分析の読み込み（`ingest.map_columns`）と同じ正規化で行う。
     columns_aliases は設定の columns。
+
+    組織 UUID は、メンバー一覧と支出レポートのファイル名に UUID の形が含まれていて org_id を
+    渡されたときだけ見る（大文字小文字は区別しない）。拡張機能の組織の切替の確認を
+    すり抜けた別組織のファイルを、配置の前に止めるための安全網。
     """
     if kind not in _KIND_COLUMNS:
         raise ValueError(f"未知の種別です: {kind}")
@@ -744,6 +771,10 @@ def verify_export(
                 f"{label}のヘッダに {canonical} に当たる列がありません"
                 f"（columns.{section}.{canonical} のエイリアスと一致しません）",
             )
+
+    reason = _org_id_reason(path, kind, org_id)
+    if reason is not None:
+        return Verdict(False, reason)
 
     try:
         period = ingest.file_period(path)
@@ -1137,22 +1168,61 @@ def _uses_profile(command: str, profile: str) -> bool:
     return False
 
 
-def chrome_pids(listing: str, profile_dir: PurePath | str, *, platform: str) -> list[int]:
+def _starts_with_executable(command: str, executable: str) -> bool:
+    """コマンドラインの先頭の実行ファイルが executable か、または Chrome の実行ファイルの名前か。
+
+    executable（起動に使った実行ファイル）との比較は引用符つき・なしの両方で行い、直後が
+    行末か空白であることまで見る（`chrome` で `chrome2` を拾わない）。空白を含むパスは
+    引用符なしでもそのまま比べる（ps は引数の区切りを残さない）。
+    一致しなくても、先頭の実行ファイルの名前に chrome / chromium を含めば Chrome とみなす
+    （Linux の `google-chrome` はラッパースクリプトで、動いているプロセスには実体の
+    `/opt/google/chrome/chrome` が見えるため）。同じ `--user-data-dir` を引数に持つ別の
+    プログラム（`python3 wrapper.py ...` 等）は、どちらにも当たらないので拾わない。
+    """
+    command = command.lstrip()
+    for prefix in (f'"{executable}"', executable):
+        if command.startswith(prefix):
+            rest = command[len(prefix):]
+            if not rest or rest[0].isspace():
+                return True
+    if command.startswith('"'):
+        head = command[1:].split('"', 1)[0]
+    else:
+        head = command.split(None, 1)[0] if command else ""
+    name = PurePath(head.replace("\\", "/")).name.lower()
+    return "chrome" in name or "chromium" in name
+
+
+def chrome_pids(
+    listing: str,
+    profile_dir: PurePath | str,
+    *,
+    platform: str,
+    chrome: PurePath | str | None = None,
+) -> list[int]:
     """プロセスの一覧から、そのプロファイルで動く Chrome の親プロセスの pid を拾う。
 
     子プロセス（レンダラ等。コマンドラインに `--type=` を持つ）は除く。親を終了させれば
-    子も終わる。Windows はパスの大文字小文字を区別しない。
+    子も終わる。chrome（起動に使った実行ファイル）を渡すと、コマンドラインの先頭がその
+    実行ファイルの行だけに絞る（同じ `--user-data-dir` を引数に持つ別のプログラムを
+    拾わない）。Windows はパスの大文字小文字を区別しない。
     """
     windows = platform == "win32"
     rows = _windows_rows(listing) if windows else _unix_rows(listing)
     profile = str(profile_dir)
+    executable = None if chrome is None else str(chrome)
     if windows:
         profile = profile.lower()
-    return [
-        pid for pid, command in rows
-        if "--type=" not in command
-        and _uses_profile(command.lower() if windows else command, profile)
-    ]
+        executable = None if executable is None else executable.lower()
+    matched = []
+    for pid, command in rows:
+        text = command.lower() if windows else command
+        if "--type=" in text or not _uses_profile(text, profile):
+            continue
+        if executable is not None and not _starts_with_executable(text, executable):
+            continue
+        matched.append(pid)
+    return matched
 
 
 def terminate_commands(
@@ -1165,14 +1235,20 @@ def terminate_commands(
     return [["taskkill", "/PID", str(pid), *extra] for pid in pids]
 
 
-def list_chrome_pids(profile_dir: Path, *, platform: str = sys.platform) -> list[int]:
-    """そのプロファイルで動いている Chrome の親プロセスの pid（無ければ空）。"""
+def list_chrome_pids(
+    profile_dir: Path, *, chrome: Path | None = None, platform: str = sys.platform
+) -> list[int]:
+    """そのプロファイルで動いている Chrome の親プロセスの pid（無ければ空）。
+
+    chrome を渡すと、その実行ファイルで動いているものだけに絞る（`chrome_pids`）。
+    """
     proc = subprocess.run(
         process_listing_command(platform),
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
     )
     return chrome_pids(
-        proc.stdout.decode("utf-8", errors="replace"), profile_dir, platform=platform
+        proc.stdout.decode("utf-8", errors="replace"), profile_dir,
+        platform=platform, chrome=chrome,
     )
 
 
@@ -1219,10 +1295,18 @@ def _alive(pids: Sequence[int], *, platform: str) -> list[int]:
 
 
 def terminate_chrome(
-    pids: Sequence[int], *, grace_seconds: float = 15.0, platform: str = sys.platform
+    pids: Sequence[int],
+    *,
+    profile_dir: Path,
+    chrome: Path | None = None,
+    grace_seconds: float = 15.0,
+    platform: str = sys.platform,
 ) -> None:
     """Chrome を終了させる。穏当に終了を求め、grace_seconds 待って残っていれば強制する。
 
+    強制終了の前にプロセスを列挙し直し（`list_chrome_pids`。profile_dir と chrome で
+    絞る）、まだそのプロファイルの Chrome として見えるものだけを強制終了する。待つ間に
+    終わった pid が別のプロセスに再利用されていても、そのプロセスは終了させない。
     pids が空なら何もしない。
     """
     if not pids:
@@ -1237,4 +1321,114 @@ def terminate_chrome(
         if time.monotonic() >= deadline:
             break
         time.sleep(0.5)
-    _signal(remaining, platform=platform, force=True)
+    current = set(list_chrome_pids(profile_dir, chrome=chrome, platform=platform))
+    targets = [pid for pid in remaining if pid in current]
+    if targets:
+        _signal(targets, platform=platform, force=True)
+
+
+# ------------------------------------------------------------------ プロファイルの排他
+
+
+class ProfileBusyError(ValueError):
+    """同じプロファイルを別の実行が使っている（ロックの持ち主が動いている）。"""
+
+
+def lock_path(staging_dir: Path, profile: str) -> Path:
+    """プロファイルのロックファイル（`<staging>/<profile>.lock`）。"""
+    return staging_dir / f"{profile}.lock"
+
+
+def pid_alive(pid: int, *, platform: str = sys.platform) -> bool:
+    """pid のプロセスが動いているか（ロックの持ち主の確認に使う）。
+
+    Unix はシグナル 0 を送って確かめ、Windows はプロセスの一覧に pid があるかを見る。
+    """
+    if platform == "win32":
+        proc = subprocess.run(
+            process_listing_command(platform),
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+        )
+        listing = proc.stdout.decode("utf-8", errors="replace")
+        return pid in {listed for listed, _ in _windows_rows(listing)}
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OverflowError, ValueError):
+        return False
+    return True
+
+
+def _lock_holder(path: Path) -> tuple[int | None, str | None]:
+    """ロックファイルの持ち主（pid, run_id）。読めない・壊れていれば (None, None)。"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    pid, run_id = data.get("pid"), data.get("run_id")
+    valid_pid = isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+    return (pid if valid_pid else None), (run_id if isinstance(run_id, str) else None)
+
+
+def acquire_profile_lock(
+    path: Path,
+    *,
+    profile: str,
+    run_id: str,
+    pid: int | None = None,
+    is_alive: Callable[[int], bool] | None = None,
+) -> None:
+    """プロファイルのロックを取る（中身は pid と run_id）。使用中なら ProfileBusyError。
+
+    排他的に作成する（既にあれば作らない）。既にあれば中の pid が動いているかを見て、
+    動いていれば使用中、動いていなければ（読めない・壊れたロックも）古いロックとして
+    消して取り直す。取り直しでも先を越されたら使用中とする。
+    """
+    pid = os.getpid() if pid is None else pid
+    alive = pid_alive if is_alive is None else is_alive
+    payload = json.dumps({"pid": pid, "run_id": run_id}) + "\n"
+    for attempt in range(2):
+        try:
+            # 既にあれば FileExistsError（作成は排他的で、先に作った側だけが成功する）
+            path.touch(mode=0o644, exist_ok=False)
+        except FileExistsError:
+            holder_pid, holder_run = _lock_holder(path)
+            if attempt == 0 and not (holder_pid is not None and alive(holder_pid)):
+                with contextlib.suppress(FileNotFoundError):
+                    path.unlink()
+                continue
+            raise ProfileBusyError(
+                f"プロファイル {profile} は別の実行（run_id {holder_run or '不明'}）が"
+                f"使用中です（使われていないことが確かなら {path} を削除してください）"
+            ) from None
+        path.write_text(payload, encoding="utf-8", newline="\n")
+        return
+
+
+@contextlib.contextmanager
+def profile_lock(
+    staging_dir: Path,
+    profile: str,
+    run_id: str,
+    *,
+    pid: int | None = None,
+    is_alive: Callable[[int], bool] | None = None,
+) -> Iterator[Path]:
+    """プロファイルのロックを取っている間だけ処理を行う（終わると、例外でも必ず消す）。
+
+    同じプロファイルの取得・組織一覧・--finish-setup を同時に走らせない（同じ Chrome と
+    staging を取り合わないため）。staging が無ければ作る。
+    """
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    path = lock_path(staging_dir, profile)
+    acquire_profile_lock(path, profile=profile, run_id=run_id, pid=pid, is_alive=is_alive)
+    try:
+        yield path
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()

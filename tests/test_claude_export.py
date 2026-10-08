@@ -10,6 +10,8 @@ import datetime as dt
 import json
 import os
 import re
+import subprocess
+import sys
 import urllib.parse
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -25,7 +27,9 @@ from seat_analyzer.claude_export import (
     ExportRecord,
     ExportTarget,
     OrgEntry,
+    ProfileBusyError,
     ProfileRun,
+    acquire_profile_lock,
     chrome_pids,
     chrome_time_us,
     extension_install_state,
@@ -36,14 +40,17 @@ from seat_analyzer.claude_export import (
     launch_command,
     list_orgs_run_id,
     list_orgs_spec,
+    lock_path,
     manifest_path,
     match_results,
     new_run_id,
     orgs_path,
+    pid_alive,
     place_export,
     plan_runs,
     preferences_ready,
     process_listing_command,
+    profile_lock,
     profile_preferences_path,
     progress_path,
     read_manifest,
@@ -559,6 +566,14 @@ def test_restore_run_rejects_a_record_that_does_not_match(record, fragment):
         restore_run(record, RUN.targets)
 
 
+def test_restore_run_rejects_org_names_that_differ_only_in_case():
+    """取得の計画と同じく、突き合わせの前に全対象で名前の衝突を止める。"""
+    record = run_record(RUN, RUN_ID, CREATED)
+    configured = [*RUN.targets, _target("Example", org_id=UUID4)]
+    with pytest.raises(ValueError, match="claude_export を設定した組織名が衝突しています"):
+        restore_run(record, configured)
+
+
 def test_read_run_record_rejects_a_broken_file(tmp_path):
     path = tmp_path / "run.json"
     path.write_text("{", encoding="utf-8")
@@ -737,6 +752,40 @@ def test_verify_export_rejects_a_header_that_is_not_utf8(tmp_path):
     path.write_bytes("メール,model\n".encode("cp932"))
     verdict = _verify(path, "spend", "2026-09")
     assert not verdict.ok and "UTF-8" in verdict.reason
+
+
+@pytest.mark.parametrize("kind,name,header", [
+    ("spend", f"spend-report-{UUID2}-2026-09-01-to-2026-09-30.csv", SPEND_HEADER),
+    ("members", f"members-{UUID2}-2026-10-07.csv", MEMBERS_HEADER),
+    # 大文字の UUID でも別組織は別組織
+    ("members", f"members-{UUID2.upper()}-2026-10-07.csv", MEMBERS_HEADER),
+])
+def test_verify_export_rejects_a_file_of_another_org(tmp_path, kind, name, header):
+    """ファイル名の組織 UUID が設定の org_id と違えば配置しない。"""
+    path = _csv(tmp_path, name, header, "user1@example.com,x\n")
+    verdict = verify_export(path, kind, "2026-09", columns_aliases=COLUMNS, org_id=UUID1)
+    assert not verdict.ok
+    assert "ファイル名の組織 UUID が設定の org_id と違います" in verdict.reason
+
+
+@pytest.mark.parametrize("kind,name,header", [
+    # 同じ UUID（大文字小文字は問わない）
+    ("spend", f"spend-report-{UUID1.upper()}-2026-09-01-to-2026-09-30.csv", SPEND_HEADER),
+    ("members", f"members-{UUID1}-2026-10-07.csv", MEMBERS_HEADER),
+    # UUID の無い名前は見ない
+    ("spend", "spend-report-2026-09-01-to-2026-09-30.csv", SPEND_HEADER),
+    ("members", "members-2026-10-07.csv", MEMBERS_HEADER),
+    # Claude Code analytics の名前は見ない
+    ("code", f"claude-code-{UUID2}-2026-09-01-to-2026-09-30.csv", CODE_HEADER),
+])
+def test_verify_export_accepts_the_org_of_the_target(tmp_path, kind, name, header):
+    path = _csv(tmp_path, name, header, "user1@example.com,x\n")
+    assert verify_export(path, kind, "2026-09", columns_aliases=COLUMNS, org_id=UUID1).ok
+
+
+def test_verify_export_without_org_id_does_not_look_at_the_uuid(tmp_path):
+    path = _csv(tmp_path, f"members-{UUID2}-2026-10-07.csv", MEMBERS_HEADER, "user1@example.com,x\n")
+    assert verify_export(path, "members", "2026-09", columns_aliases=COLUMNS).ok
 
 
 @pytest.mark.parametrize("kind,name,header,month,fragment", [
@@ -1260,3 +1309,187 @@ def test_chrome_pids_without_a_powershell_header():
     """ヘッダの無い出力（PowerShell が動かなかった等）からは何も拾わない。"""
     listing = f'"2001","{WIN_CHROME} --user-data-dir={WIN_PROFILE}"\r\n'
     assert chrome_pids(listing, WIN_PROFILE, platform="win32") == []
+
+
+MAC_CHROME_BIN = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+def test_chrome_pids_from_ps_only_for_the_chrome_executable():
+    """実行ファイルを渡すと、同じ --user-data-dir を引数に持つ別のプログラムを拾わない。
+
+    先頭の実行ファイルが渡したものと一致するか、名前に chrome / chromium を含むものだけを
+    Chrome とみなす（Linux の google-chrome はラッパースクリプトで、プロセスには実体の
+    パスが見えるため）。
+    """
+    listing = "\n".join([
+        f"  401 {CHROME_BIN} --user-data-dir={UNIX_PROFILE} --no-first-run",
+        f"  402 python3 wrapper.py --user-data-dir={UNIX_PROFILE} --no-first-run",
+        f"  403 {CHROME_BIN}2 --user-data-dir={UNIX_PROFILE} --no-first-run",
+        f'  404 "{CHROME_BIN}" --user-data-dir={UNIX_PROFILE} --no-first-run',
+        f"  405 /usr/bin/python3 /home/user/chrome-tools/watch.py --user-data-dir={UNIX_PROFILE}",
+        f"  406 /usr/lib/chromium/chromium --user-data-dir={UNIX_PROFILE} --no-first-run",
+    ])
+    assert chrome_pids(listing, UNIX_PROFILE, platform="linux") == [401, 402, 403, 404, 405, 406]
+    # 403 は名前に chrome を含む別の実行ファイル、406 は chromium。どちらも同じプロファイルで
+    # 動く Chrome として扱う。402・405 はパスの途中に chrome があっても実行ファイルは python
+    expected = [401, 403, 404, 406]
+    assert chrome_pids(listing, UNIX_PROFILE, platform="linux", chrome=CHROME_BIN) == expected
+    assert chrome_pids(listing, UNIX_PROFILE, platform="linux",
+                       chrome=PurePosixPath(CHROME_BIN)) == expected
+    # 設定の実行ファイルがラッパースクリプト（/usr/bin/google-chrome）でも実体の Chrome を拾う
+    assert chrome_pids(listing, UNIX_PROFILE, platform="linux",
+                       chrome="/usr/bin/google-chrome") == expected
+
+
+def test_chrome_pids_with_a_space_in_the_chrome_path():
+    """空白を含む実行ファイルのパス（macOS の既定の場所）でも、引用符なしの ps の出力から拾う。"""
+    listing = "\n".join([
+        f"  501 {MAC_CHROME_BIN} --user-data-dir={UNIX_PROFILE} --no-first-run",
+        f"  502 /Applications/Google --user-data-dir={UNIX_PROFILE} --no-first-run",
+    ])
+    assert chrome_pids(listing, UNIX_PROFILE, platform="darwin", chrome=MAC_CHROME_BIN) == [501]
+
+
+def test_chrome_pids_from_powershell_only_for_the_chrome_executable():
+    chrome = PureWindowsPath(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+    listing = "\r\n".join([
+        '"ProcessId","CommandLine"',
+        # 引用符つきの実行ファイル
+        f'"2201","{WIN_CHROME} --user-data-dir={WIN_PROFILE} --no-first-run"',
+        # 同じ --user-data-dir を持つ別のプログラム
+        f'"2202","python.exe wrapper.py --user-data-dir={WIN_PROFILE} --no-first-run"',
+        # 引用符なし・大文字小文字の違い
+        rf'"2203","c:\program files\google\chrome\application\chrome.exe --user-data-dir={WIN_PROFILE} --x"',
+        # 別の場所の chrome.exe（名前が chrome なので同じプロファイルの Chrome として扱う）
+        rf'"2204","""D:\portable\chrome.exe"" --user-data-dir={WIN_PROFILE} --x"',
+    ])
+    assert chrome_pids(listing, WIN_PROFILE, platform="win32") == [2201, 2202, 2203, 2204]
+    assert chrome_pids(listing, WIN_PROFILE, platform="win32", chrome=chrome) == [2201, 2203, 2204]
+
+
+def _recording_signal(monkeypatch):
+    sent: list[tuple[list[int], bool]] = []
+    monkeypatch.setattr(
+        claude_export, "_signal",
+        lambda pids, *, platform, force: sent.append((list(pids), force)))
+    return sent
+
+
+def test_terminate_chrome_forces_only_processes_still_listed(monkeypatch, tmp_path):
+    """強制終了の前に列挙し直し、まだそのプロファイルの Chrome として見えるものだけを対象にする。"""
+    sent = _recording_signal(monkeypatch)
+    monkeypatch.setattr(claude_export, "_alive", lambda pids, *, platform: list(pids))
+    relisted: list[tuple[Path, object]] = []
+
+    def relist(profile_dir, *, chrome=None, platform=None):
+        relisted.append((profile_dir, chrome))
+        return [11, 99]   # 10 は終わって pid が別のプロセスに再利用された
+
+    monkeypatch.setattr(claude_export, "list_chrome_pids", relist)
+    chrome = Path("/opt/google/chrome/chrome")
+    claude_export.terminate_chrome([10, 11], profile_dir=tmp_path, chrome=chrome,
+                                   grace_seconds=0, platform="linux")
+    assert sent == [([10, 11], False), ([11], True)]
+    assert relisted == [(tmp_path, chrome)]
+
+
+def test_terminate_chrome_does_not_force_when_nothing_is_listed(monkeypatch, tmp_path):
+    sent = _recording_signal(monkeypatch)
+    monkeypatch.setattr(claude_export, "_alive", lambda pids, *, platform: list(pids))
+    monkeypatch.setattr(claude_export, "list_chrome_pids", lambda *args, **kwargs: [])
+    claude_export.terminate_chrome([10], profile_dir=tmp_path, grace_seconds=0, platform="linux")
+    assert sent == [([10], False)]
+
+
+def test_terminate_chrome_stops_when_the_processes_exit(monkeypatch, tmp_path):
+    sent = _recording_signal(monkeypatch)
+    monkeypatch.setattr(claude_export, "_alive", lambda pids, *, platform: [])
+
+    def no_relist(*args, **kwargs):
+        raise AssertionError("終了したら列挙し直さない")
+
+    monkeypatch.setattr(claude_export, "list_chrome_pids", no_relist)
+    claude_export.terminate_chrome([10], profile_dir=tmp_path, grace_seconds=0, platform="linux")
+    assert sent == [([10], False)]
+
+
+# ------------------------------------------------------------------ プロファイルの排他
+
+
+def _holder(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_profile_lock_holds_the_pid_and_run_id_and_is_removed(tmp_path):
+    staging = tmp_path / "exports"
+    with profile_lock(staging, "corp", "corp-current-1", pid=4242,
+                      is_alive=lambda pid: True) as path:
+        assert path == lock_path(staging, "corp") == staging / "corp.lock"
+        assert _holder(path) == {"pid": 4242, "run_id": "corp-current-1"}
+    assert not path.exists()
+
+
+def test_profile_lock_is_removed_after_an_exception(tmp_path):
+    with pytest.raises(RuntimeError), profile_lock(tmp_path, "corp", "corp-current-1", pid=1):
+        raise RuntimeError("boom")
+    assert not lock_path(tmp_path, "corp").exists()
+
+
+def test_profile_lock_refuses_while_the_holder_is_alive(tmp_path):
+    path = lock_path(tmp_path, "corp")
+    path.write_text(json.dumps({"pid": 77, "run_id": "corp-current-x"}), encoding="utf-8")
+    busy = r"プロファイル corp は別の実行（run_id corp-current-x）が使用中です"
+    with pytest.raises(ProfileBusyError, match=busy), profile_lock(
+        tmp_path, "corp", "corp-current-y", pid=1, is_alive=lambda pid: pid == 77
+    ):
+        raise AssertionError("ロックを取れてはいけない")
+    # 他の実行のロックには触れない
+    assert _holder(path) == {"pid": 77, "run_id": "corp-current-x"}
+    assert issubclass(ProfileBusyError, ValueError)
+
+
+@pytest.mark.parametrize("content", [
+    json.dumps({"pid": 77, "run_id": "corp-current-x"}),   # 持ち主が終わっている
+    "{broken",
+    "",
+    json.dumps({"pid": "77"}),
+])
+def test_profile_lock_replaces_a_stale_lock(tmp_path, content):
+    path = lock_path(tmp_path, "corp")
+    path.write_text(content, encoding="utf-8")
+    with profile_lock(tmp_path, "corp", "corp-current-y", pid=1, is_alive=lambda pid: False):
+        assert _holder(path) == {"pid": 1, "run_id": "corp-current-y"}
+    assert not path.exists()
+
+
+def test_acquire_profile_lock_gives_up_when_the_retry_is_taken(tmp_path, monkeypatch):
+    """古いロックを消して取り直す間に先を越されたら、使用中として止める。"""
+    path = lock_path(tmp_path, "corp")
+    path.write_text("{broken", encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def unlink_then_taken(self, missing_ok=False):
+        real_unlink(self, missing_ok=missing_ok)
+        self.write_text("{also broken", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "unlink", unlink_then_taken)
+    with pytest.raises(ProfileBusyError, match="run_id 不明"):
+        acquire_profile_lock(path, profile="corp", run_id="corp-current-y", pid=1,
+                             is_alive=lambda pid: False)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="シグナル 0 での確認は Unix の経路")
+def test_pid_alive_on_unix():
+    assert pid_alive(os.getpid()) is True
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait()
+    assert pid_alive(proc.pid) is False
+
+
+def test_pid_alive_on_windows_reads_the_process_listing(monkeypatch):
+    listing = b'"ProcessId","CommandLine"\r\n"2001","x.exe"\r\n'
+    monkeypatch.setattr(
+        claude_export.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=listing))
+    assert pid_alive(2001, platform="win32") is True
+    assert pid_alive(2002, platform="win32") is False

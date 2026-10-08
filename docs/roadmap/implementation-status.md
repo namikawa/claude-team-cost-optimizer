@@ -268,14 +268,18 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
   ロード時にエラー）
 - OS 依存の箇所: Windows のプロセスの列挙で PowerShell の出力を UTF-8 にした（ASCII 以外を含む
   プロファイルのパスを照合するため）。Preferences のダウンロード先の比較は`os.path.normcase`
-  （Windows は大文字小文字を区別しない）。そのほかは Step 50 の関数（Chrome の場所・起動・列挙・
-  終了）を使う。拡張機能は OS に依存しない。実機確認は macOS だけで、Windows・Linux は未検証
-- テスト: 2651 passed・1 skipped（+144件）。拡張機能は`node --check`（node が無ければ skip）・manifest の
+  （Windows は大文字小文字を区別しない）。終了させるプロセスの実行ファイルの照合も Windows は
+  大文字小文字を区別しない。ロックの持ち主が動いているかは、Unix はシグナル 0、Windows は
+  プロセスの一覧で確かめる。そのほかは Step 50 の関数（Chrome の場所・起動・列挙・終了）を
+  使う。拡張機能は OS に依存しない。実機確認は macOS だけで、Windows・Linux は未検証
+- テスト: 2687 passed・1 skipped（+180件）。拡張機能は`node --check`（node が無ければ skip）・manifest の
   検査・key から導いた ID・通信先が claude.ai だけであること・コマンドとの取り決め（トリガー・
   staging のファイル名・種別のディレクトリ）を見る。CLI は起動・列挙・終了を差し替えた偽の
   拡張機能で E2E を通す（全件成功・一部失敗・検証で落ちる CSV・run_id の不一致・時間切れ・
   進捗が続く間の案内の抑制・`--keep-browser`・未設定のプロファイル・`--import`・`--setup`・
-  `--finish-setup`・`--login`・`--list-orgs`・オプションの排他）。ruff 緑、`check-text --diff`は
+  `--finish-setup`・`--login`・`--list-orgs`・オプションの排他・別組織の UUID を含むファイル名・
+  使用中のプロファイル）。プロセスの照合（実行ファイル）・強制終了の前の列挙し直し・ロックの
+  取得と解放は単体テストで見る。ruff 緑、`check-text --diff`は
   0 件、wheel に`browser_extension/`の 5 ファイルが入ることを確かめた。golden は不変
 - 実機（macOS）で受け入れ確認を行った。2 つのプロファイルで`--setup`（拡張機能の読み込み直しを
   含む）→`--list-orgs`→ 当月モード → 前月モードを実行し、全スペース × 3 種 = 24 件をすべて
@@ -283,6 +287,16 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
   残っていた）。Preferences に書いた download.default_directory は Chrome の起動と終了を挟んでも
   保たれた。実機で分かった点として、ウィンドウを閉じても Chrome 本体が残るため`--setup`を
   起動と`--finish-setup`に分けた
+- マージ前に次を足した。拡張機能は支出レポートと Claude Code のページを開くたびにも組織を
+  確かめ（取れなければその種別だけを`organization switch not confirmed`にする）、CLI は配置の
+  前にメンバー一覧と支出レポートのファイル名の組織 UUID を設定の`org_id`と照合する。同じ
+  プロファイルの取得・`--list-orgs`・`--finish-setup`はプロファイルのロック
+  （`<staging_dir>/<profile>.lock`）で排他し、拡張機能も同じ Chrome で進行中の別の実行が
+  あれば始めない。`--import`も取得の計画と同じく大文字小文字だけが違う組織名を止める。
+  Chrome を終了させるのはプロファイルが一致し、実行ファイルが起動に使ったものと一致するか
+  名前に chrome / chromium を含むプロセスだけで（Linux のラッパースクリプト経由の起動でも
+  実体の Chrome を拾う）、強制終了の前に列挙し直す。manifest.json などの固定名は拡張機能自身のダウンロードにだけ付け、
+  同じ run_id を繰り返さないための記録は直近 500 件に広げた
 
 ### 2026-10-07 — Step 50: claude.ai エクスポート取得の土台
 

@@ -2042,7 +2042,8 @@ class _FakeExtension:
     """偽の拡張機能。起動のコマンドの URL から実行内容を読み、staging に結果を書く。
 
     outcomes は (dir, kind) → "ok"（正しい CSV）・{"ok": False, "reason": ...}（拡張機能の
-    失敗）・{"header": ...}（ok だが中身の違う CSV）。manifest="later" なら最初の sleep で
+    失敗）・{"header": ...}（ok だが中身の違う CSV）。names は (dir, kind) → 保存する
+    ファイル名（省略時は対象の UUID を含む元の名前）。manifest="later" なら最初の sleep で
     manifest を書き（起動時は progress だけ）、manifest=None なら書かない。
     """
 
@@ -2055,6 +2056,7 @@ class _FakeExtension:
         self.manifest: str | None = "now"
         self.manifest_run_id: str | None = None
         self.orgs: object = None
+        self.names: dict = {}
 
     def launch(self, command, **kwargs) -> None:
         self.commands.append(list(command))
@@ -2086,7 +2088,7 @@ class _FakeExtension:
         if isinstance(outcome, dict) and outcome.get("ok") is False:
             return {"dir": org["dir"], "kind": kind, **outcome}
         header = outcome["header"] if isinstance(outcome, dict) else CLAUDE_HEADERS[kind]
-        name = _claude_filename(kind, org["uuid"])
+        name = self.names.get((org["dir"], kind)) or _claude_filename(kind, org["uuid"])
         target = run_dir.joinpath(*org["dir"].split("/"), CLAUDE_KIND_DIRS[kind], name)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(f"{header}\nuser1@example.com,x,y\n", encoding="utf-8")
@@ -2109,18 +2111,22 @@ def claude_env(tmp_path, monkeypatch):
     env = SimpleNamespace(
         tmp_path=tmp_path, chrome=chrome, config=config, input_dir=input_dir,
         staging=staging, profiles=profiles, clock=clock, ext=ext,
-        pids=[CLAUDE_PID], listed=[], terminated=[],
+        pids=[CLAUDE_PID], listed=[], terminated=[], process_args=[],
     )
 
     def list_pids(profile_dir, **kwargs):
         env.listed.append(Path(profile_dir))
+        env.process_args.append(("list", kwargs))
         return list(env.pids) if not callable(env.pids) else env.pids()
+
+    def terminate(pids, **kwargs):
+        env.terminated.append(list(pids))
+        env.process_args.append(("terminate", kwargs))
 
     monkeypatch.setattr("seat_analyzer.claude_export.local_today", lambda: CLAUDE_TODAY)
     monkeypatch.setattr("seat_analyzer.claude_export.launch_chrome", ext.launch)
     monkeypatch.setattr("seat_analyzer.claude_export.list_chrome_pids", list_pids)
-    monkeypatch.setattr("seat_analyzer.claude_export.terminate_chrome",
-                        lambda pids, **kwargs: env.terminated.append(list(pids)))
+    monkeypatch.setattr("seat_analyzer.claude_export.terminate_chrome", terminate)
     monkeypatch.setattr("seat_analyzer.cli._monotonic", clock.monotonic)
     monkeypatch.setattr("seat_analyzer.cli._sleep", clock.sleep)
     return env
@@ -2175,15 +2181,72 @@ def test_collect_claude_places_every_file_and_closes_chrome(claude_env, capsys):
     for kind in ("members", "spend", "code"):
         assert _placed(env, "example", kind).read_text(encoding="utf-8").startswith(
             CLAUDE_HEADERS[kind])
-    # 終了: そのプロファイルの Chrome だけを終了させる
+    # 終了: そのプロファイルを起動した実行ファイルの Chrome だけを終了させる
     assert env.listed == [env.profiles / "corp"]
     assert env.terminated == [[CLAUDE_PID]]
+    assert env.process_args == [
+        ("list", {"chrome": env.chrome}),
+        ("terminate", {"profile_dir": env.profiles / "corp", "chrome": env.chrome}),
+    ]
+    # プロファイルのロックは終わったら消える
+    assert not claude_export.lock_path(env.staging, "corp").exists()
 
     out = capsys.readouterr().out
     assert "profile corp: 当月モード（2026-10）" in out
     assert f"  配置: {_placed(env, 'example', 'spend')}" in out.splitlines()
     assert "  配置 3 件・失敗 0 件" in out
     assert "Chrome を終了しました" in out
+
+
+def test_collect_claude_does_not_place_a_file_of_another_org(claude_env, capsys):
+    """拡張機能の確認をすり抜けた別組織のファイル（名前の UUID が違う）は配置しない。"""
+    env = claude_env
+    env.ext.names = {("example", "spend"): _claude_filename("spend", CLAUDE_UUID4)}
+    assert _collect_claude(env, "--org", "example") == 1
+    lines = capsys.readouterr().out.splitlines()
+    [spend_line] = [line for line in lines if line.startswith("  失敗: example spend ")]
+    assert "支出レポートのファイル名の組織 UUID が設定の org_id と違います" in spend_line
+    assert not (env.input_dir / "example" / "spend").exists()
+    assert _placed(env, "example", "members").is_file()
+
+
+@pytest.mark.parametrize("command", [
+    ["--org", "example"],
+    ["--list-orgs", "corp"],
+    ["--finish-setup", "corp"],
+])
+def test_collect_claude_refuses_a_profile_in_use(claude_env, capsys, command):
+    """同じプロファイルを別の実行が使っていれば、Chrome に触れずに止める。"""
+    env = claude_env
+    lock = claude_export.lock_path(env.staging, "corp")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(json.dumps({"pid": os.getpid(), "run_id": "corp-current-20261007-090000"}),
+                    encoding="utf-8")
+
+    assert _collect_claude(env, *command) == 1
+    assert ("プロファイル corp は別の実行（run_id corp-current-20261007-090000）が使用中です"
+            in capsys.readouterr().err)
+    assert env.ext.commands == [] and env.listed == [] and env.terminated == []
+    # 他の実行のロックはそのまま
+    assert json.loads(lock.read_text(encoding="utf-8"))["run_id"] == \
+        "corp-current-20261007-090000"
+
+
+def test_collect_claude_replaces_a_stale_lock(claude_env, monkeypatch):
+    env = claude_env
+    lock = claude_export.lock_path(env.staging, "corp")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(json.dumps({"pid": 12345, "run_id": "corp-current-old"}), encoding="utf-8")
+    monkeypatch.setattr("seat_analyzer.claude_export.pid_alive", lambda pid, **kwargs: False)
+    assert _collect_claude(env, "--org", "example") == 0
+    assert not lock.exists()
+
+
+def test_collect_claude_releases_the_lock_after_a_timeout(claude_env):
+    env = claude_env
+    env.ext.manifest = None
+    assert _collect_claude(env, "--org", "example", "--timeout", "1") == 1
+    assert not claude_export.lock_path(env.staging, "corp").exists()
 
 
 def test_collect_claude_reports_each_failure_and_places_the_rest(claude_env, capsys):
@@ -2414,6 +2477,33 @@ def test_collect_claude_import_without_a_manifest(claude_env, capsys):
 def test_collect_claude_import_rejects_a_path(claude_env, capsys, run_id):
     assert _collect_claude(claude_env, "--import", run_id) == 1
     assert "staging の実行ディレクトリ名ではありません" in capsys.readouterr().err
+
+
+def test_collect_claude_import_rejects_org_names_that_differ_only_in_case(
+    claude_env, tmp_path, capsys
+):
+    """--import も取得の計画と同じく、大文字小文字だけが違う組織名を止める。"""
+    env = claude_env
+    env.ext.manifest = None
+    assert _collect_claude(env, "--org", "example", "--timeout", "1") == 1
+    run_id = env.ext.specs[0]["run_id"]
+    capsys.readouterr()
+    config = _claude_config(tmp_path, chrome=env.chrome, organizations=(
+        "organizations:\n"
+        "  example:\n"
+        "    claude_export:\n"
+        "      profile: corp\n"
+        f"      org_id: {CLAUDE_UUID1}\n"
+        "  Example:\n"
+        "    claude_export:\n"
+        "      profile: corp\n"
+        f"      org_id: {CLAUDE_UUID2}\n"
+    ))
+    rc = main(["collect", "--source", "claude", "--config", config,
+               "--input-dir", str(env.input_dir), "--import", run_id])
+    assert rc == 1
+    assert "claude_export を設定した組織名が衝突しています" in capsys.readouterr().err
+    assert not (env.input_dir / "example" / "members").exists()
 
 
 def test_collect_claude_import_rejects_a_target_no_longer_configured(claude_env, capsys):
