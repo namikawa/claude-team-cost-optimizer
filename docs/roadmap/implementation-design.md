@@ -990,8 +990,10 @@ Standard化:
 - Playwright・Chrome remote debugging（CDP）・headlessは使わない。自動操作下では外部セキュリティ
   検証が反復して管理画面へ安定して到達できず、ダウンロード時にブラウザが異常終了することもある
   ため、素のChromeと拡張機能の組み合わせだけを使う
-- OS依存はChromeの場所（OSごとの既定の場所か`claude_export.chrome_path`）と、プロセスの列挙・
-  終了の2箇所に閉じる。macOSで実機検証し、Linux・Windowsは設計上動く想定（未検証）
+- OS依存はChromeの場所（OSごとの既定の場所か`claude_export.chrome_path`）、プロセスの列挙・
+  終了、プロファイルのロック（Unixはflock、Windowsはmsvcrt.locking）の3箇所に閉じる。macOSで
+  実機検証し、Linux・Windowsは設計上動く想定（実機は未検証。ロックとプロセスの一覧の解析は
+  CIの3 OSでテストする）
 
 ### 14.2 守ること
 
@@ -1290,9 +1292,11 @@ V2判定の根拠（decision-evidence）を併記する」opt-inで、主判定�
 - `BROWSER_LOGIN_REQUIRED`
 - `ADMIN_PAGE_CHANGED`
 - `DOWNLOAD_FAILED`
-- `BROWSER_TIMEOUT`（manifestが時間内に出ない）
+- `DUPLICATE_DOWNLOAD`
 
-Step 51のCLIが表示する取得の失敗の分類として使う。
+語彙は`domain.IssueCode`に定義済みで、まだどこにも結線していない。`collect --source claude`
+（§14）は取得の失敗を、拡張機能と配置前の検証が返す理由文のまま表示する。
+`DUPLICATE_DOWNLOAD`は旧方式（download watcher）で定めた語彙。
 
 ### GitHub issue
 

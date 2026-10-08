@@ -46,6 +46,10 @@ decision-evidence・github-summary。ファイル名はいずれも
 - 対象月のスペンドレポートとメンバー一覧が揃っているか確認する。
   欠けている組織があれば docs/usage.md の月次運用手順を案内し、その組織を除外するか
   中断するかをユーザに確認する
+  - ワークスペースの `config.yaml` に `claude_export` を設定した組織なら、当月と前月は
+    `uv run seat-analyzer collect --source claude --month YYYY-MM [--org <組織名>]` で取得して
+    配置できる（docs/usage.md の「claude.ai からの CSV 取得」）。ブラウザが起動するので、
+    実行する前にユーザに確認する
 - ファイルのヘッダを確認し、`columns` のエイリアスで解決できないカラム名があれば
   エイリアスを追記する。追記先は既定設定 `src/seat_analyzer/default-config.yaml`
   （プログラムの更新で全利用者へ届く。実データのカラム名差異はここで吸収する設計）。
