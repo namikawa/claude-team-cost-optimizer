@@ -138,3 +138,30 @@ def test_run_page_guards_against_other_runs():
     assert "chrome.storage.session.get(\"activeRun\")" in run_js
     assert "ACTIVE_RUN_TTL_MS = 60 * 60 * 1000" in run_js
     assert "await releaseActiveRun(runId);" in run_js
+
+
+def test_run_page_varies_the_pauses_between_operations():
+    """遷移の完了から操作までと、ボタンや選択肢を押す前の待ちを、毎回一様乱数で選ぶ。
+
+    取得の操作が一定の間隔で並ばないようにするため。遷移ごとに選んだ待ちはログに出す。
+    """
+    run_js = _text("run.js")
+    assert "settle: [2000, 4000]," in run_js
+    assert "click: [500, 1500]," in run_js
+    assert "min + Math.floor(Math.random() * (max - min + 1))" in run_js
+    assert "WAIT.settle" not in run_js
+    navigate = run_js[run_js.index("async function navigate("):]
+    navigate = navigate[:navigate.index("\n}\n")]
+    assert "const wait = pauseMs(PAUSE.settle);" in navigate
+    assert "waiting ${(wait / 1000).toFixed(1)}s" in navigate
+    assert navigate.endswith("await sleep(wait);")
+    # タブ内でボタンや選択肢を押す処理（clickButton・spendDialog・codeMonth）を呼ぶ箇所には、
+    # すべて直前に待ちがある
+    clicks = re.findall(r"await exec\(tabId, (?:clickButton|spendDialog|codeMonth),", run_js)
+    paused = re.findall(
+        r"await pauseBeforeClick\(\);\n\s*(?:const \w+ = )?(?:expectOk\(\s*)?"
+        r"await exec\(tabId, (?:clickButton|spendDialog|codeMonth),",
+        run_js,
+    )
+    assert clicks
+    assert len(paused) == len(clicks)

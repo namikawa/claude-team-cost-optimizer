@@ -36,7 +36,6 @@ const LABEL = {
 // 待ち時間の上限（ミリ秒）
 const WAIT = {
   pageLoad: 60000,       // 遷移の完了（status complete）
-  settle: 2000,          // 遷移の完了から操作までの間
   human: 10 * 60000,     // ログイン・外部セキュリティ検証を人が済ませるまで
   orgConfirm: 15000,     // 組織の切替の確認
   button: 60000,         // ボタンが現れて有効になるまで
@@ -46,11 +45,19 @@ const WAIT = {
 };
 // Claude Code のエクスポートを押し直す回数の上限
 const CODE_RETRIES = 3;
+// 操作の前に置く待ち（ミリ秒）。毎回この範囲の一様乱数で選び、取得の操作が一定の間隔で
+// 並ばないようにする
+const PAUSE = {
+  settle: [2000, 4000],  // 遷移の完了から操作までの間
+  click: [500, 1500],    // ボタンや選択肢を押す前
+};
 
 const logLines = [];
 const logEl = document.getElementById("log");
 const statusEl = document.getElementById("status");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// PAUSE の範囲 [最小, 最大] から待ち時間（ミリ秒）を選ぶ
+const pauseMs = ([min, max]) => min + Math.floor(Math.random() * (max - min + 1));
 const errorText = (e) => String(e && e.message ? e.message : e);
 const basename = (path) => String(path || "").split(/[\\/]/).pop();
 
@@ -343,7 +350,15 @@ async function navigate(tabId, url) {
   });
   await chrome.tabs.update(tabId, { url });
   await loaded;
-  await sleep(WAIT.settle);
+  const wait = pauseMs(PAUSE.settle);
+  log(`  opened ${new URL(url).pathname}; waiting ${(wait / 1000).toFixed(1)}s`);
+  await sleep(wait);
+}
+
+// ボタンや選択肢を押す前の短い待ち。タブ内でボタンを探して押す処理を呼ぶ手前に置く
+// （探してから押すまでの間は空けない）
+async function pauseBeforeClick() {
+  await sleep(pauseMs(PAUSE.click));
 }
 
 // ログインと外部セキュリティ検証は人に任せ、管理画面の状態になるまで待つ（自動化・回避はしない）
@@ -524,6 +539,7 @@ async function switchOrg(tabId, org) {
 // メンバー一覧（組織の切替でメンバー一覧のページにいる）
 async function exportMembers(tabId, org) {
   return exportWith(prefixFor(org, "members"), async () => {
+    await pauseBeforeClick();
     expectOk(await exec(tabId, clickButton, [LABEL.membersExport, null, WAIT.button]), "export button");
   });
 }
@@ -538,7 +554,9 @@ async function exportSpend(tabId, org) {
   const previous = runMode === "previous";
   let range = null;
   const saved = await exportWith(prefixFor(org, "spend"), async () => {
+    await pauseBeforeClick();
     expectOk(await exec(tabId, clickButton, [LABEL.spendExport, null, WAIT.button]), "export button");
+    await pauseBeforeClick();
     const dialog = expectOk(
       await exec(tabId, spendDialog, [previous ? LABEL.lastMonth : LABEL.monthToDate, previous]),
       "period option",
@@ -547,6 +565,7 @@ async function exportSpend(tabId, org) {
     range = dialog.range;
     if (!range) throw new Error("date range not shown in the dialog");
     if (!/^\d{4}-\d{2}-01 to /.test(range)) throw new Error(`date range does not start on the 1st: ${range}`);
+    await pauseBeforeClick();
     expectOk(await exec(tabId, clickButton, [LABEL.download, "dialog", WAIT.button]), "download button");
   });
   return { ...saved, range };
@@ -556,10 +575,14 @@ async function exportSpend(tabId, org) {
 async function exportCode(tabId, org) {
   await openPage(tabId, PAGES.code);
   await ensureOrg(tabId, org, "code");
-  const month = expectOk(await exec(tabId, codeMonth, [runMode === "previous"]), "month control");
+  const previous = runMode === "previous";
+  // 前月は月送りのボタンを押す
+  if (previous) await pauseBeforeClick();
+  const month = expectOk(await exec(tabId, codeMonth, [previous]), "month control");
   const ready = await exec(tabId, waitForCodeData);
   log(`[${org.dir}] code month ${JSON.stringify(month)} data ${JSON.stringify(ready)}`);
   return exportWith(prefixFor(org, "code"), async () => {
+    await pauseBeforeClick();
     expectOk(await exec(tabId, clickButton, [LABEL.codeExport, null, WAIT.button]), "export button");
   }, { retries: CODE_RETRIES, retryAfterMs: WAIT.codeRetry });
 }
