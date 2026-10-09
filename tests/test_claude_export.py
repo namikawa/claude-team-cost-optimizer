@@ -26,16 +26,27 @@ from seat_analyzer.claude_export import (
     MODE_CURRENT,
     MODE_PREVIOUS,
     NO_RESULT_REASON,
+    SESSION_EXPIRING,
+    SESSION_INVALID,
+    SESSION_UNKNOWN,
+    SESSION_VALID,
     TRIGGER_PREFIX,
     ExportRecord,
     ExportTarget,
     OrgEntry,
     ProfileBusyError,
     ProfileRun,
+    SessionCheck,
+    SessionStatus,
+    action_run_id,
+    action_spec,
+    check_login_run_id,
+    check_login_spec,
     chrome_pids,
     chrome_time_us,
     extension_install_state,
     find_chrome,
+    format_expiry,
     gated_targets,
     is_profile_name,
     is_run_id,
@@ -43,6 +54,8 @@ from seat_analyzer.claude_export import (
     list_orgs_run_id,
     list_orgs_spec,
     lock_path,
+    login_run_id,
+    login_spec,
     manifest_path,
     match_results,
     new_run_id,
@@ -58,6 +71,9 @@ from seat_analyzer.claude_export import (
     read_orgs,
     read_preferences,
     read_run_record,
+    read_session,
+    remaining_days,
+    remaining_text,
     resolve_mode,
     restore_run,
     run_dir,
@@ -65,6 +81,8 @@ from seat_analyzer.claude_export import (
     run_record_path,
     run_spec,
     secure_preferences_path,
+    session_path,
+    session_status,
     staged_file,
     terminate_commands,
     trigger_url,
@@ -618,6 +636,202 @@ def test_read_orgs_rejects_other_shapes(tmp_path, text):
     path.write_text(text, encoding="utf-8")
     with pytest.raises(ValueError):
         read_orgs(path)
+
+
+# ------------------------------------------------------------------ ログインセッション（--check-login・--login）
+
+
+def test_check_login_and_login_run_id_and_spec():
+    run_id = check_login_run_id("corp", CREATED)
+    assert run_id == "corp-check-login-20261007-110009"
+    assert check_login_spec(run_id) == {"run_id": run_id, "action": "check-login"}
+    run_id = login_run_id("corp", CREATED)
+    assert run_id == "corp-login-20261007-110009"
+    assert login_spec(run_id) == {"run_id": run_id, "action": "login"}
+    # 共通の組み立て（組織一覧も同じ形）
+    assert action_run_id("corp", "list-orgs", CREATED) == list_orgs_run_id("corp", CREATED)
+    assert action_spec("x", "list-orgs") == list_orgs_spec("x")
+
+
+def test_session_path(tmp_path):
+    staging = tmp_path / "exports"
+    assert session_path(staging, "run-1") == staging / "run-1" / "session.json"
+
+
+# 拡張機能が書く session.json（ログインの確認）。期限は 2026-11-04 08:56:50 UTC
+SESSION = {
+    "run_id": "corp-check-login-20261007-110009",
+    "checked_at": "2026-10-07T02:00:09.000Z",
+    "cookie_found": True,
+    "cookie_expires_at": "2026-11-04T08:56:50.000Z",
+    "page": "app",
+    "api": {"ok": True, "status": 200, "organizations": 4},
+    "log": ["..."],
+    "extra": "ignored",
+}
+UTC = dt.UTC
+
+
+def _write_session(tmp_path: Path, payload) -> Path:
+    path = tmp_path / "session.json"
+    text = payload if isinstance(payload, str) else json.dumps(payload)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return path
+
+
+def test_read_session(tmp_path):
+    check = read_session(_write_session(tmp_path, SESSION))
+    assert check == SessionCheck(
+        run_id="corp-check-login-20261007-110009",
+        checked_at=dt.datetime(2026, 10, 7, 2, 0, 9, tzinfo=UTC),
+        cookie_found=True,
+        cookie_expires_at=dt.datetime(2026, 11, 4, 8, 56, 50, tzinfo=UTC),
+        page="app",
+        api_ok=True,
+        api_status=200,
+        api_reason=None,
+    )
+    assert check.cookie_expires_at.tzinfo is UTC
+
+
+def test_read_session_converts_offsets_to_utc_and_reads_a_failed_api(tmp_path):
+    payload = {**SESSION, "cookie_expires_at": "2026-11-04T17:56:50+09:00",
+               "api": {"ok": False, "status": None, "reason": "signal timed out"}}
+    check = read_session(_write_session(tmp_path, payload))
+    assert check.cookie_expires_at == dt.datetime(2026, 11, 4, 8, 56, 50, tzinfo=UTC)
+    assert (check.api_ok, check.api_status, check.api_reason) == (False, None, "signal timed out")
+
+
+def test_read_session_of_a_regular_export(tmp_path):
+    """通常の取得の最後に書くもの（page・api とも null、期限の無い Cookie）。"""
+    payload = {**SESSION, "page": None, "api": None, "cookie_expires_at": None}
+    check = read_session(_write_session(tmp_path, payload))
+    assert (check.page, check.api_ok, check.api_status, check.api_reason) == (None, None, None, None)
+    assert check.cookie_expires_at is None
+
+
+@pytest.mark.parametrize("payload,fragment", [
+    ('{"run_id": ', "JSON として読めません"),
+    ([], "オブジェクトではありません"),
+    ({key: value for key, value in SESSION.items() if key != "page"}, "page がありません"),
+    ({key: value for key, value in SESSION.items() if key != "cookie_expires_at"},
+     "cookie_expires_at がありません"),
+    ({**SESSION, "run_id": 1}, "run_id が文字列ではありません"),
+    ({**SESSION, "cookie_found": "true"}, "cookie_found が真偽値ではありません"),
+    ({**SESSION, "cookie_expires_at": "2026-11-04T08:56:50"}, "タイムゾーンがありません"),
+    ({**SESSION, "cookie_expires_at": "next month"}, "ISO 8601 の日時ではありません"),
+    ({**SESSION, "cookie_expires_at": 1793782610}, "cookie_expires_at が ISO 8601 の日時では"),
+    ({**SESSION, "checked_at": "2026-10-07"}, "checked_at にタイムゾーンがありません"),
+    ({**SESSION, "page": 1}, "page が文字列でも null でもありません"),
+    ({**SESSION, "api": {"status": 200}}, "api が null でも ok を持つオブジェクトでも"),
+    ({**SESSION, "api": {"ok": "yes"}}, "api が null でも ok を持つオブジェクトでも"),
+    ({**SESSION, "api": True}, "api が null でも ok を持つオブジェクトでも"),
+])
+def test_read_session_rejects_a_broken_file(tmp_path, payload, fragment):
+    with pytest.raises(ValueError, match=fragment):
+        read_session(_write_session(tmp_path, payload))
+
+
+# 判定の「今」（2026-10-07 03:00 UTC）
+NOW = dt.datetime(2026, 10, 7, 3, 0, tzinfo=UTC)
+
+
+def _check(*, page="app", api=(True, 200, None), found=True,
+           expires=NOW + dt.timedelta(days=25, hours=5)) -> SessionCheck:
+    api_ok, api_status, api_reason = api if api is not None else (None, None, None)
+    return SessionCheck("corp-check-login-x", NOW, found, expires, page,
+                        api_ok, api_status, api_reason)
+
+
+def _status(check: SessionCheck, warning_days: int = 3):
+    return session_status(check, now=NOW, warning_days=warning_days)
+
+
+def test_session_status_valid():
+    assert _status(_check()) == SessionStatus(SESSION_VALID, None, 25, True)
+
+
+@pytest.mark.parametrize("check,state,reason", [
+    # ログイン画面は Cookie の有無より先に見る
+    (_check(page="login", api=None, found=False, expires=None),
+     SESSION_INVALID, "ログイン画面が表示された"),
+    (_check(api=(False, 401, "HTTP 401")), SESSION_INVALID, "API の読み取りが HTTP 401"),
+    # 403 は権限の問題でもありうるので不明に倒す
+    (_check(api=(False, 403, "HTTP 403")), SESSION_UNKNOWN, "API の読み取りに失敗（HTTP 403）"),
+    (_check(api=(False, None, "signal timed out")),
+     SESSION_UNKNOWN, "API の読み取りに失敗（signal timed out）"),
+    (_check(api=(False, 500, None)), SESSION_UNKNOWN, "API の読み取りに失敗（HTTP 500）"),
+    (_check(page="challenge", api=None), SESSION_UNKNOWN, "セキュリティ検証が表示された"),
+    (_check(page="unknown", api=(False, None, "tab closed")),
+     SESSION_UNKNOWN, "ページの状態を読めなかった"),
+    (_check(page="elsewhere", api=None), SESSION_UNKNOWN, "ページの状態を読めなかった"),
+    (_check(api=None), SESSION_UNKNOWN, "API の読み取りの結果がない"),
+    (_check(expires=None), SESSION_UNKNOWN, "Cookie の期限が不明"),
+    (_check(found=False, expires=None), SESSION_UNKNOWN, "Cookie（sessionKey）が見つからない"),
+])
+def test_session_status_follows_the_fixed_order(check, state, reason):
+    status = _status(check)
+    assert (status.state, status.reason) == (state, reason)
+
+
+def test_session_status_against_the_warning_days():
+    """残り日数（切り捨て）が warning_days を下回れば期限間近、ちょうどなら有効。"""
+    just_under = _check(expires=NOW + dt.timedelta(days=3) - dt.timedelta(seconds=1))
+    assert _status(just_under) == SessionStatus(SESSION_EXPIRING, None, 2, True)
+    exactly = _check(expires=NOW + dt.timedelta(days=3))
+    assert _status(exactly) == SessionStatus(SESSION_VALID, None, 3, True)
+    expired = _check(expires=NOW - dt.timedelta(hours=1))
+    assert _status(expired) == SessionStatus(SESSION_EXPIRING, None, -1, True)
+
+
+def test_session_status_with_zero_warning_days():
+    """warning_days が 0 なら、期限を過ぎたものだけが期限間近。"""
+    today = _check(expires=NOW + dt.timedelta(hours=1))
+    assert _status(today, 0).state == SESSION_VALID
+    assert _status(today, 0).remaining_days == 0
+    expired = _check(expires=NOW - dt.timedelta(seconds=1))
+    assert _status(expired, 0).state == SESSION_EXPIRING
+
+
+@pytest.mark.parametrize("days,state", [(25, SESSION_VALID), (1, SESSION_EXPIRING)])
+def test_session_status_of_a_regular_export(days, state):
+    """通常の取得の最後に書いたもの（page・api とも null）は Cookie の期限だけで決める。"""
+    check = _check(page=None, api=None, expires=NOW + dt.timedelta(days=days, minutes=1))
+    assert _status(check) == SessionStatus(state, None, days, False)
+
+
+def test_session_status_of_a_regular_export_without_an_expiry():
+    status = _status(_check(page=None, api=None, expires=None))
+    assert (status.state, status.reason, status.api_checked) == (
+        SESSION_UNKNOWN, "Cookie の期限が不明", False)
+
+
+def test_remaining_days_floors():
+    assert remaining_days(None, NOW) is None
+    assert remaining_days(NOW + dt.timedelta(days=1), NOW) == 1
+    assert remaining_days(NOW + dt.timedelta(days=1) - dt.timedelta(microseconds=1), NOW) == 0
+    assert remaining_days(NOW - dt.timedelta(microseconds=1), NOW) == -1
+
+
+@pytest.mark.parametrize("days,text", [
+    (-3, "期限経過"), (-1, "期限経過"), (0, "あと 24 時間未満"), (1, "あと 1 日"), (25, "あと 25 日"),
+])
+def test_remaining_text(days, text):
+    assert remaining_text(days) == text
+
+
+def test_format_expiry_uses_the_given_time_zone():
+    moment = dt.datetime(2026, 11, 4, 8, 56, 50, tzinfo=UTC)
+    assert format_expiry(moment, dt.timezone(dt.timedelta(hours=9))) == "2026-11-04 17:56"
+    assert format_expiry(moment, UTC) == "2026-11-04 08:56"
+    assert format_expiry(moment, dt.timezone(dt.timedelta(hours=-10))) == "2026-11-03 22:56"
+
+
+def test_format_expiry_defaults_to_the_local_time_of_that_moment():
+    """既定（None）は実行機のローカル時刻で、その時点の夏時間の規則を使う（今の差を固定しない）。"""
+    assert claude_export.local_timezone() is None
+    moment = dt.datetime(2026, 11, 4, 8, 56, 50, tzinfo=UTC)
+    assert format_expiry(moment, None) == f"{moment.astimezone():%Y-%m-%d %H:%M}"
 
 
 # ------------------------------------------------------------------ プロファイル名

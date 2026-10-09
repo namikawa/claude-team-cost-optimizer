@@ -37,6 +37,8 @@
 #   profiles_dir / staging_dir: 専用プロファイルとダウンロードの一時置き場。既定から
 #     変えるときだけ書く（相対パスはこのファイルの置き場所が基準。`~` も書ける）
 #   chrome_path: Chrome が既定の場所に無いときだけ、実行ファイルの絶対パスを書く
+#   login_warning_days: --check-login で「期限間近」にする残り日数（既定 3。確認の間隔 +
+#     対応の猶予で決める。週次で確かめるなら 8 など）
 #   organizations.<組織名>.claude_export: 取得する組織。複数スペースの組織は
 #     organizations.<組織名>.workspaces.<workspace名>.claude_export に書く。org_id は
 #     collect --source claude --list-orgs <profile> で調べる。organizations は他の設定
@@ -45,6 +47,7 @@
 #   profiles_dir: ~/.seat-analyzer/profiles
 #   staging_dir: ~/.seat-analyzer/exports
 #   chrome_path: /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+#   login_warning_days: 8
 # organizations:
 #   <組織名>:
 #     claude_export:

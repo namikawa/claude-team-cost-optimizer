@@ -547,6 +547,10 @@ def _validate_claude_export(cfg: dict, errors: list[str]) -> None:
     minutes = section.get("timeout_minutes")
     if not _is_integer(minutes) or minutes < 1:
         errors.append("claude_export.timeout_minutes は 1 以上の整数が必要です")
+    # 0 は「期限を過ぎたものだけを期限間近にする」の意味で使える
+    days = section.get("login_warning_days")
+    if not _is_integer(days) or days < 0:
+        errors.append("claude_export.login_warning_days は 0 以上の整数が必要です")
 
 
 def _is_absolute_setting(value: str) -> bool:

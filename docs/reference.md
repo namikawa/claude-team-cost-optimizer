@@ -493,6 +493,7 @@ repository 名の大文字小文字は区別せず同じ1つとして扱う。
 | `profiles_dir` | `~/.seat-analyzer/profiles` | 専用プロファイルの置き場。配下の `<profile>` ディレクトリが 1 アカウント |
 | `staging_dir` | `~/.seat-analyzer/exports` | Chrome のダウンロード先（取得の一時置き場）。検証の後に `input/` へコピーする |
 | `timeout_minutes` | `15` | 取得の完了を待つ上限（分）。`--timeout` を付けた実行ではそちらが優先 |
+| `login_warning_days` | `3` | `--check-login` で「期限間近」にする残り日数（0 以上の整数）。Cookie の期限までの日数がこれを下回ると期限間近（終了コード 1）。0 なら期限を過ぎたものだけ。確認の間隔 + 対応の猶予で決める（日次なら 3・週次なら 8 など） |
 
 `profiles_dir`・`staging_dir` の相対パスは、`paths` と同じくそれを書いた設定ファイルの
 置き場所が基準になる（`~` はホームディレクトリに展開し、絶対パスはそのまま使う）。
@@ -509,7 +510,7 @@ LocalAppData の下の `Google\Chrome\Application\chrome.exe`、それ以外が 
 
 | キー | 内容 |
 |---|---|
-| `profile` | 使うプロファイル名（英数字と `.` `_` `-`。`.` と `..` は使えない）。`--setup`・`--finish-setup`・`--login`・`--list-orgs` に渡す名前と揃える |
+| `profile` | 使うプロファイル名（英数字と `.` `_` `-`。`.` と `..` は使えない）。`--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--check-login` に渡す名前と揃える |
 | `org_id` | claude.ai の組織 UUID（8-4-4-4-12 桁の16進。`--list-orgs` で調べる） |
 | `kinds` | 取得する種別（`members` / `spend` / `code` から重複なく 1 つ以上。省略時は 3 種すべて） |
 
@@ -559,18 +560,21 @@ organizations:
 | `--import <run_id>` | staging に残った実行の検証と配置だけをやり直す（ブラウザを起動しない） |
 | `--setup <名前>` | 専用プロファイルを作って Chrome をログイン画面で起動し、人が行う手順（ログイン・拡張機能の読み込み）を表示して終わる（待たない） |
 | `--finish-setup <名前>` | `--setup` の後、人の操作が終わってから実行する。そのプロファイルの Chrome を終了させ、同梱の拡張機能が表示した場所から読み込まれていることを確かめてからプロファイルの設定を書く |
-| `--login <名前>` | プロファイルの Chrome で claude.ai のログイン画面を開く（終了は待たない） |
+| `--login <名前>` | 拡張機能にそのプロファイルのセッションの Cookie（名前が `sessionKey` で始まるもの）を消させてから、claude.ai のログイン画面を開かせる（終了は待たない。ロックは取らない） |
 | `--list-orgs <名前>` | アカウントが参加している組織の uuid・name・rate_limit_tier・plan を表示する |
+| `--check-login [<名前>]` | ログインセッションの状態（有効・期限間近・無効・不明）を表示する。名前を省くと `claude_export` を設定した全プロファイルを初出順に確かめる（名前を指定すれば設定に無いプロファイルでもよい） |
 
-`--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--import` は単独で使う（`--list-orgs` だけは
-`--timeout`・`--keep-browser` を併用できる）。これらと `--profile`・`--dry-run`・
-`--keep-browser`・`--timeout` は `--source github` では使えない。組み合わせの誤りは終了コード 2。
+`--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--check-login`・`--import` は単独で使う
+（`--list-orgs` と `--check-login` だけは `--timeout`・`--keep-browser` を併用できる）。これらと
+`--profile`・`--dry-run`・`--keep-browser`・`--timeout` は `--source github` では使えない。
+組み合わせの誤りは終了コード 2。
 
 終了コードは、対象のすべての (組織, 種別) を配置できたときだけ 0。1 件でも失敗・時間切れが
-あれば 1。
+あれば 1。`--check-login` は、確かめた全プロファイルが有効のときだけ 0（期限間近・無効・不明・
+時間切れ・設定の済んでいないプロファイル・使用中のプロファイルがあれば 1）。
 
-同じプロファイルを 2 つの実行が同時に使わないよう、取得・`--list-orgs`・`--finish-setup` は
-その間 `<staging_dir>/<profile>.lock` に OS のファイルロック（Unix は flock、Windows は
+同じプロファイルを 2 つの実行が同時に使わないよう、取得・`--list-orgs`・`--check-login`・
+`--finish-setup` はその間 `<staging_dir>/<profile>.lock` に OS のファイルロック（Unix は flock、Windows は
 msvcrt.locking）を取る。別の実行がロックを持っていれば、そのプロファイルは使用中として止める
 （取得では、そのプロファイルの実行だけを失敗にする）。ロックは実行が終わると（異常終了を
 含めて）外れるので、ロックファイルを消す必要は無い（ファイルは空のまま残る）。拡張機能の側も、同じ Chrome で別の実行が進行中なら新しい実行を始めない
@@ -585,12 +589,14 @@ Chrome を終了させるのは、プロファイル（`--user-data-dir`）が�
 ### staging の配置
 
 1 回の取得（プロファイル 1 つ）ごとに `<staging_dir>/<run_id>/` を作る。`run_id` は
-`<profile>-<current|previous>-<YYYYMMDD-HHMMSS>`（組織一覧は `<profile>-list-orgs-<...>`。
-ローカル時刻）。
+`<profile>-<current|previous>-<YYYYMMDD-HHMMSS>`（組織一覧は `<profile>-list-orgs-<...>`、
+ログインの確認は `<profile>-check-login-<...>`。ローカル時刻）。`--login` も
+`<profile>-login-<...>` を拡張機能へ渡すが、実行ディレクトリは作らず、拡張機能も何も書かない。
 
 ```text
 <run_id>/run.json                           コマンドが起動の前に書く、その実行の計画（--import が使う）
 <run_id>/progress.json                      拡張機能が各手順の後に上書きする途中経過
+<run_id>/session.json                       拡張機能が書くログインセッションの観測（--check-login のときと、取得で manifest の前）
 <run_id>/manifest.json                      拡張機能が最後に書く結果（コマンドはこれを待つ）
 <run_id>/<dir>/<kind_dir>/<元のファイル名>  ダウンロードした CSV
 <run_id>/orgs.json                          --list-orgs のときの組織一覧
@@ -609,7 +615,45 @@ Chrome を終了させるのは、プロファイル（`--user-data-dir`）が�
 プロファイルの Chrome を終了させ、動いている間は書かない。拡張機能の読み込みは
 `Default/Secure Preferences` と `Default/Preferences` の拡張機能の設定で確かめ、同梱の場所と
 違う場所から読み込まれていれば書かずに止める。取得の前にはダウンロード先が staging を指して
-いることを確かめ、違えば `--setup` と `--finish-setup` を案内して起動しない。
+いることを確かめ、違えば `--setup` と `--finish-setup` を案内して起動しない（`--check-login`・
+`--login`・`--list-orgs` も同じ）。
+
+### ログインセッションの判定
+
+`--check-login` では、拡張機能が claude.ai を開いてページの状態を 1 秒ごとに最大 20 秒見る
+（アプリかログイン画面に定まったら打ち切る。外部セキュリティ検証は人の操作なしに解ける
+ことがあるので上限まで見直す）。アプリが表示されたときだけ `/api/organizations` を 1 回読み
+（上限 10 秒）、セッションの Cookie（`sessionKey`）の期限と合わせて `session.json` に書く。人の
+操作は待たない。通常の取得でも manifest.json の前に Cookie の期限だけを同じ形で書く（ページと
+API は見ないので `page`・`api` は null）。どちらも Cookie の値は書かない。
+
+| 項目 | 内容 |
+|---|---|
+| `run_id` | 実行の識別子（コマンドはその実行のものかを確かめる） |
+| `checked_at` | 観測した時刻（ISO 8601・UTC） |
+| `cookie_found` | セッションの Cookie があったか |
+| `cookie_expires_at` | Cookie の期限（ISO 8601・UTC）。期限の無い Cookie が混じれば null、複数あれば最も早いもの |
+| `page` | `app`・`login`・`challenge`（上限まで外部セキュリティ検証のまま）・`unknown`（一度も読めなかった）。通常の取得では null |
+| `api` | `{ok: true, status, organizations}`（組織は件数だけ）か `{ok: false, status, reason}`（応答が無ければ status は null）。読んでいなければ null |
+| `log` | 実行ページのログ |
+
+壊れた JSON・項目の欠落・形の違う値（タイムゾーンの無い日時を含む）は読めないものとして
+扱う（`--check-login` は待ち時間の上限の後にその理由を表示して失敗、通常の取得は警告を 1 行
+出すだけで結果を変えない）。
+
+状態は上から順に最初に当たったものを採る。
+
+1. `page` が `login` → 無効
+2. API の読み取りが HTTP 401 → 無効
+3. `page` が `challenge`・`unknown`（取り決めに無い値を含む）、API の読み取りに失敗（403 を
+   含む 401 以外と、応答なし）、`page` が `app` なのに API の結果が無い → 不明
+4. Cookie が無い・Cookie の期限が無い → 不明
+5. 残り日数が `login_warning_days` を下回る → 期限間近（0 なら期限を過ぎたものだけ）、
+   それ以外 → 有効
+
+残り日数は Cookie の期限までの時間を 1 日単位で切り捨てた整数で、表示（「あと n 日」。0 は
+「あと 24 時間未満」、負は期限経過）と `login_warning_days` との比較に同じ値を使う。期限は
+実行機のローカル時刻で表示する。
 
 ### 配置前の検証
 

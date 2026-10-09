@@ -107,7 +107,7 @@ def test_staging_names_match_the_cli():
     """拡張機能が書くファイル名・種別のディレクトリ・モードと action がコマンドと揃っている。"""
     run_js = _text("run.js")
     for name in (claude_export.MANIFEST_NAME, claude_export.PROGRESS_NAME,
-                 claude_export.ORGS_NAME):
+                 claude_export.ORGS_NAME, claude_export.SESSION_NAME):
         assert f'"{name}"' in run_js
     kind_dirs = ", ".join(f'{kind}: "{name}"' for kind, name in claude_export.KIND_DIRS.items())
     assert f"const KIND_DIRS = {{ {kind_dirs} }};" in run_js
@@ -115,7 +115,14 @@ def test_staging_names_match_the_cli():
     assert f"const KINDS = [{kinds}];" in run_js
     assert (f'const MODE_TEXT = {{ {claude_export.MODE_CURRENT}: "当月", '
             f'{claude_export.MODE_PREVIOUS}: "前月" }};') in run_js
-    assert f'spec.action === "{claude_export.ACTION_LIST_ORGS}"' in run_js
+    actions = (claude_export.ACTION_LIST_ORGS, claude_export.ACTION_CHECK_LOGIN,
+               claude_export.ACTION_LOGIN)
+    quoted = ", ".join(f'"{action}"' for action in actions)
+    assert f"const ACTIONS = [{quoted}];" in run_js
+    for action in actions:
+        assert f'spec.action === "{action}"' in run_js
+    assert f'const SESSION_COOKIE = "{claude_export.SESSION_COOKIE_NAME}";' in run_js
+    assert f'const LOGIN_URL = "{claude_export.LOGIN_URL}";' in run_js
 
 
 def test_fixed_names_apply_only_to_the_extensions_own_downloads():
@@ -178,3 +185,95 @@ def test_run_page_varies_the_pauses_between_operations():
     )
     assert clicks
     assert len(paused) == len(clicks)
+
+
+def test_check_login_does_not_wait_for_a_person():
+    """ログインの確認は人の操作を待たない（ログイン画面や検証が出たらその観測のまま書く）。"""
+    run_js = _text("run.js")
+    check = _function(run_js, "runCheckLogin")
+    for word in ("ensureApp", "openPage", "WAIT.human"):
+        assert word not in check
+    assert "await navigate(tabId, `${ORIGIN}/`);\n    page = await settledPageState(tabId);" \
+        in check
+    # API はアプリが表示されたときだけ、時間の上限を付けて読む
+    assert ('if (page === "app") {\n      api = apiOutcome(await exec(tabId, fetchOrganizations, '
+            "[WAIT.api]));") in check
+    # 途中の失敗も観測として session.json に書く
+    assert "} catch (e) {\n    api = { ok: false, status: null, reason: errorText(e) };" in check
+    assert check.rstrip().endswith(
+        'await saveJson("session.json", await sessionRecord(page, api));\n'
+        "  setStatus(`${runId}: 確認が終わりました（結果はコマンドに表示されます）`);")
+    # ページの状態は 1 秒ごとに上限（WAIT.loginState）まで見て、アプリかログイン画面で打ち切る
+    settled = _function(run_js, "settledPageState")
+    assert "const deadline = Date.now() + WAIT.loginState;" in settled
+    assert 'if (last === "app" || last === "login") return last;' in settled
+    assert ('if (Date.now() >= deadline) return last === "challenge" ? "challenge" : "unknown";'
+            in settled)
+    assert "await sleep(1000);" in settled
+    for word in ("ensureApp", "WAIT.human", "setStatus"):
+        assert word not in settled
+    assert "loginState: 20000," in run_js
+    assert "api: 10000," in run_js
+    # 進行中の実行の記録（activeRun）は session.json を書き終えてから外す
+    main = _function(run_js, "main")
+    assert main.index('else if (spec.action === "check-login") await runCheckLogin(tab.id);') \
+        < main.index("await releaseActiveRun(runId);")
+
+
+def test_session_cookie_is_read_for_its_expiry_only():
+    """セッションの Cookie は期限だけを見る（値は書き出さない・ログにも出さない）。"""
+    run_js = _text("run.js")
+    cookie = _function(run_js, "sessionCookie")
+    assert 'chrome.cookies.getAll({ domain: "claude.ai", name: SESSION_COOKIE })' in cookie
+    assert "new Date(Math.min(...expiries) * 1000).toISOString()" in cookie
+    assert ".value" not in run_js
+    # Cookie を書き換えるのは組織の切替と、再ログインの前の削除だけ
+    assert run_js.count("chrome.cookies.set(") == 1
+    assert "chrome.cookies.set(" in _function(run_js, "setOrgCookie")
+    assert run_js.count("chrome.cookies.remove(") == 2
+    # session.json に組織の名前や UUID を書かない（API は件数だけ）
+    outcome = _function(run_js, "apiOutcome")
+    assert "organizations: res.orgs.length" in outcome
+    assert "res.orgs.map" not in outcome and "uuid" not in outcome
+
+
+def test_export_writes_the_session_before_the_manifest():
+    """取得の最後に session.json を manifest.json より前に書き、その失敗で取得を落とさない。"""
+    run_export = _function(_text("run.js"), "runExport")
+    session = 'await saveJson("session.json", await sessionRecord(null, null));'
+    assert run_export.index(session) < run_export.index('await saveJson("manifest.json", {')
+    assert ("  try {\n    " + session + "\n  } catch (e) {\n"
+            "    log(`session.json not saved: ${errorText(e)}`);\n  }\n") in run_export
+    assert "fetchOrganizations" not in run_export
+
+
+def test_fetch_organizations_has_a_time_limit():
+    """API の読み取りに時間の上限を付け、呼び出し側が WAIT.api を渡す（タブ内では外側を参照しない）。"""
+    run_js = _text("run.js")
+    fetch_orgs = _function(run_js, "fetchOrganizations")
+    assert fetch_orgs.startswith("function fetchOrganizations(timeoutMs) {")
+    assert "signal: AbortSignal.timeout(timeoutMs)," in fetch_orgs
+    assert "WAIT" not in fetch_orgs
+    assert "return { ok: false, status: res.status, reason: `HTTP ${res.status}` };" in fetch_orgs
+    assert "return { ok: false, status: null, reason:" in fetch_orgs
+    # 組織一覧とログインの確認の両方が同じ上限を渡す
+    assert run_js.count("exec(tabId, fetchOrganizations, [WAIT.api])") == 2
+    assert "exec(tabId, fetchOrganizations)" not in run_js
+
+
+def test_login_removes_only_the_session_cookies():
+    """再ログインは名前が sessionKey で始まる Cookie だけを消してログイン画面を開き、何も書かない。"""
+    run_js = _text("run.js")
+    login = _function(run_js, "runLogin")
+    assert 'const cookies = await chrome.cookies.getAll({ domain: "claude.ai" });' in login
+    assert re.search(
+        r"for \(const cookie of cookies\.filter\(\(c\) => c\.name\.startsWith\(SESSION_COOKIE\)\)\) \{\n"
+        r"\s*if \(await chrome\.cookies\.remove\(\{ url: \"https://claude\.ai\" \+ cookie\.path, "
+        r"name: cookie\.name \}\)\) removed\+\+;\n\s*\}",
+        login,
+    )
+    assert login.count("chrome.cookies.remove(") == 1
+    assert "await chrome.tabs.update(tabId, { url: LOGIN_URL });" in login
+    assert login.index("chrome.cookies.remove(") < login.index("url: LOGIN_URL")
+    for word in ("saveJson", "lastActiveOrg", "ensureApp", "WAIT.human"):
+        assert word not in login

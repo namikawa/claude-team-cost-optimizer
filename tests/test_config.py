@@ -1489,6 +1489,7 @@ def test_claude_export_defaults():
         "profiles_dir": "~/.seat-analyzer/profiles",
         "staging_dir": "~/.seat-analyzer/exports",
         "timeout_minutes": 15,
+        "login_warning_days": 3,
     }
 
 
@@ -1707,11 +1708,29 @@ def test_claude_export_kind_mismatch_is_rejected(tmp_path, text, where, want):
     ("claude_export:\n  timeout_minutes: 0\n", "claude_export.timeout_minutes は 1 以上の整数"),
     ("claude_export:\n  timeout_minutes: 1.5\n", "claude_export.timeout_minutes は 1 以上の整数"),
     ("claude_export:\n  timeout_minutes: true\n", "claude_export.timeout_minutes は 1 以上の整数"),
+    ("claude_export:\n  login_warning_days: -1\n",
+     "claude_export.login_warning_days は 0 以上の整数"),
+    ("claude_export:\n  login_warning_days: 2.5\n",
+     "claude_export.login_warning_days は 0 以上の整数"),
+    ("claude_export:\n  login_warning_days: true\n",
+     "claude_export.login_warning_days は 0 以上の整数"),
+    ('claude_export:\n  login_warning_days: "3"\n',
+     "claude_export.login_warning_days は 0 以上の整数"),
+    # null は上書きの読み込みが拒否する（既定のままにするなら行ごと消す）
+    ("claude_export:\n  login_warning_days: null\n",
+     "'claude_export.login_warning_days' の値が空です"),
 ])
 def test_claude_export_settings_are_validated(tmp_path, text, fragment):
     path = _override(tmp_path, text)
     with pytest.raises(ValueError, match=re.escape(fragment)):
         load_config(path)
+
+
+@pytest.mark.parametrize("days", [0, 8])
+def test_claude_export_login_warning_days_accepts_zero_and_more(tmp_path, days):
+    """0 は「Cookie の期限を過ぎたものだけを期限間近にする」の意味で使える。"""
+    path = _override(tmp_path, f"claude_export:\n  login_warning_days: {days}\n")
+    assert load_config(path)["claude_export"]["login_warning_days"] == days
 
 
 def test_claude_export_settings_can_be_overridden(tmp_path):

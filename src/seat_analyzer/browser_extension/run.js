@@ -1,17 +1,22 @@
 // 実行ページ。URL のフラグメントに載った実行内容（spec）に従って claude.ai の管理画面を操作し、
 // 結果を staging（Chrome の既定のダウンロード先）の <run_id>/ へ書き出す。
 //
-//   取得      {run_id, mode: "current"|"previous", orgs: [{uuid, dir, kinds: ["members","spend","code"]}]}
-//   組織一覧  {run_id, action: "list-orgs"}
+//   取得          {run_id, mode: "current"|"previous", orgs: [{uuid, dir, kinds: ["members","spend","code"]}]}
+//   組織一覧      {run_id, action: "list-orgs"}
+//   ログインの確認 {run_id, action: "check-login"}
+//   再ログイン    {run_id, action: "login"}
 //
 // staging に書くもの（保存先の振り分けは background.js が routing に従って行う）:
 //   <run_id>/<dir>/<kind_dir>/<元のファイル名>   ダウンロードした CSV
 //   <run_id>/progress.json                       各手順の後に上書きする途中経過（status: "running"）
+//   <run_id>/session.json                        ログインセッションの観測（ログインの確認と、取得の最後）
 //   <run_id>/manifest.json                       最後に書く結果（コマンドはこれを待つ）
 //   <run_id>/orgs.json                           組織一覧のとき
 //
 // claude.ai の上で押すのはエクスポート系のボタンと、支出レポートのダイアログの期間の選択・
-// ダウンロードだけで、設定を変える操作は持たない。通信先は claude.ai だけ。
+// ダウンロードだけで、設定を変える操作は持たない。通信先は claude.ai だけ。Cookie を書き換える
+// のは組織の切替（lastActiveOrg）と、再ログインの前のセッションの Cookie の削除だけで、
+// セッションの Cookie は期限だけを見る（値はファイルにもログにも出さない）。
 
 const ORIGIN = "https://claude.ai";
 const KINDS = ["members", "spend", "code"];
@@ -22,6 +27,13 @@ const PAGES = {
   code: `${ORIGIN}/analytics/claude-code`,
 };
 const MODE_TEXT = { current: "当月", previous: "前月" };
+// 取得のほかに受け付ける実行内容の action
+const ACTIONS = ["list-orgs", "check-login", "login"];
+// ログインセッションの Cookie の名前（期限を見るのはこの名前のもの。再ログインの前には、
+// 名前がこれで始まる写しも含めて消す）
+const SESSION_COOKIE = "sessionKey";
+// 再ログインで開くページ
+const LOGIN_URL = "https://claude.ai/login";
 
 // ボタンと選択肢の名前（日本語と英語を併記した正規表現）
 const LABEL = {
@@ -41,7 +53,9 @@ const WAIT = {
   button: 60000,         // ボタンが現れて有効になるまで
   download: 120000,      // ダウンロードの完了
   codeRetry: 8000,       // Claude Code のエクスポートを押し直すまで
-  savedFile: 30000,      // progress.json・manifest.json・orgs.json の保存
+  savedFile: 30000,      // progress.json・manifest.json・orgs.json・session.json の保存
+  loginState: 20000,     // ログインの確認で、ページの状態（アプリかログイン画面）が定まるまで
+  api: 10000,            // API（/api/organizations）の読み取り
 };
 // Claude Code のエクスポートを押し直す回数の上限
 const CODE_RETRIES = 3;
@@ -92,7 +106,7 @@ function isDir(s) {
 function specProblem(spec) {
   if (!spec || typeof spec !== "object") return "not an object";
   if (!isPlainName(spec.run_id)) return "run_id";
-  if (spec.action === "list-orgs") return null;
+  if (ACTIONS.includes(spec.action)) return null;
   if (spec.action !== undefined) return "action";
   if (!["current", "previous"].includes(spec.mode)) return "mode";
   if (!Array.isArray(spec.orgs) || spec.orgs.length === 0) return "orgs";
@@ -253,16 +267,21 @@ async function waitForCodeData() {
   return { ok: last > 0, rows: last, note: "row count still changing at 60s" };
 }
 
-// 参加している組織の一覧（読み取りだけ）
-async function fetchOrganizations() {
+// 参加している組織の一覧（読み取りだけ）。timeoutMs で応答の本文まで読み終えなければ打ち切る。
+// status は HTTP のステータス（応答が無ければ null）
+async function fetchOrganizations(timeoutMs) {
   try {
-    const res = await fetch("/api/organizations", { credentials: "include" });
-    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+    const res = await fetch("/api/organizations", {
+      credentials: "include",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return { ok: false, status: res.status, reason: `HTTP ${res.status}` };
     const data = await res.json();
-    if (!Array.isArray(data)) return { ok: false, reason: "unexpected response" };
+    if (!Array.isArray(data)) return { ok: false, status: res.status, reason: "unexpected response" };
     const pick = (o, key) => (o && o[key] !== undefined ? o[key] : null);
     return {
       ok: true,
+      status: res.status,
       orgs: data.map((o) => ({
         uuid: pick(o, "uuid"),
         name: pick(o, "name"),
@@ -271,7 +290,7 @@ async function fetchOrganizations() {
       })),
     };
   } catch (e) {
-    return { ok: false, reason: String(e && e.message ? e.message : e) };
+    return { ok: false, status: null, reason: String(e && e.message ? e.message : e) };
   }
 }
 
@@ -589,6 +608,60 @@ async function exportCode(tabId, org) {
 
 const EXPORTERS = { members: exportMembers, spend: exportSpend, code: exportCode };
 
+// ---- ログインセッション ----
+
+// セッションの Cookie の有無と期限（ISO 8601・UTC）。期限の無い Cookie（ブラウザを閉じると
+// 消えるもの）が 1 つでも混じれば期限は null、複数あれば最も早い期限。値は使わない
+async function sessionCookie() {
+  const cookies = await chrome.cookies.getAll({ domain: "claude.ai", name: SESSION_COOKIE });
+  const expiries = cookies.map((c) => (typeof c.expirationDate === "number" ? c.expirationDate : null));
+  const expiresAt = expiries.length > 0 && expiries.every((t) => t !== null)
+    ? new Date(Math.min(...expiries) * 1000).toISOString()
+    : null;
+  log(`session cookie: ${cookies.length} found, expires ${expiresAt || "unknown"}`);
+  return { cookie_found: cookies.length > 0, cookie_expires_at: expiresAt };
+}
+
+// session.json の内容。page・api は観測していなければ null（通常の取得の最後に書くとき）
+async function sessionRecord(page, api) {
+  return {
+    run_id: runId,
+    checked_at: new Date().toISOString(),
+    ...(await sessionCookie()),
+    page,
+    api,
+    log: logLines,
+  };
+}
+
+// ページの状態（app・login・challenge）を 1 秒ごとに見て、app か login に定まったら返す。
+// 外部セキュリティ検証は人の操作なしに自動で解けることがあるので、上限まで見直す。上限まで
+// 検証のままなら "challenge"、一度も読めなければ "unknown"。人の操作は待たない
+async function settledPageState(tabId) {
+  const deadline = Date.now() + WAIT.loginState;
+  let last = null;
+  for (;;) {
+    const st = await tryExec(tabId, pageState);
+    if (st && st.state !== last) {
+      log(`page: ${st.state} (${st.title})`);
+      last = st.state;
+    }
+    if (last === "app" || last === "login") return last;
+    if (Date.now() >= deadline) return last === "challenge" ? "challenge" : "unknown";
+    await sleep(1000);
+  }
+}
+
+// API の読み取りの結果を session.json の api の形にする（組織の名前や UUID は書かない）
+function apiOutcome(res) {
+  if (res && res.ok) return { ok: true, status: res.status, organizations: res.orgs.length };
+  return {
+    ok: false,
+    status: res && typeof res.status === "number" ? res.status : null,
+    reason: res && res.reason ? res.reason : "organizations not fetched",
+  };
+}
+
 // ---- 本体 ----
 
 async function runExport(spec, tabId) {
@@ -624,6 +697,14 @@ async function runExport(spec, tabId) {
     }
   }
   setStatus(`${head}: 結果を書き出しています`);
+  // ログインの Cookie の期限を manifest より先に書く（コマンドは manifest を待つので、その
+  // 時点で揃っている）。取得できたこと自体が疎通の証拠なので API は読まない。補助の情報
+  // なので、読めなくても保存できなくても manifest の保存へ進む
+  try {
+    await saveJson("session.json", await sessionRecord(null, null));
+  } catch (e) {
+    log(`session.json not saved: ${errorText(e)}`);
+  }
   await saveJson("manifest.json", {
     run_id: runId,
     mode: runMode,
@@ -640,7 +721,7 @@ async function runListOrgs(tabId) {
   let data;
   try {
     await openPage(tabId, `${ORIGIN}/`);
-    const res = await exec(tabId, fetchOrganizations);
+    const res = await exec(tabId, fetchOrganizations, [WAIT.api]);
     if (res && res.ok) {
       data = res.orgs;
       log(`organizations: ${data.length}`);
@@ -653,6 +734,43 @@ async function runListOrgs(tabId) {
   if (!Array.isArray(data)) log(`list-orgs failed: ${data.error}`);
   await saveJson("orgs.json", data);
   setStatus(`${runId}: 完了`);
+}
+
+// ログインの確認。claude.ai を開いてページの状態を見て、アプリが表示されたら API を 1 つ
+// 読み、セッションの Cookie の期限と合わせて session.json に書く。ログインや外部セキュリティ
+// 検証の画面が出ても人の操作は待たない（見たままを書く）。途中の失敗も観測として書く
+async function runCheckLogin(tabId) {
+  setStatus(`${runId}: ログインの状態を確かめています`);
+  let page = "unknown";
+  let api = null;
+  try {
+    await navigate(tabId, `${ORIGIN}/`);
+    page = await settledPageState(tabId);
+    if (page === "app") {
+      api = apiOutcome(await exec(tabId, fetchOrganizations, [WAIT.api]));
+      log(api.ok ? `api: HTTP ${api.status}, organizations ${api.organizations}`
+                 : `api: failed ${api.reason}`);
+    }
+  } catch (e) {
+    api = { ok: false, status: null, reason: errorText(e) };
+    log(`check-login failed: ${api.reason}`);
+  }
+  await saveJson("session.json", await sessionRecord(page, api));
+  setStatus(`${runId}: 確認が終わりました（結果はコマンドに表示されます）`);
+}
+
+// 再ログイン。セッションの Cookie（名前が sessionKey で始まるもの）を消してからログイン画面を
+// 開く（有効なセッションのままログイン画面を開いても、アプリへ戻されて再認証にならないため）。
+// 他の Cookie（lastActiveOrg 等）には触れない。ログインは人が行い、ここでは待たない
+async function runLogin(tabId) {
+  const cookies = await chrome.cookies.getAll({ domain: "claude.ai" });
+  let removed = 0;
+  for (const cookie of cookies.filter((c) => c.name.startsWith(SESSION_COOKIE))) {
+    if (await chrome.cookies.remove({ url: "https://claude.ai" + cookie.path, name: cookie.name })) removed++;
+  }
+  log(`session cookies removed: ${removed}`);
+  await chrome.tabs.update(tabId, { url: LOGIN_URL });
+  setStatus("ログインしてください。終わったら Chrome を閉じてください", true);
 }
 
 async function main() {
@@ -693,11 +811,14 @@ async function main() {
   runId = spec.run_id;
   runMode = spec.mode || null;
   await chrome.storage.session.set({ activeRun: { run_id: runId, started_at: Date.now() } });
-  log(spec.action === "list-orgs" ? `run ${runId} list-orgs` : `run ${runId} mode=${runMode} orgs=${spec.orgs.length}`);
+  log(spec.action ? `run ${runId} ${spec.action}` : `run ${runId} mode=${runMode} orgs=${spec.orgs.length}`);
   const tab = await chrome.tabs.create({ url: "about:blank", active: true });
   if (spec.action === "list-orgs") await runListOrgs(tab.id);
+  else if (spec.action === "check-login") await runCheckLogin(tab.id);
+  else if (spec.action === "login") await runLogin(tab.id);
   else await runExport(spec, tab.id);
-  // manifest.json・orgs.json を保存し終えてから外す
+  // manifest.json・orgs.json・session.json を保存し終えてから（再ログインはログイン画面を
+  // 開いてから）外す
   await releaseActiveRun(runId);
 }
 
