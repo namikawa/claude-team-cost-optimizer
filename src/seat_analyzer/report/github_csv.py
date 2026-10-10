@@ -6,8 +6,8 @@
 個人行の並びは受け取った順（email の昇順）のままにして、件数の多い順へ並べ替えない。
 参考値は個人の順位づけに使うものではないため（設計書 §15.6）。
 
-repository 名・Organization 名・対応表に無い作成者の login は書かない。要約がこれらを
-持たないので、この CSV に出る余地は無い。
+repository 名・Organization 名・対象者に当たらない作成者の login は書かない。要約が
+これらを持たないので、この CSV に出る余地は無い。
 """
 
 from __future__ import annotations
@@ -110,14 +110,14 @@ def _user_cells(user: UserPrMetrics, metrics: GithubMetrics) -> dict[str, str]:
 def _organization_cells(metrics: GithubMetrics) -> dict[str, str]:
     """組織全体の行（email と login は持たない）。
 
-    件数は Bot 以外の PR 全件（`human_prs`）で、対応表の記入状況で母数が動かない。
+    件数は対象者の PR（`mapped_prs`＝個人行の合計）で、lead time の母数と同じ。
     """
     return {
         "scope": _ORGANIZATION_SCOPE,
         "email": "",
         "github_login": "",
         "month": metrics.month,
-        "merged_pr_count": str(metrics.human_prs),
+        "merged_pr_count": str(metrics.mapped_prs),
         **_lead_time_cells(metrics.lead_time),
         **{name: str(getattr(metrics, name)) for name in _BREAKDOWN_COLUMNS},
         "cache_complete": _flag(metrics.cache_complete),

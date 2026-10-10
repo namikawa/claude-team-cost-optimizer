@@ -530,8 +530,61 @@ def test_github_summary_is_written_for_a_gated_org(make_input, tmp_path, capsys)
     assert path.is_file()
     printed = capsys.readouterr().out
     assert f"github: {path}" in printed
-    assert "GitHub（参考値）" in printed
-    assert "lead time（組織全体）" in printed
+    assert "GitHub（参考値）: シートを持つ人の PR 1 件（PR あり 1 名 / 対象 1 名）" in printed
+    assert "lead time（組織全体・シートを持つ人の PR）: median 60.0h" in printed
+
+
+def _summary_rows(path: Path) -> list[dict[str, str]]:
+    """github-summary.csv を行ごとの辞書で読む（BOM を除く）。"""
+    text = path.read_bytes().decode("utf-8-sig")
+    return list(csv.DictReader(io.StringIO(text, newline="")))
+
+
+def test_github_summary_counts_only_seat_holders(make_input, tmp_path, capsys):
+    """人ごとの行と組織全体の件数は、その月にシートを持つ人（standard / premium）だけ。
+
+    未割当の人・spend にだけ居る人（シート不明）・メンバー一覧に居ない人は、対応表に
+    login があっても行を持たず、その PR は対象者に当たらない作成者の件数へ入る。
+    """
+    input_dir = make_input(
+        {"2026-06": [spend_row("p@x.jp", 10.0), spend_row("s@x.jp", 5.0),
+                     spend_row("k@x.jp", 3.0)]},
+        members=["p@x.jp,Premium", "s@x.jp,Standard", "u@x.jp,Unassigned",
+                 "t@x.jp,Standard", "n@x.jp,Premium"],
+        org="org-a",
+    )
+    _mapping(input_dir, "org-a", (
+        "p@x.jp,premium-dev", "s@x.jp,standard-dev", "u@x.jp,unassigned-dev",
+        "k@x.jp,spend-only-dev", "g@x.jp,gone-dev", "t@x.jp,", "n@x.jp,なし",
+    ))
+    _write_pr_cache(input_dir, entries=[
+        _pr_entry(1, login="premium-dev"), _pr_entry(2, login="premium-dev"),
+        _pr_entry(3, login="standard-dev"), _pr_entry(4, login="unassigned-dev"),
+        _pr_entry(5, login="spend-only-dev"), _pr_entry(6, login="gone-dev"),
+        _pr_entry(7, login="outsider-dev"),
+    ])
+    out = tmp_path / "reports"
+
+    assert _run_with(input_dir, out, _gh_config(tmp_path, **{"org-a": GH_ORG}),
+                     "--org", "org-a") == 0
+    rows = _summary_rows(out_file(out, GITHUB_SUMMARY))
+    users = [(row["email"], row["merged_pr_count"]) for row in rows
+             if row["scope"] == "user"]
+    assert users == [("p@x.jp", "2"), ("s@x.jp", "1")]
+    organization = rows[-1]
+    assert organization["scope"] == "organization"
+    # 組織全体の件数 = 人ごとの行の合計（シートを持たない人の PR は入らない）
+    assert organization["merged_pr_count"] == "3"
+    assert (organization["unmapped_authors"], organization["unmapped_prs"],
+            organization["total_prs"]) == ("4", "4", "7")
+    assert organization["lead_time_median_hours"] == "60.0"
+    printed = capsys.readouterr().out
+    assert "シートを持つ人の PR 3 件（PR あり 2 名 / 対象 2 名）" in printed
+    # login の無い対象者は email で知らせる（「なし」の人は出さない）
+    assert "シートを持つ人のうち GitHub login に対応づかない人 1 名: ['t@x.jp']" in printed
+    assert "シートを持つ人の login に当たらない作成者 4 人による PR 4 件" in printed
+    for login in ("unassigned-dev", "spend-only-dev", "gone-dev", "outsider-dev"):
+        assert login not in printed
 
 
 def test_github_summary_does_not_change_the_v1_artifacts(make_input, tmp_path):
@@ -3723,6 +3776,100 @@ def test_collect_accepts_nested_layout(make_input, tmp_path, monkeypatch, capsys
     _stub_search(monkeypatch)
     assert _collect(str(path), input_dir, "--org", "org-x") == 0
     assert _cache_path(input_dir, "org-x").is_file()
+
+
+def _nested_github(make_input, tmp_path: Path, mapping: tuple[str, ...],
+                   second_months: tuple[str, ...] = ("2026-05", "2026-06")
+                   ) -> tuple[Path, str]:
+    """GitHub 分析を有効にした2 workspace の組織と、その設定ファイルのパス。
+
+    a は主と副の両方で Premium、b は主で未割当、c は副でだけ Premium。second_months で
+    副の利用開始を遅らせると、対象月に副を分析から飛ばせる。
+    """
+    input_dir = make_input(
+        {"2026-05": [spend_row("a@x.jp", 8.0)], "2026-06": [spend_row("a@x.jp", 10.0)]},
+        members=["a@x.jp,Premium", "b@x.jp,Unassigned"], org="org-x", workspace="main")
+    make_input(
+        {month: [spend_row("a@x.jp", 20.0)] for month in second_months},
+        members=["a@x.jp,Premium", "c@x.jp,Premium"], org="org-x", workspace="second")
+    _mapping(input_dir, "org-x", mapping)
+    path = tmp_path / "nested-github.yaml"
+    path.write_text(
+        _NESTED_CONFIG.format(org="org-x") + f"    github_org: {GH_ORG}\n",
+        encoding="utf-8", newline="\n")
+    return input_dir, str(path)
+
+
+_NESTED_MAPPING = ("a@x.jp,alice-dev", "b@x.jp,bob-dev", "c@x.jp,carol-dev")
+_NESTED_PRS = [
+    _pr_entry(1, login="alice-dev"), _pr_entry(2, login="alice-dev"),
+    _pr_entry(3, login="bob-dev"), _pr_entry(4, login="carol-dev"),
+]
+
+
+def test_github_summary_of_a_nested_org_counts_seats_in_any_workspace(
+    make_input, tmp_path
+):
+    """主と副の両方に居る人は1行（二重に数えない）、副だけでシートを持つ人も対象。"""
+    input_dir, config = _nested_github(make_input, tmp_path, _NESTED_MAPPING)
+    _write_pr_cache(input_dir, org="org-x", entries=_NESTED_PRS)
+
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+    rows = _summary_rows(out_file(tmp_path / "reports", GITHUB_SUMMARY, org="org-x"))
+    assert [(row["email"], row["merged_pr_count"]) for row in rows[:-1]] == [
+        ("a@x.jp", "2"), ("c@x.jp", "1")
+    ]
+    assert rows[-1]["merged_pr_count"] == "3"
+    assert (rows[-1]["unmapped_authors"], rows[-1]["unmapped_prs"]) == ("1", "1")
+
+
+def test_github_summary_ignores_a_workspace_that_was_not_analyzed(make_input, tmp_path):
+    """分析から飛ばした（まだ始まっていない）workspace のシートは対象に入れない。"""
+    input_dir, config = _nested_github(
+        make_input, tmp_path, _NESTED_MAPPING, second_months=("2026-07",))
+    _write_pr_cache(input_dir, org="org-x", entries=_NESTED_PRS)
+
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+    rows = _summary_rows(out_file(tmp_path / "reports", GITHUB_SUMMARY, org="org-x"))
+    assert [(row["email"], row["merged_pr_count"]) for row in rows[:-1]] == [
+        ("a@x.jp", "2")
+    ]
+    assert rows[-1]["merged_pr_count"] == "2"
+    assert (rows[-1]["unmapped_authors"], rows[-1]["unmapped_prs"]) == ("2", "2")
+
+
+def _doctor_github_issues(config: str, input_dir: Path, capsys) -> list[dict]:
+    main(["doctor", "--config", config, "--input-dir", str(input_dir),
+          "--month", "2026-06", "--format", "json"])
+    issues = json.loads(capsys.readouterr().out)
+    return [i for i in issues if i["code"] == "GITHUB_MAPPING_MISSING"]
+
+
+def test_doctor_checks_the_github_mapping_of_a_nested_org(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """入れ子の組織でも、開始済みの workspace のシートを持つ人を対応表と突き合わせる。
+
+    組織直下にはメンバー一覧が無いので、直下を読むと検査が黙って飛ぶ。未割当の b は
+    シートを持たないので空欄でも警告しない。
+    """
+    input_dir, config = _nested_github(make_input, tmp_path, ("a@x.jp,alice-dev",))
+    _stub_gh(monkeypatch)
+
+    issues = _doctor_github_issues(config, input_dir, capsys)
+    assert len(issues) == 1
+    assert issues[0]["scope"]["emails"] == ["c@x.jp"]
+
+
+def test_doctor_does_not_check_an_unstarted_workspace_against_the_mapping(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """まだ始まっていない workspace のメンバーは、members-info の検査と同じく見ない。"""
+    input_dir, config = _nested_github(
+        make_input, tmp_path, ("a@x.jp,alice-dev",), second_months=("2026-07",))
+    _stub_gh(monkeypatch)
+
+    assert _doctor_github_issues(config, input_dir, capsys) == []
 
 
 def test_doctor_inspects_each_workspace_of_a_nested_org(make_input, tmp_path, capsys):

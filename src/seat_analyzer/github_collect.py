@@ -18,8 +18,9 @@ loader は持たない。
 
 値は「不明」を保つ。login の空欄と、GitHub の login として読めない字句は None（＝未対応）に
 して警告に残す（写し間違いを、分析を止めずに気付ける形にする）。`なし`・`none`・`-` は
-「GitHub のアカウントを持たない」という記入で、同じく未対応だが警告しない（未記入と、
-書く値が無いことを区別する）。一方で取り違えそのものに直結するもの——必須カラムの欠落、
+「対象の GitHub Organization で PR を作らない（アカウントが無い、または別の Organization で
+開発する）」と判断した記入で、同じく未対応だが警告しない（未記入と、書く値が無いことを
+区別する）。一方で取り違えそのものに直結するもの——必須カラムの欠落、
 email の欠落・重複、login の重複——は ValueError で中止する。login の重複は大文字小文字を
 区別せずに見る（GitHub の login は大小を区別しないため、`Foo` と `foo` は同じ1人を指す）。
 
@@ -88,8 +89,9 @@ _MAPPING_COLUMNS = ("email", "github_login")
 # 使われていないことに気付けないので、検出したら中止して移し替えを案内する
 LEGACY_GITHUB_MEMBERS_FILENAME = "github-members.csv"
 
-# GitHub のアカウントを持たないことを表す記入（前後空白を除いて比較し、`none` は
-# 大文字小文字を区別しない）。未記入と区別して、警告の対象から外す
+# 対象の GitHub Organization で PR を作らない人（アカウントが無い、または別の
+# Organization で開発する）を表す記入（前後空白を除いて比較し、`none` は大文字小文字を
+# 区別しない）。未記入と区別して、警告の対象から外す
 _NO_ACCOUNT_MARKERS = ("なし", "none", "-")
 
 # GitHub の login として受ける字句。英数字・ハイフン・アンダースコアの 1〜39 文字で、
@@ -146,21 +148,22 @@ def _normalize_email(text: str) -> str:
 
 
 def _parse_login(cell: object) -> tuple[str | None, bool, str | None]:
-    """GitHub ID のセルを (値, アカウントを持たないか, 警告) に解釈する。
+    """GitHub ID のセルを (値, 「なし」と記入されたか, 警告) に解釈する。
 
     空欄と、GitHub の login として読めない字句（`_LOGIN_RE`）は None（＝未対応）にして
     警告を返す。先頭の `@` のような余分な文字は黙って取り除かない（写し間違いに気付ける
     形を優先する。取り除くと、別人の login を正しい値として通す余地が残る）。
 
-    `_NO_ACCOUNT_MARKERS` は「アカウントを持たない」と書かれた行で、値は未対応のまま
-    警告しない。未記入と同じ扱いにすると、書きようのない人の分だけ毎月同じ警告が残り、
-    本当に記入漏れの行が埋もれる。
+    `_NO_ACCOUNT_MARKERS` は「対象の GitHub Organization で PR を作らない」と判断して
+    書かれた行で、値は未対応のまま警告しない。月々の PR の有無で書き換える値ではなく、
+    開発する場所が変われば login を書く。未記入と同じ扱いにすると、書きようのない人の
+    分だけ毎月同じ警告が残り、本当に記入漏れの行が埋もれる。
     """
     text = _cell_text(cell)
     if text is None:
         return None, False, (
-            "GitHub ID が空欄です（未対応として扱います。アカウントを持たない人は"
-            "「なし」と書いてください）"
+            "GitHub ID が空欄です（未対応として扱います。対象の GitHub Organization で"
+            "開発しない人は「なし」と書いてください）"
         )
     if text.lower() in _NO_ACCOUNT_MARKERS:
         return None, True, None
@@ -184,9 +187,9 @@ class GithubMemberLink:
     github_login は入力の原文（前後空白のみ除去）で、None は「未対応」を表す。
     値を持つ場合は必ず GitHub の login として読める字句（`_LOGIN_RE`）になっている。
 
-    no_account は「GitHub のアカウントを持たない」と記入された行。未対応であることは
-    同じだが、記入漏れではないので消費側が警告から外せるようにする。login を持つ行は
-    アカウントがある行なので、両立する状態は作らない。
+    no_account は「なし」（対象の GitHub Organization で PR を作らない）と記入された行。
+    未対応であることは同じだが、記入漏れではないので消費側が警告から外せるようにする。
+    login を持つ行はその Organization で開発する人の行なので、両立する状態は作らない。
     """
 
     email: str
@@ -208,7 +211,7 @@ class GithubMemberLink:
             return
         if self.no_account:
             raise ValueError(
-                "アカウントを持たない行に github_login は持たせられません: "
+                "「なし」と記入した行に github_login は持たせられません: "
                 f"{self.github_login!r}"
             )
         if not isinstance(self.github_login, str):
@@ -393,7 +396,7 @@ def _read_table(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
         )
     _reject_ambiguous_headers(path, headers, aliases)
     # 書かれた字句のまま受ける（既定では "None" が読み取りの時点で欠損へ変わり、
-    # 「アカウントを持たない」という記入と空欄を区別できなくなる）
+    # 「なし」と同じ意味の記入と空欄を区別できなくなる）
     df = ingest.read_csv(path, dtype=str, keep_default_na=False)
     # 全データ行がヘッダより1列多い表では、読み込みが先頭の列を暗黙の行ラベルにする。
     # 残りの列が1つずつずれ、login の位置に来たメモも email の位置に来た login も字句
@@ -426,8 +429,8 @@ def load_github_members(
     と同じ規則で選ぶ（日付つきがあれば対象月の月末以前で最新）。ファイルの選択で出る警告は
     ここでは返さない——members-info の読み取り側が同じ警告を出すため、二重に並べない。
 
-    entries は入力の行順で、login を持たない行（空欄・読めない字句・アカウントを持たない
-    記入）も email 付きで残す（表に書かれている人と、そもそも書かれていない人は別の状態
+    entries は入力の行順で、login を持たない行（空欄・読めない字句・「なし」の記入）も
+    email 付きで残す（表に書かれている人と、そもそも書かれていない人は別の状態
     のため）。
 
     email の重複はここでは中止する。`load_members_info` は同じファイルを最後の行で畳んで
@@ -508,8 +511,8 @@ def unmapped_emails(members: GithubMembers, emails: Iterable[str]) -> tuple[str,
     """emails のうち GitHub login に対応づかないものを返す（正規化済み・昇順・重複なし）。
 
     login を持たない行（空欄・読めない字句）は、対応表に書かれていない人と同じく
-    「未対応」として扱う。アカウントを持たないと記入された行は、対応づけようがない人
-    なので返さない（記入で解消できる状態だけを挙げる）。空のメールは対象にしない。
+    「未対応」として扱う。「なし」と記入された行は、対応づけようがない人なので返さない
+    （記入で解消できる状態だけを挙げる）。空のメールは対象にしない。
 
     警告にするかどうかは呼び出し側が決める（GitHub 分析の対象でない組織では、未対応が
     いること自体が正常なため）。

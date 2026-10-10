@@ -316,9 +316,20 @@ usage-summary の内容はこのファイルの有無で変わらず、逆にこ
 
 行は次の2種類で、`scope` 列が区別する。
 
-- `user` — `members-info.csv` の `GitHub ID` 列に login を書いた人全員。その月の PR が
-  0 件の人も行を持つ（0 件であることも参考情報のため）
+- `user` — 対象者のうち、`members-info.csv` の `GitHub ID` 列に login を書いた人。その月の
+  PR が 0 件の人も行を持つ（0 件であることも参考情報のため）
 - `organization` — 末尾の1行。組織全体の値で、集計から外した分の内訳もここに入る
+
+対象者は、その月にこの組織でシートを持つ人で、分析が採用したメンバー一覧で Standard か
+Premium と確認できた人を指す。複数スペースの組織では、分析したスペースのどれかで持てば
+対象になる（まだ始まっていないため分析から飛ばしたスペースは見ない）。シート未割当の人と、
+シート種別を確認できない人（メンバー一覧に居ない人を含む）は対象外。月内の在籍期間は
+復元しないので、採用したメンバー一覧に載っていれば途中加入でも月全体が対象になり、
+載っていなければ途中退任でも月全体が対象外になる。
+
+この対象者の定義は 1.4.0 より後の版からで、1.4.0 までは個人行がシートの有無を問わず、
+組織全体行は対応表に無い作成者と削除済みアカウントの PR も件数とリードタイムに含んでいた。
+前の版の CSV と比べるときは、同じ版で作り直してから比べる。
 
 各列の意味は次のとおり。
 
@@ -327,26 +338,25 @@ usage-summary の内容はこのファイルの有無で変わらず、逆にこ
 - `github_login` — 対応表に書かれた GitHub の login（組織全体行は空欄）
 - `month` — 対象月
 - `merged_pr_count` — その月に merge された PR の件数。個人行は本人が作成した分、
-  組織全体行は対象 repository の Bot 以外の PR 全件（個人へ帰属した分 + 対応表に無い
-  作成者の分 + 削除済みアカウントの分）。対応表の記入状況で組織全体の母数は動かない
+  組織全体行は対象者の PR（個人行の合計）
 - `lead_time_median_hours` / `lead_time_p75_hours` / `lead_time_p90_hours` —
   `merged_at − created_at` の時間（小数1桁）。Draft だった期間も含み、日時は UTC で
   計算する。3点はいずれも線形補間の百分位（Excel の `PERCENTILE.INC` と同じ）で、
-  PR が 0 件の行は3列とも空欄
-- `unmapped_authors` — 対応表に無い作成者の人数（組織全体行のみ）
+  母数はその行の `merged_pr_count` の PR。PR が 0 件の行は3列とも空欄
+- `unmapped_authors` — 対象者の login に当たらない作成者の人数（組織全体行のみ）。
+  対応表に無い人と、対応表にあっても対象者でない人の両方を含む
 - `unmapped_prs` — その作成者による PR の件数（組織全体行のみ）
 - `bot_prs` — Bot が作成した PR の件数（組織全体行のみ）
 - `deleted_author_prs` — 作成者が削除済みアカウントの PR の件数（組織全体行のみ）
 - `excluded_repository_prs` — 対象外 repository の PR の件数（組織全体行のみ）
-- `total_prs` — キャッシュが持つ PR の全件数（組織全体行のみ）。個人行の
-  `merged_pr_count` の合計に `unmapped_prs`・`bot_prs`・`deleted_author_prs`・
-  `excluded_repository_prs` を足した数に一致する（組織全体行の `merged_pr_count` は
-  Bot と対象外 repository の分を含まないので、この検算には使わない）
+- `total_prs` — キャッシュが持つ PR の全件数（組織全体行のみ）。組織全体行の
+  `merged_pr_count` に `unmapped_prs`・`bot_prs`・`deleted_author_prs`・
+  `excluded_repository_prs` を足した数に一致する
 - `cache_complete` — 対象月の収集を読み切ったか（True / False）。False のときの件数は
   部分的な値
 
-repository 名・GitHub の Organization 名・対応表に無い作成者の login はこのファイルに
-書かない（対象外 repository と対応表に無い作成者は件数だけを載せる）。
+repository 名・GitHub の Organization 名・対象者に当たらない作成者の login はこのファイルに
+書かない（対象外 repository と対象者に当たらない作成者は件数だけを載せる）。
 
 次の場合は書かず、実行時の出力に理由と次の一手を出す。
 
@@ -469,7 +479,7 @@ API から email は取れないため人手で記入する列で、有効にし
 | 値 | 意味 |
 |---|---|
 | 空欄 | 未記入。未対応として扱い、doctor が記入を促す |
-| `なし` / `none` / `-` | GitHub のアカウントを持たない。未対応として扱うが警告しない |
+| `なし` / `none` / `-` | 対象の GitHub Organization で PR を作らない（アカウントが無い、または別の Organization で開発する）と判断した人。未対応として扱うが警告しない。月々の PR の有無で書き換える値ではなく、開発する場所が変わったら login を書く |
 | それ以外 | GitHub の login（英数字で始まり英数字で終わる 1〜39 文字。区切りに使えるのは連続しないハイフンと高々 1 個のアンダースコア） |
 
 login として読めない値は未対応として扱い、写し間違いに気付けるよう warning に出す。
@@ -487,8 +497,9 @@ repository も取得しない。
   場合を区別して error
 - GitHub API の利用上限に達していないか。達していれば warning（再実行で解消する）
 - `input/<組織名>/members-info.csv` の `GitHub ID` 列（email → GitHub login の対応表）の
-  有無と中身。ファイルが無い場合・列が無い場合・対応づかないメンバーが居る場合は
-  warning、対応表そのものが壊れている場合は error（誤った対応で集計を完走させない）
+  有無と中身。ファイルが無い場合・列が無い場合・シートを持つメンバー（github-summary の
+  対象者と同じ定義）に対応づかない人が居る場合は warning、対応表そのものが壊れている
+  場合は error（誤った対応で集計を完走させない）
 
 `organizations` に書いた組織名が入力の組織ディレクトリのどれとも一致しない場合は、
 `=== 設定検査 ===` として warning を出す。綴り違いで検査が黙って全部飛ぶのを防ぐため。

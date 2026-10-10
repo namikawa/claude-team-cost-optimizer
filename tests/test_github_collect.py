@@ -344,14 +344,14 @@ def test_blank_login_is_unmapped_with_a_warning(tmp_path, cfg):
     )
     assert result.warnings == (
         (f"{MEMBERS_INFO_FILENAME}: user1@example.com: "
-         "GitHub ID が空欄です（未対応として扱います。アカウントを持たない人は"
-         "「なし」と書いてください）"),
+         "GitHub ID が空欄です（未対応として扱います。対象の GitHub Organization で"
+         "開発しない人は「なし」と書いてください）"),
     )
 
 
 @pytest.mark.parametrize("cell", ["なし", "none", "NONE", "None", "-", "  なし  "])
 def test_no_account_marker_is_unmapped_without_a_warning(tmp_path, cfg, cell):
-    """アカウントを持たないと書かれた行は、未対応のまま警告しない。"""
+    """「なし」と書かれた行は、未対応のまま警告しない。"""
     _write(tmp_path, [f"user1@example.com,{cell}"])
     result = load_github_members(tmp_path, cfg)
 
@@ -364,7 +364,7 @@ def test_no_account_marker_is_unmapped_without_a_warning(tmp_path, cfg, cell):
 
 
 def test_several_rows_can_declare_no_account(tmp_path, cfg):
-    """アカウントを持たない人は何人いてもよい（値の重複ではない）。"""
+    """「なし」の人は何人いてもよい（値の重複ではない）。"""
     _write(tmp_path, ["user1@example.com,なし", "user2@example.com,なし"])
 
     assert load_github_members(tmp_path, cfg).entries == (
@@ -488,7 +488,7 @@ def test_unreadable_login_counts_as_unmapped(tmp_path, cfg):
 
 
 def test_no_account_is_not_listed_as_unmapped(tmp_path, cfg):
-    """アカウントを持たない人は挙げない（記入で解消できる状態だけを返す）。"""
+    """「なし」の人は挙げない（記入で解消できる状態だけを返す）。"""
     _write(tmp_path, [
         "user1@example.com,なし",
         "user2@example.com,",
@@ -496,7 +496,7 @@ def test_no_account_is_not_listed_as_unmapped(tmp_path, cfg):
     members = load_github_members(tmp_path, cfg)
 
     assert unmapped_emails(members, [
-        "user1@example.com",   # アカウントを持たない
+        "user1@example.com",   # 「なし」
         "user2@example.com",   # 空欄（未記入）
         "user3@example.com",   # 表に行が無い
     ]) == ("user2@example.com", "user3@example.com")
@@ -519,8 +519,8 @@ def test_link_normalizes_and_validates_its_values():
 
 
 def test_link_rejects_a_login_on_a_row_without_an_account():
-    """アカウントを持たない行に login は持たせられない（両立する状態を作らない）。"""
-    with pytest.raises(ValueError, match="アカウントを持たない行に github_login"):
+    """「なし」の行に login は持たせられない（両立する状態を作らない）。"""
+    with pytest.raises(ValueError, match="「なし」と記入した行に github_login"):
         GithubMemberLink(
             email="user1@example.com", github_login="example-user", no_account=True
         )

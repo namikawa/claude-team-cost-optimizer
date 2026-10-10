@@ -850,6 +850,13 @@ def member_info_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod,
     return [(p, path) for p, path in member_info_files(input_dir) if p.month == month]
 
 
+# シートが割り当てられていると確認できる種別（`_normalize_seat` が返す値のうち）。
+# unassigned は意図的な未割当、unknown は種別を確認できない（members に居ない・読めない）
+# ので含めない。「その月にこの組織でシートを持つ人」を数える側（analyze の GitHub の
+# 参考値と doctor の対応表の検査）が同じ定義を使うよう、ここに1つだけ置く
+ASSIGNED_SEAT_TYPES = ("standard", "premium")
+
+
 def _normalize_seat(value: str) -> str:
     s = str(value).strip().lower()
     if "premium" in s:
