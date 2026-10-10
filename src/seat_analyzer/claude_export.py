@@ -14,7 +14,8 @@
 manifest.json を書く。manifest の各要素は計画の (配置先, 種別) と突き合わせるだけで、配置先の
 パスは常に計画の側から組む（manifest に書かれた場所は信用しない）。ファイルは種別ごとの
 ヘッダと、ファイル名の期間が対象月と合うかを確かめてから、元のファイル名のまま入力
-ディレクトリへコピーする。合わないものは配置しない（別の月・別の種別の CSV を分析へ
+ディレクトリへコピーする（当月モードの Claude Code analytics だけは終了日を取得日にした
+名前で置く。`placement_name`）。合わないものは配置しない（別の月・別の種別の CSV を分析へ
 混ぜないため）。配置先の組織ディレクトリが無ければ作らずに止める（設定の綴り違いで新しい
 組織ができるのを防ぐ）。
 
@@ -209,6 +210,15 @@ def local_today() -> dt.date:
 def utc_now() -> dt.datetime:
     """現在時刻（UTC・aware。ログインの期限までの日数に使う。テストから差し替えられるようにする）。"""
     return dt.datetime.now(dt.UTC)
+
+
+def local_now() -> dt.datetime:
+    """現在時刻（実行機のローカル時刻・aware）。
+
+    取得の run_id・run.json の created_at・取得日（`placement_name`）に使う。テストから
+    差し替えられるようにする。
+    """
+    return dt.datetime.now().astimezone()
 
 
 def local_timezone() -> dt.tzinfo | None:
@@ -593,11 +603,27 @@ def write_run_record(path: Path, record: dict) -> None:
 
 
 def read_run_record(path: Path) -> dict:
-    """run.json を読む（中身の検査は `restore_run` が行う）。"""
+    """run.json を読む（中身の検査は `restore_run` と `fetched_on_from_record` が行う）。"""
     data = _read_json(path)
     if isinstance(data, dict):
         return data
     raise ValueError(f"{path.name} の内容がオブジェクトではありません")
+
+
+def fetched_on_from_record(record: dict) -> dt.date:
+    """run.json の created_at を UTC に直した日付（`--import` が配置に使う取得日）。
+
+    created_at は `run_record` がタイムゾーン付きの ISO 8601 で書く。取得のときと同じく UTC の
+    日付にする（`placement_name`）。無い・文字列でない・ISO 8601 でない・タイムゾーンが無い
+    ときは ValueError。
+    """
+    value = record.get("created_at")
+    if value is None:
+        raise ValueError("run.json に created_at がありません")
+    moment, problem = _session_time(value)
+    if problem is not None:
+        raise ValueError(f"run.json の created_at {problem}")
+    return moment.date()
 
 
 _MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
@@ -737,7 +763,8 @@ class SessionCheck:
 def _session_time(value: object) -> tuple[dt.datetime | None, str | None]:
     """session.json の日時の項目（null か、タイムゾーン付きの ISO 8601）を UTC で読む。
 
-    戻りは (日時, 読めなかった理由)。
+    戻りは (日時, 読めなかった理由)。run.json の created_at の読み取り
+    （`fetched_on_from_record`）にも使う。
     """
     if value is None:
         return None, None
@@ -1053,17 +1080,52 @@ def target_dir(input_dir: Path, target: ExportTarget) -> Path:
     return base if target.workspace is None else base / target.workspace
 
 
-def place_export(src: Path, input_dir: Path, target: ExportTarget, kind: str) -> Path:
-    """検証済みの CSV を元のファイル名のまま入力ディレクトリへコピーし、配置先を返す。
+def placement_name(filename: str, kind: str, mode: str, fetched_on: dt.date) -> str:
+    """配置に使うファイル名（当月モードの Claude Code analytics だけ終了日を取得日にする）。
 
-    配置先は計画の target から組む。組織ディレクトリ（入れ子なら workspace のディレクトリ）が
-    無ければ作らずに ValueError（設定の綴り違いで新しい組織ができるのを防ぐ）。種別の
-    ディレクトリは無ければ作る。同じディレクトリに一時名で書いてから置き換えるので、途中で
-    失敗しても半端なファイルが入力に残らない。同名は上書きする（同じ日の再取得は新しい
-    スナップショット）。
+    claude.ai の Claude Code analytics のエクスポートは、部分月でも終了日が月末日の名前で
+    届く。分析はファイル名の終了日をスナップショットの時点に使う（`ingest.code_snapshots`）
+    ので、そのまま置くと月中の時点が月末日になり、週次の取得が同じ名前で上書きして前の
+    時点が残らない。そこで当月モードでは、ファイル名の期間の終了日を取得日 fetched_on に
+    置き換える（区切りとそれ以外の文字は保つ）。取得日は UTC の日付で渡す（同じ実行で取る
+    メンバー一覧のファイル名に claude.ai が付ける日付と揃える）。
+
+    元の名前のまま返すのは、他の種別・前月モード（終了日の月末日が正しい）・期間（開始日 to
+    終了日）を読めない名前・取得日が期間の外か終了日と同じとき。
+    """
+    if kind != "code" or mode != MODE_CURRENT:
+        return filename
+    try:
+        period = ingest.file_period(filename)
+    except ValueError:
+        return filename
+    if period is None or period.kind != "range":
+        return filename
+    if not period.start <= fetched_on < period.end:
+        return filename
+    return ingest.replace_range_end(filename, fetched_on)
+
+
+def place_export(
+    src: Path, input_dir: Path, target: ExportTarget, kind: str, *, dest_name: str | None = None
+) -> Path:
+    """検証済みの CSV を入力ディレクトリへコピーし、配置先を返す。
+
+    置く名前は dest_name（`placement_name` が決めた名前）で、省略時は元のファイル名のまま。
+    dest_name がディレクトリやドライブを含む名前なら ValueError。配置先は計画の target から
+    組む。組織ディレクトリ（入れ子なら workspace のディレクトリ）が無ければ作らずに
+    ValueError（設定の綴り違いで新しい組織ができるのを防ぐ）。種別のディレクトリは無ければ
+    作る。同じディレクトリに一時名で書いてから置き換えるので、途中で失敗しても半端な
+    ファイルが入力に残らない。同名は上書きする（同じ日の再取得は新しいスナップショット）。
     """
     if kind not in KIND_DIRS:
         raise ValueError(f"未知の種別です: {kind}")
+    name = src.name if dest_name is None else dest_name
+    if not _is_plain_name(name):
+        raise ValueError(
+            f"配置するファイル名 {name!r} は使えません（ディレクトリやドライブを含まない"
+            "名前が必要です）"
+        )
     # 名前の規則は分析と同じ（パス区切りや予約名で入力ディレクトリの外を指させない）
     ingest.validate_org_name(target.org)
     if target.workspace is not None:
@@ -1079,8 +1141,8 @@ def place_export(src: Path, input_dir: Path, target: ExportTarget, kind: str) ->
         )
     kind_dir = base / KIND_DIRS[kind]
     kind_dir.mkdir(exist_ok=True)
-    dest = kind_dir / src.name
-    tmp = kind_dir / f".{src.name}.tmp"
+    dest = kind_dir / name
+    tmp = kind_dir / f".{name}.tmp"
     try:
         shutil.copyfile(src, tmp)
         os.replace(tmp, dest)

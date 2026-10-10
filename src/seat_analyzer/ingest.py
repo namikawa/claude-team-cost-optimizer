@@ -256,6 +256,23 @@ def file_period(path: Path | str) -> FilePeriod | None:
     return None
 
 
+def replace_range_end(name: str, end: dt.date) -> str:
+    """ファイル名の期間（`file_period` が読む最初の「開始日 to 終了日」）の終了日を end にした名前。
+
+    置き換えるのは終了日の年・月・日の数字だけで、区切り（`-`・`_`）とそれ以外の文字は
+    元の名前のまま保つ。期間が無い名前は ValueError。
+    """
+    m = _RANGE_RE.search(name)
+    if m is None:
+        raise ValueError(f"{name}: ファイル名に期間（開始日 to 終了日）がありません")
+    return "".join((
+        name[:m.start(4)], f"{end.year:04d}",
+        name[m.end(4):m.start(5)], f"{end.month:02d}",
+        name[m.end(5):m.start(6)], f"{end.day:02d}",
+        name[m.end(6):],
+    ))
+
+
 @dataclass
 class LoadResult:
     """1ファイル分のロード結果。warnings はレポートに転記する。"""

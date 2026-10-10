@@ -1,12 +1,19 @@
 """claude.ai ダウンロード時のファイル名（期間付き・スナップショット日付）対応のテスト。"""
 
+import datetime as dt
 from pathlib import Path
 
 import pytest
 
 from seat_analyzer.analyze import analyze
 from seat_analyzer.cli import main
-from seat_analyzer.ingest import file_period, load_members, load_spend, month_of_file
+from seat_analyzer.ingest import (
+    file_period,
+    load_members,
+    load_spend,
+    month_of_file,
+    replace_range_end,
+)
 from seat_analyzer.pricing import price_for_model
 from seat_analyzer.report import PREVIEW
 
@@ -38,6 +45,25 @@ def test_file_period_days():
 def test_cross_month_range_raises():
     with pytest.raises(ValueError, match="月をまたぐ"):
         file_period(Path("spend-report-2026-06-15-to-2026-07-14.csv"))
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("claude_code_team_2026_10_01_to_2026_10_31.csv",
+     "claude_code_team_2026_10_01_to_2026_10_04.csv"),
+    (f"spend-report-{UUID}-2026-10-01-to-2026-10-31.csv",
+     f"spend-report-{UUID}-2026-10-01-to-2026-10-04.csv"),
+    # 区切りが混ざっていても終了日の数字だけを置き換え、後ろの文字も保つ
+    ("cc_2026-10_01-to_2026_10-31 (1).csv", "cc_2026-10_01-to_2026_10-04 (1).csv"),
+])
+def test_replace_range_end_keeps_separators_and_other_text(name, expected):
+    assert replace_range_end(name, dt.date(2026, 10, 4)) == expected
+    assert file_period(Path(expected)).end == dt.date(2026, 10, 4)
+
+
+@pytest.mark.parametrize("name", [f"members-{UUID}-2026-10-07.csv", "spend_2026-10.csv", "notes.csv"])
+def test_replace_range_end_requires_a_range(name):
+    with pytest.raises(ValueError, match="期間"):
+        replace_range_end(name, dt.date(2026, 10, 4))
 
 
 # --- 同一月の複数ファイル解決 ---

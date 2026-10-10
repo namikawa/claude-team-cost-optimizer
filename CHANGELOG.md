@@ -16,6 +16,8 @@
 - `collect --source claude` の取得の最後に、ログインの Cookie の期限を 1 行表示するようにした
 - `collect --source claude --login` は、専用プロファイルのセッションの Cookie を消してから
   ログイン画面を開くようにした（期限の前でもログインし直せる）
+- `collect --source claude` の当月モードで取得した Claude Code analytics は、ファイル名の
+  終了日を取得日にして置くようにした（前月モードは元のファイル名のまま）
 
 ## [1.3.0] - 2026-10-03
 

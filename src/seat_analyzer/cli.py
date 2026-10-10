@@ -1468,11 +1468,15 @@ def _claude_place(
     staging_dir: Path,
     cfg: dict,
     input_dir: Path,
+    *,
+    fetched_on: dt.date,
 ) -> bool:
     """manifest の結果を計画と突き合わせ、検証に通ったファイルを入力へ配置する。
 
     1 件ずつ「配置」か「失敗」を表示し、すべて配置できたときだけ True。失敗したファイルは
-    staging に残る（表示したパスで中身を確かめられる）。
+    staging に残る（表示したパスで中身を確かめられる）。置く名前は
+    `claude_export.placement_name` が決め（fetched_on は取得日・UTC の日付）、名前を変えた
+    ときは「配置:」の行にその旨を添える。staging のファイル名は変えない。
     """
     found_id, _mode, records = manifest
     if found_id != run_id:
@@ -1497,13 +1501,15 @@ def _claude_place(
             print(f"  失敗: {where} {verdict.reason}（{src}）")
             failed += 1
             continue
+        name = claude_export.placement_name(record.filename, kind, run.mode, fetched_on)
         try:
-            dest = claude_export.place_export(src, input_dir, target, kind)
+            dest = claude_export.place_export(src, input_dir, target, kind, dest_name=name)
         except (OSError, ValueError) as exc:
             print(f"  失敗: {where} {exc}（{src}）")
             failed += 1
             continue
-        print(f"  配置: {dest}")
+        note = "" if name == record.filename else f"（終了日を取得日 {fetched_on} に変更）"
+        print(f"  配置: {dest}{note}")
         placed += 1
     print(f"  配置 {placed} 件・失敗 {failed} 件")
     return failed == 0
@@ -1529,7 +1535,7 @@ def _claude_collect_run(
     print(f"profile {run.profile}: {_CLAUDE_MODE_TEXT[run.mode]}（{run.month}）", flush=True)
     if not _claude_profile_ready(run.profile, profiles_dir, staging_dir):
         return False
-    now = dt.datetime.now().astimezone()
+    now = claude_export.local_now()
     run_id = claude_export.new_run_id(run, now)
     try:
         with claude_export.profile_lock(staging_dir, run.profile):
@@ -1580,7 +1586,9 @@ def _claude_collect_locked(
             file=sys.stderr,
         )
         return False
-    ok = _claude_place(run, run_id, manifest, staging_dir, cfg, input_dir)
+    # 取得日は run.json の created_at と同じ時刻の UTC の日付（--import でも同じ日になる）
+    ok = _claude_place(run, run_id, manifest, staging_dir, cfg, input_dir,
+                       fetched_on=now.astimezone(dt.UTC).date())
     _claude_session_note(
         run.profile, run_id, staging_dir, cfg["claude_export"]["login_warning_days"])
     if not keep_browser:
@@ -1630,7 +1638,8 @@ def _claude_import(
 ) -> int:
     """staging に残った実行の manifest から、検証と配置だけをやり直す（Chrome には触れない）。
 
-    計画は run.json から組み直す（対象月はその実行のもの）。
+    計画は run.json から組み直す（対象月はその実行のもの）。取得日は run.json の created_at の
+    UTC の日付（取り込む日ではない）。
     """
     if not claude_export.is_run_id(run_id):
         raise ValueError(f"--import の run_id '{run_id}' は staging の実行ディレクトリ名ではありません")
@@ -1647,6 +1656,7 @@ def _claude_import(
     if record.get("run_id") != run_id:
         raise ValueError(f"{record_path} の run_id が {run_id} ではありません")
     run = claude_export.restore_run(record, targets)
+    fetched_on = claude_export.fetched_on_from_record(record)
     print(f"profile {run.profile}: {_CLAUDE_MODE_TEXT[run.mode]}（{run.month}）run_id {run_id}")
     manifest = claude_export.manifest_path(staging_dir, run_id)
     if not manifest.is_file():
@@ -1657,7 +1667,8 @@ def _claude_import(
         )
         return 1
     placed = _claude_place(
-        run, run_id, claude_export.read_manifest(manifest), staging_dir, cfg, input_dir)
+        run, run_id, claude_export.read_manifest(manifest), staging_dir, cfg, input_dir,
+        fetched_on=fetched_on)
     return 0 if placed else 1
 
 

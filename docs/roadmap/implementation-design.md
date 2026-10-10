@@ -1116,6 +1116,12 @@ orgs.json・session.jsonの固定名は拡張機能自身が始めたダウン�
 
 - 配置先は`input/<org>/[<workspace>/]<kind_dir>/<元ファイル名>`。元のファイル名のまま置くので、
   分析側の期間の解釈（`ingest.file_period`）がそのまま効く
+  - 例外: 当月モードのClaude Code analyticsは、ファイル名の期間の終了日を取得日に置き換えた名前で
+    置く（Step 54。`claude_export.placement_name`）。エクスポートは部分月でも終了日が月末日で届くが、
+    分析は終了日をスナップショットの時点に使う（`ingest.code_snapshots`）ため。取得日はUTCの日付
+    （同じ実行のmembersのファイル名の日付と揃う）で、取得ではrun.jsonの`created_at`と同じ時刻から、
+    `--import`では`created_at`から求める。取得日が期間の外か終了日と同じとき、前月モード、他の
+    種別は元の名前のまま。検証はstagingの元の名前のファイルに対して行い、stagingの名前は変えない
 - 組織ディレクトリ（入れ子レイアウトならworkspaceのディレクトリ）が無ければ配置しない
   （`init-org`で作ってから）。設定の綴り違いで新しい組織ができるのを防ぐ。種別のディレクトリは
   無ければ作る
@@ -2973,6 +2979,48 @@ dashboardで読めるようにする。
 
 - 操作の順序の入れ替え
 - マウス操作の模倣
+
+#### Step 54: 当月モードのClaude Code analyticsの終了日を取得日にする
+
+依存:
+
+- Step 51
+
+対象:
+
+- `src/seat_analyzer/claude_export.py`・`src/seat_analyzer/cli.py`・`src/seat_analyzer/ingest.py`
+- `docs/usage.md`・`docs/reference.md`・`CHANGELOG.md`
+- `tests/test_claude_export.py`・`tests/test_cli.py`・`tests/test_filenames.py`
+
+目的:
+
+- 当月モードで取得したClaude Code analyticsを、ファイル名の終了日を取得日にした名前で置く。
+  claude.aiのエクスポートは部分月でも終了日が月末日の名前で届き、分析はこの終了日をスナップ
+  ショットの時点に使う（`ingest.code_snapshots`。速報の「月中のClaude Code活動」の見出しと最新
+  区間の増分）。月末日のままでは見出しが月末日になり、週次の取得が同じ名前で上書きして時点が
+  残らない。手動の運用では終了日を取得日に書き換えて置いていた（元々の要件の実装漏れ）
+
+実装:
+
+- `claude_export.placement_name(filename, kind, mode, fetched_on)`: 種別がcodeかつ当月モードの
+  ときだけ、ファイル名の期間の終了日を取得日にする（置き換えるのは年月日の数字だけで、区切りと
+  それ以外の文字は保つ。`ingest.replace_range_end`）。他の種別・前月モード・期間を読めない名前・
+  取得日が期間の外か終了日と同じときは元の名前
+- 取得日はUTCの日付（同じ実行でclaude.aiがmembersのファイル名に付ける日付と揃える）。取得では
+  run.jsonの`created_at`と同じ時刻から、`--import`では`created_at`から求める
+  （`claude_export.fetched_on_from_record`。無い・ISO 8601でない・タイムゾーンが無ければ止める）
+- `place_export`に`dest_name`を足す（単一のファイル名でなければValueError）。検証はstagingの元の
+  名前のファイルに対して従来どおり行い、stagingの名前は変えない
+- CLI: 名前を変えたときは「配置:」の行に`（終了日を取得日 YYYY-MM-DD に変更）`を添える
+
+受け入れ条件:
+
+- 当月モードで取得したClaude Code analyticsが`…_to_<取得日>.csv`で置かれ、速報の「月中の
+  Claude Code活動」の見出しが取得日になる
+- 前月モードは元の名前のまま
+- `--import`も同じ名前で置く（取得日はrun.jsonの`created_at`）
+- stagingのファイルは元の名前のまま
+- goldenが不変
 
 ### Track 7: GitHub
 
