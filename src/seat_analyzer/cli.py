@@ -227,7 +227,10 @@ def main(argv: list[str] | None = None) -> int:
     pdoc.set_defaults(func=_run_doctor)
 
     pcol = sub.add_parser(
-        "collect", help="外部データを収集してローカルのキャッシュへ保存する")
+        "collect",
+        help="外部データを収集する（github は PR のメタデータをキャッシュへ保存し、claude は "
+             "claude.ai の CSV を入力ディレクトリへ配置する）",
+    )
     pcol.add_argument(
         "--org", action="append", metavar="組織名",
         help="対象組織（input/ 直下のディレクトリ名）。github は1組織ずつ指定する（必須）。"

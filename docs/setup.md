@@ -195,7 +195,7 @@ seat-analyzer init
   既定値はプログラムに同梱されているので、ここには既定から変えたい差分だけを書く
 - `.gitignore` — `input/`・`reports/`・`config.yaml` を除外する行
 
-以降 `analyze` / `doctor` / `discuss` はワークスペースのルートで実行する。入力・出力・
+以降 `analyze` / `doctor` / `discuss` / `collect` はワークスペースのルートで実行する。入力・出力・
 設定をカレントディレクトリから解決するため、別の場所で実行すると入力が見つからない。
 入力・出力だけをワークスペースの外に置く場合は `config.yaml` の `paths.input` /
 `paths.output` に書く（相対パスは `config.yaml` の置き場所が基準）。コマンドに
@@ -302,6 +302,8 @@ seat-analyzer init-org <組織名>
 ヘッダ行だけの `input/<組織名>/members-info.csv` が作られる。CSV はまだ無くてよい。
 
 エクスポート手順と月次の運用は [usage.md](./usage.md) の「月次運用手順」を参照する。
+claude.ai からの取得をコマンドで行う場合（任意）は、下の「claude.ai からの CSV 取得を
+設定する」で設定する。
 
 ## ステップ 6: 考察の自動執筆を疎通確認する（任意）
 
