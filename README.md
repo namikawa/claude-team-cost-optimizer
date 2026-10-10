@@ -20,7 +20,9 @@ Claude Team プラン（Standard / Premium シート）のシート最適化分�
 
 macOS / Windows / Linux で動作確認済み。必須なのは [uv](https://docs.astral.sh/uv/) のみで、
 Python（3.11 以上）は uv が用意します。レポートの考察を自動執筆する機能を使う場合は
-ローカルの Claude Code CLI も必要です。
+ローカルの Claude Code CLI も必要です。claude.ai から CSV を取得する機能
+（`collect --source claude`）を使う場合は Google Chrome も必要です（この機能の実機での
+確認は macOS）。
 
 ## インストール
 
