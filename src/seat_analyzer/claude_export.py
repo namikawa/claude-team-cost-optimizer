@@ -26,8 +26,9 @@ claude.ai からの自動ダウンロードの許可と、ダウンロード先�
 テストの対象外にする。
 
 staging の実行ディレクトリ（`<staging>/<run_id>/`）には、拡張機能が書く manifest.json・
-progress.json（途中経過）・orgs.json（組織一覧）と、コマンドが起動の前に書く run.json
-（その実行の計画）が並ぶ。run.json があるので、Chrome の待機が時間切れになった実行も、
+progress.json（途中経過）・orgs.json（組織一覧）・session.json（ログインセッションの観測）と、
+コマンドが起動の前に書く run.json（その実行の計画）が並ぶ。session.json からログイン
+セッションの状態を決めるのも純粋関数（`session_status`）で行う。run.json があるので、Chrome の待機が時間切れになった実行も、
 拡張機能が manifest を書き終えた後に検証と配置だけをやり直せる（`restore_run`）。同じ
 プロファイルを 2 つの実行が同時に使わないよう、staging の直下のプロファイルごとのファイルに
 OS のファイルロックを掛ける（`profile_lock`）。
@@ -205,6 +206,20 @@ def local_today() -> dt.date:
     return dt.datetime.now().astimezone().date()
 
 
+def utc_now() -> dt.datetime:
+    """現在時刻（UTC・aware。ログインの期限までの日数に使う。テストから差し替えられるようにする）。"""
+    return dt.datetime.now(dt.UTC)
+
+
+def local_timezone() -> dt.tzinfo | None:
+    """期限の表示に使うタイムゾーン（テストから固定のタイムゾーンへ差し替えられるようにする）。
+
+    None は実行機のローカル時刻で、期限の日時の夏時間も OS の規則で反映される（今の時点の
+    UTC との差を固定で使うと、夏時間の切り替えをまたぐ期限が 1 時間ずれる）。
+    """
+    return None
+
+
 def _previous_month(today: dt.date) -> str:
     return f"{today.replace(day=1) - dt.timedelta(days=1):%Y-%m}"
 
@@ -321,19 +336,53 @@ def trigger_url(spec: dict) -> str:
     return TRIGGER_PREFIX + urllib.parse.quote(payload, safe="")
 
 
-# 組織一覧（`--list-orgs`）の実行内容の action。拡張機能は参加している組織の一覧を
-# orgs.json に書いて終わる
+# 取得のほかに拡張機能へ頼む操作（実行内容の action）。組織一覧（`--list-orgs`）は参加して
+# いる組織の一覧を orgs.json に、ログインの確認（`--check-login`）はセッションの観測を
+# session.json に書いて終わる。再ログイン（`--login`）はセッションの Cookie を消して
+# ログイン画面を開くだけで、何も書かない
 ACTION_LIST_ORGS = "list-orgs"
+ACTION_CHECK_LOGIN = "check-login"
+ACTION_LOGIN = "login"
+
+
+def action_run_id(profile: str, action: str, now: dt.datetime) -> str:
+    """取得以外の操作の実行の識別子（`<profile>-<action>-<YYYYmmdd-HHMMSS>`）。now はローカル時刻。"""
+    return f"{profile}-{action}-{now:%Y%m%d-%H%M%S}"
+
+
+def action_spec(run_id: str, action: str) -> dict:
+    """取得以外の操作を拡張機能へ頼む実行内容（`{run_id, action}` だけ）。"""
+    return {"run_id": run_id, "action": action}
 
 
 def list_orgs_run_id(profile: str, now: dt.datetime) -> str:
     """組織一覧の実行の識別子（`<profile>-list-orgs-<YYYYmmdd-HHMMSS>`）。now はローカル時刻。"""
-    return f"{profile}-{ACTION_LIST_ORGS}-{now:%Y%m%d-%H%M%S}"
+    return action_run_id(profile, ACTION_LIST_ORGS, now)
 
 
 def list_orgs_spec(run_id: str) -> dict:
     """組織一覧を拡張機能へ頼む実行内容。"""
-    return {"run_id": run_id, "action": ACTION_LIST_ORGS}
+    return action_spec(run_id, ACTION_LIST_ORGS)
+
+
+def check_login_run_id(profile: str, now: dt.datetime) -> str:
+    """ログインの確認の実行の識別子（`<profile>-check-login-<YYYYmmdd-HHMMSS>`）。"""
+    return action_run_id(profile, ACTION_CHECK_LOGIN, now)
+
+
+def check_login_spec(run_id: str) -> dict:
+    """ログインの確認を拡張機能へ頼む実行内容。"""
+    return action_spec(run_id, ACTION_CHECK_LOGIN)
+
+
+def login_run_id(profile: str, now: dt.datetime) -> str:
+    """再ログインの実行の識別子（`<profile>-login-<YYYYmmdd-HHMMSS>`）。"""
+    return action_run_id(profile, ACTION_LOGIN, now)
+
+
+def login_spec(run_id: str) -> dict:
+    """再ログイン（セッションの Cookie を消してログイン画面を開く）を拡張機能へ頼む実行内容。"""
+    return action_spec(run_id, ACTION_LOGIN)
 
 
 # ログインと再ログイン（`--setup`・`--login`）で開くページ
@@ -356,6 +405,8 @@ MANIFEST_NAME = "manifest.json"
 PROGRESS_NAME = "progress.json"
 # 拡張機能が組織一覧の実行で書く一覧
 ORGS_NAME = "orgs.json"
+# 拡張機能がログインの確認と、取得の最後（manifest の前）に書くセッションの観測
+SESSION_NAME = "session.json"
 # コマンドが起動の前に書くその実行の計画（`--import` が計画を組み直すのに使う）
 RUN_RECORD_NAME = "run.json"
 
@@ -394,6 +445,11 @@ def orgs_path(staging_dir: Path, run_id: str) -> Path:
 def run_record_path(staging_dir: Path, run_id: str) -> Path:
     """実行の計画の置き場所（`<staging>/<run_id>/run.json`）。"""
     return run_dir(staging_dir, run_id) / RUN_RECORD_NAME
+
+
+def session_path(staging_dir: Path, run_id: str) -> Path:
+    """セッションの観測の置き場所（`<staging>/<run_id>/session.json`）。"""
+    return run_dir(staging_dir, run_id) / SESSION_NAME
 
 
 def staged_file(
@@ -644,6 +700,204 @@ def read_orgs(path: Path) -> tuple[list[OrgEntry], str | None]:
         for item in data
     ]
     return entries, None
+
+
+# ------------------------------------------------------------------ ログインセッション
+
+# claude.ai のログインセッションの Cookie の名前。拡張機能は期限をこの名前の Cookie で見て、
+# 再ログインの前には名前がこれで始まる Cookie（写しを含む）を消す
+SESSION_COOKIE_NAME = "sessionKey"
+
+# 拡張機能が観測したページの状態（session.json の page）
+PAGE_APP = "app"
+PAGE_LOGIN = "login"
+PAGE_CHALLENGE = "challenge"
+PAGE_UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class SessionCheck:
+    """session.json の内容（拡張機能の観測）。
+
+    日時は aware（UTC）。page・api は、ログインの確認では観測した結果、通常の取得の最後に
+    書いたものでは None（取得できたこと自体が疎通の証拠なので、ページも API も見ない）。
+    api_* は api が null なら None、api_status は応答が無ければ None。
+    """
+
+    run_id: str
+    checked_at: dt.datetime | None
+    cookie_found: bool
+    cookie_expires_at: dt.datetime | None
+    page: str | None
+    api_ok: bool | None
+    api_status: int | None
+    api_reason: str | None
+
+
+def _session_time(value: object) -> tuple[dt.datetime | None, str | None]:
+    """session.json の日時の項目（null か、タイムゾーン付きの ISO 8601）を UTC で読む。
+
+    戻りは (日時, 読めなかった理由)。
+    """
+    if value is None:
+        return None, None
+    parsed = None
+    if isinstance(value, str):
+        with contextlib.suppress(ValueError):
+            parsed = dt.datetime.fromisoformat(value)
+    if parsed is None:
+        return None, f"が ISO 8601 の日時ではありません: {value!r}"
+    if parsed.tzinfo is None:
+        return None, f"にタイムゾーンがありません: {value}"
+    return parsed.astimezone(dt.UTC), None
+
+
+# session.json に必ずある項目（値は null でもよいものを含む）
+_SESSION_KEYS = ("run_id", "checked_at", "cookie_found", "cookie_expires_at", "page", "api")
+
+
+def _session_problem(data: object) -> str | None:
+    """session.json の形が取り決めと違えば、その箇所の説明（ファイル名に続ける文言）。"""
+    if not isinstance(data, dict):
+        return "の内容がオブジェクトではありません"
+    for key in _SESSION_KEYS:
+        if key not in data:
+            return f"に {key} がありません"
+    if not isinstance(data["run_id"], str):
+        return "の run_id が文字列ではありません"
+    if not isinstance(data["cookie_found"], bool):
+        return "の cookie_found が真偽値ではありません"
+    for key in ("checked_at", "cookie_expires_at"):
+        problem = _session_time(data[key])[1]
+        if problem is not None:
+            return f"の {key} {problem}"
+    if data["page"] is not None and not isinstance(data["page"], str):
+        return "の page が文字列でも null でもありません"
+    api = data["api"]
+    if api is not None and not (isinstance(api, dict) and isinstance(api.get("ok"), bool)):
+        return "の api が null でも ok を持つオブジェクトでもありません"
+    return None
+
+
+def read_session(path: Path) -> SessionCheck:
+    """session.json を読む。
+
+    壊れた JSON・オブジェクトでない・項目の欠落（`_SESSION_KEYS`）・形の違う値（run_id が
+    文字列でない、cookie_found が真偽値でない、日時が null でもタイムゾーン付きの ISO 8601 でも
+    ない、page が null でも文字列でもない、api が null でも ok を真偽値に持つオブジェクトでも
+    ない）は ValueError（拡張機能との取り決めが崩れているので、部分的に読んで判定しない）。
+    未知の項目は無視する。
+    """
+    data = _read_json(path)
+    problem = _session_problem(data)
+    if problem is not None:
+        raise ValueError(f"{path.name} {problem}")
+    api = data["api"]
+    status = api.get("status") if api is not None else None
+    reason = api.get("reason") if api is not None else None
+    return SessionCheck(
+        run_id=data["run_id"],
+        checked_at=_session_time(data["checked_at"])[0],
+        cookie_found=data["cookie_found"],
+        cookie_expires_at=_session_time(data["cookie_expires_at"])[0],
+        page=data["page"],
+        api_ok=None if api is None else api["ok"],
+        api_status=status if isinstance(status, int) and not isinstance(status, bool) else None,
+        api_reason=reason if isinstance(reason, str) else None,
+    )
+
+
+# ログインセッションの状態（`session_status` の state）
+SESSION_VALID = "valid"
+SESSION_EXPIRING = "expiring"
+SESSION_INVALID = "invalid"
+SESSION_UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class SessionStatus:
+    """ログインセッションの判定。
+
+    reason は不明・無効の理由（表示用の日本語。有効・期限間近では None）。remaining_days は
+    Cookie の期限までの日数（切り捨て。期限が無ければ None）。api_checked は API を読んだか
+    （session.json の api が null でない）。
+    """
+
+    state: str
+    reason: str | None
+    remaining_days: int | None
+    api_checked: bool
+
+
+def remaining_days(expires_at: dt.datetime | None, now: dt.datetime) -> int | None:
+    """期限までの日数（1 日単位の切り捨て。期限を過ぎていれば負）。期限が無ければ None。
+
+    表示と閾値の比較に同じ整数を使う（表示が「あと 3 日」なら比較も 3）。
+    """
+    if expires_at is None:
+        return None
+    return (expires_at - now) // dt.timedelta(days=1)
+
+
+def session_status(check: SessionCheck, *, now: dt.datetime, warning_days: int) -> SessionStatus:
+    """session.json の観測からログインセッションの状態を決める。now は aware（UTC）。
+
+    優先順位は固定で、上から順に最初に当たったものを採る:
+
+    1. ログイン画面が表示された → 無効
+    2. API の読み取りが HTTP 401 → 無効
+    3. 外部セキュリティ検証が表示された・ページの状態を読めなかった（取り決めに無い page も
+       含む）・API の読み取りに失敗した（403 を含む 401 以外）・アプリが表示されたのに API の
+       結果が無い → 不明
+    4. Cookie が無い・Cookie の期限が無い → 不明
+    5. 残り日数が warning_days を下回る → 期限間近（warning_days が 0 なら期限を過ぎたもの
+       だけ）、それ以外 → 有効
+
+    4・5 に進むのは API を読めたとき（ログインの確認）か、page・api とも null のとき（通常の
+    取得の最後に書いたもの）だけ。Cookie の期限は上限の目安で、サーバー側のセッションが
+    先に切れることがあるので、ログインの確認では API の読み取りを先に見る。
+    """
+    days = remaining_days(check.cookie_expires_at, now)
+    api_checked = check.api_ok is not None
+
+    def status(state: str, reason: str | None = None) -> SessionStatus:
+        return SessionStatus(state, reason, days, api_checked)
+
+    if check.page == PAGE_LOGIN:
+        return status(SESSION_INVALID, "ログイン画面が表示された")
+    if check.api_ok is False and check.api_status == 401:
+        return status(SESSION_INVALID, "API の読み取りが HTTP 401")
+    if check.page == PAGE_CHALLENGE:
+        return status(SESSION_UNKNOWN, "セキュリティ検証が表示された")
+    if check.page not in (None, PAGE_APP):
+        return status(SESSION_UNKNOWN, "ページの状態を読めなかった")
+    if check.api_ok is False:
+        detail = check.api_reason or (
+            f"HTTP {check.api_status}" if check.api_status is not None else "理由の記録なし")
+        return status(SESSION_UNKNOWN, f"API の読み取りに失敗（{detail}）")
+    if check.page == PAGE_APP and not api_checked:
+        return status(SESSION_UNKNOWN, "API の読み取りの結果がない")
+    if not check.cookie_found:
+        return status(SESSION_UNKNOWN, f"Cookie（{SESSION_COOKIE_NAME}）が見つからない")
+    if days is None:
+        return status(SESSION_UNKNOWN, "Cookie の期限が不明")
+    if days < warning_days:
+        return status(SESSION_EXPIRING)
+    return status(SESSION_VALID)
+
+
+def format_expiry(moment: dt.datetime, tz: dt.tzinfo | None) -> str:
+    """期限の表示（tz の時刻で `YYYY-MM-DD HH:MM`。tz が None なら実行機のローカル時刻）。"""
+    return f"{moment.astimezone(tz):%Y-%m-%d %H:%M}"
+
+
+def remaining_text(days: int) -> str:
+    """残り日数の表示（負は「期限経過」、0 は「あと 24 時間未満」、それ以外は「あと n 日」）。"""
+    if days < 0:
+        return "期限経過"
+    if days == 0:
+        return "あと 24 時間未満"
+    return f"あと {days} 日"
 
 
 # ------------------------------------------------------------------ 検証と配置
@@ -1375,8 +1629,8 @@ def _unlock_file(f: BinaryIO) -> None:
 def profile_lock(staging_dir: Path, profile: str) -> Iterator[Path]:
     """プロファイルのロックを持っている間だけ処理を行う。別の実行が持っていれば ProfileBusyError。
 
-    同じプロファイルの取得・組織一覧・--finish-setup を同時に走らせない（同じ Chrome と
-    staging を取り合わないため）。ロックは `<staging>/<profile>.lock` を開いたハンドルに掛ける
+    同じプロファイルの取得・組織一覧・ログインの確認・--finish-setup を同時に走らせない
+    （同じ Chrome と staging を取り合わないため）。ロックは `<staging>/<profile>.lock` を開いたハンドルに掛ける
     OS のファイルロック（Unix は flock、Windows は msvcrt.locking）で、ファイルは消さず中身も
     書かない。OS のロックはハンドルを閉じると外れ、プロセスが異常終了しても OS が外すので、
     取り残されたロックという状態は無い。Chrome はこのハンドルを引き継がずに起動する
@@ -1393,8 +1647,8 @@ def profile_lock(staging_dir: Path, profile: str) -> Iterator[Path]:
             if exc.errno in _LOCK_HELD_ERRNOS:
                 raise ProfileBusyError(
                     f"プロファイル {profile} は別の実行が使用中です（同じプロファイルの取得・"
-                    "組織一覧・--finish-setup のいずれか）。その実行が終わってから再実行して"
-                    "ください"
+                    "組織一覧・ログインの確認・--finish-setup のいずれか）。その実行が終わって"
+                    "から再実行してください"
                 ) from None
             raise ValueError(
                 f"プロファイル {profile} のロックを取れません（{exc}）。"

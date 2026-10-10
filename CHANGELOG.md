@@ -10,6 +10,12 @@
 - config に `claude_export`（Chrome・プロファイル・staging の場所と、組織／workspace ごとの
   取得対象）を追加した
 - `collect --source claude` では `--org` を複数指定でき、`--month` を省略できるようにした
+- `collect --source claude --check-login [<プロファイル名>]` でログインセッションの状態（API の
+  読み取りと Cookie の期限までの日数）を確かめられるようにした（期限間近・無効・不明なら終了
+  コード 1。期限間近にする日数は config の `claude_export.login_warning_days`、既定 3）
+- `collect --source claude` の取得の最後に、ログインの Cookie の期限を 1 行表示するようにした
+- `collect --source claude --login` は、専用プロファイルのセッションの Cookie を消してから
+  ログイン画面を開くようにした（期限の前でもログインし直せる）
 
 ## [1.3.0] - 2026-10-03
 

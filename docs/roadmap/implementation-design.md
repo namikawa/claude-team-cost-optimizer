@@ -986,6 +986,13 @@ Standard化:
   manifestの出力を行う
 - 取得の操作が一定の間隔で並ばないよう、遷移の完了から操作までの待ち（2〜4秒）と、ボタンや
   選択肢を押す前の待ち（0.5〜1.5秒）は毎回一様乱数で選ぶ
+- ログインの確認（`--check-login`）では、拡張機能がclaude.aiを開いてページの状態・API
+  （`/api/organizations`）の読み取り・セッションのCookie（`sessionKey`）の期限を`session.json`に
+  書き、CLIがプロファイルごとに有効・期限間近・無効・不明を判定する。人の操作は待たない。
+  取得の最後にもCookieの期限だけを書き、CLIが1行添える
+- 再ログイン（`--login`）では、拡張機能がセッションのCookie（名前が`sessionKey`で始まるもの）を
+  消してからログイン画面を開く。有効なセッションのままログイン画面を開くとアプリへ戻されて
+  再認証にならないため、期限の前に更新するには先に消す
 - 対象月は2モードだけ: 当月（支出は「月累計」・Claude Codeは表示中の月）と前月（支出は「先月」・
   Claude Codeは月送り1回）。管理画面にそれ以外の選択肢が無いため。それより前の月は従来どおり
   手動のダウンロードで置く
@@ -1005,18 +1012,20 @@ Standard化:
   専用プロファイルの設定（Preferences）に書くのは、claude.aiからの自動ダウンロードの許可と、
   ダウンロードの確認を出さないこと・ダウンロード先（staging）だけで、他の項目は保つ
 - claude.ai上で押すのはエクスポート系のボタンだけで、シート・creditの設定を変更する操作を持たない
+- セッションのCookieは期限だけを見て、値はファイルにもログにも書き出さない。Cookieを
+  書き換えるのは組織の切替（`lastActiveOrg`）と、`--login`の前のセッションのCookieの削除だけ
 - ダウンロード先は専用のstagingで、利用者のDownloadsや既存ファイルを変更・削除しない
 - 別組織のデータを保存しないため、組織切替の確認が取れない組織は丸ごと飛ばす。切替の直後
   だけでなく支出レポートとClaude Codeのページを開くたびにも確かめ、取れなければその種別を
   飛ばす（ログインし直すと表示する組織が変わることがあるため）。配置の前にはファイル名の
   組織UUIDも設定の`org_id`と照合する（§14.3の検証）
-- 同じプロファイルを2つの実行が同時に使わない。CLIは取得・`--list-orgs`・`--finish-setup`の
-  間、`<staging_dir>/<profile>.lock`にOSのファイルロック（Unixはflock、Windowsは
+- 同じプロファイルを2つの実行が同時に使わない。CLIは取得・`--list-orgs`・`--check-login`・
+  `--finish-setup`の間、`<staging_dir>/<profile>.lock`にOSのファイルロック（Unixはflock、Windowsは
   msvcrt.locking）を取り、別の実行が持っていれば止める。ロックは実行が終わると（異常終了を
   含めて）OSが外すので、取り残されたロックという状態は無く、ファイルは消さず空のまま残る。
   ロックを掛けられない環境（ネットワークのファイルシステム等）ではロック無しで進めずに止める。
   拡張機能もsessionストレージの`activeRun`で、同じChromeで進行中の別の実行があれば新しい
-  実行を始めない（開始から1時間を超えた記録は無視する）
+  実行を始めない（開始から1時間を超えた記録は無視する。何も書かない`--login`は対象外）
 - 終了させるのは、プロファイル（`--user-data-dir`）が一致し、実行ファイルが起動に使ったものと
   一致するか名前にchrome / chromiumを含むプロセスだけ（Linuxの`google-chrome`はラッパー
   スクリプトで、プロセスには実体のパスが見えるため）。強制終了の前に列挙し直し、まだ一致して
@@ -1029,6 +1038,7 @@ stagingの配置（run.jsonはCLI、それ以外は拡張機能が書く）:
 ```text
 <staging_dir>/<run_id>/run.json                   起動の前に書くその実行の計画
 <staging_dir>/<run_id>/progress.json              各手順の後に上書きする途中経過
+<staging_dir>/<run_id>/session.json               ログインセッションの観測（--check-login と、取得のmanifestの前）
 <staging_dir>/<run_id>/manifest.json              最後に書く結果（CLIはこれを待つ）
 <staging_dir>/<run_id>/<dir>/<kind_dir>/<元ファイル名>
 <staging_dir>/<run_id>/orgs.json                  組織一覧（--list-orgs）のとき
@@ -1039,7 +1049,7 @@ stagingの配置（run.jsonはCLI、それ以外は拡張機能が書く）:
 サブディレクトリ（members→`members`、spend→`spend`、code→`code-analytics`）。`run_id`は
 `<profile>-<mode>-<YYYYMMDD-HHMMSS>`（ローカル時刻）。拡張機能はダウンロードを、stagingを
 既定のダウンロード先にしたうえで`<run_id>/`以下へ振り分ける。manifest.json・progress.json・
-orgs.jsonの固定名は拡張機能自身が始めたダウンロードにだけ付け、ページが始めたダウンロードは
+orgs.json・session.jsonの固定名は拡張機能自身が始めたダウンロードにだけ付け、ページが始めたダウンロードは
 元のファイル名のまま置く（押し直しの後に遅れて届いたCSVが固定名を奪わないため）。
 
 ```json
@@ -1073,7 +1083,17 @@ orgs.jsonの固定名は拡張機能自身が始めたダウンロードにだ�
 - 組織一覧（`--list-orgs`）のrun_idは`<profile>-list-orgs-<YYYYMMDD-HHMMSS>`、specは
   `{run_id, action: "list-orgs"}`。拡張機能はclaude.aiのタブで`/api/organizations`を読み、
   orgs.jsonに`[{uuid, name, rate_limit_tier, plan}]`（planは`plan_display_name`。無い値は
-  null）を書く。取得できなければ`{"error": 理由}`を書く
+  null）を書く。取得できなければ`{"error": 理由}`を書く。APIの読み取りには10秒の上限を付ける
+- ログインの確認（`--check-login`）のrun_idは`<profile>-check-login-<YYYYMMDD-HHMMSS>`、specは
+  `{run_id, action: "check-login"}`。拡張機能は`session.json`に`{run_id, checked_at,
+  cookie_found, cookie_expires_at, page, api, log}`を書く。`page`は`app`・`login`・`challenge`・
+  `unknown`、`api`は`{ok: true, status, organizations}`（件数だけ）・`{ok: false, status, reason}`・
+  null。取得でもmanifest.jsonの前に、Cookieの期限だけを同じ形（`page`・`api`はnull）で書く
+  （補助の情報なので、その失敗では取得を落とさない）
+- 再ログイン（`--login`）のrun_idは`<profile>-login-<YYYYMMDD-HHMMSS>`、specは
+  `{run_id, action: "login"}`。CLIは実行ディレクトリを作らず、ロックも取らない。拡張機能は
+  何も書かず、進行中の実行の記録（`activeRun`）による拒否と登録の対象にもしない（ログイン
+  待ちで止まった取得が同じChromeに残っていても再ログインできる）
 
 検証（最初に外れた理由を表示する）:
 
@@ -1224,6 +1244,11 @@ uv run seat-analyzer collect \
   --setup|--finish-setup|--login|--list-orgs <profile>
 
 uv run seat-analyzer collect \
+  --source claude \
+  --check-login [<profile>] \
+  [--timeout <分>] [--keep-browser]
+
+uv run seat-analyzer collect \
   --org <org> \
   --source github \
   --month YYYY-MM
@@ -1238,9 +1263,11 @@ Chromeをログイン画面で起動し、人が行う手順（ログイン・�
 終わる。人の操作が終わったら`--finish-setup`がChromeを終了させ、拡張機能が同梱の場所から
 読み込まれていることを確かめてからPreferencesを書く（ウィンドウを閉じてもChrome本体が残る
 環境があり、人による終了を待つと完了を判定できないため、締めの操作をコマンドに分ける）。
-`--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--import`は単独で使う（`--list-orgs`
-だけは`--timeout`・`--keep-browser`を併用できる）。claude専用のオプションを`--source github`に
-付けると終了コード2。
+`--login`はセッションのCookieを消してからログイン画面を開き、`--check-login`はログイン
+セッションの状態をプロファイルごとに表示する（§18 Step 52）。
+`--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--check-login`・`--import`は単独で使う
+（`--list-orgs`と`--check-login`だけは`--timeout`・`--keep-browser`を併用できる）。claude専用の
+オプションを`--source github`に付けると終了コード2。
 
 V2が安定するまで既定値は`v1`。`--decision-version`を省略した場合は
 `decision_v2.enabled`に従い、明示指定はそれに優先する。`enabled: true`は「V1の成果物に
@@ -2837,37 +2864,66 @@ dashboardで読めるようにする。
 
 対象:
 
-- `src/seat_analyzer/browser_extension/`・`src/seat_analyzer/claude_export.py`・
-  `src/seat_analyzer/cli.py`・`src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`
-- `docs/usage.md`・`docs/setup.md`・`docs/reference.md`
+- `src/seat_analyzer/browser_extension/run.js`・`src/seat_analyzer/claude_export.py`・
+  `src/seat_analyzer/cli.py`・`src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`・
+  `src/seat_analyzer/templates/workspace-config.yaml`
+- `docs/usage.md`・`docs/setup.md`・`docs/reference.md`・`CHANGELOG.md`
 - `tests/`
 
 目的:
 
 - 取得の定期実行（日次・週次）を見据え、専用プロファイルのログインセッションがあと何日で
-  切れるかを確かめ、期限が近づいたら知らせる。切れたときの再ログインは既存の
+  切れるかを確かめ、期限が近い・切れているときに終了コード1で知らせる。再ログインは
   `--login <profile>`を使う
 
 実装:
 
-- 拡張機能に`action: "check-login"`を足し、claude.aiのCookie（セッション用のCookieの
-  `expirationDate`）と、実際にAPIを1つ読めるか（`/api/organizations`）を`session.json`に書く
-- CLI: `collect --source claude --check-login [<profile>]`で、全プロファイル（または指定した
-  プロファイル）を順に確かめ、プロファイル名・有効か・残り日数を表示する。残り日数が
-  `claude_export.login_warning_days`（既定3）を下回るプロファイルがあれば終了コード1にする
-  （cron・launchdから呼んで通知につなげられるように）
-- 通常の取得の最後にも、そのプロファイルの残り日数を1行添える
+- 拡張機能: `action: "check-login"`を足す。claude.aiを開き（遷移の完了と2〜4秒の待ちの後）、
+  ページの状態を1秒ごとに最大20秒見る。アプリかログイン画面に定まったら打ち切り、外部
+  セキュリティ検証は自動で解けることがあるので上限まで見直す（上限まで検証のままなら
+  `challenge`、一度も読めなければ`unknown`）。人の操作は待たない（要操作の表示と待機を使わない）。
+  アプリが表示されたときだけ`/api/organizations`を1回読む（上限10秒。組織一覧と同じ関数で、
+  HTTPのステータスも返す）。セッションのCookie（`sessionKey`）の有無と期限（期限の無いものが
+  混じればnull、複数あれば最も早いもの）と合わせて`session.json`に書く。途中の失敗はできる
+  限り観測として書く。Cookieの値は書き出さない
+- 拡張機能: 取得の最後にも、manifest.jsonの前にCookieの期限だけを同じ形（`page`・`api`はnull）で
+  `session.json`に書く。その失敗は記録だけしてmanifestの保存へ進む
+- 拡張機能: `action: "login"`を足す。名前が`sessionKey`で始まるCookieだけを消してから、作業
+  タブでログイン画面を開く（待たない・何も書かない）。他のCookie（`lastActiveOrg`等）には
+  触れない
+- `session.json`は取得のmanifestと独立したファイルにする（取得の結果の読み取りを変えない）
+- 判定（`claude_export.session_status`）の優先順位は固定で、上から最初に当たったものを採る:
+  1. ログイン画面が表示された → 無効
+  2. APIの読み取りがHTTP 401 → 無効
+  3. 外部セキュリティ検証のまま・ページの状態を読めなかった・APIの読み取りに失敗（403を
+     含む401以外と応答なし。403は権限の問題でもありうるので無効にしない）・アプリなのに
+     APIの結果が無い → 不明
+  4. Cookieが無い・期限が無い → 不明
+  5. 残り日数（期限までの時間を1日単位で切り捨て。表示と比較に同じ整数を使う）が
+     `claude_export.login_warning_days`（既定3・0以上の整数）を下回る → 期限間近、それ以外 → 有効
+- CLI: `collect --source claude --check-login [<profile>]`。省略時は`claude_export`を設定した
+  プロファイルを初出順に重複なく、指定時はそのプロファイルだけ（設定に無くてもよい）を順に
+  確かめる。プロファイルごとに設定の確認 → ロック → 起動 → `session.json`の待機（要操作の
+  案内は出さない。時間切れはChromeを残してブラウザの確認を案内する。不明のときも`--login`
+  ではなく`--check-login <profile> --keep-browser`での再確認を案内する）→ run_idの照合 → 1行の表示 →
+  Chromeの終了。確かめた全プロファイルが有効のときだけ終了コード0。`--timeout`・
+  `--keep-browser`以外とは併用できない。`claude_export`を設定した組織が無ければ何もせず1
+- CLI: 通常の取得の配置の後に`session.json`があれば、Cookieの期限を1行添える（期限間近なら
+  `--login`の案内も）。無ければ何も出さず、読めなければ警告1行だけ。取得の成否は変えない
+- CLI: `--login`は拡張機能の`action: "login"`のトリガーURLで起動する（設定の済んでいない
+  プロファイルでは起動しない）。`--setup`は従来どおりログイン画面を直接開く
 
 注意:
 
-- Cookieの有効期限は目安で、サーバー側のセッションの実際の寿命とは一致しないことがある。
-  実際にAPIを読めたかどうかを併記する
+- Cookieの有効期限は上限の目安で、サーバー側のセッションが先に切れることがある。そのため
+  APIを実際に読めたかを先に見る
 - 通知の手段（OSの通知・チャット）はこのStepの範囲外で、終了コードと表示までにする
 
 受け入れ条件:
 
 - 実機で残り日数が表示される
 - 期限切れのプロファイルで「無効」と`--login`の案内が出る
+- 有効だが期限間近のプロファイルで`--login` → 再ログイン → 再チェックで期限が更新される
 - 既定で不活性（`claude_export`を書いた組織が無ければ何もしない）
 
 今回は行わない:
@@ -3629,6 +3685,7 @@ claude_export:
   profiles_dir: ~/.seat-analyzer/profiles   # 専用プロファイルの置き場
   staging_dir: ~/.seat-analyzer/exports     # ブラウザがダウンロードする一時置き場
   timeout_minutes: 15                       # manifestを待つ上限
+  login_warning_days: 3                     # --check-loginで「期限間近」にする残り日数
 ```
 
 新しいセクションはすべて省略可能とする。`decision_v2.enabled=false`が既定。

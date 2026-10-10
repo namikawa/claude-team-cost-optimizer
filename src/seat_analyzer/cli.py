@@ -280,13 +280,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     pcol.add_argument(
         "--login", metavar="プロファイル名",
-        help="claude のみ: プロファイルの Chrome で claude.ai のログイン画面を開く"
-             "（セッションが切れたとき。単独で使う）",
+        help="claude のみ: プロファイルのセッションの Cookie を消してから、その Chrome で "
+             "claude.ai のログイン画面を開く（セッションが切れたとき・期限の前に更新するとき。"
+             "単独で使う）",
     )
     pcol.add_argument(
         "--list-orgs", metavar="プロファイル名",
         help="claude のみ: プロファイルのアカウントが参加している組織と UUID を一覧する"
              "（--timeout・--keep-browser 以外とは併用できない）",
+    )
+    pcol.add_argument(
+        "--check-login", nargs="?", const=True, default=None, metavar="プロファイル名",
+        help="claude のみ: ログインセッションの状態（API の読み取りと Cookie の期限までの"
+             "日数）を確かめる。省略時は claude_export を設定した全プロファイル。期限間近・"
+             "無効・不明があれば終了コード 1（--timeout・--keep-browser 以外とは併用できない）",
     )
     pcol.add_argument("--config", default=None, help=_CONFIG_HELP)
     _add_dir_options(pcol, output=False)   # レポートを書かないコマンド
@@ -1073,6 +1080,7 @@ _CLAUDE_SOLO_FLAGS = {
     "--finish-setup": frozenset(),
     "--login": frozenset(),
     "--list-orgs": frozenset({"--timeout", "--keep-browser"}),
+    "--check-login": frozenset({"--timeout", "--keep-browser"}),
     "--import": frozenset(),
 }
 
@@ -1091,6 +1099,7 @@ def _collect_flags(args: argparse.Namespace) -> dict[str, bool]:
         "--finish-setup": args.finish_setup is not None,
         "--login": args.login is not None,
         "--list-orgs": args.list_orgs is not None,
+        "--check-login": args.check_login is not None,
     }
 
 
@@ -1098,7 +1107,7 @@ def _check_collect_args(parser: argparse.ArgumentParser, args: argparse.Namespac
     """収集元ごとのオプションの組み合わせを確かめる（誤りは argparse と同じ終了コード 2）。
 
     必須かどうかが収集元で変わるので、argparse の required ではなくここで見る。claude の
-    --setup・--finish-setup・--login・--list-orgs・--import は単独で使う
+    --setup・--finish-setup・--login・--list-orgs・--check-login・--import は単独で使う
     （`_CLAUDE_SOLO_FLAGS` に挙げたもの以外と併用すると、黙って無視されるオプションが
     できるため止める）。
     """
@@ -1109,7 +1118,7 @@ def _check_collect_args(parser: argparse.ArgumentParser, args: argparse.Namespac
         if args.month is None:
             parser.error("--source github では --month が必要です")
         for flag in ("--profile", "--dry-run", "--keep-browser", "--timeout", "--import",
-                     "--setup", "--finish-setup", "--login", "--list-orgs"):
+                     "--setup", "--finish-setup", "--login", "--list-orgs", "--check-login"):
             if given[flag]:
                 parser.error(f"{flag} は --source claude でだけ使えます")
         return
@@ -1202,8 +1211,8 @@ def _run_collect_claude(args: argparse.Namespace, cfg: dict, input_dir: Path) ->
     対象は claude_export を設定した組織／workspace だけ。プロファイルごとに順に（同時には
     起動しない）、専用プロファイルの Chrome を起動して拡張機能に取得させ、manifest を
     待って検証・配置し、Chrome を終了させる。--setup・--finish-setup・--login・--list-orgs は
-    プロファイルの準備、--import は staging に残った実行の配置のやり直し、--dry-run は計画の
-    表示だけ。
+    プロファイルの準備、--check-login はログインセッションの確認、--import は staging に
+    残った実行の配置のやり直し、--dry-run は計画の表示だけ。
     """
     settings = cfg["claude_export"]
     if args.setup is not None:
@@ -1218,16 +1227,17 @@ def _run_collect_claude(args: argparse.Namespace, cfg: dict, input_dir: Path) ->
             timeout_minutes=args.timeout or settings["timeout_minutes"],
             keep_browser=args.keep_browser,
         )
+    if args.check_login is not None:
+        return _claude_check_login(
+            args.check_login, cfg, settings,
+            timeout_minutes=args.timeout or settings["timeout_minutes"],
+            keep_browser=args.keep_browser,
+        )
     targets = claude_export.gated_targets(cfg["organizations"])
     if args.import_run is not None:
         return _claude_import(args.import_run, cfg, input_dir, targets)
     if not targets:
-        print(
-            "claude_export を設定した組織がありません"
-            f"（{WORKSPACE_CONFIG_NAME} の organizations.<組織名>.claude_export に"
-            " profile と org_id を書く）",
-            file=sys.stderr,
-        )
+        _claude_print_no_targets()
         return 1
     month = None if args.month is None else _validate_month(args.month)
     runs = claude_export.plan_runs(
@@ -1258,6 +1268,16 @@ def _run_collect_claude(args: argparse.Namespace, cfg: dict, input_dir: Path) ->
         )
         succeeded = succeeded and ok
     return 0 if succeeded else 1
+
+
+def _claude_print_no_targets() -> None:
+    """claude_export を設定した組織が無いときの案内（既定の不活性のまま実行したとき）。"""
+    print(
+        "claude_export を設定した組織がありません"
+        f"（{WORKSPACE_CONFIG_NAME} の organizations.<組織名>.claude_export に"
+        " profile と org_id を書く）",
+        file=sys.stderr,
+    )
 
 
 def _print_claude_plan(
@@ -1296,6 +1316,8 @@ def _print_claude_plan(
 # 取得の待機の間隔と、進捗がこの秒数止まったら出す案内の間隔（秒）
 _CLAUDE_POLL_SECONDS = 2.0
 _CLAUDE_NOTICE_SECONDS = 60.0
+# 進捗が止まったときの案内（ログインや外部セキュリティ検証の待ちはブラウザにしか出ない）
+_CLAUDE_NOTICE_TEXT = "ブラウザに「要操作」の表示が出ていないか確認してください"
 # --finish-setup で Chrome の終了を待つ上限（秒）
 _CLAUDE_STOP_SECONDS = 30.0
 # 待機に使う時計と sleep（テストが差し替えて待ち時間を縮める）
@@ -1392,12 +1414,14 @@ def _claude_wait(
     read: Callable[[], object | None],
     timeout_minutes: int,
     tick: Callable[[], bool] | None = None,
+    notice: str | None = _CLAUDE_NOTICE_TEXT,
 ) -> object | None:
     """read が値を返すまで待つ（None は「まだ」）。時間切れなら None。
 
     待つ間は tick（途中経過の表示。進捗があれば True）を呼び、進捗も案内も無いまま
-    _CLAUDE_NOTICE_SECONDS が過ぎたらブラウザの表示を確かめる案内を出す（ログインや外部
-    セキュリティ検証の待ちはブラウザにしか出ない。取得が進んでいる間は出さない）。
+    _CLAUDE_NOTICE_SECONDS が過ぎたら notice（既定はブラウザの表示を確かめる案内）を出す
+    （取得が進んでいる間は出さない）。notice が None なら案内を出さない（人の操作を待たない
+    ログインの確認）。
     """
     start = _monotonic()
     deadline = start + timeout_minutes * 60
@@ -1411,12 +1435,8 @@ def _claude_wait(
         now = _monotonic()
         if now >= deadline:
             return None
-        if now - quiet_since >= _CLAUDE_NOTICE_SECONDS:
-            print(
-                f"  待機中（{int((now - start) // 60)} 分経過）: ブラウザに「要操作」の表示が"
-                "出ていないか確認してください",
-                flush=True,
-            )
+        if notice is not None and now - quiet_since >= _CLAUDE_NOTICE_SECONDS:
+            print(f"  待機中（{int((now - start) // 60)} 分経過）: {notice}", flush=True)
             quiet_since = now
         _sleep(_CLAUDE_POLL_SECONDS)
 
@@ -1561,9 +1581,48 @@ def _claude_collect_locked(
         )
         return False
     ok = _claude_place(run, run_id, manifest, staging_dir, cfg, input_dir)
+    _claude_session_note(
+        run.profile, run_id, staging_dir, cfg["claude_export"]["login_warning_days"])
     if not keep_browser:
         _claude_close(profile_dir, chrome)
     return ok
+
+
+# ログインセッションの状態の表示名
+_CLAUDE_SESSION_TEXT = {
+    claude_export.SESSION_VALID: "有効",
+    claude_export.SESSION_EXPIRING: "期限間近",
+    claude_export.SESSION_INVALID: "無効",
+    claude_export.SESSION_UNKNOWN: "不明",
+}
+
+
+def _claude_session_note(profile: str, run_id: str, staging_dir: Path, warning_days: int) -> None:
+    """取得の最後に、拡張機能が書いた session.json からログインの Cookie の期限を 1 行添える。
+
+    session.json が無ければ何も出さない（拡張機能が書けなかったときも取得は成功のまま）。
+    読めなければ警告を 1 行だけ出す。取得の成否には影響させない。
+    """
+    path = claude_export.session_path(staging_dir, run_id)
+    if not path.is_file():
+        return
+    try:
+        check = claude_export.read_session(path)
+        if check.run_id != run_id:
+            raise ValueError(f"{path.name} の run_id（{check.run_id}）がこの実行と一致しません")
+    except (OSError, ValueError) as exc:
+        print(f"  警告: ログインの Cookie の期限を読めませんでした（{exc}）", file=sys.stderr)
+        return
+    status = claude_export.session_status(
+        check, now=claude_export.utc_now(), warning_days=warning_days)
+    if status.state not in (claude_export.SESSION_VALID, claude_export.SESSION_EXPIRING):
+        print(f"  ログインの Cookie の期限: {_CLAUDE_SESSION_TEXT[status.state]}（{status.reason}）")
+        return
+    when = claude_export.format_expiry(check.cookie_expires_at, claude_export.local_timezone())
+    line = f"  ログインの Cookie の期限: {when}（{claude_export.remaining_text(status.remaining_days)}）"
+    if status.state == claude_export.SESSION_EXPIRING:
+        line += f"。collect --source claude --login {profile} でログインし直してください"
+    print(line)
 
 
 def _claude_import(
@@ -1730,9 +1789,14 @@ def _claude_finish_setup_locked(
 
 
 def _claude_login(profile: str, settings: dict) -> int:
-    """プロファイルの Chrome でログイン画面を開くだけ（終了は待たない）。"""
+    """プロファイルの Chrome で、セッションの Cookie を消してからログイン画面を開く（終了は待たない）。
+
+    Cookie の削除とログイン画面の表示は拡張機能が行う（有効なセッションのままログイン画面を
+    開くとアプリへ戻されるため、期限の前に更新するには先に消す）。ロックは取らず、staging にも
+    何も書かない。拡張機能を読み込む前の --setup は従来どおりログイン画面を直接開く。
+    """
     claude_export.validate_profile_name(profile)
-    profiles_dir, _ = _claude_dirs(settings)
+    profiles_dir, staging_dir = _claude_dirs(settings)
     profile_dir = claude_export.profile_path(profiles_dir, profile)
     if not profile_dir.is_dir():
         print(
@@ -1744,8 +1808,15 @@ def _claude_login(profile: str, settings: dict) -> int:
     chrome = _claude_chrome(settings)
     if chrome is None:
         return 1
-    _claude_launch(chrome, profile_dir, claude_export.LOGIN_URL)
-    print("ログインしたら Chrome を閉じてください。次回の取得から有効です")
+    if not _claude_profile_ready(profile, profiles_dir, staging_dir):
+        return 1
+    run_id = claude_export.login_run_id(profile, dt.datetime.now().astimezone())
+    _claude_launch(
+        chrome, profile_dir, claude_export.trigger_url(claude_export.login_spec(run_id)))
+    print(
+        "ブラウザにログイン画面が開きます（専用プロファイルのセッション Cookie を消してから"
+        "開きます）。ログインしたら Chrome を閉じてください。次回の取得から有効です"
+    )
     return 0
 
 
@@ -1823,6 +1894,157 @@ def _claude_list_orgs_locked(
     if not keep_browser:
         _claude_close(profile_dir, chrome)
     return 0 if error is None else 1
+
+
+def _claude_check_login(
+    selector: str | bool,
+    cfg: dict,
+    settings: dict,
+    *,
+    timeout_minutes: int,
+    keep_browser: bool,
+) -> int:
+    """ログインセッションの状態を、拡張機能に観測させてプロファイルごとに 1 行で表示する。
+
+    selector がプロファイル名ならそれだけ（設定に無いプロファイルでもよい。--list-orgs と
+    同じ）、True なら claude_export を設定したプロファイルを初出順に重複なく確かめる。
+    プロファイルごとに順に（同時には起動しない）、取得と同じくプロファイルのロックを取って
+    Chrome を起動し、session.json を待って判定する。人の操作は待たない（ログイン画面や外部
+    セキュリティ検証が出ればその観測のまま判定する）。確かめた全プロファイルが有効のときだけ 0。
+    """
+    if isinstance(selector, str):
+        claude_export.validate_profile_name(selector)
+        profiles = [selector]
+    else:
+        targets = claude_export.gated_targets(cfg["organizations"])
+        profiles = list(dict.fromkeys(target.profile for target in targets))
+        if not profiles:
+            _claude_print_no_targets()
+            return 1
+    chrome = _claude_chrome(settings)
+    if chrome is None:
+        return 1
+    profiles_dir, staging_dir = _claude_dirs(settings)
+    all_valid = True
+    for profile in profiles:
+        valid = _claude_check_login_profile(
+            profile, chrome, profiles_dir, staging_dir,
+            warning_days=settings["login_warning_days"],
+            timeout_minutes=timeout_minutes, keep_browser=keep_browser,
+        )
+        all_valid = all_valid and valid
+    return 0 if all_valid else 1
+
+
+def _claude_check_login_profile(
+    profile: str,
+    chrome: Path,
+    profiles_dir: Path,
+    staging_dir: Path,
+    *,
+    warning_days: int,
+    timeout_minutes: int,
+    keep_browser: bool,
+) -> bool:
+    """1 つのプロファイルのログインの確認。有効なら True（それ以外の結果と失敗は False）。"""
+    if not _claude_profile_ready(profile, profiles_dir, staging_dir):
+        return False
+    run_id = claude_export.check_login_run_id(profile, dt.datetime.now().astimezone())
+    try:
+        with claude_export.profile_lock(staging_dir, profile):
+            return _claude_check_login_locked(
+                profile, run_id, chrome, profiles_dir, staging_dir,
+                warning_days=warning_days, timeout_minutes=timeout_minutes,
+                keep_browser=keep_browser,
+            )
+    except claude_export.ProfileBusyError as exc:
+        print(f"  {exc}", file=sys.stderr)
+        return False
+
+
+def _claude_check_login_locked(
+    profile: str,
+    run_id: str,
+    chrome: Path,
+    profiles_dir: Path,
+    staging_dir: Path,
+    *,
+    warning_days: int,
+    timeout_minutes: int,
+    keep_browser: bool,
+) -> bool:
+    """ロックを取った後のログインの確認（`_claude_check_login_profile` から呼ぶ）。"""
+    profile_dir = claude_export.profile_path(profiles_dir, profile)
+    path = claude_export.session_path(staging_dir, run_id)
+    claude_export.run_dir(staging_dir, run_id).mkdir(parents=True)
+    _claude_launch(
+        chrome, profile_dir, claude_export.trigger_url(claude_export.check_login_spec(run_id)))
+    check = _claude_wait(
+        lambda: _claude_try_read(path, claude_export.read_session), timeout_minutes, notice=None)
+    if check is None:
+        print(f"profile {profile}: {_claude_session_unread(path, timeout_minutes, profile)}",
+              file=sys.stderr)
+        return False
+    if check.run_id != run_id:
+        print(
+            f"profile {profile}: {path.name} の run_id（{check.run_id}）がこの実行（{run_id}）と"
+            "一致しません",
+            file=sys.stderr,
+        )
+        valid = False
+    else:
+        status = claude_export.session_status(
+            check, now=claude_export.utc_now(), warning_days=warning_days)
+        print(_claude_session_line(profile, check, status), flush=True)
+        valid = status.state == claude_export.SESSION_VALID
+    if not keep_browser:
+        _claude_close(profile_dir, chrome)
+    return valid
+
+
+def _claude_session_unread(path: Path, timeout_minutes: int, profile: str) -> str:
+    """session.json を待ちきれなかったときの説明（読めないファイルがあればその理由）。
+
+    取得と違って --import で続きを配置するものは無く、--login はセッションの Cookie を
+    消してしまうので、開いたままの Chrome の表示を確かめるよう案内するだけにする。
+    """
+    if path.is_file():
+        try:
+            claude_export.read_session(path)
+        except (OSError, ValueError) as exc:
+            return f"{exc}（{path}）"
+    return (
+        f"{timeout_minutes} 分待っても確認が終わりませんでした。Chrome は開いたままにしています。"
+        f"ブラウザの表示を確認してください（プロファイル {profile}）"
+    )
+
+
+def _claude_session_line(
+    profile: str, check: claude_export.SessionCheck, status: claude_export.SessionStatus
+) -> str:
+    """ログインの確認の結果の 1 行（期限はローカル時刻）。"""
+    parts = []
+    if status.api_checked and check.api_ok:
+        parts.append("API の読み取り OK")
+    if status.state in (claude_export.SESSION_VALID, claude_export.SESSION_EXPIRING):
+        when = claude_export.format_expiry(check.cookie_expires_at, claude_export.local_timezone())
+        days = status.remaining_days
+        parts.append(
+            f"Cookie の期限 {when} を経過" if days < 0
+            else f"Cookie の期限 {when} まで{claude_export.remaining_text(days)}"
+        )
+    else:
+        parts.append(status.reason)
+    line = f"profile {profile}: {_CLAUDE_SESSION_TEXT[status.state]}（{'・'.join(parts)}）"
+    if status.state in (claude_export.SESSION_EXPIRING, claude_export.SESSION_INVALID):
+        line += f"。collect --source claude --login {profile} でログインし直してください"
+    elif status.state == claude_export.SESSION_UNKNOWN:
+        # --login はセッションの Cookie を消すので、状態を確かめるだけなら勧めない
+        line += (
+            f"。collect --source claude --check-login {profile} --keep-browser で再確認し、"
+            "ブラウザの表示を確認してください"
+        )
+    return line
 
 
 def _check_text_sources(name: str) -> list[tuple[str, str]]:

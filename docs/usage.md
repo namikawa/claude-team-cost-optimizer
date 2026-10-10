@@ -354,9 +354,66 @@ Chrome の実行ページ（seat-analyzer export）に進み具合が表示さ�
 - `--keep-browser`: 取得の後も Chrome を終了させない（実行ページのログを確かめたいとき）
 - `--timeout <分>`: 取得を待つ上限（省略時は `claude_export.timeout_minutes`、既定 15 分）
 - `--import <run_id>`: staging に残った実行の検証と配置だけをやり直す（単独で使う）
+- `--check-login [<プロファイル名>]`: ログインセッションの状態を確かめる（下記。
+  `--timeout`・`--keep-browser` のほかとは併用できない）
 
 staging の実行ディレクトリは配置の後は使わない。ツールは自動では消さないので、不要に
 なれば `<staging>/<run_id>` ごと削除してよい。
+
+### ログインセッションの確認（--check-login）
+
+専用プロファイルのログインは数週間ごとに切れる（メールのワンタイムコードでログインし直す）。
+取得を定期実行（日次・週次）するときに切れる前に気づけるよう、確認だけを行える。
+
+```sh
+seat-analyzer collect --source claude --check-login          # claude_export を設定した全プロファイル
+seat-analyzer collect --source claude --check-login <名前>   # 1 つのプロファイル（設定に無くてもよい）
+```
+
+プロファイルごとに順に Chrome を起動して claude.ai を開き、API を 1 つ読めるか（参加している
+組織の一覧）と、ログインの Cookie の期限を確かめて 1 行ずつ表示する。ログイン画面や外部
+セキュリティ検証が出ても人の操作は待たず、見えたままを判定する。確認が終わると Chrome を
+終了させる（`--keep-browser` で残せる）。
+
+```text
+profile corp: 有効（API の読み取り OK・Cookie の期限 2026-11-04 17:56 まであと 25 日）
+profile corp: 期限間近（API の読み取り OK・Cookie の期限 2026-10-12 09:00 まであと 2 日）。collect --source claude --login corp でログインし直してください
+profile corp: 無効（ログイン画面が表示された）。collect --source claude --login corp でログインし直してください
+profile corp: 不明（セキュリティ検証が表示された）。collect --source claude --check-login corp --keep-browser で再確認し、ブラウザの表示を確認してください
+```
+
+| 状態 | 意味 | 対応 |
+|---|---|---|
+| 有効 | API を読めて、Cookie の期限まで `claude_export.login_warning_days`（既定 3）日以上ある | 不要 |
+| 期限間近 | API は読めるが、Cookie の期限までの日数が `login_warning_days` を下回る | `--login` でログインし直す |
+| 無効 | ログイン画面が表示された、または API の読み取りが HTTP 401 | `--login` でログインし直す |
+| 不明 | 外部セキュリティ検証が表示された・ページの状態を読めなかった・API の読み取りに失敗した（401 以外）・Cookie の期限が分からない | `--check-login <名前> --keep-browser` で再確認し、残した Chrome の表示を確かめる（`--login` はセッションの Cookie を消すので、確かめるだけなら使わない） |
+
+Cookie の期限は上限の目安で、サーバー側のセッションがそれより先に切れることがある。その
+ため API を実際に読めるかを併せて見て、読めなければ Cookie の期限によらず有効にしない
+（判定の順序は [reference.md](./reference.md) の「ログインセッションの判定」）。
+
+終了コードは、確かめた全プロファイルが有効のときだけ 0。期限間近・無効・不明のほか、
+時間切れ（`--timeout`。省略時は `claude_export.timeout_minutes`）・設定の済んでいない
+プロファイル・別の実行が使用中のプロファイルが 1 つでもあれば 1。定期実行（cron・launchd
+など）から呼び、終了コード 1 を通知につなげる使い方を想定している（定期実行と通知の仕組みは
+このツールに含まない）。
+
+`login_warning_days` は「確認の間隔 + 気づいてから対応するまでの猶予」で決める。日次で
+確かめるなら既定の 3、週次なら 8 などにする（`config.yaml` の `claude_export` に書く）。
+
+通常の取得でも、配置の結果の後（Chrome を終了させる前）に Cookie の期限を 1 行添える。
+期限間近なら `--login` の案内も添える。この行は取得の終了コードに影響しない（取得できた
+こと自体がセッションの有効な証拠なので、API は読まない）。
+
+```text
+  ログインの Cookie の期限: 2026-11-04 17:56（あと 25 日）
+```
+
+`--login <名前>` は、そのプロファイルのセッションの Cookie を消してからログイン画面を開く。
+有効なセッションのままログイン画面を開くとアプリへ戻されるため、期限の前でも先に消して
+ログインし直せるようにしている（消すのはセッションの Cookie だけで、組織の切替などに使う
+他の Cookie は残す）。ログインしたら Chrome を閉じる。次回の取得から有効になる。
 
 ## 速報モード（部分月データでの一次判断）
 

@@ -1766,6 +1766,8 @@ def test_collect_rejects_a_bad_month(make_input, tmp_path, monkeypatch, capsys, 
      "--month", COLLECT_MONTH, "--login", "corp"],                     # claude 専用
     ["collect", "--source", "github", "--org", "org-a",
      "--month", COLLECT_MONTH, "--list-orgs", "corp"],                 # claude 専用
+    ["collect", "--source", "github", "--org", "org-a",
+     "--month", COLLECT_MONTH, "--check-login"],                       # claude 専用
     ["collect", "--source", "claude", "--timeout", "0"],               # 1 分以上
     ["collect", "--source", "claude", "--timeout", "x"],               # 整数
     # --setup・--finish-setup・--login・--list-orgs・--import は単独で使う
@@ -1790,6 +1792,14 @@ def test_collect_rejects_a_bad_month(make_input, tmp_path, monkeypatch, capsys, 
     ["collect", "--source", "claude", "--import", "x", "--org", "org-a"],
     ["collect", "--source", "claude", "--import", "x", "--month", "2026-10"],
     ["collect", "--source", "claude", "--import", "x", "--keep-browser"],
+    # --check-login も単独で使う（--timeout・--keep-browser だけは併用できる）
+    ["collect", "--source", "claude", "--check-login", "--org", "org-a"],
+    ["collect", "--source", "claude", "--check-login", "corp", "--profile", "corp"],
+    ["collect", "--source", "claude", "--check-login", "--month", "2026-10"],
+    ["collect", "--source", "claude", "--check-login", "--dry-run"],
+    ["collect", "--source", "claude", "--check-login", "--list-orgs", "corp"],
+    ["collect", "--source", "claude", "--check-login", "corp", "--login", "corp"],
+    ["collect", "--source", "claude", "--check-login", "--import", "x"],
 ])
 def test_collect_requires_its_options(args):
     """必須オプションと収集元の選択肢は argparse が弾く（収集元ごとの組み合わせも同じ扱い）。"""
@@ -2011,6 +2021,14 @@ CLAUDE_HEADERS = {
     "code": "User,Lines this month,PRs with CC",
 }
 CLAUDE_KIND_DIRS = {"members": "members", "spend": "spend", "code": "code-analytics"}
+# ログインの期限の判定に使う「今」と、期限を表示するローカルのタイムゾーン（UTC+9）
+CLAUDE_NOW = dt.datetime(2026, 10, 7, 3, 0, tzinfo=dt.UTC)
+CLAUDE_TZ = dt.timezone(dt.timedelta(hours=9))
+# Cookie の期限: 25 日と 5 時間 56 分後（表示は 2026-11-01 17:56）と、1 日と 21 時間後
+# （表示は 2026-10-09 09:00。既定の login_warning_days 3 を下回る）
+CLAUDE_EXPIRES_LATER = "2026-11-01T08:56:50.000Z"
+CLAUDE_EXPIRES_SOON = "2026-10-09T00:00:00.000Z"
+CLAUDE_API_OK = {"ok": True, "status": 200, "organizations": 4}
 
 
 def _claude_filename(kind: str, uuid: str) -> str:
@@ -2045,6 +2063,11 @@ class _FakeExtension:
     失敗）・{"header": ...}（ok だが中身の違う CSV）。names は (dir, kind) → 保存する
     ファイル名（省略時は対象の UUID を含む元の名前）。manifest="later" なら最初の sleep で
     manifest を書き（起動時は progress だけ）、manifest=None なら書かない。
+
+    session はログインの確認（action "check-login"）で書く session.json の内容、
+    export_session は取得で manifest の前に書く session.json の内容（どちらも run_id は
+    実行のものを補う。文字列ならそのまま書き、None なら書かない）。再ログイン（action
+    "login"）は実行内容を記録するだけで何も書かない。
     """
 
     def __init__(self, staging: Path, clock: _FakeClock):
@@ -2057,6 +2080,13 @@ class _FakeExtension:
         self.manifest_run_id: str | None = None
         self.orgs: object = None
         self.names: dict = {}
+        self.session: dict | str | None = None
+        self.export_session: dict | str | None = None
+
+    @staticmethod
+    def _write_session(run_dir: Path, run_id: str, session: dict | str) -> None:
+        text = session if isinstance(session, str) else json.dumps({"run_id": run_id, **session})
+        (run_dir / "session.json").write_text(text, encoding="utf-8")
 
     def launch(self, command, **kwargs) -> None:
         self.commands.append(list(command))
@@ -2070,11 +2100,19 @@ class _FakeExtension:
             if self.orgs is not None:
                 (run_dir / "orgs.json").write_text(json.dumps(self.orgs), encoding="utf-8")
             return
+        if spec.get("action") == "check-login":
+            if self.session is not None:
+                self._write_session(run_dir, spec["run_id"], self.session)
+            return
+        if spec.get("action") == "login":
+            return
         results = [self._export(run_dir, org, kind) for org in spec["orgs"] for kind in org["kinds"]]
         body = {"run_id": self.manifest_run_id or spec["run_id"], "mode": spec["mode"],
                 "finished_at": "2026-10-07T02:00:49.000Z", "results": results, "log": []}
         (run_dir / "progress.json").write_text(
             json.dumps({**body, "status": "running"}), encoding="utf-8")
+        if self.export_session is not None:
+            self._write_session(run_dir, spec["run_id"], self.export_session)
         if self.manifest == "now":
             (run_dir / "manifest.json").write_text(json.dumps(body), encoding="utf-8")
         elif self.manifest == "later":
@@ -2124,6 +2162,8 @@ def claude_env(tmp_path, monkeypatch):
         env.process_args.append(("terminate", kwargs))
 
     monkeypatch.setattr("seat_analyzer.claude_export.local_today", lambda: CLAUDE_TODAY)
+    monkeypatch.setattr("seat_analyzer.claude_export.utc_now", lambda: CLAUDE_NOW)
+    monkeypatch.setattr("seat_analyzer.claude_export.local_timezone", lambda: CLAUDE_TZ)
     monkeypatch.setattr("seat_analyzer.claude_export.launch_chrome", ext.launch)
     monkeypatch.setattr("seat_analyzer.claude_export.list_chrome_pids", list_pids)
     monkeypatch.setattr("seat_analyzer.claude_export.terminate_chrome", terminate)
@@ -2214,6 +2254,7 @@ def test_collect_claude_does_not_place_a_file_of_another_org(claude_env, capsys)
 @pytest.mark.parametrize("command", [
     ["--org", "example"],
     ["--list-orgs", "corp"],
+    ["--check-login", "corp"],
     ["--finish-setup", "corp"],
 ])
 def test_collect_claude_refuses_a_profile_in_use(claude_env, capsys, command):
@@ -2223,7 +2264,8 @@ def test_collect_claude_refuses_a_profile_in_use(claude_env, capsys, command):
         assert _collect_claude(env, *command) == 1
     err = capsys.readouterr().err
     assert ("プロファイル corp は別の実行が使用中です（同じプロファイルの取得・組織一覧・"
-            "--finish-setup のいずれか）。その実行が終わってから再実行してください") in err
+            "ログインの確認・--finish-setup のいずれか）。その実行が終わってから再実行して"
+            "ください") in err
     assert env.ext.commands == [] and env.listed == [] and env.terminated == []
 
 
@@ -2672,13 +2714,36 @@ def test_collect_claude_finish_setup_requires_the_profile(claude_env, capsys):
 
 
 def test_collect_claude_login_opens_the_login_page(claude_env, capsys):
+    """--login は拡張機能にセッションの Cookie を消させてからログイン画面を開かせる。
+
+    取得と違ってロックは取らず（別の実行が使用中でも開ける）、staging にも何も作らない。
+    """
     env = claude_env
-    assert _collect_claude(env, "--login", "corp") == 0
-    assert env.ext.commands == [[
+    with claude_export.profile_lock(env.staging, "corp"):
+        assert _collect_claude(env, "--login", "corp") == 0
+    [command] = env.ext.commands
+    [spec] = env.ext.specs
+    assert command[:-1] == [
         str(env.chrome), f"--user-data-dir={env.profiles / 'corp'}", "--no-first-run",
-        "--no-default-browser-check", "https://claude.ai/login"]]
+        "--no-default-browser-check"]
+    assert command[-1] == claude_export.trigger_url(spec)
+    assert spec == {"run_id": spec["run_id"], "action": "login"}
+    assert re.fullmatch(r"corp-login-\d{8}-\d{6}", spec["run_id"])
+    assert not (env.staging / spec["run_id"]).exists()
     assert env.listed == []           # 終了は待たない
-    assert "ログインしたら Chrome を閉じてください" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "専用プロファイルのセッション Cookie を消してから開きます" in out
+    assert "ログインしたら Chrome を閉じてください" in out
+
+
+def test_collect_claude_login_requires_the_setup(claude_env, capsys):
+    """拡張機能を読み込む前（--finish-setup の前）のプロファイルでは開かない。"""
+    env = claude_env
+    (env.profiles / "half").mkdir(parents=True)
+    assert _collect_claude(env, "--login", "half") == 1
+    assert env.ext.commands == []
+    assert ("先に collect --source claude --setup half を実行し、ブラウザの操作の後に "
+            "--finish-setup half を実行してください") in capsys.readouterr().err
 
 
 def test_collect_claude_login_requires_the_profile(claude_env, capsys):
@@ -2731,6 +2796,286 @@ def test_collect_claude_list_orgs_requires_the_setup(claude_env, capsys):
     assert _collect_claude(env, "--list-orgs", "group") == 1
     assert env.ext.commands == []
     assert "--setup group" in capsys.readouterr().err
+
+
+# --- collect --source claude --check-login（ログインセッションの確認） ---
+
+
+def _session(expires: str | None = CLAUDE_EXPIRES_LATER, *, page: str | None = "app",
+             api: dict | None = CLAUDE_API_OK, found: bool = True) -> dict:
+    """偽の拡張機能が書く session.json の内容（run_id は実行のものが補われる）。"""
+    return {"checked_at": "2026-10-07T03:00:00.000Z", "cookie_found": found,
+            "cookie_expires_at": expires, "page": page, "api": api, "log": []}
+
+
+VALID_LINE = "profile corp: 有効（API の読み取り OK・Cookie の期限 2026-11-01 17:56 まであと 25 日）"
+
+
+def test_collect_claude_check_login_checks_every_configured_profile(claude_env, capsys):
+    """設定した全プロファイルを初出順に重複なく、1 つずつ起動して確かめる。"""
+    env = claude_env
+    _write_preferences(env.profiles / "group", env.staging)
+    env.ext.session = _session()
+    assert _collect_claude(env, "--check-login") == 0
+
+    # 設定の並びは example（corp）・org-a（group）・example2 の 2 つ（corp）
+    assert [spec["run_id"].rsplit("-", 2)[0] for spec in env.ext.specs] == [
+        "corp-check-login", "group-check-login"]
+    for spec, profile in zip(env.ext.specs, ("corp", "group")):
+        assert spec == {"run_id": spec["run_id"], "action": "check-login"}
+        assert re.fullmatch(rf"{profile}-check-login-\d{{8}}-\d{{6}}", spec["run_id"])
+    assert [command[1] for command in env.ext.commands] == [
+        f"--user-data-dir={env.profiles / 'corp'}", f"--user-data-dir={env.profiles / 'group'}"]
+    # 1 プロファイル 1 行の結果の後、そのプロファイルの Chrome を終了させる
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [
+        VALID_LINE, "  Chrome を終了しました",
+        VALID_LINE.replace("profile corp:", "profile group:"), "  Chrome を終了しました",
+    ]
+    assert captured.err == ""
+    assert env.listed == [env.profiles / "corp", env.profiles / "group"]
+    # ロックは終わったら外れる
+    with claude_export.profile_lock(env.staging, "corp"):
+        pass
+
+
+def test_collect_claude_check_login_of_a_named_profile(claude_env, capsys):
+    """プロファイルを指定するとそれだけを確かめる（設定に無くてもセットアップ済みなら確かめる）。"""
+    env = claude_env
+    _write_preferences(env.profiles / "spare", env.staging)
+    env.ext.session = _session()
+    assert _collect_claude(env, "--check-login", "spare") == 0
+    [spec] = env.ext.specs
+    assert spec["run_id"].startswith("spare-check-login-")
+    assert capsys.readouterr().out.splitlines()[0] == VALID_LINE.replace(
+        "profile corp:", "profile spare:")
+
+
+def test_collect_claude_check_login_requires_the_opt_in(claude_env, capsys):
+    """claude_export を書いた組織が無ければ、プロファイルを指定しない確認は何もせず 1。"""
+    env = claude_env
+    env.config = _claude_config(env.tmp_path, organizations="", chrome=env.chrome)
+    assert _collect_claude(env, "--check-login") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "claude_export を設定した組織がありません" in captured.err
+    assert env.ext.commands == []
+
+
+def test_collect_claude_check_login_skips_a_profile_not_set_up(claude_env, capsys):
+    """セットアップの済んでいないプロファイルは案内して次へ進み、終了コードは 1。"""
+    env = claude_env
+    env.ext.session = _session()
+    assert _collect_claude(env, "--check-login") == 1
+    assert [spec["run_id"].split("-")[0] for spec in env.ext.specs] == ["corp"]
+    captured = capsys.readouterr()
+    assert VALID_LINE in captured.out.splitlines()
+    assert ("プロファイル group の設定が済んでいません。先に collect --source claude "
+            "--setup group を実行し") in captured.err
+
+
+def test_collect_claude_check_login_skips_a_profile_in_use(claude_env, capsys):
+    """別の実行が使っているプロファイルは止めて次へ進む。"""
+    env = claude_env
+    _write_preferences(env.profiles / "group", env.staging)
+    env.ext.session = _session()
+    with claude_export.profile_lock(env.staging, "corp"):
+        assert _collect_claude(env, "--check-login") == 1
+    assert [spec["run_id"].split("-")[0] for spec in env.ext.specs] == ["group"]
+    captured = capsys.readouterr()
+    assert "プロファイル corp は別の実行が使用中です" in captured.err
+    assert captured.out.splitlines()[0].startswith("profile group: 有効（")
+
+
+@pytest.mark.parametrize("session,code,line", [
+    (_session(), 0, VALID_LINE),
+    (_session(CLAUDE_EXPIRES_SOON), 1,
+     ("profile corp: 期限間近（API の読み取り OK・Cookie の期限 2026-10-09 09:00 まであと 1 日）。"
+      "collect --source claude --login corp でログインし直してください")),
+    (_session("2026-10-07T12:00:00.000Z"), 1,
+     ("profile corp: 期限間近（API の読み取り OK・Cookie の期限 2026-10-07 21:00 まであと 24 時間"
+      "未満）。collect --source claude --login corp でログインし直してください")),
+    (_session("2026-10-06T12:00:00.000Z"), 1,
+     ("profile corp: 期限間近（API の読み取り OK・Cookie の期限 2026-10-06 21:00 を経過）。"
+      "collect --source claude --login corp でログインし直してください")),
+    (_session(None, page="login", api=None, found=False), 1,
+     ("profile corp: 無効（ログイン画面が表示された）。"
+      "collect --source claude --login corp でログインし直してください")),
+    (_session(api={"ok": False, "status": 401, "reason": "HTTP 401"}), 1,
+     ("profile corp: 無効（API の読み取りが HTTP 401）。"
+      "collect --source claude --login corp でログインし直してください")),
+    # 不明は --login（セッションの Cookie を消す）ではなく、ブラウザを残した再確認を勧める
+    (_session(api={"ok": False, "status": 403, "reason": "HTTP 403"}), 1,
+     ("profile corp: 不明（API の読み取りに失敗（HTTP 403））。collect --source claude "
+      "--check-login corp --keep-browser で再確認し、ブラウザの表示を確認してください")),
+    (_session(page="challenge", api=None), 1,
+     ("profile corp: 不明（セキュリティ検証が表示された）。collect --source claude "
+      "--check-login corp --keep-browser で再確認し、ブラウザの表示を確認してください")),
+    (_session(None), 1,
+     ("profile corp: 不明（API の読み取り OK・Cookie の期限が不明）。collect --source claude "
+      "--check-login corp --keep-browser で再確認し、ブラウザの表示を確認してください")),
+])
+def test_collect_claude_check_login_reports_each_state(claude_env, capsys, session, code, line):
+    """有効のときだけ終了コード 0。結果によらず、1 行出してから Chrome を終了させる。"""
+    env = claude_env
+    env.ext.session = session
+    assert _collect_claude(env, "--check-login", "corp") == code
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [line, "  Chrome を終了しました"]
+    assert captured.err == ""
+    assert env.terminated == [[CLAUDE_PID]]
+
+
+def test_collect_claude_check_login_follows_the_warning_days(claude_env, capsys):
+    """login_warning_days を上げると、同じ残り日数でも期限間近になる。"""
+    env = claude_env
+    config = Path(env.config)
+    config.write_text(config.read_text(encoding="utf-8") + "  login_warning_days: 30\n",
+                      encoding="utf-8", newline="\n")
+    env.ext.session = _session()
+    assert _collect_claude(env, "--check-login", "corp") == 1
+    assert capsys.readouterr().out.startswith("profile corp: 期限間近（")
+
+
+def test_collect_claude_check_login_keep_browser(claude_env, capsys):
+    env = claude_env
+    env.ext.session = _session()
+    assert _collect_claude(env, "--check-login", "--timeout", "5", "--keep-browser") == 1
+    # group はセットアップ前なので 1。corp は確かめて Chrome を残す
+    assert env.listed == [] and env.terminated == []
+    assert "Chrome を終了しました" not in capsys.readouterr().out
+
+
+def test_collect_claude_check_login_times_out_and_leaves_chrome_open(claude_env, capsys):
+    """session.json が届かなければ Chrome を残し、ブラウザの確認を案内する。
+
+    --import（配置の続き）も --login（セッションの Cookie を消す）も案内しない。人の操作を
+    待たないので、待機中の「要操作」の案内も出さない。
+    """
+    env = claude_env
+    assert _collect_claude(env, "--check-login", "corp", "--timeout", "2") == 1
+    captured = capsys.readouterr()
+    assert captured.err.splitlines() == [(
+        "profile corp: 2 分待っても確認が終わりませんでした。Chrome は開いたままにしています。"
+        "ブラウザの表示を確認してください（プロファイル corp）")]
+    assert "--import" not in captured.err and "--login" not in captured.err
+    assert captured.out == ""
+    assert env.listed == [] and env.terminated == []
+    assert 120 <= env.clock.now < 125
+
+
+def test_collect_claude_check_login_waits_for_the_configured_minutes(claude_env):
+    """--timeout を省くと claude_export.timeout_minutes（既定 15 分）まで待つ。"""
+    env = claude_env
+    assert _collect_claude(env, "--check-login", "corp") == 1
+    assert 15 * 60 <= env.clock.now < 15 * 60 + 5
+
+
+def test_collect_claude_check_login_rejects_a_session_of_another_run(claude_env, capsys):
+    env = claude_env
+    env.ext.session = {**_session(), "run_id": "corp-check-login-20000101-000000"}
+    assert _collect_claude(env, "--check-login", "corp") == 1
+    captured = capsys.readouterr()
+    assert ("profile corp: session.json の run_id（corp-check-login-20000101-000000）が"
+            "この実行") in captured.err
+    assert "profile corp: 有効" not in captured.out
+    assert env.terminated == [[CLAUDE_PID]]
+
+
+@pytest.mark.parametrize("session,fragment", [
+    ("{broken", "session.json を JSON として読めません"),
+    ({**_session(), "cookie_found": "yes"}, "session.json の cookie_found が真偽値ではありません"),
+])
+def test_collect_claude_check_login_with_an_unreadable_session(
+    claude_env, capsys, session, fragment
+):
+    """読めない session.json は待ち切った後に理由を出して 1（Chrome は残す）。"""
+    env = claude_env
+    env.ext.session = session
+    assert _collect_claude(env, "--check-login", "corp", "--timeout", "1") == 1
+    [spec] = env.ext.specs
+    [line] = capsys.readouterr().err.splitlines()
+    assert line.startswith(f"profile corp: {fragment}")
+    assert line.endswith(f"（{env.staging / spec['run_id'] / 'session.json'}）")
+    assert env.terminated == []
+
+
+# --- 取得の最後のログインの Cookie の期限 ---
+
+
+@pytest.mark.parametrize("session,line", [
+    (_session(page=None, api=None), "  ログインの Cookie の期限: 2026-11-01 17:56（あと 25 日）"),
+    (_session(CLAUDE_EXPIRES_SOON, page=None, api=None),
+     ("  ログインの Cookie の期限: 2026-10-09 09:00（あと 1 日）。"
+      "collect --source claude --login corp でログインし直してください")),
+    (_session(None, page=None, api=None), "  ログインの Cookie の期限: 不明（Cookie の期限が不明）"),
+    (_session(None, page=None, api=None, found=False),
+     "  ログインの Cookie の期限: 不明（Cookie（sessionKey）が見つからない）"),
+])
+def test_collect_claude_reports_the_cookie_expiry_at_the_end(claude_env, capsys, session, line):
+    """配置の結果の後、Chrome を終了させる前に 1 行添える。取得の終了コードは変えない。"""
+    env = claude_env
+    env.ext.export_session = session
+    assert _collect_claude(env, "--org", "example") == 0
+    lines = capsys.readouterr().out.splitlines()
+    index = lines.index(line)
+    assert lines[index - 1] == "  配置 3 件・失敗 0 件"
+    assert lines[index + 1] == "  Chrome を終了しました"
+
+
+def test_collect_claude_without_a_session_file_adds_nothing(claude_env, capsys):
+    env = claude_env
+    assert _collect_claude(env, "--org", "example") == 0
+    captured = capsys.readouterr()
+    assert "ログインの Cookie の期限" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("session,fragment", [
+    ("{broken", "session.json を JSON として読めません"),
+    ({**_session(page=None, api=None), "run_id": "corp-current-20000101-000000"},
+     "session.json の run_id（corp-current-20000101-000000）がこの実行と一致しません"),
+])
+def test_collect_claude_warns_about_an_unreadable_session_file(
+    claude_env, capsys, session, fragment
+):
+    """session.json を読めなくても警告 1 行だけで、取得の結果と後始末は変えない。"""
+    env = claude_env
+    env.ext.export_session = session
+    assert _collect_claude(env, "--org", "example") == 0
+    captured = capsys.readouterr()
+    [warning] = [line for line in captured.err.splitlines() if "ログインの Cookie" in line]
+    assert warning.startswith("  警告: ログインの Cookie の期限を読めませんでした（")
+    assert fragment in warning
+    assert "ログインの Cookie の期限:" not in captured.out
+    assert env.terminated == [[CLAUDE_PID]]
+    assert _placed(env, "example", "spend").is_file()
+
+
+def test_collect_claude_reports_the_cookie_expiry_even_when_a_file_fails(claude_env, capsys):
+    """配置に失敗があっても 1 行は添え、終了コードは取得の結果（1）のまま。"""
+    env = claude_env
+    env.ext.outcomes = {("example", "spend"): {"ok": False, "reason": "spend report unavailable"}}
+    env.ext.export_session = _session(CLAUDE_EXPIRES_SOON, page=None, api=None)
+    assert _collect_claude(env, "--org", "example") == 1
+    assert "  ログインの Cookie の期限: 2026-10-09 09:00（あと 1 日）。collect --source claude " \
+        "--login corp でログインし直してください" in capsys.readouterr().out.splitlines()
+
+
+def test_collect_claude_import_does_not_report_the_cookie_expiry(claude_env, capsys):
+    """--import は Chrome に触れないので、残っている session.json があっても期限を出さない。"""
+    env = claude_env
+    env.ext.manifest = None
+    env.ext.export_session = _session(page=None, api=None)
+    assert _collect_claude(env, "--org", "example", "--timeout", "1") == 1
+    run_dir = env.staging / env.ext.specs[0]["run_id"]
+    assert (run_dir / "session.json").is_file()
+    body = json.loads((run_dir / "progress.json").read_text(encoding="utf-8"))
+    (run_dir / "manifest.json").write_text(json.dumps(body), encoding="utf-8")
+    capsys.readouterr()
+
+    assert _collect_claude(env, "--import", env.ext.specs[0]["run_id"]) == 0
+    captured = capsys.readouterr()
+    assert "ログインの Cookie の期限" not in captured.out + captured.err
 
 
 # --- 複数 workspace のレイアウト ---
