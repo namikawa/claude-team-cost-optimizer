@@ -1,7 +1,8 @@
 # リリース手順
 
-新しいバージョンを配布するための手順。保守者向け。利用者はタグを指定して
-`uv tool install` するだけなので、リリース＝タグと GitHub Releases を作ることを指す。
+新しいバージョンを配布するための手順。保守者向け。利用者は GitHub Releases に添付した
+wheel の URL を指定して `uv tool install` で導入するので、リリース＝タグと GitHub Releases
+（wheel の添付）を作ることを指す。
 
 - 導入・アップデートの手順（利用者側）: [setup.md](./setup.md)
 
@@ -20,6 +21,10 @@
    畳む前に、前回のリリース以降にマージした PR がすべて載っているか確認すること。
    セクションの末尾のリンク定義（`[X.Y.Z]: .../releases/tag/vX.Y.Z`）も追記する。
    利用者の手順が変わる変更（出力ファイル名の変更など）は「変更」の先頭に置く
+
+   あわせて、実装ステータス文書（[implementation-status.md](./roadmap/implementation-status.md)）の
+   冒頭（次のタスク・リリーススコープ）を、このリリースの後の状態に更新する。また、CHANGELOG に
+   足した各行に対応する説明が README・docs にあるかを確かめ、無ければ足す
 
 2. `pyproject.toml` の `version` を更新する。タグ名（`vX.Y.Z`）と一致させること。
    `seat-analyzer --version` が返すのはこの値で、ずれると利用者が入れたものを
@@ -60,11 +65,20 @@
    Releases のタイトルと本文も公開面なので、投稿する前に検査に通す（タイトルは
    `--text` で確かめる）
 
-7. 利用者と同じ経路で導入できることを確認する。ワークスペースとは別の場所で実行する
+7. 利用者と同じ経路で導入できることを確認する。開発機にグローバルな tool を入れないよう、
+   `uvx` の隔離実行で確かめる（`uv tool install` は開発機に tool を入れるので、この確認には
+   使わない）
 
    ```sh
-   uv tool install "seat-analyzer @ https://github.com/namikawa/claude-team-cost-optimizer/releases/download/vX.Y.Z/seat_analyzer-X.Y.Z-py3-none-any.whl"
-   seat-analyzer --version
+   uvx --from "seat-analyzer @ https://github.com/namikawa/claude-team-cost-optimizer/releases/download/vX.Y.Z/seat_analyzer-X.Y.Z-py3-none-any.whl" seat-analyzer --version
+   ```
+
+   `seat-analyzer X.Y.Z` が返れば導入できている。同梱の既定設定・テンプレートまで確かめるなら、
+   同じ `uvx --from ...` でサンプルの分析を流す。サンプルを使うのでリポジトリのルートで実行し、
+   設定・入力・出力先はオプションで指す（出力先は使い捨ての場所にする）
+
+   ```sh
+   uvx --from "seat-analyzer @ <wheel の URL>" seat-analyzer analyze --config examples/config.yaml --input-dir examples/input --output-dir <使い捨ての場所> --month 2026-06
    ```
 
    確かめるのは手順 6 で添付した wheel の URL からの導入。[setup.md](./setup.md) が案内して

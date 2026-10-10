@@ -23,7 +23,8 @@ details は全ユーザ表・部署別/チーム別サマリ・詳細利用状�
 設定について: 以下で `config.yaml > trend` のように書くのは設定のキーの位置を指す。既定値は
 パッケージ同梱の `default-config.yaml` が持ち、ワークスペースの `config.yaml` には既定から
 変えたい差分だけを書く（書かなかった項目は既定が使われる）。モデル単価やカラム対応表のように
-プログラムの更新で新しい値が届く項目は、ワークスペース側に写さないこと。
+プログラムの更新で新しい値が届く項目は、ワークスペース側に写さないこと。キーの一覧と上書きの
+規則は[設定キーと既定値](#設定キーと既定値)。
 
 ## dashboard の構造と操作
 
@@ -159,11 +160,63 @@ product 名の照合は、正規化（前後空白の除去・大小文字・Uni
 部分一致・あいまい一致はしない（`Code Review` が `Claude Code` に一致するような取り違えは、
 費用ではなく活用の評価を歪めるため）。CSV 側の表記ゆれは、リストに名前を並べて吸収する。
 
+## recommendations の列
+
+V1 の判定（シート推奨）をユーザ単位で並べた表で、スプレッドシートでの二次加工に使う。行は
+members ∪ 対象月のスペンドのユーザで、利用ゼロのメンバーとシート未割当のメンバーも含み、
+組織サービス利用の行は含まない。並びは判定（`status`）ごとにまとめ、同じ判定の中は削減見込みの
+大きい順。
+
+- `email` — ユーザのメールアドレス
+- `workspace` — 複数スペースの組織でだけ `email` の次に出る列で、そのアカウントの workspace
+  （ディレクトリ名）。行は主→副の順に全スペースのアカウントを並べ、主の行の `api_cost_usd` は
+  判定に使った全スペースの合算（[複数スペース（workspace）の組織の成果物](#複数スペースworkspaceの組織の成果物)）。
+  片方のスペースにしか無い列は、もう片方の行で空欄になる
+- `current_seat` — 現在のシート（`standard` / `premium` / `unassigned` / `unknown`）。`unknown` は
+  members に居ないのにスペンドに現れたユーザ
+- `api_cost_usd` — 対象月の全 product の API 換算需要 [USD/月]
+- `cost_if_standard_usd` / `cost_if_premium_usd` — そのシートだった場合の月額（mid シナリオ）。
+  現シート側はシート料 + 実課金の観測値、変更先側はモデルの試算を観測実課金で抑えた値
+  （[判定ロジック概要](#判定ロジック概要)）。シート未割当と固定シート（`fixed_seat`）の行は空欄
+- `cost_current_usd` — 現シートの月額（シート料 + 実課金）。シート未割当と `unknown` の行は空欄
+- `recommended_seat` — mid シナリオで月額の安い方のシート（同額なら `standard`）。シート未割当の
+  行は `unassigned`、固定シートの行は現シートのまま
+- `monthly_saving_usd` — `cost_current_usd` から安い方の月額を引いた削減見込み（現シートが
+  推奨どおりなら 0）。シート未割当・固定シート・`unknown` の行は空欄
+- `status` — 判定（`変更推奨` / `要観察` / `要観察（データ蓄積待ち）` / `現状維持` / `シート不明` /
+  `対象外（シート未割当）` / `対象外（固定シート）`）。`変更推奨` はヒステリシスの条件を満たした
+  ときだけ（[判定ロジック概要](#判定ロジック概要)）。推奨が現シートと違っても、対象月までの
+  スペンドのある月が `decision.hysteresis_months` に満たなければ `要観察（データ蓄積待ち）`
+- `confidence` — 確度。low / high シナリオの推奨のうち mid と一致した数（2 = `高`・1 = `中`・
+  0 = `低`）。シート未割当と固定シートの行は `—`
+- `rec_low` / `rec_high` — low / high シナリオでの推奨シート
+- `cap_suspected` — 上限フラグ（True / False。条件は[判定ロジック概要](#判定ロジック概要)）
+- `billed_extra_usd` — 対象月の実課金（スペンドレポートの `net_spend` の合計。列の無いレポート
+  では 0）
+- `prompt_tokens` / `completion_tokens` — 対象月の prompt / completion トークン数の合計
+- `product_breakdown` — product の構成比（リクエスト数基準。リクエスト数の列が無ければ明細の
+  行数で数える。1% 未満は省く）。スペンドレポートに product の列が無ければ空欄
+- `model_breakdown` — モデルの利用割合（prompt + completion のトークン量基準。1% 未満は省く）
+- `department` / `team` / `role` / `note` — members-info.csv の部署・チーム・職種・備考（兼務は
+  `; ` 区切り）。列は常に出て、members-info が無い組織や行の無いユーザでは空欄
+- `credit_limit_usd` / `credits_mode` — 追加クレジット上限 κ（空欄は不明・`inf` は上限なし）と、
+  そこから導いたモード（`enabled` / `disabled` / `unknown`。上限が空欄でも対象月までに実課金が
+  観測されたユーザは `enabled`）。上限が決まっているユーザが1人以上いる（members-info の列に
+  値があるか、workspace の設定に `credit_limit_default_usd` がある）ときだけ出る列で、そうで
+  なければ2列とも落ちる（[追加クレジット（usage credits）の上限](#追加クレジットusage-creditsの上限)）
+- `prs_with_cc` / `loc_with_cc` — code-analytics の PR 数と LoC。対象月の code-analytics があり、
+  その列を持つときだけ出る。code-analytics に行の無いユーザも 0 になる
+
+金額は小数2桁に丸める。値の無いセルは空欄で、真偽値は True / False で書く。文字コードは
+BOM 付きの UTF-8 で、先頭が `=`・`+`・`-`・`@`・タブ・CR の文字列のセルには、表計算ソフトが
+式として解釈しないよう先頭に `'` を付ける。
+
 ## usage-summary の列
 
-ユーザ単位の product 利用特徴量。email + 8つの特徴量の計9列で、行は対象月のスペンドに明細の
-あるユーザ（メールアドレス昇順）。利用ゼロのメンバーは行を持たないため recommendations とは
-対象がそろわず、組織サービス利用の行も含まない。
+ユーザ単位の product 利用特徴量。email + 8つの特徴量の計9列（複数スペースの組織では email の
+次に `workspace` 列が入り計10列。[複数スペース（workspace）の組織の成果物](#複数スペースworkspaceの組織の成果物)）
+で、行は対象月のスペンドに明細のあるユーザ（メールアドレス昇順）。利用ゼロのメンバーは行を
+持たないため recommendations とは対象がそろわず、組織サービス利用の行も含まない。
 
 - `email` — ユーザのメールアドレス
 - `total_demand_usd` — 全 product の API 換算需要 [USD/月]
@@ -228,7 +281,7 @@ recommendations）とは別系統の出力で、V1 の内容には影響しな�
 - `suggested_credit_cap_usd` — `credit_action` が `enable_with_cap` のときに提示する初期上限
 
 金額は小数2桁、確定できなかった値は空欄にする（usage-summary と同じ流儀）。語彙の一覧と
-各理由コードの意味は実装設計書の §12 が唯一の源。
+各理由コードの意味は[実装設計書の §12](./roadmap/implementation-design.md#12-decision-v2) が唯一の源。
 
 履歴（判定が見る月の並び）は次のように組む。
 
@@ -346,10 +399,12 @@ recommendations と usage-summary の CSV には email の次に `workspace` 列
 ### 設定（config.yaml > organizations.<組織名>.workspaces）
 
 - `primary` — 主スペースだけを `true` にする
-- `label` — 成果物に出すスペースの表示名
+- `label` — 成果物に出すスペースの表示名（省略時は workspace 名）。組織内で一意にする。
+  重複は設定の読み込みでエラーになる
 - `fixed_seat` — 運用方針で固定するシート種別。副スペース（複数 workspace の組織）のための設定。
   指定された workspace のアカウントは Standard / Premium の損益分岐判定・感度分析・
-  追加クレジット付与候補の対象外
+  追加クレジット付与候補の対象外。その workspace に固定と違うシート種別のアカウントがあると
+  警告が出る（判定は変えない）
 - `credit_limit_default_usd` — 副アカウントの追加クレジット上限の既定
 - `evaluation_months` — 払い出し判定と継続判定に必要な連続月数（省略時は `decision.hysteresis_months`）
 
@@ -385,7 +440,8 @@ Team プランの各シートには利用の込み枠（レート制限型）が
   （上限は分からないため、E が小さいことは容量に余裕がないことを意味しない）
 - 昇格の前に、まず上限つきクレジットを付与して1ヶ月の課金実測で判断すべきユーザ（付与候補）。
   dashboard ではこのカードを常に表示し、候補がいない場合は「該当者なし」と「判定不能
-  （上限が未記入）」を区別して示す
+  （上限が未記入）」を区別して示す。付与するときの推奨初期上限は
+  `usage_credits.grant_suggested_cap_usd`（既定 $150）で、提示に使うだけで判定には使わない
 - 速報では、有効ユーザの残額と到達見込み（観測実課金ペースの線形外挿による目安）
 
 ## GitHub 分析の有効化（config.yaml > organizations）
@@ -701,21 +757,45 @@ API 換算需要は、モデル名の部分一致で引いた単価（USD per 1M
 
 ## 判定ロジック概要
 
-ユーザ×月ごとに API 換算コスト `api_cost` を集計し、
+ユーザ×月ごとに API 換算コスト `api_cost` を集計し、シート込み利用量（allowance）の
+モデルで各シートの月額を試算する。
 
 ```
 cost_if_standard = $25  + max(0, api_cost − S_allowance)
 cost_if_premium  = $125 + max(0, api_cost − P_allowance)
 ```
 
-の安い方を推奨。ただし:
+この試算を観測値と次のように組み合わせ、月額の安い方を推奨する（同額なら Standard）。
+
+- 現シートの月額は試算ではなく観測値（シート料 + 対象月の実課金）を使う
+- 変更先のシートの月額は上の式の試算を、込み量の大小関係（Standard ≤ Premium）を使って
+  観測実課金で上下に抑える
+  - Standard ユーザが Premium に変えた場合の超過分は、現在の実課金を超えない（試算と
+    現在の実課金の小さい方）
+  - Premium ユーザが Standard に変えた場合の超過分は、現在の実課金を下回らない（試算と
+    現在の実課金の大きい方）
+  - 帰結として、実課金がゼロの Standard ユーザは、需要がどれだけ大きくても Standard の月額が
+    $25・Premium の月額が $125 になり、推奨は Standard のまま。Standard ユーザに Premium が
+    推奨されるのは、実課金がシート差額（$100）を上回る月に限られる
+- シートが不明（members に居ないのにスペンドに現れた）のユーザは観測値で抑えず、上の式の
+  試算だけで推奨を出す（判定は「シート不明」）
+
+このほか:
 
 - allowance（シート込み利用量の USD 換算）は Anthropic 非公開のため、
   `config.yaml` の low / mid / high 3 シナリオで感度分析する（判定の主系は mid）
-- ヒステリシス: 直近 2 ヶ月連続（`decision.hysteresis_months`）で同じ推奨、
-  かつ削減見込みが差額 $100 の 20% 以上（`decision.buffer_ratio`）のときのみ「変更推奨」
-- センサリング警告: 従量課金が無効な場合、Standard ユーザの観測利用量は上限で
-  頭打ちになり真の需要を過小評価する。上限到達が疑われるユーザにはフラグを付ける
+- ヒステリシス: 対象月以前でスペンドレポートのある月のうち、直近 2 か月
+  （`decision.hysteresis_months`）のどの月でも推奨が同じで、かつその月の削減見込みが差額 $100 の
+  20%（`decision.buffer_ratio`）以上のときだけ「変更推奨」にする。数えるのはスペンドレポートの
+  ある月なので、暦の上で連続するとは限らない（レポートの無い月は飛ばして、その前の月を使う）。
+  その月のスペンドに現れないユーザは需要 0 として判定する。推奨が現シートと違っても、スペンド
+  レポートのある月が足りなければ「要観察（データ蓄積待ち）」。V2 の判定は暦で連続する月だけを
+  見る（[decision-evidence の列（V2 判定）](#decision-evidence-の列v2-判定)）
+- 上限フラグ（⚠️・recommendations の `cap_suspected`）: 現シートが Standard で、対象月の
+  実課金がゼロ、かつ需要が Standard の込み量推定（mid）の `decision.censoring_margin` 倍
+  （既定 0.85）以上のユーザに付ける。「上限で止められて需要を過小評価している」のか
+  「実効的な込み量が推定より大きい」のかはデータから区別できないので、本人への確認が要る。
+  追加クレジットが有効なユーザには付けない（[追加クレジット（usage credits）の上限](#追加クレジットusage-creditsの上限)）
 - シート未割当（Seat Tier: Unassigned）のメンバーは、意図的な未割当（別組織で
   アサイン済み・管理者等）として判定対象外にする。利用実績がある場合のみ警告
 
@@ -726,3 +806,19 @@ cost_if_premium  = $125 + max(0, api_cost − P_allowance)
 - Standard ユーザの月次 `api_cost` の分布を確認し、上限到達（頭打ち）している
   ユーザの観測最大値 ≒ `S_allowance` として `config.yaml > seats` で上書き
 - Premium は Standard の 5 倍程度（セッション倍率 1.25x vs 6.25x）を目安に設定
+
+この較正が効くのは V1 の判定（変更先シートの月額の試算と、それを基準にする上限フラグ・
+追加クレジット付与候補）だけ。V2 の判定（`--decision-version v2` / `decision_v2.enabled`）は
+allowance を使わず、方針線 `decision_v2.premium_justification_usd` を使う
+（[decision-evidence の列（V2 判定）](#decision-evidence-の列v2-判定)）。
+
+## 設定キーと既定値
+
+設定キーと既定値の一覧の正は、パッケージ同梱の既定設定ファイル
+[`src/seat_analyzer/default-config.yaml`](../src/seat_analyzer/default-config.yaml) で、各キーの
+意味はそこにコメントで書いてある（この文書には全キーの表を置かない）。
+
+ワークスペースの `config.yaml` には、既定から変えたい差分だけを書く。辞書はキー単位で既定に
+重なり、リストと単一の値は丸ごと置き換わる（一覧の一部だけを足すことはできない）。既定に
+無いキー（`organizations` の直下の組織名と、その `workspaces` の直下の workspace 名を除く）・
+型の違う値・空の値は、設定の読み込みでエラーになる。

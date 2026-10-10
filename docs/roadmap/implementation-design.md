@@ -1,8 +1,8 @@
 # Claude利活用・シート適正化機能 実装設計書
 
 - ステータス: Draft
-- 最終更新: 2026-08-14
-- 対象: `seat-analyzer` 0.1系からの段階的拡張
+- 最終更新: 2026-10-10
+- 対象: `seat-analyzer` v1.0 以降の段階的拡張
 - 関連文書: [Claude利活用・シート適正化機能提案書](./claude-adoption-cost-management-proposal.md)
 - 進捗管理: [実装ステータス](./implementation-status.md)
 
@@ -125,6 +125,9 @@ Premium → Standard:
 - 組織を跨いだユーザー結合・最適化を行わない
 - 既存の複数組織一括実行機能は維持してよい
 
+ここでの組織は入力ディレクトリ（`input/<組織名>/`）の単位。1つの組織が複数のTeamスペース
+（claude.ai上では別のorganization）を持つ場合の扱いは§26。
+
 ## 4. ゴールと非ゴール
 
 ### 4.1 ゴール
@@ -220,11 +223,11 @@ src/seat_analyzer/
   report_v2.py          # 新規CSV/Markdown
 ```
 
-上の2つのブロックは設計時点の想定で、現状とは次の点が異なる（v1.0.0 時点）。
+上の2つのブロックは設計時点の想定で、現状とは次の点が異なる。モジュールの一覧と層の正は`src/seat_analyzer/`の構成と`tests/test_module_deps.py`の`LAYERS`で、以下はその要点だけを書く。
 
-- `report.py`は`report/`パッケージになっている。`__init__.py`が公開APIとオーケストレーション、出力形式ごとに`markdown.py`/`html.py`/`csv_out.py`、共通処理が`document.py`/`format.py`/`text.py`という構成
-- `analyze.py`も`analyze/`パッケージになっている（`__init__.py`/`credits.py`/`midmonth.py`）
-- 段階的に追加する一覧のうち`domain.py`/`data_quality.py`/`identity.py`は追加済み。一覧に無いものとして考察執筆まわりの`discussion.py`/`leakcheck.py`/`public_text.py`がある
+- `report.py`は`report/`パッケージになっている。`__init__.py`が公開APIとオーケストレーションで、主なファイルは出力形式ごとの`markdown.py`/`html.py`/`csv_out.py`と、共通処理の`document.py`/`format.py`/`text.py`
+- `analyze.py`も`analyze/`パッケージになっている（主なファイルは`__init__.py`/`pipeline.py`/`credits.py`/`midmonth.py`）
+- 段階的に追加する一覧のどれが既にあるかは`src/seat_analyzer/`の構成で確かめる。一覧に無いものとして、考察執筆まわりの`discussion.py`/`leakcheck.py`/`public_text.py`もある
 - `report_v2.py`という単一モジュールは作らない。新しい出力は`report/`パッケージの中へ、出力形式ごとに足す（CSVなら`report/*_csv.py`）。以降のStepで対象として`report_v2.py`または`report.py`と書かれている箇所は、この方針に読み替える。責務ごとの実ファイル名は各Trackの着手時に個別に確定させる（着手しないTrackを先回りして書き換えない。§2.4）
 - V2判定の結線（SubjectHistoryの組み立てと判定の実行）は`decision_evidence.py`（層25）、CSVの書き出しは`report/evidence_csv.py`
 - 設定の既定は`src/seat_analyzer/default-config.yaml`が唯一の源。リポジトリ直下・ワークスペースの`config.yaml`は差分だけを書く任意の上書きファイルで、gitignore済み。以降のStepで対象として`config.yaml`と書かれている箇所は`default-config.yaml`に読み替える
@@ -296,10 +299,9 @@ reports/<org>/<month>/
 
 ```text
 ~/.seat-analyzer/exports/<run_id>/
-  manifest.json
-  <dir>/<kind_dir>/<元ファイル名>
 ```
 
+- stagingの配置（実行ごとに置くファイルと`run_id`の形）は§14.3が正
 - 置き場所は`claude_export.staging_dir`で変更できる（§14.3・§21）
 - CSV全体を走査せず、種別判定に必要なheaderだけを読む
 - stagingのファイルは変更しない（`input/`へはコピーする）
@@ -2446,7 +2448,8 @@ dashboardで読めるようにする。
 
 対象:
 
-- `src/seat_analyzer/report_v2.py`
+- `src/seat_analyzer/decision_evidence.py`
+- `src/seat_analyzer/report/evidence_csv.py`
 - `src/seat_analyzer/cli.py`
 - `tests/test_cli.py`
 
@@ -3188,7 +3191,7 @@ dashboardで読めるようにする。
 
 対象:
 
-- `src/seat_analyzer/report_v2.py`
+- `src/seat_analyzer/report/github_csv.py`
 - `tests/test_cli.py`
 
 受け入れ条件:
@@ -3582,11 +3585,12 @@ Step 9〜24
 
 ### Milestone C: Collection automation
 
-Step 31・50〜51
+Step 31・50〜54
 
 - 専用プロファイルのChromeと同梱拡張機能
 - 公式のエクスポートCSV
 - 2モード（当月・前月）
+- ログインセッションの確認（`--check-login`）
 - credit入力補助
 
 ### Milestone D: GitHub reference
@@ -3788,7 +3792,7 @@ V1のallowanceモデルに依存する出力（込み枠推定の3scenario、⚠
 
 ### Browser-assisted collection release
 
-- Step 50〜51完了
+- Step 50〜54完了
 - 3回連続で全スペースのCSV取得に成功
 - ログイン期限切れを安全に扱える
 - シート・credit変更操作が存在しない

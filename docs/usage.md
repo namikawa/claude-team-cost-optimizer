@@ -61,15 +61,49 @@ GitHub の login をそのまま書く。空欄は未記入で記入を促す警
 「月中のメンバー変動」セクションに併記する。
 
 雛形は以下のコマンドで作成できる（`input/<組織名>/{spend,members,code-analytics}/` と
-`reports/<組織名>/` をまとめて作る。複数指定可）:
+`reports/<組織名>/`、およびヘッダ行だけの `input/<組織名>/members-info.csv` をまとめて作る。
+複数指定可）:
 
 ```sh
 seat-analyzer init-org <組織名>
 ```
 
 組織が1つだけの場合も同じ構成にする。`input/spend/` のように組織ディレクトリを挟まず
-直下に置いた形は受け付けず、移行手順を示してエラー終了する（手順は docs/setup.md の
-トラブルシューティング）。組織名 `spend` と `summary` は予約されていて使えない。
+直下に置いた形は受け付けず、移行手順を示してエラー終了する（手順は [setup.md](./setup.md) の
+[トラブルシュート](./setup.md#トラブルシュート)）。組織名 `spend` と `summary` は予約されていて
+使えない。
+
+### 必須の列とカラム名の差異
+
+CSV はヘッダを正規化してから、`config.yaml` の `columns.<種別>` のエイリアス表で正準の列名へ
+対応づけて読む。種別ごとの必須の正準列は次のとおりで、どれかが見つからなければ、実ファイルの
+ヘッダを示してエラーになる。
+
+| 種別（`columns` のキー） | ファイル | 必須の正準列 |
+|---|---|---|
+| `spend` | `spend/` のスペンドレポート | `email`・`model`・`prompt_tokens`・`completion_tokens` |
+| `members` | `members/` のメンバー一覧 | `email`・`seat_type` |
+| `code_analytics` | `code-analytics/` の Claude Code 分析 | `email` |
+| `members_info` | `members-info.csv` | `email` |
+
+ヘッダの正規化は、前後の空白を除いて小文字にし、`_` と `-` を空白に置き換え、連続する空白を
+1つにまとめる。エイリアス表に挙げた名前のほか、正準の列名そのもの（`prompt_tokens` なら
+`prompt tokens`）も照合の対象になる。
+
+claude.ai の CSV の列名が変わって読めなくなったときは、ワークスペースの `config.yaml` の
+`columns.<種別>.<正準列>` にエイリアスを足すと、プログラムの更新を待たずに吸収できる。上書き
+ファイルにリストを書くと既定のリストを丸ごと置き換える（[上書きの規則](./reference.md#設定キーと既定値)）
+ので、足すときは既定のエイリアスも並べる。既定のエイリアスの一覧は既定設定ファイル
+（[default-config.yaml](../src/seat_analyzer/default-config.yaml)）の `columns` が正。
+
+```yaml
+columns:
+  spend:
+    model: ["model", "model name", "<新しい列名>"]
+```
+
+書いたリストは、プログラムの更新で届く既定のエイリアスに追従しなくなる。新しい列名に対応した
+版へ更新したら、その行は消してよい。
 
 ## 複数の Team スペースを運用する組織（入れ子レイアウト）
 
@@ -225,7 +259,7 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    V1 の判定・成果物・組織横断サマリは変わらない（V2 の判定を並べて比較するための
    追加出力）。省略時は `config.yaml > decision_v2.enabled` に従い、既定は v1。
    速報モード（`--preview`）は V2 判定を行わないため、このオプションと併用できない。
-   列の意味は [docs/reference.md](reference.md) を参照
+   列の意味は reference.md の [decision-evidence の列](./reference.md#decision-evidence-の列v2-判定) を参照
 
 6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される。ファイル名は
    `{種別}-{YYYYMM}-{組織名}.{拡張子}` で、共有でフォルダの外へ出しても
@@ -233,7 +267,7 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    - `report-YYYYMM-<組織名>.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + データ検証・警告 + 考察
    - `details-YYYYMM-<組織名>.md` — 機械生成の詳細資料（全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + シートが吸収した量の実測 + 感度分析）
    - `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（自己完結 HTML）
-   - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
+   - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用（列の意味は reference.md の [recommendations の列](./reference.md#recommendations-の列)）
    - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
    - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（`--decision-version v2` のときだけ）
    - `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数と lead time の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）

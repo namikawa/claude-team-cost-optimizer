@@ -6,6 +6,11 @@
 - 関連文書: [実装設計書](./implementation-design.md)
 - 進捗管理: [実装ステータス](./implementation-status.md)
 
+注記: 収集補助の方式（§8.1などの「通常ブラウザ＋download watcher」）は、実装のときに専用
+プロファイルのChromeと同梱の拡張機能で取得する方式へ変えた。CLIの形（`collect --source claude`・
+`collect --source github`）やGitHubの対応表（`members-info.csv`の`GitHub ID`列）など、実装で
+変わった点は[実装設計書](./implementation-design.md)（§14・§15など）が正。
+
 ## 1. エグゼクティブサマリ
 
 本システムは、Claude Teamプランを利用するエンジニア組織において、Claude Codeを中心と
