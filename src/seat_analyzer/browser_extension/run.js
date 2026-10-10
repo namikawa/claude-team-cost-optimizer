@@ -270,18 +270,21 @@ async function waitForCodeData() {
 // 参加している組織の一覧（読み取りだけ）。timeoutMs で応答の本文まで読み終えなければ打ち切る。
 // status は HTTP のステータス（応答が無ければ null）
 async function fetchOrganizations(timeoutMs) {
+  // 応答のヘッダが届いた後に本文の読み取りで失敗しても、受け取った status は残す
+  let status = null;
   try {
     const res = await fetch("/api/organizations", {
       credentials: "include",
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) return { ok: false, status: res.status, reason: `HTTP ${res.status}` };
+    status = res.status;
+    if (!res.ok) return { ok: false, status, reason: `HTTP ${status}` };
     const data = await res.json();
-    if (!Array.isArray(data)) return { ok: false, status: res.status, reason: "unexpected response" };
+    if (!Array.isArray(data)) return { ok: false, status, reason: "unexpected response" };
     const pick = (o, key) => (o && o[key] !== undefined ? o[key] : null);
     return {
       ok: true,
-      status: res.status,
+      status,
       orgs: data.map((o) => ({
         uuid: pick(o, "uuid"),
         name: pick(o, "name"),
@@ -290,7 +293,7 @@ async function fetchOrganizations(timeoutMs) {
       })),
     };
   } catch (e) {
-    return { ok: false, status: null, reason: String(e && e.message ? e.message : e) };
+    return { ok: false, status, reason: String(e && e.message ? e.message : e) };
   }
 }
 
@@ -799,7 +802,11 @@ async function main() {
     setStatus(`実行内容が不正です（${problem}）`, true);
     return;
   }
-  const other = await otherActiveRun(spec.run_id);
+  // 再ログイン（login）は何も書かず、進行中の取得（ログイン待ちで止まっているものを含む）を
+  // 妨げないので、進行中の実行の記録（activeRun）による拒否と登録の対象にしない。同じ
+  // run_id を 2 度実行しない claimRun は対象のまま（再読み込みで Cookie を消し直さないため）
+  const isLogin = spec.action === "login";
+  const other = isLogin ? null : await otherActiveRun(spec.run_id);
   if (other) {
     setStatus(`別の実行（${other}）が進行中です`, true);
     return;
@@ -810,16 +817,15 @@ async function main() {
   }
   runId = spec.run_id;
   runMode = spec.mode || null;
-  await chrome.storage.session.set({ activeRun: { run_id: runId, started_at: Date.now() } });
+  if (!isLogin) await chrome.storage.session.set({ activeRun: { run_id: runId, started_at: Date.now() } });
   log(spec.action ? `run ${runId} ${spec.action}` : `run ${runId} mode=${runMode} orgs=${spec.orgs.length}`);
   const tab = await chrome.tabs.create({ url: "about:blank", active: true });
   if (spec.action === "list-orgs") await runListOrgs(tab.id);
   else if (spec.action === "check-login") await runCheckLogin(tab.id);
-  else if (spec.action === "login") await runLogin(tab.id);
+  else if (isLogin) await runLogin(tab.id);
   else await runExport(spec, tab.id);
-  // manifest.json・orgs.json・session.json を保存し終えてから（再ログインはログイン画面を
-  // 開いてから）外す
-  await releaseActiveRun(runId);
+  // manifest.json・orgs.json・session.json を保存し終えてから外す（再ログインは登録していない）
+  if (!isLogin) await releaseActiveRun(runId);
 }
 
 main().catch(async (e) => {

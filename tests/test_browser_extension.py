@@ -254,8 +254,12 @@ def test_fetch_organizations_has_a_time_limit():
     assert fetch_orgs.startswith("function fetchOrganizations(timeoutMs) {")
     assert "signal: AbortSignal.timeout(timeoutMs)," in fetch_orgs
     assert "WAIT" not in fetch_orgs
-    assert "return { ok: false, status: res.status, reason: `HTTP ${res.status}` };" in fetch_orgs
-    assert "return { ok: false, status: null, reason:" in fetch_orgs
+    # 応答のヘッダが届いた後に本文の読み取りで失敗しても、受け取った status を残す
+    assert "let status = null;\n  try {" in fetch_orgs
+    assert ("status = res.status;\n    if (!res.ok) return { ok: false, status, reason: `HTTP ${status}` };"
+            in fetch_orgs)
+    assert "} catch (e) {\n    return { ok: false, status, reason:" in fetch_orgs
+    assert "status: null" not in fetch_orgs and "status: res.status" not in fetch_orgs
     # 組織一覧とログインの確認の両方が同じ上限を渡す
     assert run_js.count("exec(tabId, fetchOrganizations, [WAIT.api])") == 2
     assert "exec(tabId, fetchOrganizations)" not in run_js
@@ -277,3 +281,12 @@ def test_login_removes_only_the_session_cookies():
     assert login.index("chrome.cookies.remove(") < login.index("url: LOGIN_URL")
     for word in ("saveJson", "lastActiveOrg", "ensureApp", "WAIT.human"):
         assert word not in login
+    # 進行中の実行の記録（activeRun）による拒否と登録の対象にしない（ログイン待ちで止まった
+    # 取得が同じ Chrome に残っていても再ログインできる）。同じ run_id の再実行は claimRun で防ぐ
+    main = _function(run_js, "main")
+    assert 'const isLogin = spec.action === "login";' in main
+    assert "const other = isLogin ? null : await otherActiveRun(spec.run_id);" in main
+    assert "if (!isLogin) await chrome.storage.session.set({ activeRun:" in main
+    assert "if (!isLogin) await releaseActiveRun(runId);" in main
+    assert main.index("if (!(await claimRun(spec.run_id)))") \
+        < main.index("else if (isLogin) await runLogin(tab.id);")
