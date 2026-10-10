@@ -268,9 +268,9 @@ columns:
     credit_limit_usd: ["credit limit", "credit limit usd", "extra usage limit",
                        "spending limit", "追加クレジット上限", "従量上限"]
     # GitHub の login（email → login の対応表。GitHub 分析を有効にした組織だけが使う）。
-    # 空欄=未記入（未対応として扱い警告する）/ なし・none・- =アカウントを持たない
-    # （未対応として扱い警告しない）/ それ以外=GitHub の login（英数字で始まり英数字で
-    # 終わる1〜39文字・連続しないハイフン・高々1個のアンダースコア）
+    # 空欄=未記入（未対応として扱い警告する）/ なし・none・- =対象の GitHub Organization で
+    # PR を作らない（未対応として扱い警告しない）/ それ以外=GitHub の login（英数字で始まり
+    # 英数字で終わる1〜39文字・連続しないハイフン・高々1個のアンダースコア）
     github_login: ["github id", "github login", "github username", "github user",
                    "github account", "githubログイン", "githubユーザー名",
                    "githubアカウント", "github"]

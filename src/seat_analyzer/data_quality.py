@@ -887,37 +887,46 @@ def _github_org_issues(
 
 
 def _github_unmapped_issues(
-    input_dir: Path, month: str | None, cfg: dict, org: str, github_org: str,
-    members: GithubMembers,
+    month: str | None, cfg: dict, org: str, github_org: str,
+    members: GithubMembers, workspace_dirs: Iterable[Path | str],
 ) -> list[QualityIssue]:
-    """メンバー一覧のうち GitHub login に対応づかない人を警告する。
+    """シートを持つメンバーのうち GitHub login に対応づかない人を警告する。
 
-    メンバー一覧を読めない場合は静かに飛ばす（同じ原因を inspect_input が
-    MISSING_MEMBERS として報告するため、ここで二重に出さない）。
+    対象は analyze の GitHub の参考値と同じく、メンバー一覧で standard / premium の人
+    （`ingest.ASSIGNED_SEAT_TYPES`）。workspace_dirs は members-info の検査と同じ
+    workspace の一覧で、その和集合を照合する。メンバー一覧を読めない workspace は静かに
+    飛ばす（同じ原因を inspect_input が MISSING_MEMBERS として報告するため、ここで二重に
+    出さない）。
     """
     if month is None:
         return []
-    try:
-        result = ingest.load_members(input_dir, month, cfg)
-    except (OSError, ValueError):
-        return []
-    unmapped = github_collect.unmapped_emails(members, result.df["email"])
+    seated: set[str] = set()
+    for raw_dir in workspace_dirs:
+        try:
+            frame = ingest.load_members(Path(raw_dir), month, cfg).df
+        except (OSError, ValueError):
+            continue
+        seated.update(
+            frame.loc[frame["seat_type"].isin(ingest.ASSIGNED_SEAT_TYPES), "email"]
+        )
+    unmapped = github_collect.unmapped_emails(members, seated)
     if not unmapped:
         return []
     emails = list(unmapped[:_MAX_LISTED])
     return [_issue(
         Severity.WARNING, IssueCode.GITHUB_MAPPING_MISSING,
-        f"GitHub login に対応づかないメンバーが {len(unmapped)} 名います"
-        f"（例: {', '.join(emails)}）。"
+        f"シートを持つメンバーのうち GitHub login に対応づかない人が {len(unmapped)} 名"
+        f"います（例: {', '.join(emails)}）。"
         f"{ingest.MEMBERS_INFO_FILENAME} の GitHub ID 列に記入してください"
-        "（アカウントを持たない人は「なし」と書くとこの警告から外れます。"
-        "対応づかない人の PR はどのユーザにも帰属しません）",
+        "（対象の GitHub Organization で開発しない人は「なし」と書くとこの警告から"
+        "外れます。対応づかない人の PR は、人ごとの行にも組織全体の件数にも入りません）",
         org, github_org=github_org, members=len(unmapped), emails=emails,
     )]
 
 
 def _github_mapping_issues(
-    input_dir: Path, month: str | None, cfg: dict, org: str, github_org: str
+    input_dir: Path, month: str | None, cfg: dict, org: str, github_org: str,
+    workspace_dirs: Iterable[Path | str],
 ) -> list[QualityIssue]:
     """members-info の GitHub ID 列（email → GitHub login の対応表）を検査する。
 
@@ -950,7 +959,7 @@ def _github_mapping_issues(
             Severity.WARNING, IssueCode.GITHUB_MAPPING_MISSING,
             f"{members.source} に GitHub ID の列がありません"
             "（email → GitHub login の対応表。列を足して各メンバーの GitHub login を"
-            "記入してください。アカウントを持たない人は「なし」）",
+            "記入してください。対象の GitHub Organization で開発しない人は「なし」）",
             org, github_org=github_org,
         )]
     issues = [
@@ -960,21 +969,25 @@ def _github_mapping_issues(
         )
         for warning in members.warnings
     ]
-    issues.extend(
-        _github_unmapped_issues(input_dir, month, cfg, org, github_org, members)
-    )
+    issues.extend(_github_unmapped_issues(
+        month, cfg, org, github_org, members, workspace_dirs))
     return issues
 
 
 def inspect_github(
     input_dir: Path | str, month: str | None, cfg: dict, org: str,
-    github_org: str, probes: GithubProbes,
+    github_org: str, probes: GithubProbes, workspace_dirs: Iterable[Path | str],
 ) -> list[QualityIssue]:
     """GitHub分析を有効にした1組織分の検査（整列済み）。
 
     probes は gh の実行結果（`github_collect.probe_github`）で、この関数自身は gh も
     ネットワークも呼ばない。monthは突き合わせるメンバー一覧の選択にだけ使い、scopeには
     持たせない（GitHubの検査結果は対象月に依存しないため）。
+
+    input_dir は組織ディレクトリ（members-info の対応表を読む場所）。workspace_dirs は
+    メンバー一覧を読む workspace のディレクトリで、members_info_issues と同じもの
+    （入れ子なら開始済みの workspace、単一なら組織直下）を渡す。組織直下にメンバー一覧を
+    持たない入れ子の組織でも、対応表の突き合わせが黙って飛ばないようにするため。
 
     認証できていない場合、そこから派生する scope・rate・Organization の検査結果は意味を
     持たないので probe 側が実行せず、ここでも報告しない。対応表の検査はghと無関係な
@@ -986,7 +999,8 @@ def inspect_github(
         issues.extend(_github_scope_issues(probes.scopes, org, github_org))
         issues.extend(_github_rate_issues(probes.rate, org, github_org))
         issues.extend(_github_org_issues(probes.org(github_org), org, github_org))
-    issues.extend(_github_mapping_issues(input_dir, month, cfg, org, github_org))
+    issues.extend(_github_mapping_issues(
+        input_dir, month, cfg, org, github_org, workspace_dirs))
     return sort_issues(issues)
 
 

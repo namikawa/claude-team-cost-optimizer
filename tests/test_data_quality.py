@@ -659,6 +659,17 @@ def _fake_gh(**overrides: GhResult) -> _FakeGh:
     return _FakeGh(responses)
 
 
+def _members_csv(directory: Path, members: tuple[str, ...]) -> None:
+    """メンバー一覧を置く（"email" だけなら Premium、"email,種別" ならその種別）。"""
+    (directory / "members").mkdir(parents=True, exist_ok=True)
+    (directory / "members" / f"members_{MONTH}.csv").write_text(
+        "Email,Seat Type\n" + "".join(
+            f"{row}\n" if "," in row else f"{row},Premium\n" for row in members
+        ),
+        encoding="utf-8", newline="\n",
+    )
+
+
 def _org_input(
     tmp_path: Path,
     members: tuple[str, ...] = ("a@x.jp",),
@@ -667,11 +678,7 @@ def _org_input(
 ) -> Path:
     """組織の入力ディレクトリ（メンバー一覧と、任意で members-info の対応表）。"""
     base = tmp_path / ORG
-    (base / "members").mkdir(parents=True, exist_ok=True)
-    (base / "members" / f"members_{MONTH}.csv").write_text(
-        "Email,Seat Type\n" + "".join(f"{email},Premium\n" for email in members),
-        encoding="utf-8", newline="\n",
-    )
+    _members_csv(base, members)
     if mapping is not None:
         (base / "members-info.csv").write_text(
             header + "\n" + "".join(f"{row}\n" for row in mapping),
@@ -680,9 +687,12 @@ def _org_input(
     return base
 
 
-def _inspect(input_dir: Path, cfg: dict, gh: _FakeGh) -> list[QualityIssue]:
+def _inspect(input_dir: Path, cfg: dict, gh: _FakeGh,
+             workspace_dirs: list[Path] | None = None) -> list[QualityIssue]:
+    """GitHub の検査（workspace_dirs を省くと組織直下＝単一 workspace の組織）。"""
     probes = probe_github([GH_ORG], runner=gh)
-    return inspect_github(input_dir, MONTH, cfg, ORG, GH_ORG, probes)
+    dirs = [input_dir] if workspace_dirs is None else workspace_dirs
+    return inspect_github(input_dir, MONTH, cfg, ORG, GH_ORG, probes, dirs)
 
 
 def _codes(issues) -> list[str]:
@@ -917,14 +927,84 @@ def test_github_members_without_an_account_are_not_listed(tmp_path, cfg):
 
 def test_github_members_without_a_login_are_warned_with_a_sample(tmp_path, cfg):
     input_dir = _org_input(
-        tmp_path, members=("a@x.jp", "b@x.jp", "c@x.jp"),
+        tmp_path, members=("a@x.jp", "b@x.jp", "c@x.jp,Standard"),
         mapping=("a@x.jp,octo-example",),
     )
     issues = _inspect(input_dir, cfg, _fake_gh())
 
     assert _codes(issues) == ["GITHUB_MAPPING_MISSING"]
-    assert "2 名います" in issues[0].message
+    assert issues[0].message == (
+        "シートを持つメンバーのうち GitHub login に対応づかない人が 2 名います"
+        "（例: b@x.jp, c@x.jp）。members-info.csv の GitHub ID 列に記入してください"
+        "（対象の GitHub Organization で開発しない人は「なし」と書くとこの警告から"
+        "外れます。対応づかない人の PR は、人ごとの行にも組織全体の件数にも入りません）"
+    )
     assert list(issues[0].scope["emails"]) == ["b@x.jp", "c@x.jp"]
+    assert issues[0].scope["members"] == 2
+
+
+@pytest.mark.parametrize("seat", ["Unassigned", "Guest"])
+def test_github_members_without_a_seat_are_not_listed(tmp_path, cfg, seat):
+    """シートを持たない人（未割当・種別を確認できない）の空欄は警告しない。
+
+    analyze の GitHub の参考値も、この人たちを対象者に入れないため。
+    """
+    input_dir = _org_input(
+        tmp_path, members=("a@x.jp", f"b@x.jp,{seat}"),
+        mapping=("a@x.jp,octo-example",),
+    )
+
+    assert _inspect(input_dir, cfg, _fake_gh()) == []
+
+
+def _nested_org_input(tmp_path: Path, mapping: tuple[str, ...]) -> Path:
+    """main / second の2 workspace を持つ組織（組織直下にメンバー一覧を置かない）。"""
+    base = tmp_path / ORG
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "members-info.csv").write_text(
+        "email,GitHub ID\n" + "".join(f"{row}\n" for row in mapping),
+        encoding="utf-8", newline="\n",
+    )
+    return base
+
+
+def test_github_members_of_every_workspace_are_checked(tmp_path, cfg):
+    """入れ子の組織は渡された workspace のメンバー一覧の和集合を照合する。
+
+    組織直下にはメンバー一覧が無い（直下を読みに行くと見つからず、検査が黙って飛ぶ）。
+    同じ人が主と副の両方に居ても1人として数え、副だけでシートを持つ人も対象に入る。
+    """
+    org_input = _nested_org_input(tmp_path, ("a@x.jp,octo-example",))
+    _members_csv(org_input / "main", ("a@x.jp", "b@x.jp", "u@x.jp,Unassigned"))
+    _members_csv(org_input / "second", ("a@x.jp", "b@x.jp", "c@x.jp,Standard"))
+
+    issues = _inspect(org_input, cfg, _fake_gh(),
+                      [org_input / "main", org_input / "second"])
+
+    assert _codes(issues) == ["GITHUB_MAPPING_MISSING"]
+    assert list(issues[0].scope["emails"]) == ["b@x.jp", "c@x.jp"]
+    assert issues[0].scope["members"] == 2
+
+
+def test_github_check_only_reads_the_given_workspaces(tmp_path, cfg):
+    """渡されなかった workspace（未開始など）のメンバーは照合しない。"""
+    org_input = _nested_org_input(tmp_path, ("a@x.jp,octo-example",))
+    _members_csv(org_input / "main", ("a@x.jp",))
+    _members_csv(org_input / "second", ("c@x.jp",))
+
+    assert _inspect(org_input, cfg, _fake_gh(), [org_input / "main"]) == []
+
+
+def test_github_unreadable_workspace_members_are_skipped(tmp_path, cfg):
+    """メンバー一覧を読めない workspace は飛ばし、読める workspace は照合する。"""
+    org_input = _nested_org_input(tmp_path, ("a@x.jp,octo-example",))
+    _members_csv(org_input / "main", ("a@x.jp", "b@x.jp"))
+    (org_input / "second").mkdir()     # members/ が無い（inspect_input が報告する）
+
+    issues = _inspect(org_input, cfg, _fake_gh(),
+                      [org_input / "main", org_input / "second"])
+
+    assert list(issues[0].scope["emails"]) == ["b@x.jp"]
 
 
 def test_github_loader_warning_becomes_an_issue(tmp_path, cfg):
@@ -962,7 +1042,7 @@ def test_github_unmapped_check_is_skipped_without_a_target_month(tmp_path, cfg):
     input_dir = _org_input(tmp_path, members=("a@x.jp", "b@x.jp"))
     probes = probe_github([GH_ORG], runner=_fake_gh())
 
-    assert inspect_github(input_dir, None, cfg, ORG, GH_ORG, probes) == []
+    assert inspect_github(input_dir, None, cfg, ORG, GH_ORG, probes, [input_dir]) == []
 
 
 # --- 決定性

@@ -746,16 +746,22 @@ def _latest_month(org_input: Path) -> str | None:
 
 
 def _inspect_org(
-    org_input: Path, month: str | None, cfg: dict, org: str
+    org_input: Path, month: str | None, cfg: dict, org: str,
+    github: tuple[str, github_collect.GithubProbes] | None = None,
 ) -> list[QualityIssue]:
-    """1組織分の入力検査（構造 + 入力の中身）。
+    """1組織分の入力検査（構造 + 入力の中身 + 有効なら GitHub）。
 
     入れ子レイアウトでは未開始の workspace を警告して飛ばし、開始済みの workspace
     ごとに検査を回して scope を持たせる。混在レイアウトは構造の報告だけに留める
     （どの入力を検査したのかが読み手に決まらない状態で中身の issue を並べない）。
+
+    github は GitHub 分析を有効にした組織の (Organization 名, probe の結果)。メンバー
+    一覧と突き合わせる workspace は members-info の検査と同じものを渡す（入れ子なら
+    開始済みの workspace、単一なら組織直下、混在なら無し）。
     """
     issues = data_quality.workspace_issues(org_input, cfg, org)
     layout, workspaces = ingest.detect_workspace_layout(org_input)
+    member_dirs: list[Path] = []
     if layout == ingest.WORKSPACE_LAYOUT_NESTED:
         started = []
         for workspace in workspaces:
@@ -775,10 +781,17 @@ def _inspect_org(
             issues.extend(data_quality.inspect_input(
                 workspace_dir, month, cfg, org=org, workspace=workspace))
         issues.extend(data_quality.person_issues(org_input, month, cfg, org))
-        issues.extend(data_quality.members_info_issues(org_input, month, cfg, org, started))
+        member_dirs = started
     elif layout == ingest.WORKSPACE_LAYOUT_SINGLE:
         issues.extend(data_quality.inspect_input(org_input, month, cfg, org=org))
-        issues.extend(data_quality.members_info_issues(org_input, month, cfg, org, [org_input]))
+        member_dirs = [org_input]
+    if layout != ingest.WORKSPACE_LAYOUT_MIXED:
+        issues.extend(data_quality.members_info_issues(
+            org_input, month, cfg, org, member_dirs))
+    if github is not None:
+        github_org, probes = github
+        issues.extend(data_quality.inspect_github(
+            org_input, month, cfg, org, github_org, probes, member_dirs))
     return data_quality.sort_issues(issues)
 
 
@@ -822,12 +835,9 @@ def _run_doctor(args: argparse.Namespace) -> int:
     probes = github_collect.probe_github(gated.values()) if gated else None
 
     for org, org_input in targets:
-        issues = _inspect_org(org_input, month, cfg, org)
-        if org in gated:
-            # 組織ごとのレポートが自己完結するよう、GitHub の issue もその組織へ合流させる
-            github = data_quality.inspect_github(
-                org_input, month, cfg, org, gated[org], probes)
-            issues = data_quality.sort_issues([*issues, *github])
+        # 組織ごとのレポートが自己完結するよう、GitHub の issue もその組織へ合流させる
+        github = (gated[org], probes) if org in gated and probes is not None else None
+        issues = _inspect_org(org_input, month, cfg, org, github)
         all_issues.extend(issues)
         if not as_json:
             _print_issues(org, month, issues)
@@ -985,7 +995,8 @@ def _run_analyze(args: argparse.Namespace) -> int:
         metrics: github_metrics.GithubMetrics | None = None
         if org in gated:
             metrics, github_notices = _write_github_summary(
-                org, org_input, org_output, month, cfg, gated[org], paths
+                org, org_input, org_output, month, cfg, gated[org], paths,
+                _github_subjects(result),
             )
             notices += github_notices
             if metrics is None:
@@ -2394,6 +2405,22 @@ def _stale_evidence_notices(
     ]
 
 
+def _github_subjects(result: analyze.OrgAnalysisResult) -> frozenset[str]:
+    """GitHub の参考値の対象者（その月にこの組織でシートを持つ人）の email。
+
+    分析が採用したメンバー一覧で standard / premium と確認できた人で、複数 workspace の
+    組織は分析した workspace のどれかで持てば入る（分析から飛ばした workspace は見ない）。
+    未割当・シート不明（members に居ない人を含む）は入れない。
+    """
+    return frozenset(
+        str(email)
+        for workspace in result.workspaces.values()
+        for email in workspace.users.loc[
+            workspace.users["current_seat"].isin(ingest.ASSIGNED_SEAT_TYPES), "email"
+        ]
+    )
+
+
 def _write_github_summary(
     org: str,
     org_input: Path,
@@ -2402,6 +2429,7 @@ def _write_github_summary(
     cfg: dict,
     github_org: str,
     paths: dict[str, Path],
+    subjects: frozenset[str],
 ) -> tuple[github_metrics.GithubMetrics | None, list[str]]:
     """GitHub の参考値を書き、出力一覧へ加える（V1 の成果物には触れない）。
 
@@ -2409,6 +2437,7 @@ def _write_github_summary(
     キャッシュからは常に同じ内容になり、オフラインでも分析が完走する）。書けない場合は
     何も書かず、理由と次の一手を通知で返す。壊れたキャッシュは `load_pr_cache` の
     ValueError がそのまま伝わり、実行がエラーで止まる（黙って参考値を落とさない）。
+    subjects は対象者の email（`_github_subjects`）。
     """
     cache_dir = org_input / github_collect.PR_CACHE_DIRNAME
     command = f"collect --org {org} --source github --month {month}"
@@ -2425,7 +2454,9 @@ def _write_github_summary(
         ]
 
     members = github_collect.load_github_members(org_input, cfg, month)
-    metrics = github_metrics.pr_metrics(cache, members, cache.repositories)
+    metrics = github_metrics.pr_metrics(
+        cache, members, cache.repositories, subjects
+    )
     path = report.GITHUB_SUMMARY.path(org_output, month, org)
     report.write_github_summary(metrics, path)
     paths["github"] = path
@@ -2451,14 +2482,14 @@ def _print_github_metrics(metrics: github_metrics.GithubMetrics) -> None:
     """GitHub の参考値の要約（シートの判定には使わない値であることを見出しで示す）。"""
     active = sum(1 for user in metrics.users if user.merged_pr_count)
     print(
-        f"GitHub（参考値）: 個人へ帰属 {metrics.mapped_prs} 件"
-        f"（PR あり {active} 名 / 対応表 {len(metrics.users)} 名）・"
-        f"組織全体 {metrics.human_prs} 件"
+        f"GitHub（参考値）: シートを持つ人の PR {metrics.mapped_prs} 件"
+        f"（PR あり {active} 名 / 対象 {len(metrics.users)} 名）"
     )
     lead = metrics.lead_time
     if lead is not None:
         print(
-            f"  lead time（組織全体）: median {lead.median_hours:.1f}h / "
+            "  lead time（組織全体・シートを持つ人の PR）: "
+            f"median {lead.median_hours:.1f}h / "
             f"P75 {lead.p75_hours:.1f}h / P90 {lead.p90_hours:.1f}h"
             f"（{lead.count} 件）"
         )

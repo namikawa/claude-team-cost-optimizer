@@ -1,6 +1,6 @@
 # 実装ステータス
 
-- 最終更新: 2026-10-10
+- 最終更新: 2026-10-11
 - 対象設計: [Claude利活用・シート適正化機能 実装設計書](./implementation-design.md)
 - 次のタスク: Step 52 の受け入れ条件のうち実機での確認が 2 点（期限切れのプロファイルで「無効」と
   `--login`の案内が出ること、期限間近のプロファイルで`--login` → 再ログイン → 再チェックで期限が
@@ -241,6 +241,39 @@ Step 8F・8G・8E・8Dはこの順で行う（番号順ではない）。デザ�
 | 49 | 切替の観測（Phase 2） | `未着手` |  |
 
 ## 6. 検証記録
+
+### 2026-10-11 — github-summary の母集団をシートを持つ人に揃える
+
+- github-summary の対象者を「その月にこの組織でシートを持つ人」にした（分析が採用した
+  メンバー一覧で`standard`か`premium`の人。複数workspaceの組織は分析したworkspaceのどれか。
+  定義は設計書 §15.5）。2 値は`ingest.ASSIGNED_SEAT_TYPES`に 1 つだけ置き、analyze 側
+  （`cli._github_subjects`）と doctor 側（`data_quality._github_unmapped_issues`）の両方から使う
+- `github_metrics.pr_metrics`に対象者の email の集合（`subjects`・frozenset の必須引数）を足した。
+  人ごとの行は対象者のうち login を持つ人だけで、対応表に login があっても対象者でない人の PR は
+  `unmapped_authors` / `unmapped_prs`へ入る。組織全体の lead time は対象者の PR だけを要約し、
+  `GithubMetrics`の不変条件を`lead_time.count == mapped_prs`に変えた（`human_prs`は削除）。
+  対応表があるときは、login に対応づかない対象者を人数と email で警告する（「なし」の人は除く）
+- github-summary の組織全体行の`merged_pr_count`を`mapped_prs`（個人行の合計）にした。列構成は不変
+- analyze の要約の表示を「シートを持つ人の PR N 件（PR あり N 名 / 対象 N 名）」と「lead time
+  （組織全体・シートを持つ人の PR）」にした
+- doctor の対応表の検査を`standard` / `premium`の人だけにし、入れ子の組織では members-info の
+  検査と同じ workspace の一覧（開始済みの workspace）のメンバー一覧の和集合を照合するようにした。
+  従来は組織直下のメンバー一覧を読みに行き、入れ子の組織では読めずに検査が黙って飛んでいた。
+  `inspect_github`に`workspace_dirs`を足し、`cli._inspect_org`が渡す
+- members-info の GitHub ID 列の`なし`を「対象の GitHub Organization で PR を作らない（アカウントが
+  無い、または別の Organization で開発する）と判断して書く値」と定義し直し、docs・案内文・
+  default-config のコメントを揃えた
+- テスト: 2859 passed・1 skipped（+29 件）。対象者の PR が 0 件の月・対象外の作成者の PR しか
+  ない月・削除済みアカウント（件数には入り lead time に入らない）・対応表にいるがシートを持たない人
+  （未割当・spend にだけ居る人・メンバー一覧に居ない人）・主と副の両方にいる人が 1 行・副だけで
+  シートを持つ人・未開始の workspace の人を入れないこと・組織全体の件数 = 人ごとの行の合計・
+  login の無い対象者の警告（「なし」と対応表なしでは出ない）・警告の並び・対象者の集合の作り方に
+  依らない結果・doctor の入れ子の検査と席種の条件を見る（対象者で絞る条件の削除・組織全体の
+  lead time への削除済みアカウントと対象外の作成者の混入・不変条件の旧い母数・CSV の組織行の
+  旧い母数・email の正規化の削除・対応表なしでの警告・警告の削除・cli の席種の条件の削除・
+  主 workspace だけの対象者・doctor の席種の条件の削除・doctor へ組織直下だけを渡す・未開始の
+  workspace を渡す・定数への unknown の追加の 14 の変異で落ちることを確かめた）。ruff 緑、
+  `check-text --diff`は 0 件。golden は不変
 
 ### 2026-10-10 — Step 54: 当月モードの Claude Code analytics の終了日を取得日にする
 

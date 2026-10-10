@@ -1,10 +1,15 @@
 """収集した merged PR を、ユーザ×月の件数と lead time へ畳む計算（設計書 §15.5）。
 
-受け取るのは3つの値だけ——その月の PR キャッシュ（`github_collect.load_pr_cache`）、
+受け取るのは4つの値だけ——その月の PR キャッシュ（`github_collect.load_pr_cache`）、
 email → GitHub login の対応表（`load_github_members`）、Organization 内の repository の
-一覧（`discover_repositories`）。`gh` もネットワークもファイルも現在時刻も参照しないので、
-同じ入力からは常に同じ結果と同じ警告の並びを返す。並びは email の昇順で明示的に決め、
-集合の反復順には依らせない。
+一覧（`discover_repositories`）、対象者の email の集合。`gh` もネットワークもファイルも
+現在時刻も参照しないので、同じ入力からは常に同じ結果と同じ警告の並びを返す。並びは
+email の昇順で明示的に決め、集合の反復順には依らせない。
+
+対象者は「その月にこの組織でシートを持つ人」で、誰を対象者にするかは呼び出し側が
+決める（定義は設計書 §15.5）。ここは対象者の PR だけを人ごとの行と組織全体の要約に
+入れる。対応表に login があっても対象者でない人（シートを持たない人）の PR は、対応表に
+無い作成者の PR と同じ区分に入る。
 
 PR が帰属する月は merge した月で、それはキャッシュの形（1ファイル = 1組織 × 1月）が
 保証している（`PrCache` は month 以外の月に merge された PR を受けない）。件数の計算は
@@ -15,14 +20,14 @@ lead time は時（hours）の実数で、Draft だった期間も含める（�
 P75 / P90 の3点に件数を添えたもので、件数の下限は設けない——1件でも要約し、代表値の
 重みは件数で伝える。
 
-1件の PR は必ず1つの区分に入る——個人別の件数・対応表に無い作成者・Bot・削除済みの
+1件の PR は必ず1つの区分に入る——個人別の件数・対象者に当たらない作成者・Bot・削除済みの
 アカウント・対象外 repository の5つで、先に該当した区分に入れる。区分の合計がキャッシュの
 全件数に一致することを値オブジェクトが検査するので、どこかの区分から静かに漏れた PR は
 結果を作る時点で落ちる。
 
 Bot が作った PR は個人の実績ではないので個人別の集計から外す（`author_type` が
-`BOT_AUTHOR_TYPE` の PR）。対応表に無い作成者の PR も外すが、外した分は件数と人数だけを
-残し、login は結果のどこにも持たせない。対応表の外にいる人はこの組織のメンバーとは
+`BOT_AUTHOR_TYPE` の PR）。対象者に当たらない作成者の PR も外すが、外した分は件数と人数
+だけを残し、login は結果のどこにも持たせない。対象者の外にいる人はこの組織のメンバーとは
 限らず、その名前はこの組織の資料に載せる対象ではないため、結果にも警告にも写さない
 （設計書 §15.6 の「個人ランキングを作らない」とも整合する）。件数を黙って落とさないよう、
 外した分は警告に出す。
@@ -48,6 +53,7 @@ from .github_collect import (
     RepoDiscovery,
     is_github_org_name,
     month_windows,
+    unmapped_emails,
 )
 
 # 個人の実績から外す作成者の種別（GraphQL の `__typename`）。完全一致で見る——種別は
@@ -177,7 +183,7 @@ class UserPrMetrics:
 
     email は対応表の鍵（前後空白を除いて小文字へ揃えた表記）、github_login は対応表に
     書かれた原文の表記。どちらも対応表の1行（`GithubMemberLink`）と同じ規則で検証する。
-    login を持たない行はこの型にならないので、github_login は必ず値を持つ。
+    login を持たない人はこの型にならないので、github_login は必ず値を持つ。
 
     lead_time は PR が1件以上あるときだけ値を持ち、その count は merged_pr_count と一致
     する（0件の人は None）。既定値を置かないのは、件数と要約が食い違う行を書けなく
@@ -226,18 +232,17 @@ class UserPrMetrics:
 class GithubMetrics:
     """1組織×1月の merged PR 数・lead time と、集計から外した分の内訳。
 
-    users は対応表に login を持つ全員で、PR が0件の人も行として持つ（0件であることも
-    参考情報のため）。email の昇順で、email も login（小文字比較）も重複しない。
+    users は対象者のうち対応表に login を持つ全員で、PR が0件の人も行として持つ（0件で
+    あることも参考情報のため）。email の昇順で、email も login（小文字比較）も重複しない。
 
     users 以外の件数は集計から外した PR の内訳で、`mapped_prs` と足すと total_prs に
-    なる（1件の PR が必ず1つの区分に入ることの機械検査）。unmapped_authors は対応表に
-    無い作成者の人数で、login そのものは持たない。
+    なる（1件の PR が必ず1つの区分に入ることの機械検査）。unmapped_authors / unmapped_prs
+    は対象者の login に当たらない作成者（対応表に無い人と、対応表にあっても対象者でない
+    人）の人数と件数で、login そのものは持たない。
 
-    lead_time は `human_prs`——対象 repository の PR から Bot を除いた分、つまり個人へ
-    帰属した PR・対応表に無い作成者の PR・削除済みのアカウントの PR の合計——の要約で、
-    Organization 全体の基準線になる（対応表の記入状況で母数が動かない）。削除済みの
-    アカウントは種別が分からないが Bot と確定できないので人の側に置く。`human_prs` が
-    0件なら None で、値があるときの count は `human_prs` と一致する。
+    lead_time は対象者の PR（`mapped_prs` の分）の要約で、組織全体の値になる。削除済みの
+    アカウントと対象者に当たらない作成者の PR は件数だけを残し、要約には入れない。
+    `mapped_prs` が0件なら None で、値があるときの count は `mapped_prs` と一致する。
 
     cache_complete は対象月の収集を読み切ったか（`PrCache.complete`）。False のときの
     件数は部分的な値で、その旨は warnings にも入る。
@@ -279,16 +284,16 @@ class GithubMetrics:
                 raise ValueError(
                     f"{name} には0以上の件数が必要です: {getattr(self, name)!r}"
                 )
-        # 対応表に無い作成者は人数と件数を対で持つ。片方だけが立つ結果は、除外の理由を
-        # 説明できない件数（または PR を1件も持たない人数）になる
+        # 対象者に当たらない作成者は人数と件数を対で持つ。片方だけが立つ結果は、除外の
+        # 理由を説明できない件数（または PR を1件も持たない人数）になる
         if (self.unmapped_authors == 0) != (self.unmapped_prs == 0):
             raise ValueError(
-                "対応表に無い作成者は人数と件数の両方を持たせてください: "
+                "対象者に当たらない作成者は人数と件数の両方を持たせてください: "
                 f"{self.unmapped_authors} 人 / {self.unmapped_prs} 件"
             )
         if self.unmapped_authors > self.unmapped_prs:
             raise ValueError(
-                "対応表に無い作成者の人数が PR の件数を超えています: "
+                "対象者に当たらない作成者の人数が PR の件数を超えています: "
                 f"{self.unmapped_authors} 人 / {self.unmapped_prs} 件"
             )
         # 1件の PR は必ず1つの区分に入る。合計が合わない結果は、どこかの区分から
@@ -303,7 +308,7 @@ class GithubMetrics:
         if counted != self.total_prs:
             raise ValueError(
                 f"区分ごとの件数の合計が全件数と一致しません: {counted} / "
-                f"{self.total_prs}（個人別 {self.mapped_prs}・対応表に無い作成者 "
+                f"{self.total_prs}（個人別 {self.mapped_prs}・対象者に当たらない作成者 "
                 f"{self.unmapped_prs}・Bot {self.bot_prs}・削除済み "
                 f"{self.deleted_author_prs}・対象外 repository "
                 f"{self.excluded_repository_prs}）"
@@ -315,16 +320,16 @@ class GithubMetrics:
                 "lead_time には LeadTimeSummary か None が必要です: "
                 f"{type(self.lead_time).__name__}"
             )
-        # 要約の母数は人の PR 全件。件数と食い違う要約は、何を代表した値か説明できない
-        if (self.human_prs == 0) != (self.lead_time is None):
+        # 要約の母数は対象者の PR。件数と食い違う要約は、何を代表した値か説明できない
+        if (self.mapped_prs == 0) != (self.lead_time is None):
             raise ValueError(
-                "人の PR が1件も無いときだけ lead_time を None にしてください: "
-                f"{self.human_prs} 件 / {self.lead_time!r}"
+                "対象者の PR が1件も無いときだけ lead_time を None にしてください: "
+                f"{self.mapped_prs} 件 / {self.lead_time!r}"
             )
-        if self.lead_time is not None and self.lead_time.count != self.human_prs:
+        if self.lead_time is not None and self.lead_time.count != self.mapped_prs:
             raise ValueError(
-                "lead_time の件数が人の PR の件数と一致しません: "
-                f"{self.lead_time.count} / {self.human_prs}"
+                "lead_time の件数が対象者の PR の件数と一致しません: "
+                f"{self.lead_time.count} / {self.mapped_prs}"
             )
         if not isinstance(self.cache_complete, bool):
             raise TypeError(
@@ -338,13 +343,8 @@ class GithubMetrics:
 
     @property
     def mapped_prs(self) -> int:
-        """個人へ帰属した PR の件数（users の合計）。"""
+        """対象者へ帰属した PR の件数（users の合計で、lead_time の母数）。"""
         return sum(user.merged_pr_count for user in self.users)
-
-    @property
-    def human_prs(self) -> int:
-        """対象 repository の、Bot 以外の PR の件数（lead_time の母数）。"""
-        return self.mapped_prs + self.unmapped_prs + self.deleted_author_prs
 
 
 # --------------------------------------------------------------------- 公開 API
@@ -367,22 +367,49 @@ def summarize_lead_times(hours: Iterable[float]) -> LeadTimeSummary | None:
     )
 
 
+def _subject_emails(subjects: object) -> frozenset[str]:
+    """対象者の email の集合を、対応表と同じ表記（前後空白を除いて小文字）へ揃える。
+
+    集合で受けるのは、対象者に順序が無いことを型で表すため（並びは結果の側で email の
+    昇順に決める）。正規化は対応表の1行（`GithubMemberLink`）へ委ねる——規則は ingest が
+    spend / members の email 列に施すものと同じで、ここに写しを置くと、メンバー一覧では
+    同じ人が対応表の側で別人になる状態を作りうる。空の email は ValueError。
+    """
+    if not isinstance(subjects, frozenset) or not all(
+        isinstance(email, str) for email in subjects
+    ):
+        raise TypeError(
+            "subjects には email（文字列）の frozenset が必要です: "
+            f"{type(subjects).__name__}"
+        )
+    return frozenset(
+        GithubMemberLink(email=email, github_login=None).email for email in subjects
+    )
+
+
 def pr_metrics(
-    cache: PrCache, members: GithubMembers, repos: RepoDiscovery
+    cache: PrCache,
+    members: GithubMembers,
+    repos: RepoDiscovery,
+    subjects: frozenset[str],
 ) -> GithubMetrics:
     """その月の merged PR を、ユーザ単位の件数と lead time へ畳む（設計書 §15.5）。
 
+    subjects は対象者（その月にこの組織でシートを持つ人）の email の集合。人ごとの行は
+    対象者のうち対応表に login を持つ人だけで、組織全体の lead time も対象者の PR だけで
+    要約する。対象者が0人でも対応表全体へ戻すことはしない（対象者の PR が0件の結果になる）。
+
     PR は次の順で排他的に1つの区分へ入れる: 対象外 repository → 削除済みのアカウント →
-    Bot → 対応表の login と一致する人 → 対応表に無い作成者。repository と login は
-    どちらも小文字で突き合わせる（GitHub は repository 名も login も大文字小文字を
-    区別しないため、表記の違いで別物として数えない）。
+    Bot → 対象者の login と一致する人 → それ以外（対応表に無い作成者と、対応表にあっても
+    対象者でない人）。repository と login はどちらも小文字で突き合わせる（GitHub は
+    repository 名も login も大文字小文字を区別しないため、表記の違いで別物として数えない）。
 
     集計できない入力は結果を返さずに中止する（fail-closed）。repository の一覧が別の
     Organization のものだったり完全でなかったりすると、対象の PR が「対象外」へ流れて
     参考指標が黙って小さく出るため。
 
     対応表が無い組織でも呼べる（users が空になり、Bot と削除済み以外の PR はすべて
-    対応表に無い作成者の分として数える）。
+    対象者に当たらない作成者の分として数える）。
     """
     for name, value, expected in (
         ("cache", cache, PrCache),
@@ -393,6 +420,7 @@ def pr_metrics(
             raise TypeError(
                 f"{name} には {expected.__name__} が必要です: {type(value).__name__}"
             )
+    subject_emails = _subject_emails(subjects)
     if repos.github_org != cache.github_org:
         raise ValueError(
             "repository の一覧と PR キャッシュの Organization が違います: "
@@ -406,16 +434,17 @@ def pr_metrics(
         )
 
     known_repos = {name.lower() for name in repos.repos}
-    # login（小文字）→ 対応表の行。行順を保つので、同じ対応表からは常に同じ並びで作れる
+    # login（小文字）→ 対応表の行（対象者の行だけ）。行順を保つので、同じ対応表からは
+    # 常に同じ並びで作れる
     linked = {
         entry.github_login.lower(): entry
         for entry in members.entries
-        if entry.github_login is not None
+        if entry.github_login is not None and entry.email in subject_emails
     }
     counts = dict.fromkeys(linked, 0)
-    # 個人別の lead time（login → 時の並び）と、人の PR 全件の lead time
+    # 個人別の lead time（login → 時の並び）と、対象者の PR 全件の lead time
     user_hours: dict[str, list[float]] = {login: [] for login in linked}
-    human_hours: list[float] = []
+    mapped_hours: list[float] = []
 
     unmapped_logins: set[str] = set()   # 人数を数えるためだけに持つ（結果へは残さない）
     unmapped_prs = bot_prs = deleted_author_prs = excluded_repository_prs = 0
@@ -425,20 +454,18 @@ def pr_metrics(
             continue
         if pr.author_login is None:
             # 削除済みのアカウント（`CachedPr` の不変条件で author_type も None）。
-            # 誰の実績かを知る手立てが無いので、対応表の記入では解消しない＝警告しない。
-            # 種別は分からないが Bot と確定できないので lead time は人の側へ入れる
+            # 誰の実績かを知る手立てが無いので、対応表の記入では解消しない＝警告しない
             deleted_author_prs += 1
-            human_hours.append(lead_time_hours(pr))
             continue
         if pr.author_type == BOT_AUTHOR_TYPE:
             bot_prs += 1
             continue
-        hours = lead_time_hours(pr)
-        human_hours.append(hours)
         login = pr.author_login.lower()
         if login in counts:
+            hours = lead_time_hours(pr)
             counts[login] += 1
             user_hours[login].append(hours)
+            mapped_hours.append(hours)
         else:
             unmapped_prs += 1
             unmapped_logins.add(login)
@@ -462,10 +489,21 @@ def pr_metrics(
             "GitHub ID の対応表がありません（members-info.csv に GitHub ID 列が"
             "無い）。PR を個人に帰属できません"
         )
+    else:
+        # 対応表が無いときは全員が該当するので並べない（上の警告が同じことを伝える）
+        unlinked = unmapped_emails(members, subject_emails)
+        if unlinked:
+            warnings.append(
+                f"シートを持つ人のうち GitHub login に対応づかない人 {len(unlinked)} 名: "
+                f"{list(unlinked)}（この人の PR は人ごとの行にも組織全体の件数にも"
+                "入りません。members-info.csv の GitHub ID 列に login を書くか、対象の "
+                "GitHub Organization で開発しない人は「なし」と書いてください）"
+            )
     if unmapped_prs:
         warnings.append(
-            f"対応表に無い作成者 {len(unmapped_logins)} 人による PR {unmapped_prs} 件を"
-            "個人別の集計から除外しました"
+            f"シートを持つ人の login に当たらない作成者 {len(unmapped_logins)} 人による "
+            f"PR {unmapped_prs} 件を集計から除外しました（人ごとの行・組織全体の件数とも。"
+            "対応表に無い人と、対応表にあってもこの組織でシートを持たない人を含みます）"
         )
     if not cache.complete:
         warnings.append(
@@ -476,7 +514,7 @@ def pr_metrics(
         github_org=cache.github_org,
         month=cache.month,
         users=users,
-        lead_time=summarize_lead_times(human_hours),
+        lead_time=summarize_lead_times(mapped_hours),
         unmapped_authors=len(unmapped_logins),
         unmapped_prs=unmapped_prs,
         bot_prs=bot_prs,
