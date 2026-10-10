@@ -45,6 +45,7 @@ from seat_analyzer.claude_export import (
     chrome_pids,
     chrome_time_us,
     extension_install_state,
+    fetched_on_from_record,
     find_chrome,
     format_expiry,
     gated_targets,
@@ -61,6 +62,7 @@ from seat_analyzer.claude_export import (
     new_run_id,
     orgs_path,
     place_export,
+    placement_name,
     plan_runs,
     preferences_ready,
     process_listing_command,
@@ -603,6 +605,42 @@ def test_read_run_record_rejects_a_broken_file(tmp_path):
         read_run_record(path)
 
 
+def test_fetched_on_from_record_reads_what_run_record_wrote(tmp_path):
+    """run_record が書いた created_at（2026-10-07 11:00:09+09:00）の UTC の日付。"""
+    path = tmp_path / "run.json"
+    write_run_record(path, run_record(RUN, RUN_ID, CREATED))
+    assert fetched_on_from_record(read_run_record(path)) == dt.date(2026, 10, 7)
+
+
+@pytest.mark.parametrize("created_at,expected", [
+    ("2026-10-07T11:00:09+09:00", dt.date(2026, 10, 7)),
+    # 日本時間の深夜は UTC の前日（メンバー一覧の名前に claude.ai が付ける日付と揃う）
+    ("2026-10-08T00:30:00+09:00", dt.date(2026, 10, 7)),
+    ("2026-10-07T20:00:00-05:00", dt.date(2026, 10, 8)),
+    ("2026-10-07T23:59:59+00:00", dt.date(2026, 10, 7)),
+])
+def test_fetched_on_from_record_is_the_utc_date(created_at, expected):
+    record = {**run_record(RUN, RUN_ID, CREATED), "created_at": created_at}
+    assert fetched_on_from_record(record) == expected
+
+
+@pytest.mark.parametrize("created_at,fragment", [
+    (None, "run.json に created_at がありません"),
+    (20261007, "run.json の created_at が ISO 8601 の日時ではありません"),
+    ("yesterday", "run.json の created_at が ISO 8601 の日時ではありません"),
+    ("2026-10-07T11:00:09", "run.json の created_at にタイムゾーンがありません"),
+    ("2026-10-07", "run.json の created_at にタイムゾーンがありません"),
+])
+def test_fetched_on_from_record_rejects_a_broken_created_at(created_at, fragment):
+    record = run_record(RUN, RUN_ID, CREATED)
+    if created_at is None:
+        del record["created_at"]
+    else:
+        record["created_at"] = created_at
+    with pytest.raises(ValueError, match=fragment):
+        fetched_on_from_record(record)
+
+
 # ------------------------------------------------------------------ 組織一覧（--list-orgs）
 
 
@@ -1108,6 +1146,86 @@ def test_place_export_cleans_up_after_a_failed_copy(tmp_path):
         place_export(tmp_path / "staging" / "missing.csv", input_dir, _target("example"),
                      "spend")
     assert list((input_dir / "example" / "spend").iterdir()) == []
+
+
+def test_place_export_uses_the_given_name(tmp_path):
+    """dest_name を渡せばその名前で置く（staging の元のファイルは名前も中身もそのまま）。"""
+    input_dir = tmp_path / "input"
+    (input_dir / "example").mkdir(parents=True)
+    src = _staged(tmp_path, "claude_code_team_2026_10_01_to_2026_10_31.csv", "a,b\r\n1,2\r\n")
+
+    dest = place_export(src, input_dir, _target("example"), "code",
+                        dest_name="claude_code_team_2026_10_01_to_2026_10_10.csv")
+
+    kind_dir = input_dir / "example" / "code-analytics"
+    assert dest == kind_dir / "claude_code_team_2026_10_01_to_2026_10_10.csv"
+    assert sorted(path.name for path in kind_dir.iterdir()) == [dest.name]
+    assert dest.read_bytes() == src.read_bytes()
+    assert src.read_bytes() == b"a,b\r\n1,2\r\n"
+
+
+@pytest.mark.parametrize("name", [
+    "", ".", "..", "../x.csv", "a/b.csv", "a\\b.csv", "D:x.csv", "x.csv:y", "x\x00.csv"])
+def test_place_export_rejects_a_name_that_is_not_a_plain_file_name(tmp_path, name):
+    """dest_name は単一のファイル名だけ（種別のディレクトリも作らずに止める）。"""
+    input_dir = tmp_path / "input"
+    (input_dir / "example").mkdir(parents=True)
+    with pytest.raises(ValueError, match="配置するファイル名"):
+        place_export(_staged(tmp_path), input_dir, _target("example"), "spend", dest_name=name)
+    assert list((input_dir / "example").iterdir()) == []
+
+
+# ------------------------------------------------------------------ 配置の名前
+
+
+# claude.ai の Claude Code analytics の名前の形（当月の部分月でも終了日が月末日）
+CODE_NAME = "claude_code_team_2026_10_01_to_2026_10_31.csv"
+
+
+@pytest.mark.parametrize("name,fetched_on,expected", [
+    (CODE_NAME, dt.date(2026, 10, 10), "claude_code_team_2026_10_01_to_2026_10_10.csv"),
+    # `-` 区切りの名前は `-` のまま
+    (f"claude-code-{UUID1}-2026-10-01-to-2026-10-31.csv", dt.date(2026, 10, 4),
+     f"claude-code-{UUID1}-2026-10-01-to-2026-10-04.csv"),
+    # 区切りが混ざっていても終了日の数字だけを置き換え、ほかの文字は保つ
+    ("cc_2026-10_01-to_2026_10-31 (1).csv", dt.date(2026, 10, 9),
+     "cc_2026-10_01-to_2026_10-09 (1).csv"),
+    # 期間の初日に取得した
+    (CODE_NAME, dt.date(2026, 10, 1), "claude_code_team_2026_10_01_to_2026_10_01.csv"),
+    # 2 月（月末日が 28 日）
+    ("claude_code_team_2027_02_01_to_2027_02_28.csv", dt.date(2027, 2, 27),
+     "claude_code_team_2027_02_01_to_2027_02_27.csv"),
+])
+def test_placement_name_sets_the_end_to_the_fetch_date(name, fetched_on, expected):
+    placed = placement_name(name, "code", MODE_CURRENT, fetched_on)
+    assert placed == expected
+    assert claude_export._is_plain_name(placed)
+    period = ingest.file_period(placed)
+    assert (period.kind, period.start.day, period.end) == ("range", 1, fetched_on)
+
+
+@pytest.mark.parametrize("name,kind,mode,fetched_on", [
+    # 前月モード（終了日の月末日が正しい）
+    (CODE_NAME, "code", MODE_PREVIOUS, dt.date(2026, 10, 10)),
+    # 他の種別（期間の中の取得日でも変えない）
+    (f"spend-report-{UUID1}-2026-10-01-to-2026-10-09.csv", "spend", MODE_CURRENT,
+     dt.date(2026, 10, 5)),
+    (f"members-{UUID1}-2026-10-10.csv", "members", MODE_CURRENT, dt.date(2026, 10, 5)),
+    # 期間（開始日 to 終了日）を読めない名前
+    ("claude_code_team_2026_10_10.csv", "code", MODE_CURRENT, dt.date(2026, 10, 5)),
+    ("claude_code_team_2026_10.csv", "code", MODE_CURRENT, dt.date(2026, 10, 5)),
+    ("claude_code_team.csv", "code", MODE_CURRENT, dt.date(2026, 10, 5)),
+    ("claude_code_team_2026_09_15_to_2026_10_31.csv", "code", MODE_CURRENT,
+     dt.date(2026, 10, 5)),
+    # 取得日が期間の外（UTC の日付が前月の末日になる月初の深夜など）
+    (CODE_NAME, "code", MODE_CURRENT, dt.date(2026, 9, 30)),
+    ("claude_code_team_2026_10_01_to_2026_10_09.csv", "code", MODE_CURRENT,
+     dt.date(2026, 10, 10)),
+    # 取得日が終了日と同じ
+    (CODE_NAME, "code", MODE_CURRENT, dt.date(2026, 10, 31)),
+])
+def test_placement_name_keeps_the_original_name(name, kind, mode, fetched_on):
+    assert placement_name(name, kind, mode, fetched_on) == name
 
 
 # ------------------------------------------------------------------ Preferences

@@ -2024,6 +2024,8 @@ CLAUDE_KIND_DIRS = {"members": "members", "spend": "spend", "code": "code-analyt
 # ログインの期限の判定に使う「今」と、期限を表示するローカルのタイムゾーン（UTC+9）
 CLAUDE_NOW = dt.datetime(2026, 10, 7, 3, 0, tzinfo=dt.UTC)
 CLAUDE_TZ = dt.timezone(dt.timedelta(hours=9))
+# 取得の時刻（run_id・run.json の created_at）。取得日はこの UTC の日付 2026-10-07
+CLAUDE_LOCAL_NOW = dt.datetime(2026, 10, 7, 12, 0, tzinfo=CLAUDE_TZ)
 # Cookie の期限: 25 日と 5 時間 56 分後（表示は 2026-11-01 17:56）と、1 日と 21 時間後
 # （表示は 2026-10-09 09:00。既定の login_warning_days 3 を下回る）
 CLAUDE_EXPIRES_LATER = "2026-11-01T08:56:50.000Z"
@@ -2038,6 +2040,13 @@ def _claude_filename(kind: str, uuid: str) -> str:
         "spend": f"spend-report-{uuid}-2026-10-01-to-2026-10-06.csv",
         "code": f"claude-code-{uuid}-2026-10-01-to-2026-10-31.csv",
     }[kind]
+
+
+def _claude_placed_name(kind: str, uuid: str, fetched_on: str = "2026-10-07") -> str:
+    """当月モードで配置される名前（Claude Code analytics だけ終了日が取得日になる）。"""
+    if kind == "code":
+        return f"claude-code-{uuid}-2026-10-01-to-{fetched_on}.csv"
+    return _claude_filename(kind, uuid)
 
 
 class _FakeClock:
@@ -2163,6 +2172,7 @@ def claude_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr("seat_analyzer.claude_export.local_today", lambda: CLAUDE_TODAY)
     monkeypatch.setattr("seat_analyzer.claude_export.utc_now", lambda: CLAUDE_NOW)
+    monkeypatch.setattr("seat_analyzer.claude_export.local_now", lambda: CLAUDE_LOCAL_NOW)
     monkeypatch.setattr("seat_analyzer.claude_export.local_timezone", lambda: CLAUDE_TZ)
     monkeypatch.setattr("seat_analyzer.claude_export.launch_chrome", ext.launch)
     monkeypatch.setattr("seat_analyzer.claude_export.list_chrome_pids", list_pids)
@@ -2189,11 +2199,12 @@ def _collect_claude(env, *extra: str) -> int:
     ])
 
 
-def _placed(env, rel: str, kind: str) -> Path:
+def _placed(env, rel: str, kind: str, name: str | None = None) -> Path:
+    """配置先のパス。name を省くと当月モード（取得日 2026-10-07）で配置される名前。"""
     uuid = {"example": CLAUDE_UUID1, "example2/main": CLAUDE_UUID2,
             "example2/second": CLAUDE_UUID3, "org-a": CLAUDE_UUID4}[rel]
     return env.input_dir.joinpath(*rel.split("/"), CLAUDE_KIND_DIRS[kind],
-                                  _claude_filename(kind, uuid))
+                                  name or _claude_placed_name(kind, uuid))
 
 
 def test_collect_claude_places_every_file_and_closes_chrome(claude_env, capsys):
@@ -2217,7 +2228,7 @@ def test_collect_claude_places_every_file_and_closes_chrome(claude_env, capsys):
         "spec": spec}
     assert dt.datetime.fromisoformat(record["created_at"]).tzinfo is not None
 
-    # 配置: 元のファイル名のまま入力の種別ディレクトリへ
+    # 配置: 入力の種別ディレクトリへ（当月モードの Claude Code analytics だけ終了日を取得日に）
     for kind in ("members", "spend", "code"):
         assert _placed(env, "example", kind).read_text(encoding="utf-8").startswith(
             CLAUDE_HEADERS[kind])
@@ -2558,6 +2569,142 @@ def test_collect_claude_import_rejects_a_target_no_longer_configured(claude_env,
 
     assert _collect_claude(env, "--import", run_id) == 1
     assert "run.json の対象 org-x は claude_export の設定にありません" in capsys.readouterr().err
+
+
+# --- 当月モードの Claude Code analytics の配置名（終了日を取得日にする） ---
+
+
+def test_collect_claude_names_the_current_code_analytics_after_the_fetch_date(claude_env, capsys):
+    """当月モードの Claude Code analytics は、終了日を取得日（UTC の日付）にした名前で置く。
+
+    メンバー一覧と支出レポートは元の名前のまま。staging のファイルは元の名前で残る。
+    """
+    env = claude_env
+    assert _collect_claude(env, "--org", "example") == 0
+
+    original = _claude_filename("code", CLAUDE_UUID1)
+    placed = f"claude-code-{CLAUDE_UUID1}-2026-10-01-to-2026-10-07.csv"
+    code_dir = env.input_dir / "example" / "code-analytics"
+    assert sorted(path.name for path in code_dir.iterdir()) == [placed]
+    assert (code_dir / placed).read_text(encoding="utf-8").startswith(CLAUDE_HEADERS["code"])
+    for kind in ("members", "spend"):
+        kind_dir = env.input_dir / "example" / CLAUDE_KIND_DIRS[kind]
+        assert sorted(path.name for path in kind_dir.iterdir()) == [
+            _claude_filename(kind, CLAUDE_UUID1)]
+    staged = env.staging / env.ext.specs[0]["run_id"] / "example" / "code-analytics"
+    assert sorted(path.name for path in staged.iterdir()) == [original]
+
+    lines = capsys.readouterr().out.splitlines()
+    assert f"  配置: {code_dir / placed}（終了日を取得日 2026-10-07 に変更）" in lines
+    for kind in ("members", "spend"):
+        assert f"  配置: {_placed(env, 'example', kind)}" in lines
+
+
+def test_collect_claude_uses_the_utc_date_as_the_fetch_date(claude_env, monkeypatch, capsys):
+    """取得日は実行機のローカルの日付ではなく UTC の日付（日本時間 10-08 00:30 は 10-07）。"""
+    env = claude_env
+    monkeypatch.setattr("seat_analyzer.claude_export.local_now",
+                        lambda: dt.datetime(2026, 10, 8, 0, 30, tzinfo=CLAUDE_TZ))
+    assert _collect_claude(env, "--org", "example") == 0
+    code_dir = env.input_dir / "example" / "code-analytics"
+    assert sorted(path.name for path in code_dir.iterdir()) == [
+        f"claude-code-{CLAUDE_UUID1}-2026-10-01-to-2026-10-07.csv"]
+    assert "（終了日を取得日 2026-10-07 に変更）" in capsys.readouterr().out
+
+
+def test_collect_claude_keeps_the_names_in_the_previous_month_mode(
+    claude_env, monkeypatch, capsys
+):
+    """前月モードは Claude Code analytics も元の名前のまま置く。
+
+    取得日を前月の期間の中に置いても（時計を差し替えてそうする）名前を変えないことで、
+    期間の外だから変わらないのではなく、モードで決めていることを見る。
+    """
+    env = claude_env
+    monkeypatch.setattr("seat_analyzer.claude_export.local_now",
+                        lambda: dt.datetime(2026, 9, 20, 12, 0, tzinfo=CLAUDE_TZ))
+    names = {
+        "members": f"members-{CLAUDE_UUID1}-2026-09-20.csv",
+        "spend": f"spend-report-{CLAUDE_UUID1}-2026-09-01-to-2026-09-30.csv",
+        "code": f"claude-code-{CLAUDE_UUID1}-2026-09-01-to-2026-09-30.csv",
+    }
+    env.ext.names = {("example", kind): name for kind, name in names.items()}
+    assert _collect_claude(env, "--org", "example", "--month", "2026-09") == 0
+
+    for kind, name in names.items():
+        kind_dir = env.input_dir / "example" / CLAUDE_KIND_DIRS[kind]
+        assert sorted(path.name for path in kind_dir.iterdir()) == [name]
+    out = capsys.readouterr().out
+    assert "profile corp: 前月モード（2026-09）" in out
+    assert "終了日を取得日" not in out
+
+
+def _claude_timed_out_run(env) -> Path:
+    """時間切れで終わった当月モードの実行を作り、拡張機能が後から manifest を書き終えた状態にする。
+
+    実行ディレクトリを返す（--import で配置をやり直す前の状態）。
+    """
+    env.ext.manifest = None
+    assert _collect_claude(env, "--org", "example", "--timeout", "1") == 1
+    run_dir = env.staging / env.ext.specs[0]["run_id"]
+    body = json.loads((run_dir / "progress.json").read_text(encoding="utf-8"))
+    (run_dir / "manifest.json").write_text(json.dumps(body), encoding="utf-8")
+    return run_dir
+
+
+@pytest.mark.parametrize("created_at,fetched_on", [
+    (None, "2026-10-07"),                           # 取得のときに書いたまま
+    ("2026-10-09T08:30:00+09:00", "2026-10-08"),    # UTC の日付（日本時間では 10-09）
+])
+def test_collect_claude_import_names_the_code_analytics_after_the_run(
+    claude_env, monkeypatch, capsys, created_at, fetched_on
+):
+    """--import の取得日は run.json の created_at の UTC の日付（取り込む日ではない）。"""
+    env = claude_env
+    run_dir = _claude_timed_out_run(env)
+    record_path = run_dir / "run.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["created_at"] == "2026-10-07T12:00:00+09:00"
+    if created_at is not None:
+        record_path.write_text(json.dumps({**record, "created_at": created_at}),
+                               encoding="utf-8")
+    # 取り込む日は取得の日と違う
+    monkeypatch.setattr("seat_analyzer.claude_export.local_now",
+                        lambda: dt.datetime(2026, 10, 10, 12, 0, tzinfo=CLAUDE_TZ))
+    capsys.readouterr()
+
+    assert _collect_claude(env, "--import", run_dir.name) == 0
+    placed = _placed(env, "example", "code", _claude_placed_name("code", CLAUDE_UUID1, fetched_on))
+    assert sorted(path.name for path in placed.parent.iterdir()) == [placed.name]
+    assert (run_dir / "example" / "code-analytics" / _claude_filename("code", CLAUDE_UUID1)).is_file()
+    assert f"  配置: {placed}（終了日を取得日 {fetched_on} に変更）" \
+        in capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.parametrize("created_at,fragment", [
+    (None, "run.json に created_at がありません"),
+    ("yesterday", "run.json の created_at が ISO 8601 の日時ではありません"),
+    ("2026-10-07T12:00:00", "run.json の created_at にタイムゾーンがありません"),
+])
+def test_collect_claude_import_rejects_a_broken_created_at(
+    claude_env, capsys, created_at, fragment
+):
+    """run.json の created_at が壊れていれば、何も配置せずに止める。"""
+    env = claude_env
+    run_dir = _claude_timed_out_run(env)
+    record_path = run_dir / "run.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    if created_at is None:
+        del record["created_at"]
+    else:
+        record["created_at"] = created_at
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    capsys.readouterr()
+
+    assert _collect_claude(env, "--import", run_dir.name) == 1
+    assert fragment in capsys.readouterr().err
+    for kind in ("members", "spend", "code"):
+        assert not (env.input_dir / "example" / CLAUDE_KIND_DIRS[kind]).exists()
 
 
 def test_collect_claude_setup_launches_chrome_and_returns(claude_env, capsys):
