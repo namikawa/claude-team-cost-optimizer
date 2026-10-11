@@ -7,5 +7,5 @@ kudo@example.co.jp,standard,320.0,25.0,125.0,25.0,standard,0.0,現状維持,高,
 mori@example.co.jp,premium,520.0,495.0,385.0,385.0,premium,0.0,現状維持,高,premium,premium,False,260.0,69333332,6933332,Claude Code 70% / Cowork 20% / Chat 10%,Opus 4.8 100%,プラットフォーム開発部,基盤チーム,テックリード,,250.0,enabled,22,5900
 sasaki@example.co.jp,standard,0.0,25.0,125.0,25.0,standard,0.0,現状維持,高,standard,standard,False,0.0,0,0,,,,,,,,unknown,0,0
 shimizu@example.co.jp,standard,48.0,25.0,125.0,25.0,standard,0.0,現状維持,高,standard,standard,False,0.0,10666666,1066666,Claude Code 100%,Sonnet 4.6 100%,プロダクト開発部,モバイルチーム,エンジニア,,inf,enabled,3,310
-ikeda@example.co.jp,premium,0.0,25.0,125.0,125.0,standard,100.0,要観察,高,standard,standard,False,0.0,0,0,,,プラットフォーム開発部,基盤チーム,エンジニア,,250.0,enabled,0,0
-tanabe@example.co.jp,premium,180.0,155.0,155.0,155.0,standard,0.0,要観察,中,premium,standard,False,30.0,40000000,4000000,Claude Code 80% / Design 20%,Sonnet 4.6 100%,プラットフォーム開発部,SREチーム,エンジニア,,100.0,enabled,7,1500
+ikeda@example.co.jp,premium,0.0,25.0,125.0,125.0,standard,100.0,要観察（データ蓄積待ち）,高,standard,standard,False,0.0,0,0,,,プラットフォーム開発部,基盤チーム,エンジニア,,250.0,enabled,0,0
+tanabe@example.co.jp,premium,180.0,155.0,155.0,155.0,standard,0.0,要観察（データ蓄積待ち）,中,premium,standard,False,30.0,40000000,4000000,Claude Code 80% / Design 20%,Sonnet 4.6 100%,プラットフォーム開発部,SREチーム,エンジニア,,100.0,enabled,7,1500

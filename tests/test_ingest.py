@@ -3,7 +3,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from seat_analyzer import ingest
+from seat_analyzer import analyze, ingest, pricing
+from seat_analyzer.data_quality import inspect_input
+from seat_analyzer.domain import IssueCode, Severity
 from tests.conftest import spend_row
 
 
@@ -343,3 +345,70 @@ def test_empty_spend_has_the_canonical_columns():
     for column in (*ingest.REQUIRED_COLUMNS["spend"], "product", "requests",
                    "net_spend", "account_uuid", "user_id", "month"):
         assert column in empty.columns
+
+
+# --- キャッシュ内訳の部分欠損 ---
+
+_CACHE_HEADERS = {
+    "uncached_input_tokens": "Total Uncached Input Tokens",
+    "cache_read_tokens": "Total Cache Read Tokens",
+    "cache_write_5m_tokens": "Total Cache Write 5m Tokens",
+    "cache_write_1h_tokens": "Total Cache Write 1h Tokens",
+}
+
+
+def _write_cache_spend(base: Path, columns: tuple[str, ...]) -> Path:
+    """キャッシュ内訳の列を指定した分だけ持つ spend（2026-06）と members を置く。"""
+    path = base / "spend" / "spend_2026-06.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = ["Email", "Model", "Prompt Tokens", "Completion Tokens",
+              *(_CACHE_HEADERS[c] for c in columns)]
+    row = ["a@x.jp", "claude-sonnet-4-6", "1000000", "100000", *(["250000"] * len(columns))]
+    path.write_text(",".join(header) + "\n" + ",".join(row) + "\n",
+                    encoding="utf-8", newline="\n")
+    members = base / "members" / "members_2026-06.csv"
+    members.parent.mkdir(parents=True, exist_ok=True)
+    members.write_text("Email,Seat Type\na@x.jp,Premium\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def test_cache_columns_definition_matches_pricing():
+    # pricing は同じ層の ingest を import できないので、同じ並びを持つことをここで固定する
+    assert ingest.SPEND_CACHE_COLUMNS == pricing.CACHE_COLS
+
+
+def test_partial_cache_columns_raise_with_file_and_missing_names(cfg, tmp_path: Path):
+    path = _write_cache_spend(tmp_path / "input",
+                              ("uncached_input_tokens", "cache_read_tokens"))
+    with pytest.raises(ValueError) as excinfo:
+        ingest.load_spend(tmp_path / "input", "2026-06", cfg)
+    message = str(excinfo.value)
+    assert "spend_2026-06.csv" in message
+    assert "['cache_write_5m_tokens', 'cache_write_1h_tokens']" in message
+    assert "config.yaml > columns > spend" in message
+    # 月中差分の読み取り口（重複解決なし）も同じ規則で止まる
+    with pytest.raises(ValueError, match="キャッシュ内訳"):
+        ingest.load_spend_file(path, "2026-06", cfg)
+
+
+@pytest.mark.parametrize("columns", [(), tuple(_CACHE_HEADERS)])
+def test_cache_columns_all_or_nothing_load(cfg, tmp_path: Path, columns):
+    _write_cache_spend(tmp_path / "input", columns)
+    df = ingest.load_spend(tmp_path / "input", "2026-06", cfg).df
+    assert all((c in df.columns) == bool(columns) for c in ingest.SPEND_CACHE_COLUMNS)
+
+
+def test_partial_cache_columns_stop_analyze_preview_and_doctor(cfg, tmp_path: Path):
+    base = tmp_path / "input" / "org-a"
+    _write_cache_spend(base, ("cache_read_tokens",))
+    with pytest.raises(ValueError, match="キャッシュ内訳"):
+        analyze.analyze(base, "2026-06", cfg, org="org-a")
+    with pytest.raises(ValueError, match="キャッシュ内訳"):
+        analyze.preview(base, "2026-06", cfg, 10, "org-a")
+    issues = inspect_input(base, "2026-06", cfg, "org-a")
+    spend_errors = [i for i in issues
+                    if i.code is IssueCode.MISSING_SPEND and i.severity is Severity.ERROR]
+    assert len(spend_errors) == 1
+    assert "キャッシュ内訳" in spend_errors[0].message
+    # doctor の message に絶対パスを載せない
+    assert str(tmp_path) not in spend_errors[0].message

@@ -256,7 +256,9 @@ def analyze_org(
                 "分析しました（--allow-missing-workspace の指定による）"
             )
 
-    def run(name: str, extra_demand: list[dict] | None = None) -> AnalysisResult:
+    def run(name: str,
+            secondary_results: dict[str, AnalysisResult] | None = None) -> AnalysisResult:
+        secondary_results = secondary_results or {}
         return analyze(
             org_input / name, month, cfg, org,
             decision_context=decision_context,
@@ -264,15 +266,18 @@ def analyze_org(
             # members-info は人単位の任意入力なので組織直下の1つを全 workspace で読む
             members_info_dir=org_input,
             assume_no_usage=analyzed[name],
-            extra_demand=extra_demand or (),
+            extra_demand=[result.monthly for result in secondary_results.values()],
+            secondary_results=secondary_results,
         )
 
     # 副を先に分析し、その需要を主の判定へ渡す（複数アカウント保有者の主の行は
-    # 全 workspace の合算需要で判定する・§26.4）。結果と警告の並びは contexts の順のまま
+    # 全 workspace の合算需要で判定する・§26.4）。副の月の揃い方も主の判定窓の検査に
+    # 渡す（副の欠け・部分月があれば主の変更推奨を保留する）。結果と警告の並びは
+    # contexts の順のまま
     secondaries = [name for name in analyzed if name != primary]
     results = {name: run(name) for name in secondaries}
     if primary in analyzed:
-        results[primary] = run(primary, [results[name].monthly for name in secondaries])
+        results[primary] = run(primary, {name: results[name] for name in secondaries})
     result = OrgAnalysisResult(
         org=org, month=month, primary=primary,
         workspaces={name: results[name] for name in contexts if name in results},
@@ -292,8 +297,12 @@ def preview_days(org_input: str | Path, month: str) -> int | None:
     org_input は組織の入力ディレクトリ。従来レイアウトでは採用ファイルの期間の日数を
     返し、入れ子では対象月の spend を持つ全 workspace の日数が同じときだけ採る。
     同一月に複数ファイルがある場合も、spend_file_period が採用する1本だけを見る。
-    対象月のファイルが無い、または期間を持たない命名があれば None。日数が食い違う
-    場合は ValueError（CLI は --days による明示指定を案内する）。
+    対象月のファイルが無い、または期間を持たない命名があれば None。
+
+    入れ子で、日数の分かる workspace どうしが食い違う場合は ValueError（日数の分からない
+    workspace があっても先に検査する）。速報の換算は全 workspace に同じ倍率を掛けるので、
+    --days で1つの日数を指定しても食い違いは直らない。すべての workspace で同じ期間の
+    spend をそろえることを案内する。
     """
     directory = Path(org_input)
     layout, names = ingest.detect_workspace_layout(directory)
@@ -307,14 +316,18 @@ def preview_days(org_input: str | Path, month: str) -> int | None:
         period = ingest.spend_file_period(directory / name, month)
         if period is not None:
             days[name] = period.days
-    if not days or any(value is None for value in days.values()):
-        return None
-    if len(set(days.values())) != 1:
-        detail = " / ".join(f"{name}: {value} 日" for name, value in sorted(days.items()))
+    known = {value for value in days.values() if value is not None}
+    if len(known) > 1:
+        detail = " / ".join(
+            f"{name}: {'不明' if value is None else f'{value} 日'}"
+            for name, value in sorted(days.items())
+        )
         raise ValueError(
             f"workspace ごとの観測日数が違います（{detail}）。"
-            "--days で観測日数を指定してください"
+            "すべての workspace で同じ期間のスペンドレポートをそろえてください"
         )
+    if not days or any(value is None for value in days.values()):
+        return None
     return next(iter(days.values()))
 
 

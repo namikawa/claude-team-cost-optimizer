@@ -24,7 +24,7 @@ from seat_analyzer.analyze import (
 )
 from seat_analyzer.config import load_config
 from seat_analyzer.report.format import _group_summary_rows
-from tests.conftest import spend_row
+from tests.conftest import SPEND_HEADER, spend_row
 
 ORG = "org-x"
 
@@ -436,6 +436,94 @@ def test_continuation_breakeven_follows_fixed_seat(make_input, tmp_path):
     assert layer.breakeven_usd == 25.0
     assert judgments["carol@example.com"].breakeven_usd == 25.0
     assert judgments["carol@example.com"].status == CONTINUE
+
+
+def _write_spend(base: Path, name: str, rows: list[str]) -> None:
+    """workspace の spend/ にファイル名を指定して置く（期間付きの部分月を作るため）。"""
+    directory = base / "spend"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / name).write_text(
+        SPEND_HEADER + "\n" + "\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+
+
+def _payout_streak_input(make_input, main_months: tuple[str, ...]) -> Path:
+    """主の実課金が損益分岐ちょうど（$125）の月が並ぶ人（alice・上限 $250）の構成。"""
+    input_dir = make_input(
+        {month: [spend_row("alice@example.com", 300.0, net=125.0)] for month in main_months},
+        members=["alice@example.com,premium"], org=ORG, workspace="main",
+    )
+    make_input(
+        {"2026-06": [spend_row("zoe@example.com", 200.0, net=0.0)]},
+        members=["zoe@example.com,premium"], org=ORG, workspace="second",
+    )
+    _write_members_info(input_dir, "email,追加クレジット上限\nalice@example.com,250\n")
+    return input_dir
+
+
+def _second_cfg(tmp_path):
+    return _cfg(tmp_path, {
+        "main": {"primary": True}, "second": {"fixed_seat": "premium"},
+    })
+
+
+def test_payout_streak_stops_at_missing_month(make_input, tmp_path):
+    # 2026-05 が欠月なので、2026-04 の損益分岐以上は連続月数に数えない
+    input_dir = _payout_streak_input(make_input, ("2026-04", "2026-06"))
+    layer = analyze_org(input_dir / ORG, "2026-06", _second_cfg(tmp_path), ORG).persons
+    alice = {j.email: j for j in layer.payout}["alice@example.com"]
+    assert alice.streak_months == 1
+    assert alice.status == PAYOUT_WATCH
+    # 表示用の月別の値は従来どおり months_used の全月
+    assert alice.monthly_billed == (("2026-04", 125.0), ("2026-06", 125.0))
+
+
+def test_payout_streak_stops_at_partial_month(make_input, tmp_path):
+    input_dir = _payout_streak_input(make_input, ("2026-06",))
+    _write_spend(input_dir / ORG / "main", "spend-report-uuid-2026-05-01-to-2026-05-20.csv",
+                 [spend_row("alice@example.com", 300.0, net=125.0)])
+    layer = analyze_org(input_dir / ORG, "2026-06", _second_cfg(tmp_path), ORG).persons
+    alice = {j.email: j for j in layer.payout}["alice@example.com"]
+    assert alice.streak_months == 1
+    assert alice.status == PAYOUT_WATCH
+    assert alice.monthly_billed == (("2026-05", 125.0), ("2026-06", 125.0))
+
+
+def _continuation_gap_input(make_input, second_months: tuple[str, ...]) -> Path:
+    """副で 2026-03 に払い出した bob の需要が、毎月損益分岐未満の構成。"""
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@example.com", 300.0, net=0.0)],
+         "2026-06": [spend_row("alice@example.com", 300.0, net=0.0)]},
+        members=["alice@example.com,premium", "bob@example.com,premium"],
+        org=ORG, workspace="main",
+    )
+    make_input(
+        {month: [spend_row("bob@example.com", 10.0, net=0.0)] for month in second_months},
+        members=["bob@example.com,premium"], org=ORG, workspace="second",
+    )
+    return input_dir
+
+
+def test_continuation_months_stop_at_secondary_missing_month(make_input, tmp_path):
+    # 2026-05 が欠月。2026-04 と 2026-06 は損益分岐未満でも連続した2か月ではない
+    input_dir = _continuation_gap_input(make_input, ("2026-03", "2026-04", "2026-06"))
+    org = analyze_org(input_dir / ORG, "2026-06", _second_cfg(tmp_path), ORG)
+    assert org.first_seen["second"]["bob@example.com"] == "2026-03"
+    bob = {j.email: j for j in org.persons.continuation}["bob@example.com"]
+    assert (bob.complete_months, bob.streak_months) == (1, 1)
+    assert bob.status == WAITING
+    assert bob.monthly_demand == (
+        ("2026-03", 10.0), ("2026-04", 10.0), ("2026-06", 10.0))
+
+
+def test_continuation_months_stop_at_secondary_partial_month(make_input, tmp_path):
+    input_dir = _continuation_gap_input(make_input, ("2026-04", "2026-06"))
+    _write_spend(input_dir / ORG / "second",
+                 "spend-report-uuid-2026-05-01-to-2026-05-20.csv",
+                 [spend_row("bob@example.com", 10.0, net=0.0)])
+    org = analyze_org(input_dir / ORG, "2026-06", _second_cfg(tmp_path), ORG)
+    bob = {j.email: j for j in org.persons.continuation}["bob@example.com"]
+    assert (bob.complete_months, bob.streak_months) == (1, 1)
+    assert bob.status == WAITING
 
 
 def test_billed_with_secondary(make_input, tmp_path):

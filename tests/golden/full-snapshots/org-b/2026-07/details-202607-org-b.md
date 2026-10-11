@@ -7,7 +7,7 @@
 | ユーザ | 現シート | API換算需要 | 実課金(従量) | Standard時 | Premium時 | 推奨 | 削減/月 | 判定 | 確度 | PR(CC) | 行数(CC) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | hayashi@example.co.jp | Premium | $0.00 | $0.00 | $25.00 | $125.00 | Standard | $100.00 | 変更推奨 | 高 | 0 | 0 |
-| kudo@example.co.jp | Standard | $260.00 | $130.00 | $155.00 | $135.00 | Premium | $20.00 | 要観察 | 中 | 0 | 0 |
+| kudo@example.co.jp | Standard | $260.00 | $130.00 | $155.00 | $135.00 | Premium | $20.00 | 要観察（データ蓄積待ち） | 中 | 0 | 0 |
 | abe@example.co.jp | Standard | $9.00 | $0.00 | $25.00 | $125.00 | Standard | $0.00 | 現状維持 | 高 | 1 | 90 |
 | endo@example.co.jp | Standard | $0.00 | $0.00 | $25.00 | $125.00 | Standard | $0.00 | 現状維持 | 高 | 0 | 0 |
 | ikeda@example.co.jp | Premium | $260.00 | $90.00 | $235.00 | $215.00 | Premium | $0.00 | 現状維持 | 中 | 18 | 4,300 |
@@ -126,5 +126,5 @@ allowance（シート込み利用量のUSD換算・非公開のため推定）�
 
 | ユーザ | 現シート | API換算需要 | 実課金(従量) | Standard時 | Premium時 | 推奨 | 削減/月 | 判定 | 確度 | PR(CC) | 行数(CC) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| kudo@example.co.jp | Standard | $260.00 | $130.00 | $155.00 | $135.00 | Premium | $20.00 | 要観察 | 中 | 0 | 0 |
+| kudo@example.co.jp | Standard | $260.00 | $130.00 | $155.00 | $135.00 | Premium | $20.00 | 要観察（データ蓄積待ち） | 中 | 0 | 0 |
 | ikeda@example.co.jp | Premium | $260.00 | $90.00 | $235.00 | $215.00 | Premium | $0.00 | 現状維持 | 中 | 18 | 4,300 |
