@@ -89,7 +89,7 @@ CSV はヘッダを正規化してから、`config.yaml` の `columns.<種別>` 
 
 スペンドレポートのキャッシュ内訳の4列（`uncached_input_tokens`・`cache_read_tokens`・
 `cache_write_5m_tokens`・`cache_write_1h_tokens`）は任意だが、4列のうち一部だけが見つかった
-場合もエラーになる（4列とも無い CSV は `prompt_tokens` で需要を計算する）。
+場合もエラーになる（4列とも無い CSV は、入力分を `prompt_tokens` 全量で計算する）。
 
 ヘッダの正規化は、前後の空白を除いて小文字にし、`_` と `-` を空白に置き換え、連続する空白を
 1つにまとめる。エイリアス表に挙げた名前のほか、正準の列名そのもの（`prompt_tokens` なら
@@ -158,7 +158,8 @@ organizations:
 その workspace のアカウントは Standard / Premium の損益分岐判定・感度分析・追加クレジット
 付与候補の対象外になる。`credit_limit_default_usd` は副アカウントの追加クレジット上限の既定、
 `evaluation_months` は払い出し判定と継続判定に必要な連続月数（省略時は
-`decision.hysteresis_months`）。組織直下の `secondary_breakeven_usd` は副の損益分岐の設定で、
+`decision.hysteresis_months`）。連続月数は暦で連続し全月そろった月だけを数え、欠月・部分月で
+途切れる。組織直下の `secondary_breakeven_usd` は副の損益分岐の設定で、
 省略時は副の `fixed_seat` の価格を使う。workspace が 1 つの組織には `fixed_seat` を書かない。
 
 スペンドレポート・メンバー一覧・code-analytics は、エクスポート元のスペースの
@@ -226,10 +227,16 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
   翌月初のファイルに入っているため（末日から8日以上離れたファイルしか無い場合は、当時の
   構成と異なる可能性が高い旨の警告を出す）。どのファイルを採用したかにかかわらず、月中の
   メンバー変動の検出には対象月内のスナップショットを使う。採用は実行時点で置いてある
-  ファイルから選ぶため、過去の月を再実行すると採用ファイルが変わり、判定が変わることがある
+  ファイルから選ぶため、過去の月を再実行すると採用ファイルが変わり、判定が変わることがある。
+  判定窓のあいだの加入・シート変更を検出するため、判定窓の始まり以前の members の
+  スナップショットも残しておく必要がある。
 - ファイル名の期間が暦日数に満たないスペンドレポートは部分月として扱い、通常分析に使うと警告が
   出る（速報モードを案内）。部分月が判定窓（対象月から暦で遡る `decision.hysteresis_months`
-  か月）に入るあいだは変更推奨を出さない。期間の無い命名（日付のみ・月のみ）は全月として扱う
+  か月）に入るあいだは変更推奨を出さない。期間の無い命名（日付のみ・月のみ）は全月として扱う。
+  欠月・副スペースの欠け・判定窓のあいだの加入やシート変更でも同じく変更推奨を出さず、推奨が
+  現シートと違う人は「要観察（データ蓄積待ち）」になる（条件の詳細は reference.md の
+  [判定ロジック概要](./reference.md#判定ロジック概要)を参照）。
+
 4. 入力データの検査（任意）
 
    分析の前に、配置した CSV に不足や不整合がないかを確認できる。
@@ -246,7 +253,7 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    を検出する。メンバー一覧が対象月のものでない場合も警告するが、対象月末の直後（7日以内）の
    スナップショットを採用したときは出さない（月末までのデータを翌月初に取得する通常の運用経路の
    ため）。分析を止めるべき問題（error）があれば終了コード 1 を返し、警告だけなら 0 を返す。
-   レポートは書き換えず、判定にも影響しない読み取り専用の検査
+   レポートは書き換えず、判定にも影響しない読み取り専用の検査。
    複数スペースの組織では構造・workspace ごとの入力・人（主に居ない副のアカウント）も
    検査する。両レイアウトで members-info の未登録と読めないファイルも検査する。
 5. 分析実行
@@ -262,7 +269,7 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    リポジトリを clone している場合は、Claude Code から `/seat-analysis` を実行すると、
    分析に加えて警告の検証と考察の執筆までを対話的に行える。
 
-   `--decision-version v2` は上の5種の成果物に加えて `decision-evidence` を出力する。
+   `--decision-version v2` は下の5種の成果物に加えて `decision-evidence` を出力する。
    V1 の判定・成果物・組織横断サマリは変わらない（V2 の判定を並べて比較するための
    追加出力）。省略時は `config.yaml > decision_v2.enabled` に従い、既定は v1。
    速報モード（`--preview`）は V2 判定を行わないため、このオプションと併用できない。
@@ -276,7 +283,7 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    - `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（自己完結 HTML）
    - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用（列の意味は reference.md の [recommendations の列](./reference.md#recommendations-の列)）
    - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
-   - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（`--decision-version v2` のときだけ）
+   - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（V2 判定を有効にしたとき（`--decision-version v2` か、`config.yaml` の `decision_v2.enabled: true`）だけ出力）
    - `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数と lead time の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）
 
    以下では種別名（report / details / dashboard …）で呼ぶ。
@@ -478,7 +485,8 @@ seat-analyzer analyze --preview [--org <組織名>] [--days 10]
 ```
 
 観測日数はファイル名の期間（`...-2026-07-01-to-2026-07-10.csv` なら10日）から
-自動判別される。期間の無いファイル名の場合のみ `--days` で指定する。
+自動判別される。期間の無いファイル名の場合のみ `--days` で指定する（複数スペースの組織は
+この節の後の段落を参照）。
 
 - 出力は `reports/<組織名>/<月>/` の `preview-YYYYMM-<組織名>.md` と
   `preview-dashboard-YYYYMM-<組織名>.html`（経営層共有向けの速報ダッシュボード）。

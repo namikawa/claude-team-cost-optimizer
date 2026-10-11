@@ -50,6 +50,10 @@ decision-evidence・github-summary。ファイル名はいずれも
     `uv run seat-analyzer collect --source claude --month YYYY-MM [--org <組織名>]` で取得して
     配置できる（docs/usage.md の「claude.ai からの CSV 取得」）。ブラウザが起動するので、
     実行する前にユーザに確認する
+- 判定窓（対象月から暦で遡る `decision.hysteresis_months` か月。既定は前月まで）の過去月の
+  スペンドレポートが全月分そろっているか確認する（複数スペースの組織は副スペースも）。
+  欠けや部分月があると変更推奨が出ない。前月分は 90 日以内なら取り直せる。
+  条件の詳細は docs/reference.md の[判定ロジック概要](../../docs/reference.md#判定ロジック概要)を参照する
 - ファイルのヘッダを確認し、`columns` のエイリアスで解決できないカラム名があれば
   エイリアスを追記する。追記先は既定設定 `src/seat_analyzer/default-config.yaml`
   （プログラムの更新で全利用者へ届く。実データのカラム名差異はここで吸収する設計）。
@@ -74,6 +78,9 @@ uv run seat-analyzer analyze [--month YYYY-MM] [--org <組織名>]
   - **シート不明ユーザ** → members ファイルの更新漏れの可能性を指摘する
     （「対象外（シート未割当）」は意図的な未割当のため指摘不要）
   - **スキップされた組織** → 対象月のエクスポート漏れ。手順を案内する
+  - **判定窓による保留** → 欠月・部分月・副スペースの欠け・加入やシート変更による保留の
+    警告を確認し、「要観察（データ蓄積待ち）」になった人は考察で保留の理由を書く。
+    条件の詳細は docs/reference.md の[判定ロジック概要](../../docs/reference.md#判定ロジック概要)を参照する
 - `reports/<組織名>/<月>/` の recommendations と details（全ユーザ表・月中の推移・
   組織内の分布）を読み、外れ値（極端な API換算コスト、前月からの急変）がないか確認する
 
