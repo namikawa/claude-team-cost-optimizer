@@ -954,8 +954,14 @@ def _run_analyze(args: argparse.Namespace) -> int:
                     "（参考値は正式分析でだけ出力）"
                 )
             days = args.days
+            # 入れ子の組織は --days の有無によらず workspace ごとの観測日数を突き合わせる
+            # （速報は全 workspace に同じ倍率を掛けるので、--days では食い違いを直せない）
+            detected = (
+                analyze.preview_days(org_input, month)
+                if days is None or org in nested else None
+            )
             if days is None:
-                days = analyze.preview_days(org_input, month)
+                days = detected
                 if days is None:
                     raise ValueError(
                         f"--days <観測日数> を指定してください"

@@ -7,4 +7,4 @@ ikeda@example.co.jp,premium,260.0,235.0,215.0,215.0,premium,0.0,現状維持,中
 mori@example.co.jp,premium,470.0,445.0,345.0,345.0,premium,0.0,現状維持,高,premium,premium,False,220.0,62666666,6266666,Claude Code 100%,Opus 4.8 100%,,,,,250.0,enabled,27,6800
 shimizu@example.co.jp,standard,45.4,25.0,125.0,25.0,standard,0.0,現状維持,高,standard,standard,False,0.0,10088888,1008888,Claude Code 100%,Sonnet 4.6 100%,,,,,inf,enabled,2,260
 tanabe@example.co.jp,standard,0.0,25.0,125.0,25.0,standard,0.0,現状維持,高,standard,standard,False,0.0,0,0,,,,,,,,unknown,0,0
-kudo@example.co.jp,standard,260.0,155.0,135.0,155.0,premium,20.0,要観察,中,standard,premium,False,130.0,34666666,3466666,Claude Code 100%,Opus 4.8 100%,,,,,0.0,disabled,0,0
+kudo@example.co.jp,standard,260.0,155.0,135.0,155.0,premium,20.0,要観察（データ蓄積待ち）,中,standard,premium,False,130.0,34666666,3466666,Claude Code 100%,Opus 4.8 100%,,,,,0.0,disabled,0,0

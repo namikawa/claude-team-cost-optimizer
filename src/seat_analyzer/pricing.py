@@ -51,6 +51,8 @@ def unmatched_models(models, cfg: dict) -> list[str]:
     return sorted(n for n in names if not any(p in n.lower() for p in patterns))
 
 
+# キャッシュ内訳4列。ingest.SPEND_CACHE_COLUMNS と同じ並び（同じ層どうしは import
+# できないので値を持ち、一致はテストで固定する）。一部だけある CSV は ingest が止める
 CACHE_COLS = ("uncached_input_tokens", "cache_read_tokens",
               "cache_write_5m_tokens", "cache_write_1h_tokens")
 

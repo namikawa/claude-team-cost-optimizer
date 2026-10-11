@@ -58,6 +58,18 @@ SPEND_OPTIONAL_COLUMNS = (
 # 識別できる追加列だけをマーカーにする。いずれかがあれば4列の部分欠損を警告する。
 SPEND_CURRENT_SCHEMA_MARKERS = ("user_id", "web_search_count")
 
+# Spend のキャッシュ内訳4列（正準名）。需要の計算（pricing.add_computed_cost）は4列が
+# そろったときだけ内訳の実効単価で計算し、1列でも欠けると prompt_tokens 全量 × 入力単価に
+# 切り替わる（キャッシュ読取を含むので需要を過大に見積もる）。一部だけある CSV はロード時に
+# 止める。pricing は同じ層で import できないため同じ並びを pricing.CACHE_COLS に持ち、
+# 一致はテストで固定する。
+SPEND_CACHE_COLUMNS = (
+    "uncached_input_tokens",
+    "cache_read_tokens",
+    "cache_write_5m_tokens",
+    "cache_write_1h_tokens",
+)
+
 # Step 2で正準化するMembers任意列。既存CSVとの互換性を保つため、
 # 列がない場合は警告を増やさずNAで補完する。
 MEMBERS_OPTIONAL_COLUMNS = (
@@ -695,20 +707,27 @@ def _read_spend_df(path: Path, month: str, cfg: dict) -> tuple[pd.DataFrame, lis
     """1つのスペンド CSV を読み、カラム正規化・数値化・email 正規化を施す。"""
     # IDの先頭ゼロや、欠損混在時の ".0" 付与を防ぐため、Spendはまず文字列で読む。
     # 数値列は正準化後に _to_numeric で明示的に変換する。
-    df = read_csv(path, dtype=str)
+    raw = read_csv(path, dtype=str)
     df, warnings = map_columns(
-        df,
+        raw,
         cfg["columns"]["spend"],
         required=REQUIRED_COLUMNS["spend"],
         source=path,
         fill_na_columns=SPEND_OPTIONAL_COLUMNS,
         partial_schema_markers=SPEND_CURRENT_SCHEMA_MARKERS,
     )
+    # キャッシュ内訳は4列そろうか1列も無いかのどちらかだけを受ける（一部だけだと需要の
+    # 計算が prompt_tokens 全量の経路へ黙って切り替わる）。4列とも無い旧形式は従来どおり
+    cache_missing = [c for c in SPEND_CACHE_COLUMNS if c not in df.columns]
+    if cache_missing and len(cache_missing) < len(SPEND_CACHE_COLUMNS):
+        raise ValueError(
+            f"{path}: キャッシュ内訳の列が一部しか見つかりません: {cache_missing}\n"
+            f"  実ファイルのヘッダ: {list(raw.columns)}\n"
+            f"  config.yaml > columns > spend にエイリアスを追記してください"
+        )
     _to_numeric(df, [
         "requests", "prompt_tokens", "completion_tokens", "gross_spend", "net_spend",
-        "web_search_count",
-        "uncached_input_tokens", "cache_read_tokens",
-        "cache_write_5m_tokens", "cache_write_1h_tokens",
+        "web_search_count", *SPEND_CACHE_COLUMNS,
     ])
     _clean_string_columns(df, ("account_uuid", "user_id"))
     df["email"] = df["email"].astype(str).str.strip().str.lower()
@@ -820,6 +839,16 @@ def member_files(input_dir: Path) -> list[tuple[FilePeriod, Path]]:
             entries.append((period, p))
     entries.sort(key=lambda e: e[0].start)
     return entries
+
+
+def member_periods(input_dir: Path) -> list[tuple[FilePeriod, Path]]:
+    """members の CSV のうちファイル名から期間を読めたもの全件（ファイル名の昇順）。
+
+    期間付き・単日日付・月のみの3種の命名をすべて含む（load_members が採用の候補に
+    するのと同じ集合）。判定窓のあいだの加入・シート種別の変更を確かめる側が、
+    採用ファイルと同じ代表日（期間の終わり）で並べ直して読む。
+    """
+    return _csv_periods(Path(input_dir) / "members")
 
 
 def member_snapshots(input_dir: Path, month: str) -> list[tuple[FilePeriod, Path]]:

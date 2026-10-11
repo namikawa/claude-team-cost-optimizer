@@ -27,7 +27,12 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from .credits import CREDIT_DISABLED, CREDIT_ENABLED, credit_reached, credits_mode
-from .pipeline import SEAT_LABELS, STATUS_CHANGE, AnalysisResult
+from .pipeline import (
+    SEAT_LABELS,
+    STATUS_CHANGE,
+    AnalysisResult,
+    consecutive_complete_months,
+)
 
 if TYPE_CHECKING:  # 実行時の import は循環する（workspaces がこのモジュールを呼ぶため）
     from .workspaces import OrgAnalysisResult, OrgPreviewResult, WorkspaceContext
@@ -285,10 +290,10 @@ class Person:
 class PayoutJudgment:
     """副を持たない人への払い出し判定（§26.5-1）。
 
-    streak_months は対象月を末尾とする「主の実課金 ≥ 損益分岐」の連続月数、
-    cap_reached は対象月に主の追加クレジット上限へ到達したか。monthly_billed は
-    主の月別実課金（月の昇順）で、code_ratio と loc_with_cc は「さらに仕事が進むか」を
-    読むための材料。
+    streak_months は対象月を末尾とする「主の実課金 ≥ 損益分岐」の連続月数（暦で連続し、
+    主で全月そろった月だけを数える。欠月・部分月で途切れる）、cap_reached は対象月に主の
+    追加クレジット上限へ到達したか。monthly_billed は主の月別実課金（months_used の全月・
+    月の昇順）で、code_ratio と loc_with_cc は「さらに仕事が進むか」を読むための材料。
     """
 
     email: str
@@ -307,8 +312,10 @@ class PayoutJudgment:
 class ContinuationJudgment:
     """副にシートを持つアカウントの継続判定（§26.5-2）。
 
-    complete_months は払い出した月より後の月数（払い出した月は不完全月として数えない）、
-    streak_months は直近の完全月から遡って「副の需要 < 損益分岐」が続いた月数。
+    complete_months は払い出した月より後で、対象月から暦で連続し副で全月そろった月の数
+    （払い出した月は不完全月として数えない。欠月・部分月で途切れる）、streak_months は
+    同じ月の上で、直近の月から遡って「副の需要 < 損益分岐」が続いた月数。
+    monthly_demand は副の月別需要（months_used の全月）。
     evaluation_months はその workspace の判定に必要な連続月数（breakeven_usd と同じく
     workspace ごとに決まる）。saving_usd は戻す候補のときの削減見込み（副のシート料 −
     副の需要）で、over_primary_cap_months は副の需要が主の追加クレジット上限を超えた月＝
@@ -603,6 +610,7 @@ def payout_judgments(persons: Sequence[Person], org: OrgAnalysisResult,
     主の実課金が「副を足さずクレジットへ払っている額」なので、副の損益分岐と
     比べて候補・観察・不要を分け、実課金が上限到達を語らない状態（κ が無効・不明）と
     払い出すシート種別と主のシートが違う状態は判断材料なしにする。
+    連続月数は主自身の完全性で数える（副の欠けは主の V1 判定の材料にだけ含める）。
     """
     policy = _policy(org, cfg)
     primary_result = org.workspaces.get(org.primary)
@@ -615,6 +623,9 @@ def payout_judgments(persons: Sequence[Person], org: OrgAnalysisResult,
         month: _column_by_email(primary_result.monthly[month], "billed")
         for month in primary_result.months_used
     }
+    counted = consecutive_complete_months(
+        primary_result.month, primary_result.months_used, primary_result.complete
+    )
     shares = _code_shares(primary_result)
 
     judgments = []
@@ -629,9 +640,10 @@ def payout_judgments(persons: Sequence[Person], org: OrgAnalysisResult,
             for month in primary_result.months_used
         )
         billed = monthly_billed[-1][1] if monthly_billed else 0.0
+        billed_on = dict(monthly_billed)
         streak = 0
-        for _, value in reversed(monthly_billed):
-            if value < breakeven:
+        for month in reversed(counted):
+            if billed_on[month] < breakeven:
                 break
             streak += 1
         cap_reached = credit_reached(account.credit_limit_usd, billed, policy.tolerance)
@@ -685,6 +697,8 @@ def continuation_judgments(
 
     並びは email 昇順で、同一人物の中は workspace 順。first_seen は workspace → email → 払い出した月（spend か members にその email が
     最初に現れた月）。払い出した月は不完全月として数えないため、連続月数の起点に使う。
+    数える月は、対象月から暦で連続し、その副自身で全月そろった月のうち払い出した月より
+    後のもの（欠月・部分月で途切れる）。
     """
     policy = _policy(org, cfg)
     if policy is None:
@@ -695,6 +709,10 @@ def continuation_judgments(
             month: _column_by_email(result.monthly[month], "api_cost")
             for month in result.months_used
         }
+        for name, result in org.workspaces.items()
+    }
+    counted_by_workspace = {
+        name: consecutive_complete_months(result.month, result.months_used, result.complete)
         for name, result in org.workspaces.items()
     }
 
@@ -717,7 +735,11 @@ def continuation_judgments(
             start = seen.get(account.workspace, {}).get(person.email)
             if start is None:
                 start = _first_month(monthly_demand, org.month)
-            complete = [(m, v) for m, v in monthly_demand if m > start]
+            demand_on = dict(monthly_demand)
+            complete = [
+                (m, demand_on[m]) for m in counted_by_workspace[account.workspace]
+                if m > start
+            ]
             streak = 0
             for _, value in reversed(complete):
                 if value >= breakeven:

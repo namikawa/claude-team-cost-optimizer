@@ -965,8 +965,9 @@ def test_doctor_output_is_deterministic(make_input, capsys):
 
 
 def test_doctor_history_gap_message_matches_analyze_behavior(make_input, cfg, capsys):
-    # analyze は欠月を飛ばした過去月で連続同推奨を判定するため、欠月があっても
-    # 「変更推奨」は出る。doctor が「要観察に留まる」と案内してはいけない
+    # analyze は判定窓（対象月から暦で遡る N か月）に欠月があると変更推奨を出さず、
+    # 推奨が現シートと違うユーザを「要観察（データ蓄積待ち）」にする。doctor の案内も
+    # この挙動と一致させる
     input_dir = make_input(
         {"2026-04": [spend_row("a@x.jp", 10.0)], "2026-06": [spend_row("a@x.jp", 12.0)]},
         members=["a@x.jp,Premium"], org="org-a",
@@ -974,13 +975,15 @@ def test_doctor_history_gap_message_matches_analyze_behavior(make_input, cfg, ca
     # analyze 側の実挙動を同じ入力で固定する（将来 analyze が変わればこのテストが落ちる）
     result = analyze.analyze(input_dir / "org-a", "2026-06", cfg, org="org-a")
     assert result.months_used == ["2026-04", "2026-06"]      # 2026-05 は欠月
-    assert result.users.iloc[0]["status"] == "変更推奨"
+    assert result.users.iloc[0]["recommended_seat"] == "standard"
+    assert result.users.iloc[0]["status"] == "要観察（データ蓄積待ち）"
 
     assert _doctor(input_dir, "--month", "2026-06") == 0
     out = capsys.readouterr().out
     assert "[warning] MISSING_HISTORY_MONTH" in out
-    assert "要観察" not in out
-    assert "変更推奨が出ることがあります" in out
+    assert "2026-05" in out
+    assert "変更推奨を出さず" in out
+    assert "要観察（データ蓄積待ち）" in out
 
 
 def test_doctor_inspects_org_without_spend_dir(make_input, capsys):
@@ -3487,8 +3490,8 @@ def test_single_nested_preview_matches_flat_bytes(tmp_path, month):
                 == artifact.path(outputs[1] / "org-b", month, "org-b").read_bytes())
 
 
-def test_preview_days_uses_selected_period_and_explicit_days_overrides(make_input, tmp_path,
-                                                                        capsys):
+def test_preview_days_uses_selected_period_and_days_does_not_override_mismatch(
+        make_input, tmp_path, capsys):
     input_dir, config = _nested_ready(make_input, tmp_path)
     for name, ends in (("main", ("05", "10")), ("second", ("09",))):
         spend_dir = input_dir / "org-x" / name / "spend"
@@ -3497,14 +3500,116 @@ def test_preview_days_uses_selected_period_and_explicit_days_overrides(make_inpu
             (spend_dir / f"spend-report-uuid-2026-06-01-to-2026-06-{end}.csv").write_text(
                 SPEND_HEADER + "\n" + spend_row("a@x.jp", 10.0) + "\n",
                 encoding="utf-8", newline="\n")
+    # 主は採用される期間の広い方（10日）で突き合わせる
     assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
                            "--preview") == 1
     assert "main: 10 日 / second: 9 日" in capsys.readouterr().err
+    # 速報は全 workspace に同じ倍率を掛けるので、--days を付けても食い違いのまま止める
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", "--days", "10") == 1
+    assert "main: 10 日 / second: 9 日" in capsys.readouterr().err
+    # 日数がそろえば --days の指定は従来どおり効く（範囲の検査も従来どおり）
+    (input_dir / "org-x" / "second" / "spend"
+     / "spend-report-uuid-2026-06-01-to-2026-06-09.csv").rename(
+        input_dir / "org-x" / "second" / "spend"
+        / "spend-report-uuid-2026-06-01-to-2026-06-10.csv")
     assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
                            "--preview", "--days", "10") == 0
     assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
                            "--preview", "--days", "0") == 1
     assert "--days は 1〜30" in capsys.readouterr().err
+
+
+def _preview_days_org(tmp_path: Path, ends: dict[str, str | None]) -> tuple[Path, str]:
+    """workspace ごとに 2026-06 の spend を1本ずつ持つ入れ子の組織（最初が主）。
+
+    ends は workspace 名 → 期間の終了日（"09" なら 06-01〜06-09）。None は月のみの
+    命名（観測日数がファイル名から分からない）。
+    """
+    input_dir = tmp_path / "input"
+    names = list(ends)
+    for name, end in ends.items():
+        base = input_dir / "org-x" / name
+        (base / "spend").mkdir(parents=True)
+        spend = ("spend_2026-06.csv" if end is None
+                 else f"spend-report-uuid-2026-06-01-to-2026-06-{end}.csv")
+        (base / "spend" / spend).write_text(
+            SPEND_HEADER + "\n" + spend_row("a@x.jp", 10.0) + "\n",
+            encoding="utf-8", newline="\n")
+        (base / "members").mkdir()
+        (base / "members" / "members_2026-06.csv").write_text(
+            "Email,Seat Type\na@x.jp,Premium\n", encoding="utf-8", newline="\n")
+    lines = ["organizations:", "  org-x:", "    workspaces:"]
+    for name in names:
+        lines += [f"      {name}:",
+                  "        primary: true" if name == names[0]
+                  else "        fixed_seat: premium"]
+    config = tmp_path / "preview-days.yaml"
+    config.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return input_dir, str(config)
+
+
+def test_preview_days_checks_known_days_before_unknown(tmp_path):
+    input_dir, _ = _preview_days_org(tmp_path, {"main": "09", "second": "06", "third": None})
+    with pytest.raises(ValueError) as excinfo:
+        analyze.preview_days(input_dir / "org-x", "2026-06")
+    message = str(excinfo.value)
+    assert "main: 9 日 / second: 6 日 / third: 不明" in message
+    assert "同じ期間のスペンドレポートをそろえてください" in message
+    assert "--days" not in message
+
+
+def test_preview_days_returns_shared_days_or_none(tmp_path):
+    input_dir, _ = _preview_days_org(tmp_path / "a", {"main": "09", "second": "09"})
+    assert analyze.preview_days(input_dir / "org-x", "2026-06") == 9
+    input_dir, _ = _preview_days_org(tmp_path / "b", {"main": "09", "second": None})
+    assert analyze.preview_days(input_dir / "org-x", "2026-06") is None
+
+
+def test_preview_cli_stops_on_mismatched_days_even_with_days(tmp_path, capsys):
+    input_dir, config = _preview_days_org(
+        tmp_path, {"main": "09", "second": "06", "third": None})
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", "--days", "9") == 1
+    err = capsys.readouterr().err
+    assert "main: 9 日 / second: 6 日 / third: 不明" in err
+    assert "--days" not in err
+
+
+@pytest.mark.parametrize("extra", [(), ("--days", "9")])
+def test_preview_cli_stops_on_two_mismatched_workspaces(tmp_path, capsys, extra):
+    input_dir, config = _preview_days_org(tmp_path, {"main": "09", "second": "06"})
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", *extra) == 1
+    err = capsys.readouterr().err
+    assert "main: 9 日 / second: 6 日" in err
+    assert "--days" not in err
+
+
+@pytest.mark.parametrize(("extra", "days"), [((), 9), (("--days", "12"), 12)])
+def test_preview_cli_with_matching_nested_days_is_unchanged(tmp_path, extra, days):
+    input_dir, config = _preview_days_org(tmp_path, {"main": "09", "second": "09"})
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
+                           "--preview", *extra) == 0
+    md = out_file(tmp_path / "reports", PREVIEW, org="org-x").read_text(encoding="utf-8")
+    assert f"{days}日間の観測データ" in md
+
+
+def test_preview_cli_single_workspace_days_overrides_the_file_period(tmp_path):
+    input_dir = tmp_path / "input"
+    base = input_dir / "org-a"
+    (base / "spend").mkdir(parents=True)
+    (base / "spend" / "spend-report-uuid-2026-06-01-to-2026-06-04.csv").write_text(
+        SPEND_HEADER + "\n" + spend_row("a@x.jp", 10.0) + "\n",
+        encoding="utf-8", newline="\n")
+    (base / "members").mkdir()
+    (base / "members" / "members_2026-06.csv").write_text(
+        "Email,Seat Type\na@x.jp,Premium\n", encoding="utf-8", newline="\n")
+    assert main(["analyze", "--config", CONFIG, "--input-dir", str(input_dir),
+                 "--output-dir", str(tmp_path / "reports"), "--month", "2026-06",
+                 "--preview", "--days", "10"]) == 0
+    md = out_file(tmp_path / "reports", PREVIEW).read_text(encoding="utf-8")
+    assert "10日間の観測データ" in md
 
 
 def test_preview_started_missing_workspace_stops_multi_org_run(make_input, tmp_path, capsys):

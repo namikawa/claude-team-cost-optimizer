@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import calendar
+import datetime as dt
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -80,6 +81,44 @@ _IDENTITY_COLUMNS = ("email", "account_uuid", "user_id")
 # 採用ファイルのパスが入る位置なので、パスと取り違えない固定の文言にする
 NO_USAGE_SOURCE = "(利用なしとして扱う)"
 
+# 警告に例として載せるユーザの数（人数と併記する）
+_LISTED_USERS = 5
+
+
+def _prev_month(month: str) -> str:
+    """YYYY-MM の暦上の直前月。"""
+    year, mon = (int(part) for part in month.split("-"))
+    return f"{year - 1}-12" if mon == 1 else f"{year}-{mon - 1:02d}"
+
+
+def judgment_window(month: str, n_months: int) -> tuple[str, ...]:
+    """V1 の主判定が見る判定窓（対象月から暦で遡る n_months か月。昇順で最後が対象月）。"""
+    found = [month]
+    for _ in range(max(n_months - 1, 0)):
+        found.append(_prev_month(found[-1]))
+    return tuple(reversed(found))
+
+
+def consecutive_complete_months(
+    month: str, months: Collection[str], complete: Mapping[str, bool]
+) -> tuple[str, ...]:
+    """対象月から暦で遡り、全月そろった月が途切れずに続くあいだの月（昇順）。
+
+    数えるのは months（その workspace の months_used）にあり、complete が True の月。
+    欠月（months に無い月）と部分月（complete が False の月）でそこから先を数えない。
+    complete に無い月は全月と確かめられないので、途切れる側に倒す。
+
+    主の V1 判定（判定窓の月がすべてこの中に入るか）と、人の層の払い出し判定・継続判定の
+    連続月数が、この1つの規則を使う。
+    """
+    available = set(months)
+    found: list[str] = []
+    cursor = month
+    while cursor in available and complete.get(cursor, False):
+        found.append(cursor)
+        cursor = _prev_month(cursor)
+    return tuple(reversed(found))
+
 
 @dataclass(frozen=True)
 class DecisionContext:
@@ -131,6 +170,10 @@ class AnalysisResult:
     # 複数 workspace の組織で人ごとに月別の需要を束ね直す側が読む（V1 の判定・出力は
     # users と summary だけを見るので、ここを読んでも成果物は変わらない）
     monthly: dict[str, pd.DataFrame] = field(default_factory=dict)
+    # 月 → その月の spend が全月データか（この workspace 自身の値。DecisionContext.complete
+    # と同じ値で、decision_context の有無によらず入る）。副の欠け・部分月を主の判定に
+    # 含めるのは主の V1 判定の材料の中だけで、ここには載せない
+    complete: dict[str, bool] = field(default_factory=dict)
 
 
 def _seat_cost(api_cost: float, seat: str, scenario: str, cfg: dict) -> float:
@@ -271,6 +314,7 @@ def _load_spend_history(
     snapshot_active: bool,
     decision_context: bool = False,
     assume_no_usage: bool = False,
+    window: Collection[str] = (),
 ) -> _SpendHistory:
     """対象月までのスペンドを読み、全月へ同じ需要基準を適用する。
 
@@ -279,6 +323,8 @@ def _load_spend_history(
 
     assume_no_usage=True は対象月のファイルを読まず、空の明細（＝需要 0 の観測）で
     代替する。過去月は従来どおりファイルから読む。
+
+    window は V1 の判定窓の月で、部分月の警告の文言を窓の内外で分けるためだけに使う。
     """
     warnings: list[str] = []
     raw: dict[str, pd.DataFrame] = {}
@@ -305,17 +351,23 @@ def _load_spend_history(
         sources[current_month] = str(result.source)
         raw[current_month] = pricing.add_computed_cost(result.df, cfg)
 
-        # ファイル名の期間が全月に満たない場合、月額前提の判定が歪む（過小評価）
+        # ファイル名の期間が全月に満たない場合、月額前提の判定が歪む（過小評価）ので、
+        # 判定窓に入るあいだは変更推奨を出さない（analyze の判定窓の検査が complete を読む）
         complete[current_month] = True
         period = ingest.file_period(result.source)
         if period is not None and period.days is not None:
             year, mon = (int(part) for part in current_month.split("-"))
             if period.days < calendar.monthrange(year, mon)[1]:
                 complete[current_month] = False
-                warnings.append(
+                observed = (
                     f"{result.source.name}: {current_month} は部分月データ"
-                    f"（{period.start:%m-%d}〜{period.end:%m-%d} の {period.days}日分）ですが"
-                    "全月として扱っています。月中の一次判断には --preview を利用してください"
+                    f"（{period.start:%m-%d}〜{period.end:%m-%d} の {period.days}日分）"
+                )
+                warnings.append(
+                    f"{observed}のため、この月が判定窓に入るあいだは変更推奨を出しません。"
+                    "月中の一次判断には --preview を利用してください"
+                    if current_month in window else
+                    f"{observed}です。判定窓の外の月なので変更推奨の判定には使っていません"
                 )
 
     warnings.extend(
@@ -534,15 +586,22 @@ class _AnalysisContext:
 
     fixed_seat は、その workspace のシート種別が運用方針で固定されている場合の種別
     （config の fixed_seat。単一 workspace の組織では常に None）。
+
+    window は判定窓の月（昇順・最後が対象月）。window_ready は判定窓の月がすべて
+    暦で連続し全月そろっているか（欠月・部分月・副の欠けがあれば False）、held は
+    判定窓のあいだに加入・シート種別の変更が members で確かめられた email。
+    window_ready が False の組織の全員と held の人は、推奨が現シートと違っても
+    変更推奨を出さず「要観察（データ蓄積待ち）」にする。
     """
 
     cfg: dict
-    months_used: tuple[str, ...]
     monthly_by_email: dict[str, pd.DataFrame]
-    hysteresis_months: int
     censoring_margin: float
     min_saving: float
     standard_allowance_mid: float
+    window: tuple[str, ...]
+    window_ready: bool = True
+    held: frozenset[str] = frozenset()
     fixed_seat: str | None = None
 
 
@@ -552,14 +611,20 @@ def _hysteresis_status(
     recommendation: str,
     context: _AnalysisContext,
 ) -> str:
-    """直近月の推奨と削減額から正式判定のステータスを返す。"""
+    """判定窓の各月の推奨と削減額から正式判定のステータスを返す。
+
+    判定窓が揃っていない組織と、判定窓のあいだに加入・シート種別の変更があった人は、
+    推奨が現シートと違えば保留（要観察（データ蓄積待ち））にする。
+    """
     if seat == "unknown":
         return STATUS_UNKNOWN
     if recommendation == seat:
         return STATUS_KEEP
+    if not context.window_ready or email in context.held:
+        return STATUS_WATCH_WAIT
 
     checks = []
-    for current_month in context.months_used[-context.hysteresis_months :]:
+    for current_month in context.window:
         monthly = context.monthly_by_email[current_month]
         if email in monthly.index:
             api_cost = float(monthly.loc[email, "api_cost"])
@@ -572,9 +637,6 @@ def _hysteresis_status(
         current_cost = cost_std if seat == "standard" else cost_prem
         saving = current_cost - min(cost_std, cost_prem)
         checks.append(rec == recommendation and saving >= context.min_saving)
-
-    if len(context.months_used) < context.hysteresis_months:
-        return STATUS_WATCH_WAIT
     return STATUS_CHANGE if all(checks) else STATUS_WATCH
 
 
@@ -674,11 +736,15 @@ def _build_analysis_users(
     seat_by_email: dict[str, str],
     cfg: dict,
     fixed_seat: str | None = None,
+    *,
+    window_ready: bool = True,
+    held: Collection[str] = (),
 ) -> tuple[pd.DataFrame, int]:
     """月次表を索引化し、正式分析の全ユーザ行を構築する。
 
     monthly は月 → aggregate_month の結果。判定に使う需要をこの表が決めるので、
-    月別に束ね直した表を渡せば、その値で判定し直せる。
+    月別に束ね直した表を渡せば、その値で判定し直せる。window_ready と held は
+    判定を保留する条件（_AnalysisContext の同名の値）。
     """
     decision_cfg = cfg["decision"]
     hysteresis_months = int(decision_cfg["hysteresis_months"])
@@ -688,14 +754,15 @@ def _build_analysis_users(
     }
     context = _AnalysisContext(
         cfg=cfg,
-        months_used=tuple(months_used),
         monthly_by_email=monthly_by_email,
-        hysteresis_months=hysteresis_months,
         censoring_margin=float(decision_cfg["censoring_margin"]),
         min_saving=_min_saving(cfg),
         standard_allowance_mid=float(
             cfg["seats"]["standard"]["allowance_usd"]["mid"]
         ),
+        window=judgment_window(months_used[-1], hysteresis_months),
+        window_ready=window_ready,
+        held=frozenset(held),
         fixed_seat=fixed_seat,
     )
     target = monthly_by_email[months_used[-1]]
@@ -815,6 +882,135 @@ def _warn_fixed_seat_mismatch(users: pd.DataFrame,
     ]
 
 
+def _secondary_gap(result: AnalysisResult, month: str) -> str | None:
+    """副 workspace のその月が、主の判定から見て欠けているか（"missing" / "partial" / None）。
+
+    副の months_used の最古の月より前は、副が始まる前の月なので欠けとみなさない。
+    --allow-missing-workspace で需要 0 とした対象月は全月の観測（complete=True）なので
+    欠けに当たらない。
+    """
+    if not result.months_used or month < min(result.months_used):
+        return None
+    if month not in result.months_used:
+        return "missing"
+    if not result.complete.get(month, False):
+        return "partial"
+    return None
+
+
+def _judged_complete(
+    months_used: Sequence[str],
+    complete: Mapping[str, bool],
+    secondary_results: Mapping[str, AnalysisResult],
+) -> dict[str, bool]:
+    """主の V1 判定の材料にする月ごとの完全性（主自身の値に副の欠け・部分月を重ねる）。
+
+    副のどれかがその月に欠け・部分月なら、主のその月を揃っていない月として扱う。副に
+    アカウントがある人かどうかは見分けない（組織単位）。合わせた値は判定の材料の中だけで
+    使い、AnalysisResult・DecisionContext には workspace 自身の値を載せる。
+    """
+    return {
+        current_month: bool(complete.get(current_month, False)) and all(
+            _secondary_gap(result, current_month) is None
+            for result in secondary_results.values()
+        )
+        for current_month in months_used
+    }
+
+
+def _window_warnings(
+    window: Sequence[str],
+    months_used: Sequence[str],
+    secondary_results: Mapping[str, AnalysisResult],
+) -> list[str]:
+    """判定窓の欠月・副の欠けで変更推奨を出していないことの警告（主の部分月はロード時に出す）。
+
+    主の欠月は months_used の最古の月以降の月だけを挙げる（それより前の月が無いのは
+    データの蓄積が足りないだけで、従来どおり警告しない）。
+    """
+    span = f"判定窓（{window[0]}〜{window[-1]}）"
+    warnings: list[str] = []
+    gaps = [m for m in window if m not in months_used and m >= months_used[0]]
+    if gaps:
+        warnings.append(
+            f"{span}のうち {'/'.join(gaps)} のスペンドレポートが無いため、変更推奨を"
+            f"出していません（推奨が現シートと違うユーザは「{STATUS_WATCH_WAIT}」）"
+        )
+    details = []
+    for name, result in secondary_results.items():
+        found = [(m, _secondary_gap(result, m)) for m in window]
+        missing = [m for m, gap in found if gap == "missing"]
+        partial = [m for m, gap in found if gap == "partial"]
+        parts = [
+            *([f"{'/'.join(missing)} が無い"] if missing else []),
+            *([f"{'/'.join(partial)} が部分月"] if partial else []),
+        ]
+        if parts:
+            details.append(f"{name} は {'・'.join(parts)}")
+    if details:
+        warnings.append(
+            f"{span}で副 workspace のスペンドレポートがそろっていないため、変更推奨を"
+            f"出していません（{' / '.join(details)}）"
+        )
+    return warnings
+
+
+def _seat_history_held(
+    input_dir: Path,
+    window_start: str,
+    adopted: Path,
+    seat_by_email: Mapping[str, str],
+    cfg: dict,
+) -> frozenset[str]:
+    """判定窓のあいだに加入・シート種別の変更があったと members で確かめられた email。
+
+    見るのは、判定窓の最初の月の1日以前で代表日が最も新しいファイル（同じ代表日の
+    ファイルはすべて）から、対象月の分析で採用したファイル（adopted）までの範囲に代表日が
+    入る members。代表日はファイルの期間の終わり（単日はその日、月のみはその月の末日。
+    採用ファイルを選ぶ ingest._nearest_to_month_end と同じ）。1日以前のファイルが無ければ、
+    採用ファイルの代表日以前の全ファイルを見る。範囲内のどれか1つで、その人が居ない・
+    シート種別が対象月と違えば保留の対象にする。対象は対象月のシートが Standard /
+    Premium の人。範囲のファイルは警告を出さずに読む（警告は分析本体の採用ファイルの分だけ）。
+
+    過去月ごとに月末に最も近い1ファイルを選ぶ形にしないのは、月末直前と翌月1日の
+    ファイルがあると前月の分に翌月1日のファイルが選ばれ、1日付の加入を前月から在籍と
+    読むため。判定窓の始まり以前の members が無いと、加入はその範囲で見つけられない。
+    """
+    targets = {
+        str(email): seat for email, seat in seat_by_email.items()
+        if seat in ingest.ASSIGNED_SEAT_TYPES
+    }
+    adopted_period = ingest.file_period(adopted)
+    if not targets or adopted_period is None:
+        return frozenset()
+    adopted_day = adopted_period.interval()[1]
+    year, mon = (int(part) for part in window_start.split("-"))
+    first_day = dt.date(year, mon, 1)
+    entries = [
+        (period.interval()[1], path) for period, path in ingest.member_periods(input_dir)
+    ]
+    before = [day for day, _ in entries if day <= first_day]
+    start = max(before) if before else None
+    held: set[str] = set()
+    for day, path in entries:
+        if day > adopted_day or (start is not None and day < start):
+            continue
+        frame = ingest.load_members_file(path, cfg)
+        seen = dict(zip(frame["email"].astype(str), frame["seat_type"], strict=True))
+        held.update(email for email, seat in targets.items() if seen.get(email) != seat)
+    return frozenset(held)
+
+
+def _warn_seat_history_held(held: Sequence[str]) -> list[str]:
+    """判定窓のあいだの加入・シート種別の変更で保留したユーザの警告（無ければ空）。"""
+    if not held:
+        return []
+    return [
+        (f"判定窓のあいだに加入・シート種別の変更があったユーザ {len(held)} 名は変更推奨を"
+         f"出していません（「{STATUS_WATCH_WAIT}」）: {list(held[:_LISTED_USERS])}")
+    ]
+
+
 def _empty_analysis_users(context: _AnalysisContext) -> pd.DataFrame:
     """ユーザが1人も居ないときの users（列・並び・型を通常の行と揃えた0行の表）。
 
@@ -838,6 +1034,7 @@ def analyze(
     members_info_dir: str | Path | None = None,
     assume_no_usage: bool = False,
     extra_demand: Sequence[Mapping[str, pd.DataFrame]] = (),
+    secondary_results: Mapping[str, AnalysisResult] | None = None,
 ) -> AnalysisResult:
     """1 workspace 分の分析。input_dir はその入力ディレクトリ（spend/ 等を直下に持つ）。
 
@@ -856,8 +1053,20 @@ def analyze(
     extra_demand は他 workspace の月次表（AnalysisResult.monthly）で、同じ人（email）の
     需要を月ごとに合算してからシート判定を行う（複数アカウント保有者の利活用は人の
     合算で見る・設計書 §26.4）。既定の空では合算の計算経路を通らない。
+
+    secondary_results は主の判定に需要を足す副 workspace の分析結果（名前 → 結果）。
+    判定窓の月に副の欠け・部分月があれば、主の全員の変更推奨を保留する（副の需要が
+    黙って足されないまま判定しないため）。
+
+    推奨が現シートと違う人のうち、判定窓（対象月から暦で遡る decision.hysteresis_months
+    か月）の月が全月そろっていない（欠月・部分月・副の欠けがある）組織の全員と、判定窓の
+    あいだに加入・シート種別の変更が members で確かめられた人は、変更推奨を出さず
+    「要観察（データ蓄積待ち）」にする。それ以外の人は判定窓の各月の推奨と削減額で決める。
     """
     input_dir = Path(input_dir)
+    secondary_results = secondary_results or {}
+    n_hyst = int(cfg["decision"]["hysteresis_months"])
+    window = judgment_window(month, n_hyst)
 
     # --- 対象月まで（ヒステリシス判定に必要な過去月含む）のスペンドをロード ---
     available = ingest.discover_months(input_dir)
@@ -881,6 +1090,7 @@ def analyze(
         snapshot_active=active.spend,
         decision_context=decision_context,
         assume_no_usage=assume_no_usage,
+        window=window,
     )
     warnings = history.warnings
     monthly = history.monthly
@@ -920,10 +1130,26 @@ def analyze(
     judged_monthly = (
         add_demand(monthly, months_used, extra_demand) if extra_demand else monthly
     )
+    # 判定窓が揃っているか（主自身の欠月・部分月と、副の欠け・部分月）。揃っていなければ
+    # 全員を保留するので、加入・シート変更の確かめ（members の読み直し）は揃ったときだけ行う
+    fixed_seat = workspace.fixed_seat if workspace is not None else None
+    judged_complete = _judged_complete(months_used, history.complete, secondary_results)
+    window_ready = (
+        len(consecutive_complete_months(month, months_used, judged_complete)) >= n_hyst
+    )
+    held = (
+        _seat_history_held(input_dir, window[0], members_result.source, seat_by_email, cfg)
+        if window_ready and fixed_seat is None else frozenset()
+    )
     users, n_hyst = _build_analysis_users(
         judged_monthly, months_used, emails, seat_by_email, cfg,
-        fixed_seat=workspace.fixed_seat if workspace is not None else None,
+        fixed_seat=fixed_seat, window_ready=window_ready, held=held,
     )
+    warnings.extend(_window_warnings(window, months_used, secondary_results))
+    warnings.extend(_warn_seat_history_held(sorted(
+        users.loc[(users["status"] == STATUS_WATCH_WAIT) & users["email"].isin(list(held)),
+                  "email"].astype(str)
+    )))
 
     # 部署・職種・備考・追加クレジット上限（任意ファイル members-info）の結合
     warnings.extend(
@@ -988,6 +1214,7 @@ def analyze(
             if decision_context else None
         ),
         monthly=monthly,
+        complete=dict(history.complete),
     )
 
 

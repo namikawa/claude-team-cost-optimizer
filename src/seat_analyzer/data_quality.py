@@ -288,9 +288,8 @@ def _history_gap_issues(
         Severity.WARNING, IssueCode.MISSING_HISTORY_MONTH,
         f"ヒステリシス判定に必要な直近 {n_hyst} ヶ月のうち "
         f"{'/'.join(missing)} のスペンドレポートがありません。"
-        "暦上の連続性が確認できないため判定の質が下がります"
-        "（欠月は飛ばして存在する過去月で連続同推奨を判定するため、"
-        "実質1ヶ月の裏付けでも変更推奨が出ることがあります）",
+        "欠月があるあいだは変更推奨を出さず、推奨が現シートと違うユーザは"
+        "「要観察（データ蓄積待ち）」になります",
         org, month, missing_months=missing, hysteresis_months=n_hyst,
     )]
 
