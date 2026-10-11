@@ -30,6 +30,7 @@
 #   command: /usr/local/bin/claude
 
 # 判定のヒステリシス。既定より慎重にしたい（連続 N ヶ月の一致を求める）場合に上げる
+#   上げると、判定窓の N か月すべてのスペンドレポートが全月そろっていないと変更推奨が出なくなる
 # decision:
 #   hysteresis_months: 3
 

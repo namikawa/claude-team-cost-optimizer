@@ -4,7 +4,7 @@
 # ここの値を上書きできる（辞書はキー単位で再帰マージ、リストと値は丸ごと置換）。
 # モデル単価・カラムのエイリアス表はプログラムの更新で配られるので、ワークスペース側へ
 # 写す必要はない。実データが溜まったら allowance_usd をキャリブレーションすること
-# （docs/reference.md「allowanceのキャリブレーション」参照）。
+# （docs/reference.md「allowance のキャリブレーション」参照）。
 
 # 入出力ディレクトリの既定（CLI の --input-dir / --output-dir を省略したときに使う）。
 # ワークスペースの config.yaml にここを書くと、実行のたびにフラグを付けずに済む。
@@ -31,7 +31,9 @@ seats:
       high: 375.0
 
 decision:
-  # 直近 N ヶ月連続で同じ推奨のときだけ「変更推奨」。それ未満は「要観察」。
+  # 判定窓（対象月から暦で遡る N か月）の全月がそろい、全月で同じ推奨のときだけ「変更推奨」。
+  # 窓に欠月・部分月があるあいだは、推奨が現シートと違う人を「要観察（データ蓄積待ち）」にする。
+  # 詳細は docs/reference.md「判定ロジック概要」参照。
   hysteresis_months: 2
   # 月あたり削減見込みが（Premium−Standard 差額 × この割合）以上のときのみ変更推奨。
   buffer_ratio: 0.20
@@ -238,7 +240,8 @@ columns:
     gross_spend:      ["total gross spend usd", "gross spend usd", "gross spend"]
     net_spend:        ["total net spend usd", "net spend usd", "net spend"]
     web_search_count: ["total web search count", "web search count", "web searches"]
-    # キャッシュ内訳（実スペンドレポートに存在。あると spend 検算の精度が上がる）
+    # キャッシュ内訳は4列そろうか1列も無いかのどちらか。一部だけある CSV は読み込みエラー。
+    # そろうと入力分をキャッシュの実効単価で、無いと prompt_tokens 全量を入力単価で計算する。
     uncached_input_tokens: ["total uncached input tokens", "uncached input tokens"]
     cache_read_tokens:     ["total cache read tokens", "cache read tokens"]
     cache_write_5m_tokens: ["total cache write 5m tokens", "cache write 5m tokens"]

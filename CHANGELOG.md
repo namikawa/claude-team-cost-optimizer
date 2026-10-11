@@ -1,21 +1,33 @@
 # 変更履歴
 
-## [未リリース]
+## [1.4.1] - 2026-10-12
+
+### 追加
+
+- analyze の GitHub の参考値で、シートを持つのに GitHub login に対応づかない人を警告するようにした
 
 ### 変更
 
-- GitHub の参考値（github-summary）の対象を、その月にシートを持つ人に揃えた（組織全体の行の
-  件数・リードタイムもシートを持つ人の PR だけで数える）
 - 正式分析の判定窓（対象月から暦で遡る `decision.hysteresis_months` か月）に欠月・部分月が
   あるあいだは変更推奨を出さず、推奨が現シートと違う人を「要観察（データ蓄積待ち）」にした
 - 複数スペースの組織で、副スペースのスペンドレポートが判定窓の月に無い・部分月のあいだは、
   主スペースの変更推奨を出さないようにした
 - 判定窓のあいだに加入・シート種別の変更があったと members のスナップショットで確かめられた人は、
   変更推奨を出さず「要観察（データ蓄積待ち）」にした
-- スペンドレポートのキャッシュ内訳の4列のうち一部だけがある CSV をエラーにした
-- 速報（`--preview`）で入れ子の組織の workspace ごとの観測日数が違うときは、`--days` の指定に
-  よらず止めるようにした
 - 複数スペースの払い出し判定・継続判定の連続月数を、暦で連続し全月そろった月だけで数えるようにした
+- GitHub の参考値（github-summary）の対象を、その月にシートを持つ人に揃えた（組織全体の行の
+  件数・リードタイムもシートを持つ人の PR だけで数え、シートを持たない人の PR は
+  `unmapped_authors`・`unmapped_prs` に入れる）
+- members-info の GitHub ID の「なし」を、対象の GitHub Organization で PR を作らない人（アカウントが
+  無い人と、別の Organization で開発する人）を表す値にした
+- スペンドレポートのキャッシュ内訳の4列のうち一部だけがある CSV をエラーにした
+
+### 修正
+
+- 速報（`--preview`）で入れ子の組織の workspace ごとの観測日数が違うとき、`--days` を付けると
+  1 つの日数で全 workspace を月末ペースに換算していた（`--days` の指定によらず止めるようにした）
+- `doctor` で、GitHub login に対応づかないメンバーの検査が、入れ子レイアウトの組織では行われて
+  いなかった（あわせて、この検査の対象をシートを持つメンバーに絞った）
 
 ## [1.4.0] - 2026-10-10
 
@@ -176,6 +188,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.4.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.1
 [1.4.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.0
 [1.3.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.3.0
 [1.2.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.2.0
