@@ -28,10 +28,12 @@ from ..analyze import (
 )
 from .format import (
     _fmt_compact,
+    _fmt_delta,
     _fmt_tokens,
     _fmt_usd,
     _has_values,
     _is_missing,
+    _labeled,
     _md_cell,
     _text_value,
 )
@@ -545,12 +547,54 @@ JUDGMENT_LEGEND = (
 )
 
 
+SWITCH_HEADING = "主と副の切り替え"
+SWITCH_LEGEND = (
+    ("区間は主と副で終了日が一致した月初からの累積の差。終了日が一致しない時点と、"
+     "同じ日付のファイルが複数ある時点は使わない"),
+    ("需要は API 換算、実課金は主で追加クレジットに払った額。区間ごとの利用先は分かるが、"
+     "上限に当たった時刻や切り替えた時刻は分からない"),
+    ("対象は、分析で採用したメンバー一覧の時点で副にシートがあり、主にもアカウントがある人。"
+     "区間ごとにシートを持っていたかは示さない"),
+)
+
+
+def switch_observation_md(org: OrgAnalysisResult) -> list[str]:
+    """details.md の主と副の切り替えの節を、他の workspace ごとの節と同じ名前順で組む。"""
+    blocks = []
+    for observation in _people_layer(org).switch_observations:
+        label = org.contexts[observation.workspace].label
+        points = " / ".join(f"〜{end:%m-%d}" for end in observation.ends)
+        lines = [f"## {_labeled(SWITCH_HEADING, label)}", "",
+                 f"スナップショット: {points}（主と副で終了日が一致したもの）"]
+        if observation.unused:
+            unused = []
+            for snap in observation.unused:
+                other = observation.workspace if snap.workspace == org.primary else org.primary
+                reason = ("同じ日付のファイルが複数ある" if snap.duplicate else
+                          f"{org.contexts[other].label}に使える同じ日付が無い")
+                unused.append(f"{org.contexts[snap.workspace].label} 〜{snap.end:%m-%d}（{reason}）")
+            lines.append("使っていない時点: " + " / ".join(unused))
+        lines += ["", ("| ユーザ | 区間 | 日数 | 主のAPI換算需要の増分 |"
+                       " 副のAPI換算需要の増分 | 主の実課金の増分 |"), "|" + "---|" * 6]
+        for row in observation.rows:
+            start = "月初" if row.start is None else f"〜{row.start:%m-%d}"
+            cells = [row.email, f"{start}→〜{row.end:%m-%d}", str(row.days),
+                     _fmt_delta(row.primary_demand_usd), _fmt_delta(row.secondary_demand_usd),
+                     _fmt_delta(row.primary_billed_usd)]
+            lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
+        lines += ["", *(f"- {line}" for line in SWITCH_LEGEND)]
+        blocks.append("\n".join(lines))
+    return blocks
+
+
 def multi_space_md(org: OrgAnalysisResult) -> str:
     """report.md の「## 複数スペースの利用」（判定・スペース一覧・閾値）。"""
     details = DETAILS.name(org.month, org.org)
     lines = ["## 複数スペースの利用", ""]
     lines += [f"- {_md_cell(line)}" for line in overview_lines(org, _fmt_usd)]
     lines.append(f"- 人別の利用（全員1人1行）は {details} の「人別の利用」にあります")
+    if _people_layer(org).switch_observations:
+        lines.append(f"- 区間ごとの主と副の需要は {details} の「{SWITCH_HEADING}」にあります")
 
     payout, unneeded = payout_rows(org, _fmt_usd)
     lines += ["", "### 払い出し判定（副を持たない人）", ""]

@@ -107,6 +107,8 @@ def _compute_snapshot_diff(input_dir: Path, month: str, cfg: dict,
     需要基準は computed（tokens×単価）固定。区間増分が止まった Standard ユーザや、
     込み量を消化して実課金が発生したユーザを、allowance 実測の材料として抽出する。
     スナップショットが1つ以下なら (None, 除外警告) を返す（既存出力と同一）。
+    cumulative_snapshots は各時点の終了日・日数・email 別の丸め前の累積需要と累積実課金。
+    主と副の区間の突き合わせに使い、描画には使わない。
     """
     entries, excluded = ingest.spend_snapshots(input_dir, month)
     warnings = [f"{name}: 月初開始でないため差分分析から除外" for name in excluded] \
@@ -179,6 +181,7 @@ def _compute_snapshot_diff(input_dir: Path, month: str, cfg: dict,
                 break
 
     snapshot = {
+        "cumulative_snapshots": snaps,
         "labels": labels,
         "snaps": [{"label": s["label"], "days": s["days"]} for s in snaps],
         "latest_interval_days": latest_interval_days,

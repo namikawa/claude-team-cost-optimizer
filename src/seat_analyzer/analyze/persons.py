@@ -13,6 +13,8 @@
 副で未割当のアカウント（シートを払い出していない管理者など）だけの人は副を持たない
 扱いにする。需要・トークンの合計は未割当のアカウントも含めた全アカウントで数える。
 
+副ごとの切り替えの観測（主と副で終了日が一致した月初からの累積の差）もここで組む。
+
 I/O は持たない純粋関数だけを置く（members スナップショットの読み取りが要る
 「払い出した月」は workspaces.analyze_org が解決して first_seen として渡す）。
 """
@@ -22,6 +24,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -352,6 +355,54 @@ class MultiAccountBilling:
 
 
 @dataclass(frozen=True)
+class SwitchInterval:
+    """1人の主・副の共通区間の増分。
+
+    start は直前の共通日で、None は月初からの区間。end は区間末尾の共通日。
+    days は最初の区間ではファイルの期間の日数、以後は終了日の差。
+    primary_demand_usd / secondary_demand_usd / primary_billed_usd は、丸め前の
+    累積の差を小数2桁に丸めた値。需要は API 換算で、cost_basis に依らない。
+    """
+
+    email: str
+    start: date | None
+    end: date
+    days: int
+    primary_demand_usd: float
+    secondary_demand_usd: float
+    primary_billed_usd: float
+
+
+@dataclass(frozen=True)
+class UnusedSwitchSnapshot:
+    """切り替えの表で使わない時点と、その理由。
+
+    duplicate が True は、このスペースで同じ終了日のファイルが複数あること。
+    False は、もう一方のスペースにその日付の使えるファイルが無いこと
+    （その日付のファイルが無い、または複数ある）。
+    """
+
+    workspace: str
+    end: date
+    duplicate: bool
+
+
+@dataclass(frozen=True)
+class SwitchObservation:
+    """副スペース1つの共通時点・使わない時点・人別の区間行。
+
+    workspace は副の workspace 名、ends は使った共通日（昇順）。
+    unused は主→副の順、その中は終了日の昇順。
+    rows は email 昇順、その中は区間の古い順。
+    """
+
+    workspace: str
+    ends: tuple[date, ...]
+    unused: tuple[UnusedSwitchSnapshot, ...]
+    rows: tuple[SwitchInterval, ...]
+
+
+@dataclass(frozen=True)
 class PersonLayer:
     """人の層の一式（人の行と §26.5 の参考判定）。
 
@@ -369,6 +420,7 @@ class PersonLayer:
     breakeven_usd: float | None
     evaluation_months: int | None
     payout_workspace: str | None = None
+    switch_observations: tuple[SwitchObservation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -825,6 +877,68 @@ def billed_with_secondary(persons: Sequence[Person],
     return tuple(rows)
 
 
+def switch_observations(
+    org: OrgAnalysisResult, persons: Sequence[Person],
+) -> tuple[SwitchObservation, ...]:
+    """主と副で1本ずつある終了日を揃え、人別に累積の差を取る（I/O なし）。
+
+    共通日が2つ以上あり、主のアカウントとその副のシートを持つ人がいる副だけ返す。
+    workspace は contexts 順、行は email 昇順・区間の古い順。累積の行が無い人は0とする。
+    """
+    def by_end(result: AnalysisResult) -> dict[date, list[dict]]:
+        """丸め前の累積を終了日で束ねる（重複ファイルを残して検出する）。"""
+        grouped: dict[date, list[dict]] = {}
+        for snap in (result.snapshot or {}).get("cumulative_snapshots", ()):
+            grouped.setdefault(snap["end"], []).append(snap)
+        return grouped
+
+    primary = org.workspaces.get(org.primary)
+    if primary is None:
+        return ()
+    main = by_end(primary)
+    observations = []
+    for name in org.contexts:
+        if name == org.primary or name not in org.workspaces:
+            continue
+        secondary = by_end(org.workspaces[name])
+        common = sorted(end for end in main.keys() & secondary.keys()
+                        if len(main[end]) == 1 and len(secondary[end]) == 1)
+        if len(common) < 2:
+            continue
+        eligible = sorted(
+            (p for p in persons if p.primary is not None
+             and any(a.workspace == name and holds_seat(a.seat) for a in p.secondaries)),
+            key=lambda p: p.email,
+        )
+        if not eligible:
+            continue
+        unused = tuple(
+            UnusedSwitchSnapshot(workspace, end, len(snaps[end]) > 1)
+            for workspace, snaps in ((org.primary, main), (name, secondary))
+            for end in sorted(snaps) if end not in common
+        )
+        rows = []
+        for person in eligible:
+            previous = None
+            prev_main, prev_secondary, prev_billed = 0.0, 0.0, 0.0
+            for end in common:
+                m, s = main[end][0], secondary[end][0]
+                demand_main = m["cum"].get(person.email, 0.0)
+                demand_secondary = s["cum"].get(person.email, 0.0)
+                billed = m["billed"].get(person.email, 0.0)
+                rows.append(SwitchInterval(
+                    email=person.email, start=previous, end=end,
+                    days=m["days"] if previous is None else (end - previous).days,
+                    primary_demand_usd=round(demand_main - prev_main, 2),
+                    secondary_demand_usd=round(demand_secondary - prev_secondary, 2),
+                    primary_billed_usd=round(billed - prev_billed, 2),
+                ))
+                previous = end
+                prev_main, prev_secondary, prev_billed = demand_main, demand_secondary, billed
+        observations.append(SwitchObservation(name, tuple(common), unused, tuple(rows)))
+    return tuple(observations)
+
+
 def build_person_layer(
     org: OrgAnalysisResult,
     cfg: dict,
@@ -852,4 +966,5 @@ def build_person_layer(
         breakeven_usd=policy.breakeven_for(policy.payout_workspace),
         evaluation_months=policy.evaluation_months_for(policy.payout_workspace),
         payout_workspace=policy.payout_workspace,
+        switch_observations=switch_observations(org, persons),
     )
