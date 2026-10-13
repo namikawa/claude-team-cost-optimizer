@@ -109,6 +109,7 @@ def _sections_multi(org: OrgAnalysisResult) -> list[str]:
         for name, r in results.items()
     ]
     blocks += [_snapshot_md(r.snapshot, labels[name]) for name, r in results.items()]
+    blocks += spaces.switch_observation_md(org)
     blocks += [_code_diff_md(r.code_diff, labels[name]) for name, r in results.items()]
     blocks += [_member_changes_md(r.member_changes, labels[name])
                for name, r in results.items()]

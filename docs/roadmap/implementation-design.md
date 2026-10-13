@@ -3566,17 +3566,42 @@ dashboardで読めるようにする。
 対象:
 
 - `src/seat_analyzer/analyze/midmonth.py`
-- `src/seat_analyzer/report/markdown.py`・`src/seat_analyzer/report/details.py`
+- `src/seat_analyzer/analyze/persons.py`・`src/seat_analyzer/analyze/__init__.py`
+- `src/seat_analyzer/report/spaces.py`・`src/seat_analyzer/report/details.py`
+- `src/seat_analyzer/prompts/aspects-full.md`・`tests/test_switch_observation.py`
+- `docs/reference.md`・`docs/roadmap/implementation-design.md`・
+  `docs/roadmap/implementation-status.md`・`CHANGELOG.md`
 
 実装:
 
-- 両workspaceの月初開始スナップショットで終端日が一致する区間について、2アカウント保有者の
-  需要増分を主・副で並べる。主が横ばいで副が伸びる区間が切替の観測になる
+- 複数workspaceの組織のdetailsに「主と副の切り替え（副の表示名）」を副ごとに出す。
+  並びは他のworkspaceごとの節と同じく、主の次は名前の昇順。
+  対象は主にアカウントがあり、その副にシートのあるアカウント（`holds_seat`）を持つ人。
+  主のシート種別は問わず、対象月の利用がゼロでも行を出す。副で未割当だけの人は除く
+- 対象月の月初開始の累積スペンドについて、主と副の両方で1本ずつある終了日だけを使う。
+  同じ終了日のファイルが複数ある日付は、そのworkspaceでは使わない。共通日が2つ未満、
+  または対象者がいない副の節は出さない
+- 最初は月初から最初の共通日まで、以後は前の共通日から次の共通日までを区間とする。
+  表記は`月初→〜MM-DD`・`〜MM-DD→〜MM-DD`。日数は最初が`FilePeriod.days`、以後が終了日の差
+- 列はユーザ・区間・日数・主のAPI換算需要の増分・副のAPI換算需要の増分・主の実課金の増分。
+  需要は`computed_cost_usd`（`cost_basis`に依らない）、実課金は`net_spend`のemail別合計。
+  emailの行が無い時点と実課金列が無い場合は0とし、丸め前の累積の差を取ってから小数2桁に
+  丸め、既存の`_fmt_delta`で表示する。行はemail昇順・区間の古い順
+- `_compute_snapshot_diff`の追加キーで終了日・日数・丸め前の累積を渡し、`persons.py`の
+  純粋関数で突き合わせて`PersonLayer`に持たせる。既存キー・描画・警告は変えない
+- detailsではworkspaceごとの月中推移の直後、Claude Code活動の前に置く。使った時点と、
+  使わなかった時点の表示名・理由を表の前に示し、読み方を表の後に置く。
+  見出し・描画・読み方は`spaces.py`にまとめる
+- 節のある月だけreportの「複数スペースの利用」にdetailsへの案内を1行足す。
+  考察プロンプトには継続判定の補助材料として読む指示を足す。dashboard・速報・CSVには出さず、
+  新しいconfigキーや閾値は作らない
 
 受け入れ条件:
 
 - 終端日が一致しない区間は出さない（近い日付で無理に合わせない）
 - 単一workspaceの出力が不変
+- 同じ両端日の区間の増分は既存の月中の利用推移と一致する
+- 同じ終了日のファイルが複数ある日付は使わない
 
 ## 19. Milestone
 
@@ -4081,6 +4106,7 @@ Standardの運用でも同じ規則で動く。
   文書・表はdetailsという分担）
 - details: 全ユーザ（判定系・スペース列）、備考と部署別・チーム別サマリは人の層から数える、
   「人別の利用」（人の表。全アカウントのinput / outputトークンの合計を含む）を新設、
+  「主と副の切り替え」（副ごと。主と副で終了日が2つ以上一致する月で対象者がいる場合だけ）、
   詳細利用状況（観測系・スペース列）。分布・月中の利用推移・
   Claude Code活動・メンバー変動・Eの実測・感度分析はworkspaceごと
 - dashboard: 概要のKPIは人数（添え書きにアカウント数）、KPIの直下に「スペース別」の表、
