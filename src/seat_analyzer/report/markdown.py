@@ -48,6 +48,7 @@ from .text import (
     STATUS_ORDER,
     _cap_legend_supplement,
     _disabled_cost_note,
+    _preview_decision_note,
 )
 
 
@@ -515,7 +516,7 @@ def write_markdown(result: AnalysisResult | OrgAnalysisResult, path: Path) -> No
 | **変更推奨** | **{s['n_change_recommended']} 名（削減見込み {_fmt_usd(s['est_monthly_saving_usd'])} /月）** |
 | 要観察 | {s['n_watching']} 名 |
 | 上限到達疑い（Standard） | {s['n_cap_suspected']} 名 |
-{credit_row}| 判定に使用した月 | {', '.join(s['months_used'])}（ヒステリシス {s['hysteresis_months']} ヶ月） |
+{credit_row}| 判定に使用した月 | {', '.join(s['judgment_months'])}（ヒステリシス {s['hysteresis_months']} ヶ月） |
 {extra_sections}
 ## シート変更推奨
 
@@ -575,9 +576,7 @@ def _write_markdown_multi(org: OrgAnalysisResult, path: Path) -> None:
         if (row := _credit_summary_md_row(r.summary, labels[name]))
     )
     hysteresis = next(iter(results.values())).summary["hysteresis_months"]
-    months = " / ".join(
-        f"{labels[name]}: {', '.join(r.summary['months_used'])}" for name, r in results.items()
-    )
+    months = spaces.judgment_months_text(org)
     org_service = {"org_service_by_product": total["org_service_by_product"]}
 
     extra_sections = ""
@@ -748,7 +747,7 @@ def write_preview_markdown(result: PreviewResult | OrgPreviewResult, path: Path)
 
 - 日割り換算（×{factor:.1f}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません
 - {_TEXT['note_billed_nonlinear']}
-- 変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（`analyze`）で行ってください{disabled_note_line}
+- {_preview_decision_note(s['hysteresis_months'], markdown=True)}{disabled_note_line}
 
 ## データ検証・警告
 
@@ -919,7 +918,7 @@ def _write_preview_markdown_multi(org: OrgPreviewResult, path: Path) -> None:
 
 - 日割り換算（×{factor:.1f}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません
 - {_TEXT['note_billed_nonlinear']}
-- 変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（`analyze`）で行ってください{disabled_line}
+- {_preview_decision_note(summaries[0]['hysteresis_months'], markdown=True)}{disabled_line}
 {multi_notes}
 
 ## データ検証・警告

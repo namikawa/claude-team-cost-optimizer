@@ -1300,6 +1300,9 @@ def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
             if "billed_extra_usd" in users.columns else 0.0, 2),
         "est_monthly_saving_usd": round(savings, 2),
         "months_used": months_used,
+        "judgment_months": [
+            m for m in judgment_window(months_used[-1], n_hyst) if m in months_used
+        ],
         "hysteresis_months": n_hyst,
         "grant_suggested_cap_usd": _usage_credits_cfg(cfg)["grant_suggested_cap_usd"],
         # 補助プロダクトの需要が多いことの閾値（表示用。判定には使わない）。

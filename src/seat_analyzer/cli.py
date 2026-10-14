@@ -148,7 +148,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--days", type=int,
-        help="速報モードの観測日数。省略時はスペンドレポートのファイル名の期間から自動判別",
+        help="速報モードの観測日数。省略時はスペンドレポートのファイル名の期間から自動判別。"
+             "複数 workspace の組織で、ファイル名から分かる日数が workspace ごとに違うときは、"
+             "指定しても止まる",
     )
     p.add_argument(
         "--decision-version", choices=("v1", "v2"), default=None,

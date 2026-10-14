@@ -146,7 +146,7 @@
         <li><!--text:note_cap_flag-->。{% if cap_supplement %}{{ cap_supplement }}。{% endif %}</li>
 {% if disabled_note %}        <li>{{ disabled_note }}。</li>
 {% endif %}{% if has_team_summary %}        <li><!--text:note_team_total-->。</li>
-{% endif %}        <li>判定に使用した月: {% if multi %}{{ months_text }}{% else %}{{ s.months_used | join(', ') }}{% endif %}（{{ s.hysteresis_months }}ヶ月ヒステリシス）。</li>
+{% endif %}        <li>判定に使用した月: {% if multi %}{{ months_text }}{% else %}{{ s.judgment_months | join(', ') }}{% endif %}（{{ s.hysteresis_months }}ヶ月ヒステリシス）。</li>
 {% if multi %}{% for line in multi_notes %}        <li>{{ line }}。</li>
 {% endfor %}{% endif %}      </ul>
     </div>

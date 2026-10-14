@@ -67,6 +67,7 @@ from .text import (
     _cap_legend_supplement,
     _disabled_cost_note,
     _embed_shared_text,
+    _preview_decision_note,
 )
 
 # CSV 由来の値（email 等）が HTML/JS として解釈されないよう autoescape を有効化
@@ -675,6 +676,7 @@ def write_preview_html(result: PreviewResult | OrgPreviewResult, path: Path) -> 
 
     cap_usd = result.summary["grant_suggested_cap_usd"]
     html = _PREVIEW_HTML_TEMPLATE.render(
+        decision_note=_preview_decision_note(result.summary["hysteresis_months"], markdown=False),
         dashboard_css=_DASHBOARD_CSS,
         dashboard_js=_DASHBOARD_JS,
         scope=_scope_label(result),
@@ -815,6 +817,8 @@ def _render_preview_multi(org: OrgPreviewResult) -> str:
         and result.users["loc_with_cc"].notna().any()
     ) or None
     return _PREVIEW_HTML_TEMPLATE.render(
+        decision_note=_preview_decision_note(
+            next(iter(results.values())).summary["hysteresis_months"], markdown=False),
         dashboard_css=_DASHBOARD_CSS, dashboard_js=_DASHBOARD_JS,
         scope=_scope_label(org), org=org.org, month=org.month,
         s=totals, n_persons=len(org.persons), multi=True,
@@ -1047,9 +1051,7 @@ def _render_multi(org: OrgAnalysisResult) -> str:
         "n_persons": summary["n_persons"],
         "hysteresis_months": first["hysteresis_months"],
     }
-    months_text = " / ".join(
-        f"{labels[name]}: {', '.join(r.summary['months_used'])}" for name, r in results.items()
-    )
+    months_text = spaces.judgment_months_text(org)
     return _HTML_TEMPLATE.render(
         dashboard_css=_DASHBOARD_CSS,
         dashboard_js=_DASHBOARD_JS,
