@@ -211,21 +211,31 @@ def _days_in_month(month: str) -> int:
     return calendar.monthrange(year, mon)[1]
 
 
+def _judgment_window(month: str, n_months: int) -> list[str]:
+    """対象月を含む暦上の判定窓を昇順で返す。"""
+    window = [month]
+    for _ in range(max(n_months - 1, 0)):
+        window.append(_prev_month(window[-1]))
+    return list(reversed(window))
+
+
 def _sample(emails: Iterable[str]) -> list[str]:
     """messageへ載せる代表例。入力順に依存しないよう整列してから先頭を採る。"""
     return sorted(emails)[:_MAX_LISTED]
 
 
 def _partial_month_issues(
-    input_dir: Path, month: str, spend_months: list[str], org: str
+    input_dir: Path, month: str, spend_months: list[str], cfg: dict, org: str
 ) -> list[QualityIssue]:
     """対象月までの各月で、全月データと確認できないスペンドを警告する。
 
-    kind=range は期間の日数で判定する。kind=date（単日日付の命名）は実際の集計期間が
-    ファイル名から分からないため、日数を断定せず「確認できない」として警告する。
+    kind=range は期間の日数で判定し、判定窓の内外で変更推奨への影響を伝える。
+    kind=date（単日日付の命名）は実際の集計期間がファイル名から分からないため、
+    日数を断定せず「確認できない」として警告する。
     kind=month（spend_YYYY-MM.csv）は全月の指定として扱い警告しない。
     """
     issues: list[QualityIssue] = []
+    window = _judgment_window(month, int(cfg["decision"]["hysteresis_months"]))
     for m in [x for x in spend_months if x <= month]:
         try:
             period = ingest.spend_file_period(input_dir, m)
@@ -259,12 +269,16 @@ def _partial_month_issues(
             continue
         if period.days is None or period.days >= days_in_month:
             continue
+        note = (
+            "この月が判定窓に入るあいだは、正式分析で変更推奨を出しません"
+            "（月中の一次判断は analyze --preview を使ってください）"
+            if m in window else
+            "判定窓の外の月なので、変更推奨の判定には使いません"
+        )
         issues.append(_issue(
             Severity.WARNING, IssueCode.PARTIAL_MONTH,
             f"{m} は部分月データです（{period.start:%m-%d}〜{period.end:%m-%d} の "
-            f"{period.days}日分 / 暦上 {days_in_month}日）。"
-            "月額前提の判定では需要が過小評価されます"
-            "（月中の一次判断は analyze --preview を使ってください）",
+            f"{period.days}日分 / 暦上 {days_in_month}日）。{note}",
             org, m, days_observed=period.days, days_in_month=days_in_month,
         ))
     return issues
@@ -275,13 +289,9 @@ def _history_gap_issues(
 ) -> list[QualityIssue]:
     """ヒステリシス窓（対象月を含む直近 N ヶ月）に欠けている月を警告する。"""
     n_hyst = int(cfg["decision"]["hysteresis_months"])
-    window: list[str] = []
-    cursor = month
-    for _ in range(max(n_hyst - 1, 0)):
-        cursor = _prev_month(cursor)
-        window.append(cursor)
+    window = _judgment_window(month, n_hyst)[:-1]
     oldest = min(spend_months) if spend_months else month
-    missing = [m for m in reversed(window) if oldest <= m and m not in spend_months]
+    missing = [m for m in window if oldest <= m and m not in spend_months]
     if not missing:
         return []
     return [_issue(
@@ -710,7 +720,7 @@ def _input_issues(
                 org, month, available_months=spend_months,
             ))
         else:
-            issues.extend(_partial_month_issues(input_dir, month, spend_months, org))
+            issues.extend(_partial_month_issues(input_dir, month, spend_months, cfg, org))
             issues.extend(_history_gap_issues(month, spend_months, cfg, org))
             try:
                 spend_df = ingest.load_spend(input_dir, month, cfg).df

@@ -8,6 +8,7 @@ Premium ユーザは毎月 Standard 推奨（削減 $100）になるので、判
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from seat_analyzer import decision_evidence, seat_changes
@@ -17,9 +18,13 @@ from seat_analyzer.analyze import (
     STATUS_WATCH_WAIT,
     analyze,
     analyze_org,
+    preview,
+    preview_org,
 )
 from seat_analyzer.analyze.pipeline import consecutive_complete_months, judgment_window
 from seat_analyzer.config import load_config
+from seat_analyzer.report.html import write_html, write_preview_html
+from seat_analyzer.report.markdown import write_markdown, write_preview_markdown
 from tests.conftest import SPEND_HEADER, spend_row
 
 ORG = "org-x"
@@ -87,6 +92,97 @@ def test_consecutive_complete_months_stops_at_gap_and_partial_month():
 
 
 # ------------------------------------------------------------------ 要件 1: 欠月
+
+
+@pytest.mark.parametrize(("months", "hysteresis", "expected"), [
+    (("2026-04", "2026-05", "2026-06"), 2, ["2026-05", "2026-06"]),
+    (("2026-04", "2026-06"), 2, ["2026-06"]),
+    (("2026-06",), 2, ["2026-06"]),
+    (("2025-10", "2025-11", "2025-12", "2026-01"), 3,
+     ["2025-11", "2025-12", "2026-01"]),
+])
+def test_summary_judgment_months(cfg, make_input, months, hysteresis, expected):
+    cfg["decision"]["hysteresis_months"] = hysteresis
+    input_dir = make_input(
+        {m: [_light("user@example.com")] for m in months},
+        members=["user@example.com,premium"], members_month=months[-1],
+    )
+    result = analyze(input_dir, months[-1], cfg, org=ORG)
+    assert result.summary["judgment_months"] == expected
+    assert result.summary["months_used"] == list(months)
+
+
+@pytest.mark.parametrize(("writer", "suffix", "expected"), [
+    (write_markdown, "md", "| 判定に使用した月 | 2026-05, 2026-06（ヒステリシス 2 ヶ月） |"),
+    (write_html, "html", "判定に使用した月: 2026-05, 2026-06（2ヶ月ヒステリシス）。"),
+])
+def test_single_judgment_months_display(cfg, make_input, tmp_path, writer, suffix, expected):
+    input_dir = make_input(
+        {m: [_light("user@example.com")] for m in ("2026-04", "2026-05", "2026-06")},
+        members=["user@example.com,premium"],
+    )
+    result = analyze(input_dir, "2026-06", cfg, org=ORG)
+    path = tmp_path / f"report.{suffix}"
+    writer(result, path)
+    assert expected in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(("writer", "suffix"), [(write_markdown, "md"), (write_html, "html")])
+@pytest.mark.parametrize("second_months", [("2026-06",), ("2026-04", "2026-06")])
+def test_multi_judgment_months_display(make_input, tmp_path, writer, suffix, second_months):
+    cfg = _nested_cfg(tmp_path)
+    settings = cfg["organizations"][ORG]["workspaces"]
+    settings["main"]["label"] = "主スペース"
+    settings["second"]["label"] = "副スペース"
+    input_dir = make_input(
+        {m: [_light("user@example.com")] for m in ("2026-04", "2026-05", "2026-06")},
+        members=["user@example.com,premium"], org=ORG, workspace="main",
+    )
+    make_input(
+        {m: [_light("user@example.com")] for m in second_months},
+        members=["user@example.com,premium"], org=ORG, workspace="second",
+    )
+    result = analyze_org(input_dir / ORG, "2026-06", cfg, ORG)
+    path = tmp_path / f"report.{suffix}"
+    writer(result, path)
+    line = next(line for line in path.read_text(encoding="utf-8").splitlines()
+                if "判定に使用した月" in line)
+    assert "主スペース: 2026-05, 2026-06 / 副スペース: 2026-06" in line
+    assert "2026-04" not in line
+
+
+@pytest.mark.parametrize("multi", [False, True])
+@pytest.mark.parametrize(("writer", "suffix", "command", "ending"), [
+    (write_preview_markdown, "md", "`analyze`", ""),
+    (write_preview_html, "html", "analyze", "。"),
+])
+def test_preview_decision_note_uses_setting(cfg, make_input, tmp_path,
+                                          multi, writer, suffix, command, ending):
+    if multi:
+        cfg = _nested_cfg(tmp_path)
+    cfg["decision"]["hysteresis_months"] = 3
+    input_dir = make_input(
+        {"2026-06": [_light("user@example.com")]},
+        members=["user@example.com,premium"], org=ORG if multi else None,
+        workspace="main" if multi else None,
+    )
+    if multi:
+        make_input({"2026-06": [_light("user@example.com")]},
+                   members=["user@example.com,premium"], org=ORG, workspace="second")
+        result = preview_org(input_dir / ORG, "2026-06", cfg, 15, ORG)
+        assert all(r.summary["hysteresis_months"] == 3 for r in result.workspaces.values())
+    else:
+        result = preview(input_dir, "2026-06", cfg, 15, ORG)
+        assert result.summary["hysteresis_months"] == 3
+    path = tmp_path / f"preview.{suffix}"
+    writer(result, path)
+    text = path.read_text(encoding="utf-8")
+    expected = (
+        "変更推奨・ヒステリシス判定は行いません。確定判断は全月データ3ヶ月分"
+        f"での正式分析（{command}）で行ってください{ending}"
+    )
+    assert (f"- {expected}\n" if suffix == "md" else f"<li>{expected}</li>") in text
+    assert "全月データ2ヶ月分" not in text
 
 
 def test_missing_month_in_window_holds_change(cfg, make_input):

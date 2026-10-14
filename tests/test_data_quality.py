@@ -22,7 +22,7 @@ from seat_analyzer.data_quality import (
 from seat_analyzer.domain import IssueCode, QualityIssue, Severity
 from seat_analyzer.github_collect import GhFailure, GhResult, probe_github
 
-from .conftest import requires_symlink, spend_row
+from .conftest import SPEND_HEADER, requires_symlink, spend_row
 
 EXPECTED_CODES = {
     # 入力
@@ -100,6 +100,63 @@ def test_history_gap_excludes_months_before_first_spend(cfg, make_input):
                org="org-x")
     issues = inspect_input(root / "org-x", "2026-06", cfg, "org-x")
     assert IssueCode.MISSING_HISTORY_MONTH in {issue.code for issue in issues}
+
+
+@pytest.mark.parametrize(("hysteresis", "inside"), [(2, False), (3, True)])
+def test_partial_month_warning_follows_judgment_window(cfg, make_input, hysteresis, inside):
+    cfg["decision"]["hysteresis_months"] = hysteresis
+    root = make_input(
+        {"2026-06": [spend_row("user@example.com", 10.0)]},
+        members=["user@example.com,Premium"], org="org-x",
+    )
+    for month in ("04", "05", "06"):
+        (root / "org-x" / "spend" / f"spend-2026-{month}-01-to-2026-{month}-15.csv").write_text(
+            SPEND_HEADER + "\n" + spend_row("user@example.com", 10.0) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+    (root / "org-x" / "spend" / "spend_2026-06.csv").unlink()
+    issues = inspect_input(root / "org-x", "2026-06", cfg, "org-x")
+    partial = {issue.scope["month"]: issue for issue in issues
+               if issue.code == IssueCode.PARTIAL_MONTH}
+    assert set(partial) == {"2026-04", "2026-05", "2026-06"}
+    for month, issue in partial.items():
+        note = (
+            "この月が判定窓に入るあいだは、正式分析で変更推奨を出しません"
+            "（月中の一次判断は analyze --preview を使ってください）"
+            if month != "2026-04" or inside else
+            "判定窓の外の月なので、変更推奨の判定には使いません"
+        )
+        mon = month[-2:]
+        days = 31 if mon == "05" else 30
+        assert issue.message == (
+            f"{month} は部分月データです（{mon}-01〜{mon}-15 の 15日分 / 暦上 {days}日）。{note}"
+        )
+        assert issue.severity == Severity.WARNING
+        assert dict(issue.scope) == {
+            "org": "org-x", "month": month, "days_observed": 15, "days_in_month": days,
+        }
+
+
+def test_single_date_partial_month_warning_is_unchanged(cfg, make_input):
+    root = make_input(
+        {"2026-06": [spend_row("user@example.com", 10.0)]},
+        members=["user@example.com,Premium"], org="org-x",
+    )
+    (root / "org-x" / "spend" / "spend_2026-06.csv").rename(
+        root / "org-x" / "spend" / "spend-2026-06-15.csv")
+    issues = inspect_input(root / "org-x", "2026-06", cfg, "org-x")
+    partial = [issue for issue in issues if issue.code == IssueCode.PARTIAL_MONTH]
+    assert len(partial) == 1
+    assert partial[0].message == (
+        "2026-06 のスペンドはファイル名が単日日付（06-15）のため、"
+        "暦上 30日の全月データであることを確認できません。"
+        "部分月であれば月額前提の判定で需要が過小評価されます"
+        "（月中の一次判断は analyze --preview を使ってください）"
+    )
+    assert partial[0].severity == Severity.WARNING
+    assert dict(partial[0].scope) == {
+        "org": "org-x", "month": "2026-06", "snapshot_date": "2026-06-15", "days_in_month": 30,
+    }
 
 
 def test_person_issues_only_for_started_seated_secondary(cfg, make_input):

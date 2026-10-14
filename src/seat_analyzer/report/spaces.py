@@ -89,6 +89,14 @@ def space_list(org: OrgAnalysisResult) -> str:
     return " / ".join(parts)
 
 
+def judgment_months_text(org: OrgAnalysisResult) -> str:
+    """分析済みのスペースごとの判定に使用した月（表示名・workspace の順）。"""
+    return " / ".join(
+        f"{org.contexts[name].label}: {', '.join(result.summary['judgment_months'])}"
+        for name, result in org.workspaces.items()
+    )
+
+
 def fixed_seat_labels(org: OrgAnalysisResult | OrgPreviewResult) -> list[str]:
     """シート種別を固定した、分析済みの workspace の表示名（config の順）。"""
     return [

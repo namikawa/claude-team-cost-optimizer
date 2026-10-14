@@ -257,6 +257,7 @@ def preview(
         {
             "days_observed": days_observed,
             "days_in_month": days_in_month,
+            "hysteresis_months": int(cfg["decision"]["hysteresis_months"]),
             "total_api_observed_usd": round(
                 float(own_users["api_cost_observed_usd"].sum()), 2
             ),

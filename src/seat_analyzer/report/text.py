@@ -114,6 +114,16 @@ def _embed_shared_text(src: str) -> str:
     return src
 
 
+def _preview_decision_note(hysteresis_months: int, *, markdown: bool) -> str:
+    """速報の確定判断に必要な月数の注記（末尾の句点は使う側で付ける。Markdown はコード書式）。"""
+    command = "`analyze`" if markdown else "analyze"
+    return (
+        "変更推奨・ヒステリシス判定は行いません。"
+        f"確定判断は全月データ{hysteresis_months}ヶ月分での正式分析（{command}）"
+        "で行ってください"
+    )
+
+
 def _disabled_cost_note(users: pd.DataFrame) -> str:
     """クレジット無効ユーザのコスト列の意味注記（無ければ空文字列）。"""
     if "credits_mode" not in users.columns:

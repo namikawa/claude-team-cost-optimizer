@@ -109,7 +109,7 @@
       <ul class="notes assumptions">
         <li>日割り換算（×{{ '%.1f' % factor }}）は利用の偏り（曜日・導入直後の立ち上がり・プロジェクト山谷）を補正しません。</li>
         <li><!--text:note_billed_nonlinear-->。</li>
-        <li>変更推奨・ヒステリシス判定は行いません。確定判断は全月データ2ヶ月分での正式分析（analyze）で行ってください。</li>
+        <li>{{ decision_note }}。</li>
 {% if disabled_note %}        <li>{{ disabled_note }}。</li>
 {% endif %}        <li><!--text:legend_idle-->。</li>
         <li><!--text:legend_over-->。</li>
