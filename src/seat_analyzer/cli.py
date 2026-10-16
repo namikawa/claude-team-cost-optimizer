@@ -1661,7 +1661,8 @@ def _claude_import(
     """staging に残った実行の manifest から、検証と配置だけをやり直す（Chrome には触れない）。
 
     計画は run.json から組み直す（対象月はその実行のもの）。取得日は run.json の created_at の
-    UTC の日付（取り込む日ではない）。
+    UTC の日付（取り込む日ではない）。manifest の検証と配置は取得と同じプロファイルの
+    ロックを持って行う。
     """
     if not claude_export.is_run_id(run_id):
         raise ValueError(f"--import の run_id '{run_id}' は staging の実行ディレクトリ名ではありません")
@@ -1680,17 +1681,18 @@ def _claude_import(
     run = claude_export.restore_run(record, targets)
     fetched_on = claude_export.fetched_on_from_record(record)
     print(f"profile {run.profile}: {_CLAUDE_MODE_TEXT[run.mode]}（{run.month}）run_id {run_id}")
-    manifest = claude_export.manifest_path(staging_dir, run_id)
-    if not manifest.is_file():
-        print(
-            f"エラー: {manifest} がまだありません（ブラウザの取得が終わってから"
-            "再実行してください）",
-            file=sys.stderr,
-        )
-        return 1
-    placed = _claude_place(
-        run, run_id, claude_export.read_manifest(manifest), staging_dir, cfg, input_dir,
-        fetched_on=fetched_on)
+    with claude_export.profile_lock(staging_dir, run.profile):
+        manifest = claude_export.manifest_path(staging_dir, run_id)
+        if not manifest.is_file():
+            print(
+                f"エラー: {manifest} がまだありません（ブラウザの取得が終わってから"
+                "再実行してください）",
+                file=sys.stderr,
+            )
+            return 1
+        placed = _claude_place(
+            run, run_id, claude_export.read_manifest(manifest), staging_dir, cfg, input_dir,
+            fetched_on=fetched_on)
     return 0 if placed else 1
 
 

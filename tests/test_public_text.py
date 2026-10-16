@@ -378,6 +378,185 @@ def test_diff_added_text_keeps_rename_targets(publish_input, tmp_path):
     assert _check(diff, publish_input, tmp_path, "--diff") == 1
 
 
+@pytest.mark.parametrize("metadata", ["+++ ", "rename to ", "copy to "])
+def test_diff_decodes_git_quoted_paths(metadata):
+    quoted = r'"\346\236\266\347\251\272\346\216\250\351\200\2623\351\203\250 \"draft\"\\.md"'
+    extract = public_text.diff_added_text(metadata + quoted + "\n")
+    assert extract.text == '架空推進3部 "draft"\\.md'
+    assert extract.n_paths == 1
+
+
+@pytest.mark.parametrize("name", [
+    "架空推進3部.md", "space b/part.md",
+    pytest.param('quote"back\\slash.md', marks=pytest.mark.skipif(
+        os.name == "nt", reason="Windows では引用符とバックスラッシュを名前に使えない")),
+])
+@pytest.mark.parametrize("content", [b"", b"\x00binary\xff"])
+def test_diff_checks_actual_git_empty_and_binary_paths(tmp_path, name, content):
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    result = subprocess.run(
+        ["git", "-c", "core.quotePath=true", "diff", "--no-index", "--", "/dev/null", str(path)],
+        capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    extract = public_text.diff_added_text(result.stdout.decode("utf-8"))
+    assert str(Path(name)) in extract.text
+    assert extract.n_paths == 1
+    deleted = subprocess.run(
+        ["git", "-c", "core.quotePath=true", "diff", "--no-index", "--", str(path), "/dev/null"],
+        capture_output=True, check=False,
+    )
+    assert public_text.diff_added_text(deleted.stdout.decode("utf-8")).n_paths == 0
+
+
+def test_diff_counts_rename_destination_once():
+    diff = ('diff --git a/old.md b/new.md\nrename from old.md\nrename to new.md\n'
+            '--- a/old.md\n+++ b/new.md\n@@ -1 +1 @@\n-old\n+new\n')
+    extract = public_text.diff_added_text(diff)
+    assert (extract.n_added_lines, extract.n_paths) == (1, 1)
+    assert "old.md" not in extract.text
+
+
+@pytest.mark.parametrize("path", [r'"bad\q.md"', r'"bad\377.md"', '"unclosed.md'])
+def test_diff_rejects_malformed_quoted_paths(path):
+    with pytest.raises(leakcheck.LeakCheckError):
+        public_text.diff_added_text("+++ " + path + "\n")
+
+
+def test_diff_rejects_ambiguous_header():
+    with pytest.raises(leakcheck.LeakCheckError):
+        public_text.diff_added_text("diff --git a/old path.md b/different path.md\nnew file mode 100644\n")
+
+
+@pytest.mark.parametrize("metadata", ["rename", "copy"])
+def test_diff_quoted_move_and_multiple_blocks(metadata):
+    diff = (f'diff --git a/old.md "b/new \\"draft\\".md"\n'
+            f'{metadata} from old.md\n{metadata} to "new \\"draft\\".md"\n'
+            '--- a/old.md\n+++ "b/new \\"draft\\".md"\n@@ -1 +1 @@\n-old\n+++ added\n'
+            'diff --git a/removed.md b/removed.md\ndeleted file mode 100644\n'
+            '--- a/removed.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-removed\n'
+            'diff --git a/empty file.md b/empty file.md\nnew file mode 100644\n')
+    extract = public_text.diff_added_text(diff)
+    assert (extract.n_paths, extract.n_added_lines) == (2, 1)
+    assert extract.text == 'b/new "draft".md\nb/empty file.md\n++ added'
+
+
+def test_diff_quoted_paths_are_checked(publish_input, tmp_path):
+    quoted = r'"b/\345\242\227\346\236\240\346\216\250\351\200\262\345\256\244.md"'
+    assert _check("+++ " + quoted + "\n", publish_input, tmp_path, "--diff") == 1
+
+
+@pytest.mark.parametrize("escaped,decoded", [(r'\t', '\t'), (r'\n', '\n'), (r'\a', '\a'),
+                                            (r'\b', '\b'), (r'\v', '\v'), (r'\f', '\f'),
+                                            (r'\r', '\r')])
+def test_diff_decodes_git_special_escapes(escaped, decoded):
+    extract = public_text.diff_added_text('+++ "b/name' + escaped + '.md"\n')
+    assert extract.text == 'b/name' + decoded + '.md'
+
+
+def test_diff_checks_multiple_unified_files_without_git_headers():
+    diff = ('--- old1\n+++ new1\n@@ -1 +1 @@\n-a\n+b\n'
+            '--- old2\n+++ new2\n@@ -1 +1 @@\n-c\n+d\n')
+    extract = public_text.diff_added_text(diff)
+    assert (extract.n_paths, extract.n_added_lines) == (2, 2)
+    assert extract.text == 'new1\nnew2\nb\nd'
+
+
+def test_diff_distinguishes_unified_headers_from_hunk_content():
+    diff = ('--- old1\n+++ new1\n@@ -1,2 +1,2 @@\n--- removed\n+++ added\n context\n'
+            '--- old2\n+++ new2\n@@ -0,0 +1 @@\n+++ next\n'
+            '--- old3\n+++ /dev/null\n@@ -1 +0,0 @@\n--- deleted\n')
+    extract = public_text.diff_added_text(diff)
+    assert (extract.n_paths, extract.n_added_lines) == (2, 2)
+    assert extract.text == 'new1\nnew2\n++ added\n++ next'
+
+
+@pytest.mark.parametrize("separator", ["\r", "\u2028"])
+def test_diff_keeps_git_hunk_lines_and_destination(
+    publish_input, tmp_path, separator,
+):
+    """本文中の CR・Unicode 改行文字でも追加先と追加行数を保つ。"""
+    content = f"good{separator} context\n++ harmless\n"
+    result = subprocess.run(
+        ["git", "diff", "--no-index", "--dst-prefix=b/ZTeamX/", "--", "/dev/null", "-"],
+        input=content.encode("utf-8"), capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    diff = result.stdout.decode("utf-8")
+    extract = public_text.diff_added_text(diff)
+    status = _check(diff, publish_input, tmp_path, "--diff")
+    assert (extract.text, extract.n_added_lines, extract.n_paths, status) == (
+        "b/ZTeamX/-\n" + content.removesuffix("\n"), 2, 1, 1,
+    )
+
+
+def test_diff_keeps_actual_git_rename_with_space_and_content_change(tmp_path):
+    """空白入りの変更先を持つ Git の rename と本文変更を一度ずつ拾う。"""
+    before, after = tmp_path / "before", tmp_path / "after"
+    before.mkdir()
+    after.mkdir()
+    content = "".join(f"line {index}\n" for index in range(30))
+    (before / "old.md").write_text(content, encoding="utf-8", newline="\n")
+    (after / "new name.md").write_text(
+        content.replace("line 15\n", "changed\n"), encoding="utf-8", newline="\n",
+    )
+    result = subprocess.run(
+        ["git", "diff", "--no-index", "-M", "--", "before", "after"],
+        cwd=tmp_path, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    diff = result.stdout.decode("utf-8")
+    assert "rename to after/new name.md\n" in diff
+    assert "+++ b/after/new name.md\t\n" in diff
+    extract = public_text.diff_added_text(diff)
+    assert (extract.text, extract.n_paths, extract.n_added_lines) == (
+        "b/after/new name.md\nchanged", 1, 1,
+    )
+
+
+@pytest.mark.parametrize("metadata", ["rename", "copy"])
+def test_diff_counts_space_move_with_tab_header_once(metadata):
+    diff = (f"diff --git a/old.md b/new name.md\n{metadata} from old.md\n"
+            f"{metadata} to new name.md\n--- a/old.md\n+++ b/new name.md\t\n"
+            "@@ -1 +1 @@\n-old\n+new\n")
+    extract = public_text.diff_added_text(diff)
+    assert (extract.text, extract.n_paths, extract.n_added_lines) == ("b/new name.md\nnew", 1, 1)
+
+
+@pytest.mark.parametrize("token,path", [
+    ("b/new name.md", "b/new name.md"),
+    (r'"b/new \"draft\".md"', 'b/new "draft".md'),
+    (r'"b/name\t.md"', "b/name\t.md"),
+    ("b/trailing.md ", "b/trailing.md "),
+])
+def test_diff_separates_header_timestamp_from_path(token, path):
+    """実 TAB の区切りだけを除き、引用内のエスケープと末尾空白は保つ。"""
+    diff = (f"--- /dev/null\n+++ {token}\t2026-10-16 00:00:00 +0000\n"
+            "@@ -0,0 +1 @@\n+new\n")
+    extract = public_text.diff_added_text(diff)
+    assert (extract.text, extract.n_paths, extract.n_added_lines) == (path + "\nnew", 1, 1)
+
+
+def test_diff_ignores_dev_null_with_header_timestamp():
+    diff = ("--- a/old.md\n+++ /dev/null\t2026-10-16 00:00:00 +0000\n"
+            "@@ -1 +0,0 @@\n-old\n")
+    extract = public_text.diff_added_text(diff)
+    assert (extract.text, extract.n_paths, extract.n_added_lines) == ("", 0, 0)
+
+
+def test_diff_accepts_crlf_structure_and_preserves_body_separators():
+    diff = ('diff --git a/old.md "b/new\\tname.md"\r\n'
+            'rename from old.md\r\nrename to "new\\tname.md"\r\n'
+            '--- a/old.md\r\n+++ "b/new\\tname.md"\t\r\n'
+            '@@ -1 +1,2 @@\r\n-old\n+good\r context\u2028 text\r\n+++ next\n')
+    extract = public_text.diff_added_text(diff)
+    assert (extract.text, extract.n_paths, extract.n_added_lines) == (
+        "b/new\tname.md\ngood\r context\u2028 text\r\n++ next", 1, 2,
+    )
+
+
 def test_diff_mode_rejects_non_diff_input(publish_input, tmp_path, capsys):
     """差分でない入力に --diff を付けたら素通りさせずエラーにする。
 

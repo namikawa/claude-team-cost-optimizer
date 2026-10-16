@@ -1558,19 +1558,30 @@ def terminate_commands(
     return [["taskkill", "/PID", str(pid), *extra] for pid in pids]
 
 
+def _process_listing(platform: str) -> str:
+    """プロセス一覧を取得する。列挙の失敗を、プロセスが無い状態と区別する。"""
+    command = process_listing_command(platform)
+    proc = subprocess.run(
+        command,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
+    )
+    if proc.returncode != 0:
+        raise OSError(
+            f"プロセス一覧の取得（{command[0]}）に失敗しました（終了コード {proc.returncode}）"
+        )
+    return proc.stdout.decode("utf-8", errors="replace")
+
+
 def list_chrome_pids(
     profile_dir: Path, *, chrome: Path | None = None, platform: str = sys.platform
 ) -> list[int]:
     """そのプロファイルで動いている Chrome の親プロセスの pid（無ければ空）。
 
     chrome を渡すと、その実行ファイルで動いているものだけに絞る（`chrome_pids`）。
+    プロセス一覧を取得できなければ OSError で止める。
     """
-    proc = subprocess.run(
-        process_listing_command(platform),
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
-    )
     return chrome_pids(
-        proc.stdout.decode("utf-8", errors="replace"), profile_dir,
+        _process_listing(platform), profile_dir,
         platform=platform, chrome=chrome,
     )
 
@@ -1594,11 +1605,7 @@ def _signal(pids: Iterable[int], *, platform: str, force: bool) -> None:
 def _alive(pids: Sequence[int], *, platform: str) -> list[int]:
     """pids のうちまだ動いているもの。"""
     if platform == "win32":
-        proc = subprocess.run(
-            process_listing_command(platform),
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False,
-        )
-        listed = {pid for pid, _ in _windows_rows(proc.stdout.decode("utf-8", errors="replace"))}
+        listed = {pid for pid, _ in _windows_rows(_process_listing(platform))}
         return [pid for pid in pids if pid in listed]
     alive = []
     for pid in pids:
@@ -1691,7 +1698,7 @@ def _unlock_file(f: BinaryIO) -> None:
 def profile_lock(staging_dir: Path, profile: str) -> Iterator[Path]:
     """プロファイルのロックを持っている間だけ処理を行う。別の実行が持っていれば ProfileBusyError。
 
-    同じプロファイルの取得・組織一覧・ログインの確認・--finish-setup を同時に走らせない
+    同じプロファイルの取得・組織一覧・ログインの確認・--finish-setup・--import を同時に走らせない
     （同じ Chrome と staging を取り合わないため）。ロックは `<staging>/<profile>.lock` を開いたハンドルに掛ける
     OS のファイルロック（Unix は flock、Windows は msvcrt.locking）で、ファイルは消さず中身も
     書かない。OS のロックはハンドルを閉じると外れ、プロセスが異常終了しても OS が外すので、
@@ -1709,7 +1716,7 @@ def profile_lock(staging_dir: Path, profile: str) -> Iterator[Path]:
             if exc.errno in _LOCK_HELD_ERRNOS:
                 raise ProfileBusyError(
                     f"プロファイル {profile} は別の実行が使用中です（同じプロファイルの取得・"
-                    "組織一覧・ログインの確認・--finish-setup のいずれか）。その実行が終わって"
+                    "組織一覧・ログインの確認・--finish-setup・--import のいずれか）。その実行が終わって"
                     "から再実行してください"
                 ) from None
             raise ValueError(

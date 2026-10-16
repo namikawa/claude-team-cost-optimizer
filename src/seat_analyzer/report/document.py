@@ -73,7 +73,7 @@ def discussion_body(md: str) -> str | None:
 
 
 def write_discussion(
-    path: Path, body: str, *, only_if_unwritten: bool = False,
+    path: Path, body: str, *, only_if_unwritten: bool = False, expected: str | None = None,
 ) -> WriteResult:
     """考察セクションの中身を body に差し替えて書き戻す。本文側は一切変更しない。
 
@@ -81,16 +81,19 @@ def write_discussion(
     判定と書き込みを1回の読み取りに畳み、さらに置換の直前に内容が変わっていないかを
     確認する（生成に時間がかかる間に人が考察を書いた場合や、並行する analyze が本文を
     更新した場合に、それを巻き戻さないための保護）。この競合は CONFLICT で返す。
+    expected は資料として読んだ時点の全文。指定時はその内容との一致も置換直前まで確認する。
     """
     md = path.read_text(encoding="utf-8")
     if _DISCUSSION_MARKER not in md:
         raise ValueError(f"{path} に「## 考察」セクションがありません")
     if only_if_unwritten and discussion_body(md) is not None:
         return WriteResult.KEPT
+    if expected is not None and md != expected:
+        return WriteResult.CONFLICT
     head = md.split(_DISCUSSION_MARKER, 1)[0]
     written = _atomic_write(
         path, head + _DISCUSSION_MARKER + "\n" + body.strip() + "\n",
-        expect=md if only_if_unwritten else None,
+        expect=expected if expected is not None else (md if only_if_unwritten else None),
     )
     return WriteResult.WRITTEN if written else WriteResult.CONFLICT
 

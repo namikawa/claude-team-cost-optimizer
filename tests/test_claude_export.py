@@ -1,8 +1,7 @@
 """claude.ai からの CSV 取得（claude_export）の計画・検証・配置と、Chrome 周りの純粋関数のテスト。
 
-ブラウザもプロセスも起動しない。プロセスの起動・列挙・終了を実際に行う薄いラッパ
-（launch_chrome・list_chrome_pids・terminate_chrome）は対象外で、ここではそれらが使う
-コマンドの組み立てと出力の解釈を見る。OS の違いは platform 引数で切り替えて、どの OS の
+Chrome は起動しない。プロセスの起動・列挙・終了の呼び出しは差し替え、
+コマンドの組み立てと出力の解釈・失敗時の停止を見る。OS の違いは platform 引数で切り替えて、どの OS の
 上でも 3 OS 分を検査する。
 """
 
@@ -1615,6 +1614,51 @@ WIN_LISTING = "\r\n".join([
 def test_chrome_pids_from_powershell_csv():
     """引用符つき・大文字小文字の違いも同じプロファイルとして拾い、子と別プロファイルは除く。"""
     assert chrome_pids(WIN_LISTING, WIN_PROFILE, platform="win32") == [2001, 2004, 2005]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux", "win32"])
+@pytest.mark.parametrize("stdout", [b"", b"partial process listing"])
+def test_list_chrome_pids_rejects_a_failed_listing(monkeypatch, platform, stdout):
+    monkeypatch.setattr(
+        claude_export.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 7, stdout=stdout),
+    )
+    with pytest.raises(OSError, match="7"):
+        claude_export.list_chrome_pids(Path("profiles/corp"), platform=platform)
+
+
+@pytest.mark.parametrize("platform,profile,listing,expected", [
+    ("linux", UNIX_PROFILE, "", []),
+    ("linux", UNIX_PROFILE, PS_LISTING, [101, 107]),
+    ("win32", WIN_PROFILE, "", []),
+    ("win32", WIN_PROFILE, WIN_LISTING, [2001, 2004, 2005]),
+])
+def test_list_chrome_pids_reads_a_successful_listing(
+    monkeypatch, platform, profile, listing, expected
+):
+    monkeypatch.setattr(
+        claude_export.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=listing.encode("utf-8")),
+    )
+    assert claude_export.list_chrome_pids(profile, platform=platform) == expected
+
+
+def test_windows_alive_rejects_a_failed_listing(monkeypatch):
+    monkeypatch.setattr(
+        claude_export.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 9, stdout=b""),
+    )
+    with pytest.raises(OSError, match="9"):
+        claude_export._alive([2001], platform="win32")
+
+
+@pytest.mark.parametrize("listing,expected", [("", []), (WIN_LISTING, [2001, 2005])])
+def test_windows_alive_reads_a_successful_listing(monkeypatch, listing, expected):
+    monkeypatch.setattr(
+        claude_export.subprocess, "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=listing.encode("utf-8")),
+    )
+    assert claude_export._alive([2001, 2005, 9999], platform="win32") == expected
 
 
 def test_chrome_pids_ignore_a_profile_whose_path_extends_the_target_with_a_space():

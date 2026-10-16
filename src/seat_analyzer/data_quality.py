@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import github_collect, ingest, pricing
+from . import calendar_months, github_collect, ingest, pricing
 from .domain import IssueCode, QualityIssue, ScopeValue, Severity
 from .github_collect import (
     GhAuth,
@@ -200,10 +200,7 @@ def _reason(exc: Exception, input_dir: Path) -> str:
     return " ".join(flat.split()).strip()
 
 
-def _prev_month(month: str) -> str:
-    """YYYY-MM の暦上の直前月。"""
-    year, mon = (int(x) for x in month.split("-"))
-    return f"{year - 1}-12" if mon == 1 else f"{year}-{mon - 1:02d}"
+_prev_month = calendar_months.previous_month
 
 
 def _days_in_month(month: str) -> int:
@@ -213,10 +210,7 @@ def _days_in_month(month: str) -> int:
 
 def _judgment_window(month: str, n_months: int) -> list[str]:
     """対象月を含む暦上の判定窓を昇順で返す。"""
-    window = [month]
-    for _ in range(max(n_months - 1, 0)):
-        window.append(_prev_month(window[-1]))
-    return list(reversed(window))
+    return list(calendar_months.judgment_window(month, n_months))
 
 
 def _sample(emails: Iterable[str]) -> list[str]:

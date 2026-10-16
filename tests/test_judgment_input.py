@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from seat_analyzer import decision_evidence, seat_changes
+from seat_analyzer import data_quality, decision_evidence, seat_changes
 from seat_analyzer.analyze import (
     STATUS_CHANGE,
     STATUS_KEEP,
@@ -21,6 +21,7 @@ from seat_analyzer.analyze import (
     preview,
     preview_org,
 )
+from seat_analyzer.analyze.midmonth import _prev_calendar_month
 from seat_analyzer.analyze.pipeline import consecutive_complete_months, judgment_window
 from seat_analyzer.config import load_config
 from seat_analyzer.report.html import write_html, write_preview_html
@@ -73,6 +74,33 @@ def test_judgment_window_counts_back_calendar_months():
     assert judgment_window("2026-06", 2) == ("2026-05", "2026-06")
     assert judgment_window("2026-01", 3) == ("2025-11", "2025-12", "2026-01")
     assert judgment_window("2026-06", 1) == ("2026-06",)
+
+
+@pytest.mark.parametrize(("month", "n_months", "expected"), [
+    ("2026-01", 3, ("2025-11", "2025-12", "2026-01")),
+    ("2026-06", 0, ("2026-06",)),
+    ("2026-06", -2, ("2026-06",)),
+    ("0001-01", 2, ("0-12", "0001-01")),
+])
+def test_judgment_window_import_paths_preserve_values_and_types(month, n_months, expected):
+    """判定と doctor は同じ暦窓を使い、従来の tuple / list の返却型を保つ。"""
+    window = judgment_window(month, n_months)
+    quality_window = data_quality._judgment_window(month, n_months)
+    assert type(window) is tuple
+    assert type(quality_window) is list
+    assert window == expected
+    assert quality_window == list(expected)
+
+
+@pytest.mark.parametrize(("month", "expected"), [
+    ("2026-01", "2025-12"),
+    ("2026-03", "2026-02"),
+    ("0001-01", "0-12"),
+])
+def test_previous_month_keeps_existing_year_format(month, expected):
+    """前月の欠月判定でも、年のゼロ埋めを追加せず同じ暦を使う。"""
+    assert _prev_calendar_month(month) == expected
+    assert data_quality._prev_month(month) == expected
 
 
 def test_consecutive_complete_months_stops_at_gap_and_partial_month():

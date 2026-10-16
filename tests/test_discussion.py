@@ -356,6 +356,30 @@ def test_generate_does_not_overwrite_discussion_written_during_generation(two_or
     assert any("生成中" in n for n in notices)
 
 
+@pytest.mark.parametrize("preview", [False, True])
+@pytest.mark.parametrize("force", [False, True])
+def test_generate_checks_material_snapshot(two_orgs, tmp_path, preview, force):
+    """資料採取後の本文更新は検出し、明示的な上書き時だけ書き込む。"""
+    flags = ("--preview", "--days", "10") if preview else ()
+    out = run_analyze(two_orgs, tmp_path, *flags)
+    path = out_file(out, PREVIEW if preview else REPORT)
+    original = path.read_text(encoding="utf-8")
+    updated = "更新された本文\n" + original
+
+    def updates_meanwhile(prompt, settings):
+        assert "更新された本文" not in prompt
+        path.write_text(updated, encoding="utf-8")
+        return BODY
+
+    outcome = _generate(two_orgs, out, updates_meanwhile, preview=preview, force=force)
+    assert outcome.status == ("written" if force else "conflict")
+    if force:
+        assert path.read_text(encoding="utf-8").startswith("更新された本文\n")
+        assert report.discussion_body(path.read_text(encoding="utf-8")) == BODY
+    else:
+        assert path.read_text(encoding="utf-8") == updated
+
+
 def test_generate_retries_transient_failure(two_orgs, tmp_path):
     out = run_analyze(two_orgs, tmp_path)
     calls: list[str] = []

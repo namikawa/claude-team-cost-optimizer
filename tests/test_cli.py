@@ -16,6 +16,7 @@ import pytest
 
 from seat_analyzer import analyze, claude_export, github_collect, ingest, seat_changes
 from seat_analyzer.analyze import pipeline
+from seat_analyzer.claude_export import list_chrome_pids
 from seat_analyzer.cli import main
 from seat_analyzer.github_collect import (
     PR_CACHE_DIRNAME,
@@ -2331,7 +2332,7 @@ def test_collect_claude_refuses_a_profile_in_use(claude_env, capsys, command):
         assert _collect_claude(env, *command) == 1
     err = capsys.readouterr().err
     assert ("プロファイル corp は別の実行が使用中です（同じプロファイルの取得・組織一覧・"
-            "ログインの確認・--finish-setup のいずれか）。その実行が終わってから再実行して"
+            "ログインの確認・--finish-setup・--import のいずれか）。その実行が終わってから再実行して"
             "ください") in err
     assert env.ext.commands == [] and env.listed == [] and env.terminated == []
 
@@ -2708,6 +2709,58 @@ def _claude_timed_out_run(env) -> Path:
     return run_dir
 
 
+@pytest.mark.parametrize("has_manifest", [True, False])
+def test_collect_claude_import_refuses_a_profile_in_use(
+    claude_env, monkeypatch, capsys, has_manifest
+):
+    env = claude_env
+    run_dir = _claude_timed_out_run(env)
+    if not has_manifest:
+        (run_dir / "manifest.json").unlink()
+    capsys.readouterr()
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("ロックを取る前に manifest の読み取りや配置を行ってはいけない")
+
+    monkeypatch.setattr(claude_export, "read_manifest", unexpected)
+    monkeypatch.setattr("seat_analyzer.cli._claude_place", unexpected)
+    with claude_export.profile_lock(env.staging, "corp"):
+        assert _collect_claude(env, "--import", run_dir.name) == 1
+    assert "プロファイル corp は別の実行が使用中です" in capsys.readouterr().err
+    for kind in ("members", "spend", "code"):
+        assert not (env.input_dir / "example" / CLAUDE_KIND_DIRS[kind]).exists()
+
+
+def test_collect_claude_import_is_independent_of_another_profile_lock(claude_env):
+    env = claude_env
+    run_dir = _claude_timed_out_run(env)
+    with claude_export.profile_lock(env.staging, "other"):
+        assert _collect_claude(env, "--import", run_dir.name) == 0
+    for kind in ("members", "spend", "code"):
+        assert _placed(env, "example", kind).read_text(encoding="utf-8").startswith(
+            CLAUDE_HEADERS[kind])
+
+
+def test_collect_claude_import_holds_the_lock_while_reading_and_placing(claude_env, monkeypatch):
+    env = claude_env
+    run_dir = _claude_timed_out_run(env)
+    calls = []
+
+    def guarded(name, operation):
+        def call(*args, **kwargs):
+            with pytest.raises(claude_export.ProfileBusyError), \
+                    claude_export.profile_lock(env.staging, "corp"):
+                raise AssertionError("再取り込みの途中でプロファイルのロックが外れてはいけない")
+            calls.append(name)
+            return operation(*args, **kwargs)
+        return call
+
+    for name in ("read_manifest", "place_export"):
+        monkeypatch.setattr(claude_export, name, guarded(name, getattr(claude_export, name)))
+    assert _collect_claude(env, "--import", run_dir.name) == 0
+    assert calls == ["read_manifest", "place_export", "place_export", "place_export"]
+
+
 @pytest.mark.parametrize("created_at,fetched_on", [
     (None, "2026-10-07"),                           # 取得のときに書いたまま
     ("2026-10-09T08:30:00+09:00", "2026-10-08"),    # UTC の日付（日本時間では 10-09）
@@ -2849,6 +2902,40 @@ def test_collect_claude_finish_setup_when_chrome_is_not_running(claude_env, caps
     prefs = json.loads((profile_dir / "Default" / "Preferences").read_text(encoding="utf-8"))
     assert prefs["download"]["default_directory"] == str(env.staging)
     assert "Chrome を終了しました" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("fail_on_recheck", [False, True])
+def test_collect_claude_finish_setup_does_not_write_after_a_failed_listing(
+    claude_env, monkeypatch, capsys, fail_on_recheck
+):
+    env = claude_env
+    profile_dir = _prepared_profile(env)
+    preferences = profile_dir / "Default" / "Preferences"
+    before = preferences.read_bytes()
+    listed = False
+
+    def listing(*args, **kwargs):
+        nonlocal listed
+        if fail_on_recheck and not listed:
+            listed = True
+            stdout = f"{CLAUDE_PID} {env.chrome} --user-data-dir={profile_dir} --no-first-run\n"
+            return SimpleNamespace(returncode=0, stdout=stdout.encode("utf-8"))
+        return SimpleNamespace(returncode=7, stdout=b"", stderr=b"private process details")
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("プロセスの列挙に失敗したら Preferences を書いてはいけない")
+
+    monkeypatch.setattr(
+        claude_export, "list_chrome_pids",
+        lambda *args, **kwargs: list_chrome_pids(*args, **kwargs, platform="linux"),
+    )
+    monkeypatch.setattr(claude_export.subprocess, "run", listing)
+    monkeypatch.setattr(claude_export, "write_preferences", unexpected)
+    assert _collect_claude(env, "--finish-setup", "new") == 1
+    assert preferences.read_bytes() == before
+    err = capsys.readouterr().err
+    assert "7" in err
+    assert "private process details" not in err
 
 
 def test_collect_claude_finish_setup_reads_the_extension_from_preferences(claude_env):

@@ -208,6 +208,7 @@ def _details_material(path: Path, month: str, report_body: str) -> str | None:
 def collect_materials(
     *, org: str, org_output: Path, month: str, preview: bool, doc_path: Path,
     terms: tuple[Term, ...] = (), include_previous: bool = False, notify=None,
+    document_text: str | None = None,
 ) -> tuple[list[tuple[str, str]], str]:
     """(プロンプトへ渡す資料, 混入チェックの照合元テキスト) を返す。
 
@@ -216,6 +217,7 @@ def collect_materials(
     途中で並行する analyze が新名を作った場合に、資料は新名から読み・考察は旧名へ書く、
     という食い違いが起きる。書き込みは成功するので、生成した考察が二度と読まれない
     ファイルに残ることに気づけない。
+    document_text を渡す場合はその全文を資料に使い、書き込み側の期待値と揃える。
 
     正式分析の資料は report.md 本文 → details.md → recommendations.csv の順。
     report.md は考察中心の短い文書なので、ユーザ単位の表・月中の推移・分布は
@@ -236,7 +238,8 @@ def collect_materials(
             f"{doc_path} がありません。先に "
             f"`seat-analyzer analyze{' --preview' if preview else ''}` を実行してください"
         )
-    body = report.document_body(doc_path.read_text(encoding="utf-8"))
+    md = doc_path.read_text(encoding="utf-8") if document_text is None else document_text
+    body = report.document_body(md)
     materials = [(f"資料1: 分析レポート本文（{month}）", body)]
     source = [body]
 
@@ -487,10 +490,16 @@ def generate(
 
     terms = forbidden_terms(
         input_dir=input_dir, output_dir=output_dir, target_org=org, cfg=cfg)
+    if not doc_path.exists():
+        raise DiscussionError(
+            f"{doc_path} がありません。先に "
+            f"`seat-analyzer analyze{' --preview' if preview else ''}` を実行してください"
+        )
+    document_text = doc_path.read_text(encoding="utf-8")
     materials, source = collect_materials(
         org=org, org_output=org_output, month=month, preview=preview,
         doc_path=doc_path, terms=terms,
-        include_previous=include_previous, notify=notify)
+        include_previous=include_previous, notify=notify, document_text=document_text)
     prompt = build_prompt(org=org, scope=scope, materials=materials, preview=preview)
 
     # --dry-run はプロンプトの確認用なので、上書き可否に関係なく必ずプロンプトを返す
@@ -529,7 +538,10 @@ def generate(
         # その間に人が考察を書いた場合や、並行する analyze が本文を更新した場合に、
         # それを巻き戻さないよう書き込み側で判定と置換を畳み、置換直前にも内容が
         # 変わっていないか確認する。「書かなかった」理由は2つに分かれ、扱いが違う
-        result = report.write_discussion(doc_path, body, only_if_unwritten=not force)
+        result = report.write_discussion(
+            doc_path, body, only_if_unwritten=not force,
+            expected=None if force else document_text,
+        )
         if result is report.WriteResult.KEPT:
             # 設計どおりの no-op（手書きの考察を守った）。次の手は要らない
             notify("生成中に考察が記入されたため書き込みません（上書きは --force）")

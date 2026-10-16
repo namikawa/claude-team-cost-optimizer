@@ -257,6 +257,60 @@ class DiffExtract:
 # ほぼ空になり何も検査されないまま成功する
 _DIFF_MARKER_RE = re.compile(
     r"^(?:diff --git |@@ |\+\+\+ |--- |rename to |copy to )", re.MULTILINE)
+_HUNK_RE = re.compile(r"@@ -[0-9]+(?:,([0-9]+))? \+[0-9]+(?:,([0-9]+))? @@")
+
+
+def _git_path(value: str) -> str:
+    """Git の C 形式で引用されたパスを、UTF-8 の元の名前へ戻す。"""
+    if not value.startswith('"'):
+        return value
+    escapes = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13,
+               '"': 34, "\\": 92}
+    raw = bytearray()
+    i = 1
+    while i < len(value):
+        char = value[i]
+        if char == '"':
+            if i != len(value) - 1:
+                break
+            try:
+                return raw.decode("utf-8")
+            except UnicodeDecodeError:
+                break
+        if char != "\\":
+            raw.extend(char.encode("utf-8"))
+            i += 1
+            continue
+        i += 1
+        if i == len(value):
+            break
+        if value[i] in escapes:
+            raw.append(escapes[value[i]])
+            i += 1
+        elif re.fullmatch(r"[0-3][0-7]{2}", value[i:i + 3]):
+            raw.append(int(value[i:i + 3], 8))
+            i += 3
+        else:
+            break
+    raise LeakCheckError("差分の引用されたパスを UTF-8 として解釈できません")
+
+
+def _git_header_destination(header: str) -> str:
+    """同じパスを指す a/・b/ の組から追加先を得る。曖昧なヘッダは受け付けない。"""
+    candidates: set[str] = set()
+    for match in re.finditer(" ", header):
+        left, right = header[:match.start()], header[match.end():]
+        if not left.startswith(("a/", '"a/')) or not right.startswith(("b/", '"b/')):
+            continue
+        try:
+            before, after = _git_path(left), _git_path(right)
+        except LeakCheckError:
+            continue
+        if before[2:] == after[2:]:
+            candidates.add(after)
+    if len(candidates) != 1:
+        raise LeakCheckError("差分の追加先パスを一意に解釈できません")
+    return candidates.pop()
 
 
 def diff_added_text(diff: str) -> DiffExtract:
@@ -276,16 +330,65 @@ def diff_added_text(diff: str) -> DiffExtract:
         )
     added: list[str] = []
     paths: list[str] = []
-    for line in diff.splitlines():
-        if line.startswith("+++"):
-            path = line[3:].strip()
-            if path and path != "/dev/null":
-                paths.append(path)
+    header: str | None = None
+    destination: str | None = None
+    moved: str | None = None
+    deleted = False
+    in_hunk = False
+    old_left = new_left = 0
+
+    def finish() -> None:
+        if deleted or destination == "/dev/null":
+            return
+        if destination is not None:
+            if moved is not None and destination.removeprefix("b/") != moved:
+                raise LeakCheckError("差分の追加先パスが一致しません")
+            paths.append(destination)
+        elif moved is not None:
+            paths.append(moved)
+        elif header is not None:
+            paths.append(_git_header_destination(header))
+
+    # 差分の行境界は LF。本文中の CR・Unicode 改行文字は分割しない。
+    for raw_line in diff.split("\n"):
+        # CRLF の構造行を受け付け、hunk 内の CR は本文として保つ。
+        line = raw_line if in_hunk else raw_line.removesuffix("\r")
+        if line.startswith("diff --git "):
+            finish()
+            header = line[len("diff --git "):]
+            destination = moved = None
+            deleted = in_hunk = False
+        elif line.startswith("@@ "):
+            match = _HUNK_RE.match(line)
+            if match is None:
+                raise LeakCheckError("差分の変更行数を解釈できません")
+            old_left, new_left = (int(count) if count is not None else 1
+                                  for count in match.groups())
+            in_hunk = old_left > 0 or new_left > 0
+        elif in_hunk:
+            if line.startswith("+"):
+                added.append(line[1:])
+                new_left -= 1
+            elif line.startswith("-"):
+                old_left -= 1
+            elif line.startswith(" "):
+                old_left -= 1
+                new_left -= 1
+            in_hunk = old_left > 0 or new_left > 0
+        elif line.startswith("--- "):
+            if destination is not None:
+                finish()
+                header = destination = moved = None
+                deleted = False
+        elif not in_hunk and line.startswith("+++ "):
+            destination = _git_path(line[4:].split("\t", 1)[0])
+        elif not in_hunk and line.startswith(("rename to ", "copy to ")):
+            moved = _git_path(line.split(" to ", 1)[1])
+        elif not in_hunk and line.startswith("deleted file mode "):
+            deleted = True
         elif line.startswith("+"):
             added.append(line[1:])
-        elif line.startswith(("rename to ", "copy to ")):
-            # 内容変更を伴わない rename/copy は +++ 行を持たないため、ここで拾う
-            paths.append(line.split(" to ", 1)[1].strip())
+    finish()
     return DiffExtract("\n".join(paths + added), len(added), len(paths))
 
 

@@ -533,17 +533,9 @@ def _discover(directory: Path) -> tuple[dict[str, list[tuple[dt.date, Path]]], l
 # ------------------------------------------------------------ ファイルの読み取り
 
 
-def _candidates(canonical: str, alias_list: object) -> tuple[str, ...]:
-    """正準列 canonical に写る、正規化済みヘッダの候補（並びは決定的）。
-
-    照合の規則は `ingest.map_columns` と同じ（エイリアスと正準名そのもの）。同じ規則を
-    2度書かないよう、ヘッダの曖昧さの検査もこの1箇所を使う。
-    """
-    aliases = alias_list if isinstance(alias_list, list) else []
-    return tuple(sorted(
-        {ingest.normalize_header(alias) for alias in aliases}
-        | {ingest.normalize_header(canonical)}
-    ))
+_candidates = ingest.header_candidates
+_reject_overlapping_aliases = ingest.reject_overlapping_aliases
+_reject_ambiguous_headers = ingest.reject_ambiguous_headers
 
 
 def _raw_header(path: Path) -> list[str]:
@@ -568,48 +560,6 @@ def _raw_header(path: Path) -> list[str]:
             return []
         return [str(value) for value in row.iloc[0]]
     raise ValueError(f"{path}: 文字コードを判別できません（utf-8 / cp932 を試行）")
-
-
-def _reject_overlapping_aliases(section: str, aliases: dict) -> None:
-    """1つのヘッダが2つの正準列の候補になっている設定を拒否する。
-
-    正準名へ写す対応は正準列ごとに決めるため、同じヘッダが2つの正準列の候補に入って
-    いると、写る先が定義の並び順で決まり、もう一方の正準列は黙って NA になる。入力の
-    中身に依らない設定側の誤りなので、突き合わせより前に止める。
-    """
-    owner: dict[str, str] = {}
-    for canonical, alias_list in aliases.items():
-        for candidate in _candidates(canonical, alias_list):
-            other = owner.setdefault(candidate, canonical)
-            if other != canonical:
-                raise ValueError(
-                    f"columns.{section}: ヘッダ {candidate!r} が {other} と {canonical} の"
-                    "両方の候補になっています。どちらの列に写すか決まらないため、"
-                    "片方のエイリアスから取り除いてください"
-                )
-
-
-def _reject_ambiguous_headers(path: Path, headers: list[str], aliases: dict) -> None:
-    """1つの正準列に対応する実ヘッダが2つ以上ある表を中止する。
-
-    正準名へ写すのは最初に一致したヘッダだけなので、`Snapshot Date` と `snapshot_date` の
-    ように両方が並ぶ表では、写した後に同名の列が2つ残ってセルの取得が曖昧になる（並びが
-    逆なら片方が黙って捨てられる）。完全に同名のヘッダが2つある表も、読み込みの改名で
-    見た目には1つずつになるだけで同じことが起きる。どちらが正かは決められないので、
-    列名を挙げて止める。
-
-    見るのは正準列に写るヘッダだけで、読まない列の重複（`Comment,Comment` や、表計算が
-    行末に付ける空のヘッダ）は結果に影響しないので止めない。
-    """
-    normalized = [(column, ingest.normalize_header(column)) for column in headers]
-    for canonical, alias_list in aliases.items():
-        candidates = _candidates(canonical, alias_list)
-        matched = [column for column, norm in normalized if norm in candidates]
-        if len(matched) > 1:
-            raise ValueError(
-                f"{path}: 同じ列 {canonical} に対応するヘッダが複数あります: {matched}。"
-                "どちらが正か判断できないため、1つに絞ってください"
-            )
 
 
 def _read_table(

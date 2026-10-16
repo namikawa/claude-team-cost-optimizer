@@ -8,13 +8,8 @@ from pathlib import Path
 import pandas as pd
 
 from .. import ingest, pricing
+from ..calendar_months import previous_month as _prev_calendar_month
 from .credits import _credit_display, _kappa_equal
-
-
-def _prev_calendar_month(month: str) -> str:
-    """YYYY-MM の暦上の直前月を返す（欠月判定用）。"""
-    year, mon = (int(x) for x in month.split("-"))
-    return f"{year - 1}-12" if mon == 1 else f"{year}-{mon - 1:02d}"
 
 
 def _trend_thresholds(cfg: dict) -> dict:

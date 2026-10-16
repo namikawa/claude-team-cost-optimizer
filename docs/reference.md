@@ -652,7 +652,7 @@ organizations:
 時間切れ・設定の済んでいないプロファイル・使用中のプロファイルがあれば 1）。
 
 同じプロファイルを 2 つの実行が同時に使わないよう、取得・`--list-orgs`・`--check-login`・
-`--finish-setup` はその間 `<staging_dir>/<profile>.lock` に OS のファイルロック（Unix は flock、Windows は
+`--finish-setup`・`--import` はその間 `<staging_dir>/<profile>.lock` に OS のファイルロック（Unix は flock、Windows は
 msvcrt.locking）を取る。別の実行がロックを持っていれば、そのプロファイルは使用中として止める
 （取得では、そのプロファイルの実行だけを失敗にする）。ロックは実行が終わると（異常終了を
 含めて）外れるので、ロックファイルを消す必要は無い（ファイルは空のまま残る）。拡張機能の側も、同じ Chrome で別の実行が進行中なら新しい実行を始めない
