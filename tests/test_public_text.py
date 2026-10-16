@@ -402,7 +402,7 @@ def test_diff_checks_actual_git_empty_and_binary_paths(tmp_path, name, content):
     )
     assert result.returncode == 1
     extract = public_text.diff_added_text(result.stdout.decode("utf-8"))
-    assert name in extract.text
+    assert str(Path(name)) in extract.text
     assert extract.n_paths == 1
     deleted = subprocess.run(
         ["git", "-c", "core.quotePath=true", "diff", "--no-index", "--", str(path), "/dev/null"],
