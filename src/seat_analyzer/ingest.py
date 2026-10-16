@@ -300,6 +300,59 @@ def normalize_header(name: str) -> str:
     return re.sub(r"\s+", " ", s)
 
 
+def header_candidates(canonical: str, alias_list: object) -> tuple[str, ...]:
+    """正準列 canonical に写る、正規化済みヘッダの候補（並びは決定的）。
+
+    照合の規則は `map_columns` と同じ（エイリアスと正準名そのもの）。ヘッダの曖昧さを
+    検査する入力は、この候補を使って設定と実ヘッダの両方を突き合わせる。
+    """
+    aliases = alias_list if isinstance(alias_list, list) else []
+    return tuple(sorted(
+        {normalize_header(alias) for alias in aliases}
+        | {normalize_header(canonical)}
+    ))
+
+
+def reject_overlapping_aliases(section: str, aliases: dict) -> None:
+    """1つのヘッダが2つの正準列の候補になっている設定を拒否する。
+
+    正準名へ写す対応は正準列ごとに決めるため、同じヘッダが2つの正準列の候補に入って
+    いると、写る先が定義の並び順で決まり、もう一方の正準列は黙って NA になる。入力の
+    中身に依らない設定側の誤りなので、突き合わせより前に止める。
+    """
+    owner: dict[str, str] = {}
+    for canonical, alias_list in aliases.items():
+        for candidate in header_candidates(canonical, alias_list):
+            other = owner.setdefault(candidate, canonical)
+            if other != canonical:
+                raise ValueError(
+                    f"columns.{section}: ヘッダ {candidate!r} が {other} と {canonical} の"
+                    "両方の候補になっています。どちらの列に写すか決まらないため、"
+                    "片方のエイリアスから取り除いてください"
+                )
+
+
+def reject_ambiguous_headers(path: Path, headers: list[str], aliases: dict) -> None:
+    """1つの正準列に対応する実ヘッダが2つ以上ある表を中止する。
+
+    正準名へ写すのは最初に一致したヘッダだけなので、エイリアスと正準名が両方並ぶ表は
+    どちらが正かを決められない。完全に同名のヘッダが2つある表も、読み込みで改名された
+    後では見分けられないため、生のヘッダを突き合わせ、列名を挙げて止める。
+
+    見るのは正準列に写るヘッダだけで、読まない列の重複（`Comment,Comment` や、表計算が
+    行末に付ける空のヘッダ）は結果に影響しないので止めない。
+    """
+    normalized = [(column, normalize_header(column)) for column in headers]
+    for canonical, alias_list in aliases.items():
+        candidates = header_candidates(canonical, alias_list)
+        matched = [column for column, norm in normalized if norm in candidates]
+        if len(matched) > 1:
+            raise ValueError(
+                f"{path}: 同じ列 {canonical} に対応するヘッダが複数あります: {matched}。"
+                "どちらが正か判断できないため、1つに絞ってください"
+            )
+
+
 def map_columns(
     df: pd.DataFrame,
     aliases: dict[str, list[str]],

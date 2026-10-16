@@ -508,6 +508,34 @@ def test_alias_shared_by_two_canonical_columns_is_an_error(tmp_path, cfg):
         load_admin_inputs(tmp_path, broken)
 
 
+def test_alias_matching_another_canonical_name_is_rejected_first(tmp_path, cfg):
+    """正準名自身との衝突も、実ヘッダの曖昧さより先に設定エラーとして返す。"""
+    broken = copy.deepcopy(cfg)
+    broken["columns"]["admin_users"] = {"email": [], "source": [" EMAIL "]}
+    _write(tmp_path, "users-2026-08-01.csv", "Email,email,Source",
+           ["user1@example.com,user2@example.com,manual"])
+    with pytest.raises(ValueError) as error:
+        load_admin_inputs(tmp_path, broken)
+    assert str(error.value) == (
+        "columns.admin_users: ヘッダ 'email' が email と source の"
+        "両方の候補になっています。どちらの列に写すか決まらないため、"
+        "片方のエイリアスから取り除いてください"
+    )
+
+
+def test_ambiguous_headers_preserve_original_order_in_error(tmp_path, cfg):
+    """生ヘッダの表記と並びをエラーメッセージに残す。"""
+    _write(tmp_path, "users-2026-08-01.csv", "Snapshot Date,User Email,Email,Source",
+           ["2026-08-01,user1@example.com,user2@example.com,manual"])
+    with pytest.raises(ValueError) as error:
+        load_admin_inputs(tmp_path, cfg)
+    path = tmp_path / "admin" / "users-2026-08-01.csv"
+    assert str(error.value) == (
+        f"{path}: 同じ列 email に対応するヘッダが複数あります: ['User Email', 'Email']。"
+        "どちらが正か判断できないため、1つに絞ってください"
+    )
+
+
 # ------------------------------------------------- ファイル名と取得日の突き合わせ
 
 

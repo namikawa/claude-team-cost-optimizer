@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from .. import ingest, pricing
+from ..calendar_months import judgment_window, previous_month as _prev_month
 from ..product_usage import (
     ProductUsage,
     compute as compute_product_usage,
@@ -83,20 +84,6 @@ NO_USAGE_SOURCE = "(利用なしとして扱う)"
 
 # 警告に例として載せるユーザの数（人数と併記する）
 _LISTED_USERS = 5
-
-
-def _prev_month(month: str) -> str:
-    """YYYY-MM の暦上の直前月。"""
-    year, mon = (int(part) for part in month.split("-"))
-    return f"{year - 1}-12" if mon == 1 else f"{year}-{mon - 1:02d}"
-
-
-def judgment_window(month: str, n_months: int) -> tuple[str, ...]:
-    """V1 の主判定が見る判定窓（対象月から暦で遡る n_months か月。昇順で最後が対象月）。"""
-    found = [month]
-    for _ in range(max(n_months - 1, 0)):
-        found.append(_prev_month(found[-1]))
-    return tuple(reversed(found))
 
 
 def consecutive_complete_months(

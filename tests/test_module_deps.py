@@ -34,6 +34,7 @@ PACKAGE_DIR = REPO_ROOT / "src" / PACKAGE
 #   50 CLI
 #   60 パッケージのファサード
 LAYERS = {
+    "calendar_months": 10,
     "domain": 10,
     "identity": 10,
     "ingest": 10,
