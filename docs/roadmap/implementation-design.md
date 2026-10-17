@@ -1002,6 +1002,27 @@ Standard化:
 - 対象月は2モードだけ: 当月（支出は「月累計」・Claude Codeは表示中の月）と前月（支出は「先月」・
   Claude Codeは月送り1回）。管理画面にそれ以外の選択肢が無いため。それより前の月は従来どおり
   手動のダウンロードで置く
+- 取得できる時期はUTCの日付で決める（Step 55）。claude.aiのエクスポートの期間はUTC基準で、支出
+  レポートの「月累計」はUTCで完了した日まで、membersとClaude Code analyticsの取得日はUTCの日付に
+  なる。ツールの当月・前月は実行機のローカル日付で決まる（`resolve_mode`）ので、UTCの今日が
+  ローカルの月に追いつく前に取ると別の月の期間で届く（支出レポートとmembersは§14.3の検証で止まり、
+  Claude Code analyticsは画面の表示月の名前で検証を通り、取得日が期間の外なので終了日の置き換えが
+  働かず月末日の名前のまま当月に置かれうる）。当月モードはUTCの今日の年月がローカルの年月と同じで
+  日が2以上のとき（当月にUTCで完了した日がある）、前月モードはUTCの今日の年月がローカルの年月と
+  同じとき（UTCでも前月が終わっている）だけ取得し、それ以外はChromeを起動せずに理由を表示する。
+  理由は3通り: 必要なUTCの時点（当月モードは対象月の2日0:00 UTC、前月モードは対象月の翌月の
+  1日0:00 UTC）にまだ達していないときは「取得できる時刻」（その時点をローカル時刻に直したもの。
+  UTCより東の1日・2日の朝のほか、UTCとローカルが同じ年月の1日も含む）、UTCが先に翌月へ進んで
+  いるとき（UTCより西のローカルの月末の夜）は、当月モードなら「ローカルが翌月になってから前月
+  モードで取る」、前月モードなら「claude.aiの先月はもう別の月なので手動で置く」（待っても取れる
+  ようにならない）。`--month`を省略した実行は終了コード0（取るものが無いだけで失敗ではなく、
+  定期実行が誤って通知しない）、`--month`を明示した実行は1（頼まれた月を取れていない）。`--dry-run`も
+  同じ表示で、`--import`はrun.jsonの月で検証するので対象外。プロファイルは順に起動するので、
+  各プロファイルの起動直前にも判定し直す: いまのローカル日付で`resolve_mode`を引き直して計画と
+  同じモード・月になり、かつ時期の規則を満たすときだけ起動し、そうでなければ対象月を変えずに
+  そのプロファイルを失敗にする（取得の途中でUTCの月が変わる、UTCとローカルが同時に翌月へ進む、
+  など月末の0:00（UTC）の直前に始めた実行のため）。日本時間では当月は2日9:00以降、前月は1日
+  9:00以降になる
 - Playwright・Chrome remote debugging（CDP）・headlessは使わない。自動操作下では外部セキュリティ
   検証が反復して管理画面へ安定して到達できず、ダウンロード時にブラウザが異常終了することもある
   ため、素のChromeと拡張機能の組み合わせだけを使う
@@ -1141,6 +1162,49 @@ orgs.json・session.jsonの固定名は拡張機能自身が始めたダウン�
 - 手動でダウンロードして従来どおり`input/`へ置けば分析は動く。分析そのものをブラウザに依存させない
 - タイムアウト時はChromeを終了させず、ブラウザに出ている要操作の表示を確認するよう案内する。
   人の操作で取得が続いてmanifestが書かれたら、`--import <run_id>`で検証・配置だけをやり直す
+
+### 14.5 定期実行の雛形（macOS launchd）
+
+定期実行と通知はツールの機能にせず、`examples/launchd/`に置く雛形（Step 56）で行う。wheelには
+入れない（利用者はリポジトリから取る）。CLIにインストールのサブコマンドも持たせない（OS固有の
+インストール処理をツールに持ち込まないため）。
+
+- 構成は4ファイル。`collect.zsh`（本体）、`seat-analyzer.collect-weekly.plist`・
+  `seat-analyzer.collect-monthly.plist`（launchdのジョブ定義。パスは`__HOME__`・`__WORKSPACE__`の
+  プレースホルダ。launchdは`~`や環境変数をパスに展開しない）、`install.zsh`（プレースホルダを埋めて
+  `~/Library/LaunchAgents/`に置き`launchctl bootstrap`する。再実行は入れ替え、`--uninstall`は
+  bootoutとplistの削除。本体は`~/.seat-analyzer/scheduled/`へ写すので、実行時にリポジトリは要らない）
+- 本体の動き: 引数はweekly / monthly。作業ディレクトリはplistの`WorkingDirectory`（ワークスペース）を
+  そのまま使う。launchdが起動するzshは`.zprofile`・`.zshrc`を読まないので、コマンドの場所はplistの
+  `EnvironmentVariables`で与える: PATHは`__HOME__/.local/bin`（`uv tool install`の置き場所）・
+  Homebrew・OS標準の順、コマンドは`SEAT_ANALYZER_CMD`（既定`seat-analyzer`。開発機のように
+  `uv run seat-analyzer`にもできる。本体はzshの`${=SEAT_ANALYZER_CMD}`で空白で単語に分けて
+  実行する。引用符は解釈せず、空白を含むパスは非対応＝`uv tool install`の置き場所に空白は無く、
+  必要ならsymlinkで避ける）。
+  weeklyは`collect --source claude`（当月）、monthlyは`--month <前月>`（前月はzshの算術で求め、
+  macOS固有の`date -v`は使わない）。どちらもそのあと`--check-login`。取得か`--check-login`の
+  終了コードが0でなければmacOSの通知（`osascript`の`display notification`）を出し、全体の終了コードを
+  1にする（出力の文字列は解釈しない。`--check-login`の1は期限間近・無効・不明・時間切れ・設定未完了・
+  使用中を含み、通知の文はログを見るよう促すだけにする）。ログはlaunchdが`~/.seat-analyzer/logs/`へ
+  追記する。`SEAT_ANALYZER_INPUT_DIR`があれば`--input-dir`に渡す（一時ディレクトリへ配置して試す）
+- 既定の時刻は週次が日曜2:00、月次が毎月2日2:00（ローカル時刻）。どのタイムゾーンでも、月次の
+  2日2:00はUTCで当月の1日か2日に入るので前月を取れる。週次が1日か2日に当たる日曜は、タイム
+  ゾーンによってはツールの時期の判定（§14.1・Step 55）が「まだ」と表示して取得せずに終わる
+  （UTC+14では2日2:00がUTCの1日12:00、UTC-12では2日14:00）。雛形は日付の規則を持たない
+- plistは`caffeinate -is`（実行中の再スリープを止める。`-s`はAC電源のとき有効）→`lockf -k`（週次と
+  月次が同じ時刻に重なっても順番に実行する。既定でロックが外れるまで待つ）→`/bin/zsh`の順に包む
+- 起床の予約（`pmset`）は持たない。無人で予約するにはsudoersの変更が要るため。スリープするMacの
+  扱いはdocs/setup.mdで案内する（電源接続時にスリープしない設定にするか、`sudo pmset repeat
+  wakeorpoweron`を1回手で登録する。`pmset repeat`は1件しか持てない）。あわせてlaunchdの前提も
+  書く: LaunchAgentsはGUIにログインした状態でだけ動く（電源投入後にログイン画面で止まっていれば
+  動かない）、スリープ中に過ぎた予定は起床後に1回だけまとめて実行される、対象月は実行した時点の
+  日付で決まる（長く止まっていた分の遡及はしない。予定した月が過ぎていれば手動で置く）
+- 雛形に個人のパス・ラベル・組織名を含めない。ラベルは`seat-analyzer.collect-weekly`・
+  `seat-analyzer.collect-monthly`
+- テスト: plistの雛形を`plistlib`で読めること・必要なキーとプレースホルダだけを含むことを全OSで見る。
+  `zsh`がある環境では`zsh -n`で構文を見る。macOSでは偽の`seat-analyzer`をPATHに置いて、weekly /
+  monthlyの呼び出し列と終了コード（取得か`--check-login`の失敗で1）を見る。偽のコマンドは
+  `SEAT_ANALYZER_CMD`の単語分割（複数語）も確かめる
 
 ## 15. GitHub collection
 
@@ -1282,7 +1346,9 @@ uv run seat-analyzer collect \
   --month YYYY-MM
 ```
 
-`--source claude`の`--month`は当月か前月で、省略時は当月（§14.1）。`--org`は複数指定でき、
+`--source claude`の`--month`は当月か前月で、省略時は当月（§14.1）。取得できる時期（UTCの今日が
+ローカルの月に追いついているか。§14.1・Step 55）を満たさなければChromeを起動せずに理由を表示し、
+`--month`の省略時は終了コード0、明示時は1。`--org`は複数指定でき、
 省略時は`claude_export`を設定した全組織。`--dry-run`は取得の計画（プロファイルごとのモードと、
 対象・UUID・種別・配置先）を表示して終了する。`--keep-browser`は取得の後もChromeを終了させず、
 `--timeout`は待機の上限（分。省略時は`claude_export.timeout_minutes`）を決める。`--import`は
@@ -3044,6 +3110,105 @@ dashboardで読めるようにする。
 - `--import`も同じ名前で置く（取得日はrun.jsonの`created_at`）
 - stagingのファイルは元の名前のまま
 - goldenが不変
+
+#### Step 55: 取得できる時期をUTCの日付で判定する
+
+依存:
+
+- Step 54
+
+対象:
+
+- `src/seat_analyzer/claude_export.py`・`src/seat_analyzer/cli.py`
+- `docs/usage.md`・`docs/reference.md`・`CHANGELOG.md`
+- `tests/test_claude_export.py`・`tests/test_cli.py`
+
+目的:
+
+- claude.aiのエクスポートの期間はUTC基準で、ツールの当月・前月は実行機のローカル日付で決まる。UTCの
+  今日がローカルの月に追いつく前に取ると、支出レポートとmembersは別の月の期間で届いて検証で止まり
+  （終了コード1）、Claude Code analyticsは画面の表示月の名前で検証を通り、取得日が期間の外なので
+  終了日の置き換えが働かず月末日の名前のまま当月に置かれうる。定期実行では1日・2日に当たる日に
+  これが起き、誤った通知と誤った名前のファイルになる。日本時間に固有の「1日・2日は取らない」規則を
+  定期実行のスクリプトに持たせる代わりに、タイムゾーンに依らない判定をツール側に置く（§14.1）
+
+実装:
+
+- `claude_export`に時期の判定を足す（例: `not_ready_reason(mode, month, local_today, utc_today)`。
+  名前は実装時に決めてよい）。当月モードはUTCの今日の年月がローカルの年月と同じで日が2以上、
+  前月モードはUTCの今日の年月がローカルの年月と同じなら`None`。満たさなければ理由の文。理由は
+  §14.1の3通り: 必要なUTCの時点（当月は対象月の2日0:00 UTC、前月は翌月の1日0:00 UTC）に達して
+  いなければ取得できるようになるローカルの時刻（その時点を`local_timezone()`で直したもの）、UTCが
+  先に翌月へ進んでいれば、当月モードは「ローカルが翌月になってから前月モードで」、前月モードは
+  「期間を過ぎたので手動で置く」
+- CLI: `plan_runs`の後、Chromeを起動する前に判定する。満たさなければ理由を表示して、`--month`の
+  省略時は終了コード0、明示時は1。`--dry-run`でも同じ表示（計画は出さない）。各プロファイルの
+  起動直前にも判定し直す: いまのローカル日付で`resolve_mode`を引き直して計画と同じモード・月に
+  なり、かつ時期の規則を満たすときだけ起動し、そうでなければ対象月を変えずにそのプロファイルを
+  理由つきで失敗にする（残りのプロファイルも同じ）。`--import`・`--check-login`・`--list-orgs`・
+  `--setup`・`--finish-setup`・`--login`は対象外
+- 現在の日時は`claude_export.local_today()`と`claude_export.utc_now()`から取り、テストから差し替える。
+  tests/test_cli.pyの`_dry_run`は`local_today`だけを固定しているので、`claude_env`と同じ瞬間に
+  `utc_now`・`local_timezone`も固定する（固定しないと実行日によって落ちる）
+- docs/usage.mdの「当月は実行機のローカル日付で決まる」に、取得できる時期（日本時間では当月は
+  2日9:00以降、前月は1日9:00以降）・3通りの理由・終了コードを添える。docs/reference.mdの
+  `--dry-run`（計画を出さない場合）と終了コード（省略時の0の例外）の説明を揃える
+
+受け入れ条件:
+
+- ローカルが日本時間のとき、当月モードは2日9:00以降、前月モードは1日9:00以降だけChromeを起動する。
+  それより前は起動せず、理由と取得できる時刻を表示する
+- UTCより西のタイムゾーン（例: UTC-8）でローカルの月末の夜に動かすと、UTCの今日が翌月なので当月・
+  前月モードとも止まり、当月モードは翌月に前月モードで取るよう、前月モードは手動で置くよう案内する
+- `--month`の省略時は終了コード0、明示時は1。`--dry-run`も同じ
+- 2つ目以降のプロファイルの起動直前に、UTCの月が変わっている・UTCとローカルが同時に翌月へ進んで
+  計画のモード・月と合わなくなった、のどちらでも、そのプロファイルは起動せずに失敗になる
+- UTCとローカルが同じ年月の1日に当月モードを動かすと、2日0:00 UTCに当たるローカルの時刻を案内する
+- テストはUTC+14とUTC-12、年末年始、2日0:00（UTC）の直前と直後を含み、既存のdry-runのテストが
+  実行日によらず通る
+- それ以外の日時では計画・取得・配置・表示が変わらない。goldenが不変
+
+#### Step 56: 定期実行の雛形（macOS launchd）
+
+依存:
+
+- Step 55
+
+対象:
+
+- `examples/launchd/collect.zsh`・`examples/launchd/seat-analyzer.collect-weekly.plist`・
+  `examples/launchd/seat-analyzer.collect-monthly.plist`・`examples/launchd/install.zsh`（新規）
+- `docs/setup.md`・`docs/usage.md`・`docs/reference.md`・`README.md`・`CHANGELOG.md`
+- `tests/test_examples_launchd.py`（新規）
+
+目的:
+
+- 週次（当月）と月次（前月）の取得とログインの確認を無人で回し、失敗と期限間近だけ通知する雛形を
+  公開する（§14.5）。ツールの機能にはしない
+
+実装:
+
+- §14.5の構成と動き
+- docs/setup.mdに「定期実行を設定する（macOS・任意）」の節: 4ファイルの取り方（リポジトリから）、
+  `install.zsh <ワークスペース>`の実行と確認（`launchctl print`）、試し方（一時ディレクトリに
+  `seat-analyzer init-org --input-dir <一時> <組織名> [--workspaces ...]`で配置先の組織ディレクトリを
+  作ってから、`SEAT_ANALYZER_INPUT_DIR`でそこへ配置して本体を直接実行し、登録後は
+  `launchctl kickstart`で1回動かす）、ログと通知、解除（`install.zsh --uninstall`）、スリープするMacの
+  扱いとlaunchdの前提（§14.5の4点: GUIログイン・起床後の1回の実行・対象月は実行時点・遡及なし）、
+  `login_warning_days`を10にする理由（週1回の確認と対応の猶予3日）
+- docs/usage.mdの運用例と「定期実行と通知の仕組みはこのツールに含まない」の文を雛形への案内に
+  変える。docs/reference.mdの`login_warning_days`の例に週次の値を添える。READMEに1行
+
+受け入れ条件:
+
+- `install.zsh <ワークスペース>`で2つのジョブが登録され、`launchctl print`で見える。再実行で
+  入れ替わり、`--uninstall`で消える
+- 一時ディレクトリへの配置で、weeklyが当月、monthlyが前月を取得し、どちらも最後に`--check-login`を
+  行う。取得か`--check-login`の終了コードが0でないときだけ通知が出て終了コード1
+- Step 55が「まだ」と判定する日時の週次は、取得せずにログイン確認へ進み、それが成功すれば正常終了する
+  （Step 55の表示がログに残る。偽のコマンドで、取得が終了コード0で何も置かない場合を含める）
+- テストが全OSで通る（zsh・macOS固有の検査はその環境でだけ行う）。雛形に個人のパス・組織名が無く、
+  `check-text --diff`が0件
 
 ### Track 7: GitHub
 
