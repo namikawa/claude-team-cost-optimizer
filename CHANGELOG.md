@@ -1,6 +1,6 @@
 # 変更履歴
 
-## [未リリース]
+## [1.4.2] - 2026-10-18
 
 ### 追加
 
@@ -11,6 +11,9 @@
 - report と dashboard の「判定に使用した月」に判定窓の外の月まで並んでいた（判定窓の月だけにした）
 - 速報の注意書きの月数が `decision.hysteresis_months` の設定によらず 2 ヶ月だった（設定値を表示するようにした）
 - `doctor` の部分月の警告が、判定窓に入るあいだは正式分析で変更推奨を出さないことに触れていなかった（判定窓の内外に応じて文言を分けた）
+- `discuss`（`--force` なし）が、考察の生成中に `analyze` で report が作り直されると、古い内容から書いた考察を書き込んでいた（生成を始めた時点から report が変わっていれば書き込まず、再実行を求めるようにした）
+- `collect --source claude --import` が、同じプロファイルの取得・ログインの確認などと同時に動けた（取得と同じプロファイルのロックを取り、使用中なら止めるようにした）
+- `check-text --diff` が、引用符で囲まれたパス（日本語のファイル名など）・空白を含む名前の rename / copy・特殊な改行文字を含む追加行を正しく検査できていなかった（解釈できない差分は終了コード 1 で止めるようにした）
 
 ## [1.4.1] - 2026-10-12
 
@@ -200,6 +203,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.4.2]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.2
 [1.4.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.1
 [1.4.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.0
 [1.3.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.3.0
