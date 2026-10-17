@@ -2420,6 +2420,22 @@ def test_collect_claude_shows_progress_while_waiting(claude_env, capsys):
         index for index, line in enumerate(lines) if line.startswith("  配置: "))
 
 
+def test_collect_claude_shows_progress_when_the_manifest_is_already_there(claude_env, capsys):
+    """最初の確認で manifest が読めても、途中経過を全件、配置の前に出す。
+
+    偽の拡張機能は既定で起動時に progress と manifest を両方書く。拡張機能が最後の途中経過と
+    manifest を続けて書き、その間に確認が挟まらなかったときと同じ状況になる。
+    """
+    env = claude_env
+    assert _collect_claude(env, "--org", "example") == 0
+
+    lines = capsys.readouterr().out.splitlines()
+    progress = ["  example members: ok", "  example spend: ok", "  example code: ok"]
+    assert [line for line in lines if line in progress] == progress
+    assert lines.index(progress[-1]) < next(
+        index for index, line in enumerate(lines) if line.startswith("  配置: "))
+
+
 def test_collect_claude_rejects_a_manifest_of_another_run(claude_env, capsys):
     env = claude_env
     env.ext.manifest_run_id = "corp-current-20000101-000000"
