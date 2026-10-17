@@ -1440,10 +1440,11 @@ def _claude_wait(
 ) -> object | None:
     """read が値を返すまで待つ（None は「まだ」）。時間切れなら None。
 
-    待つ間は tick（途中経過の表示。進捗があれば True）を呼び、進捗も案内も無いまま
-    _CLAUDE_NOTICE_SECONDS が過ぎたら notice（既定はブラウザの表示を確かめる案内）を出す
-    （取得が進んでいる間は出さない）。notice が None なら案内を出さない（人の操作を待たない
-    ログインの確認）。
+    待つ間は tick（途中経過の表示。進捗があれば True）を呼び、値が届いたときも返す前に
+    1 回呼ぶ（直前の確認の後、値より先に書かれた途中経過も表示しきる）。進捗も案内も
+    無いまま _CLAUDE_NOTICE_SECONDS が過ぎたら notice（既定はブラウザの表示を確かめる
+    案内）を出す（取得が進んでいる間は出さない）。notice が None なら案内を出さない
+    （人の操作を待たないログインの確認）。
     """
     start = _monotonic()
     deadline = start + timeout_minutes * 60
@@ -1451,6 +1452,8 @@ def _claude_wait(
     while True:
         value = read()
         if value is not None:
+            if tick is not None:
+                tick()
             return value
         if tick is not None and tick():
             quiet_since = _monotonic()
