@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    claude.ai の CSV の週次（当月）取得とログイン確認。install.zsh がパスを埋める。
+    caffeinate -is: 実行中の再スリープを止める（-s は AC 電源のときだけ有効）。
+    lockf -k: 週次と月次を順に実行する。ロックが外れるまで待ち、ファイルを消さない。
+    zsh -f: .zshenv も読まず、環境は plist で決める。
+    launchd の zsh は .zprofile・.zshrc を読まないため、コマンドは PATH と SEAT_ANALYZER_CMD で与える。
+    PATH: uv tool install の ~/.local/bin、Homebrew（Apple Silicon・Intel）、OS 標準の順。
+    SEAT_ANALYZER_CMD: 開発用 clone なら uv run seat-analyzer にできる。
+    空白で単語に分ける。引用符は解釈せず、空白を含むパスは非対応。
+    PYTHONUNBUFFERED: 標準出力と標準エラーの行の順序を保ち、実行中も tail で追えるようにする。
+    RunAtLoad false: 登録した時点では取得しない。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>seat-analyzer.collect-weekly</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-is</string>
+        <string>/usr/bin/lockf</string>
+        <string>-k</string>
+        <string>__HOME__/.seat-analyzer/scheduled/collect.lock</string>
+        <string>/bin/zsh</string>
+        <string>-f</string>
+        <string>__HOME__/.seat-analyzer/scheduled/collect.zsh</string>
+        <string>weekly</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__WORKSPACE__</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>SEAT_ANALYZER_CMD</key>
+        <string>seat-analyzer</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>__HOME__/.seat-analyzer/logs/collect-weekly.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/.seat-analyzer/logs/collect-weekly.log</string>
+</dict>
+</plist>

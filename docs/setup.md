@@ -542,6 +542,165 @@ Claude Code analytics）を、`seat-analyzer collect --source claude` で取得�
 - 実行ページに「別の実行（<run_id>）が進行中です」と出て何もしない: 同じ Chrome で別の
   取得が進んでいる。その取得が終わってから実行し直す
 
+## 定期実行を設定する（macOS・任意）
+
+前節の CSV 取得の設定が済んでいることを前提に、launchd で無人の取得とログインの確認を
+行う雛形を登録する。週次は日曜 2:00 に当月、月次は毎月 2 日 2:00 に前月を取得し、
+どちらも続けて `--check-login` を行う。時刻は Mac のローカル時刻で、取得か確認の
+終了コードが 0 でないときだけ macOS の通知を出す。
+
+登録すると以後この Mac で定期的に Chrome が起動する。この内容と時刻・ワークスペースを
+ユーザに伝え、承認を得てから登録する。
+
+1 日・2 日に当たる日曜の週次は、タイムゾーンによっては取得せずに理由をログに残し、
+正常に終わる（ログインの確認は行う）。取得できる時期の判定はツールに任せる
+（[usage.md の「claude.ai からの CSV 取得」](./usage.md#claudeai-からの-csv-取得有効にした組織のみ)）。
+月次の 2 日 2:00 は、どのタイムゾーンでも前月を取れる。
+
+### 雛形の取得と設定
+
+雛形の 4 ファイルは wheel に含まれない。導入している seat-analyzer と同じ版のタグの
+`examples/launchd/` から取る。取得できる時期の判定など、ツールの動きに合わせてあるため、
+版をそろえる。
+
+ターミナル:
+
+```sh
+seat-analyzer --version
+git clone --depth 1 --branch v<版> https://github.com/namikawa/claude-team-cost-optimizer.git <一時の場所>
+ls <一時の場所>/examples/launchd/
+```
+
+検証: 表示された版とタグが一致し、`collect.zsh`・`install.zsh`・
+`seat-analyzer.collect-weekly.plist`・`seat-analyzer.collect-monthly.plist` があること。
+
+開発用の clone から `uv run seat-analyzer` で動かすときは、登録前に 2 つの plist の
+`EnvironmentVariables` の `SEAT_ANALYZER_CMD` を変える。空白で単語に分け、
+引用符は解釈しないので、空白を含むコマンドのパスは使えない（必要なら symlink を使う）。
+時刻を変えるときも登録前に `StartCalendarInterval` を直す。
+
+ワークスペースの `config.yaml` に次を設定する（既存の `claude_export` に追加する）。
+
+```yaml
+claude_export:
+  login_warning_days: 10
+```
+
+確認は週 1 回なので、10 日にしておけば、期限間近の通知から期限まで少なくとも 3 日の
+猶予が残る（7 日 + 3 日）。既定の 3 は日次で確かめる場合に向く。
+
+### 登録と検証
+
+ワークスペースは `config.yaml` のあるディレクトリを指定する。設定ファイルが無ければ
+登録せずに止まる。
+
+ターミナル（ユーザの承認後）:
+
+```sh
+zsh <一時の場所>/examples/launchd/install.zsh <ワークスペース>
+launchctl print gui/$(id -u)/seat-analyzer.collect-weekly
+launchctl print gui/$(id -u)/seat-analyzer.collect-monthly
+```
+
+検証: 2 つのジョブが表示され、ワークスペースと予定時刻が合っていること。登録した時点では
+取得しない。本体は `~/.seat-analyzer/scheduled/collect.zsh` へ写るので、取った雛形は
+登録後に消してよい。ワークスペースや雛形を変えたときは、同じ登録コマンドを再実行すると
+入れ替わる。
+
+### 一時ディレクトリで試す
+
+Chrome が起動して CSV を取得することをユーザに伝える。ワークスペースから、まず
+`claude_export` を設定した各組織の配置先を一時ディレクトリに作る。複数スペースの組織は
+`--workspaces` に設定と同じ名前を並べる。
+
+ターミナル:
+
+```sh
+seat-analyzer init-org --input-dir <一時の入力先> <組織名> [--workspaces ...]
+SEAT_ANALYZER_INPUT_DIR=<一時の入力先> zsh ~/.seat-analyzer/scheduled/collect.zsh weekly
+SEAT_ANALYZER_INPUT_DIR=<一時の入力先> zsh ~/.seat-analyzer/scheduled/collect.zsh monthly
+```
+
+plist の `SEAT_ANALYZER_CMD` を変えた場合は、直接実行するときも同じ環境変数を付ける。
+検証: 取得できる時期なら一時の入力先に当月・前月の CSV が置かれ、続けてログインの確認が
+行われること。取得できる時期より前なら理由が表示される。
+
+登録後に launchd から 1 回動かす場合は、週次を実行する（月次も同じ仕組みで動く）。
+こちらは本番と同じく、ワークスペースの `input/` へ置く。
+
+ターミナル:
+
+```sh
+launchctl kickstart gui/$(id -u)/seat-analyzer.collect-weekly
+tail -f ~/.seat-analyzer/logs/collect-weekly.log
+```
+
+検証: 下記のログに開始と終了の行があり、取得結果とログインの状態を確認できること。
+
+### ログと通知
+
+ログは `~/.seat-analyzer/logs/collect-weekly.log`・`collect-monthly.log` に追記される。
+各回は `=== weekly 開始 ===` の行で始まり、`=== weekly 終了: 正常 ===` か
+`=== weekly 終了: 要対応（…）===` の行で終わる（どちらの行も先頭に日時が付く。月次は
+`monthly`）。
+
+通知は要対応のときだけ出る。文はどの手順が失敗したかとログの場所だけなので、中身はログで
+確かめる。期限間近・無効なら `--login` でログインし直し、取得の失敗は前節の「トラブル」を
+参照する。通知が出ないときは、システム設定の「通知」で「スクリプトエディタ」の通知を許可する。
+
+### 解除
+
+ターミナル:
+
+```sh
+zsh <雛形の場所>/install.zsh --uninstall
+```
+
+雛形を消した後なら、手で解除して plist を削除する。
+
+ターミナル:
+
+```sh
+launchctl bootout gui/$(id -u)/seat-analyzer.collect-weekly
+launchctl bootout gui/$(id -u)/seat-analyzer.collect-monthly
+rm -f ~/Library/LaunchAgents/seat-analyzer.collect-weekly.plist
+rm -f ~/Library/LaunchAgents/seat-analyzer.collect-monthly.plist
+```
+
+検証: `launchctl print` で 2 つのジョブが見つからず、plist が無いこと。
+`~/.seat-analyzer/scheduled/` とログは残る。要らなければ削除する。
+
+### スリープする Mac と launchd の前提
+
+雛形は起床を予約しない（無人で予約するには sudoers の変更が要るため）。電源に接続している
+間はスリープしない設定にするか、毎日の起床を 1 回だけ手で登録する。`pmset repeat` は
+起床・電源投入の予定を 1 組しか持てず、登録すると既存の予定を置き換える。
+先に現在の予定を確かめる。
+
+ターミナル:
+
+```sh
+pmset -g sched
+```
+
+既存の予定と、毎日 1:55 に起こす内容をユーザに伝える。次は `sudo` を伴うので、
+承認を得てから実行する。
+
+ターミナル（ユーザの承認後）:
+
+```sh
+sudo pmset repeat wakeorpoweron MTWRFSU 01:55:00
+pmset -g sched
+```
+
+検証: 毎日の 1:55 の予定が表示されること。launchd には次の前提がある。
+
+- LaunchAgents は GUI にログインしている間だけ動く。電源投入後にログイン画面で止まって
+  いれば動かない
+- スリープ中に過ぎた予定は、起床後に 1 回だけまとめて実行される
+- 取得する月は、実行した時点の日付で決まる
+- 長く止まっていた分はさかのぼらない。予定した月が過ぎていれば、その月は手動で置く
+
 ## アップデート
 
 導入と同じ手順で行う。最新リリースの wheel の URL をステップ 2 のコマンドで調べ、
@@ -621,6 +780,8 @@ uv tool install "seat-analyzer @ <最新リリースの wheel の URL>"
 - 入力データの事前検査: `seat-analyzer doctor`
 - claude.ai からの CSV 取得をコマンドで行う場合（任意・組織ごと）: 上の「claude.ai からの
   CSV 取得を設定する」。取得の運用は [usage.md](./usage.md) の「claude.ai からの CSV 取得」
+- macOS で週次・月次の取得を自動化する場合（任意）: 上の
+  [「定期実行を設定する（macOS・任意）」](#定期実行を設定するmacos任意)
 - GitHub の PR 数とリードタイムを参考値として使う場合（任意・組織ごと）: ワークスペースの
   `config.yaml` に対象組織の GitHub Organization 名を書き、`members-info.csv` の
   `GitHub ID` 列を記入する（[reference.md](./reference.md) の「GitHub 分析の有効化」）。
