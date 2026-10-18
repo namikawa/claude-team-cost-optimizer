@@ -1942,6 +1942,8 @@ def _claude_input(tmp_path: Path) -> Path:
 def _dry_run(config: str, input_dir: Path, monkeypatch, *extra: str) -> int:
     monkeypatch.setattr(
         "seat_analyzer.claude_export.local_today", lambda: CLAUDE_TODAY)
+    monkeypatch.setattr("seat_analyzer.claude_export.utc_now", lambda: CLAUDE_NOW)
+    monkeypatch.setattr("seat_analyzer.claude_export.local_timezone", lambda: CLAUDE_TZ)
     return main([
         "collect", "--source", "claude", "--dry-run", "--config", config,
         "--input-dir", str(input_dir), *extra,
@@ -2262,6 +2264,88 @@ def _placed(env, rel: str, kind: str, name: str | None = None) -> Path:
             "example2/second": CLAUDE_UUID3, "org-a": CLAUDE_UUID4}[rel]
     return env.input_dir.joinpath(*rel.split("/"), CLAUDE_KIND_DIRS[kind],
                                   name or _claude_placed_name(kind, uuid))
+
+
+@pytest.mark.parametrize("month,code,fragment", [
+    (None, 0, "当月（2026-11）はまだ取得できません"),
+    ("2026-11", 1, "当月（2026-11）はまだ取得できません"),
+    ("2026-10", 1, "前月（2026-10）はまだ取得できません"),
+])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_collect_claude_before_ready_time(
+    claude_env, monkeypatch, capsys, month, code, fragment, dry_run
+):
+    """時期の前は計画や取得を始めず、明示した月を取れないときだけエラーにする。"""
+    env = claude_env
+    monkeypatch.setattr(claude_export, "local_today", lambda: dt.date(2026, 11, 1))
+    monkeypatch.setattr(claude_export, "utc_now",
+                        lambda: dt.datetime(2026, 10, 31, 17, tzinfo=dt.UTC))
+
+    def unexpected_chrome_search(*args, **kwargs):
+        pytest.fail("時期の前には Chrome の検索も行わない")
+
+    monkeypatch.setattr(claude_export, "find_chrome", unexpected_chrome_search)
+    extra = (["--month", month] if month is not None else []) + (["--dry-run"] if dry_run else [])
+    assert _collect_claude(env, *extra) == code
+    captured = capsys.readouterr()
+    shown = captured.out if month is None else captured.err
+    assert fragment in shown
+    assert ("2026-11-01 09:00" if month == "2026-10" else "2026-11-02 09:00") in shown
+    assert (captured.err if month is None else captured.out) == ""
+    assert not any(line.startswith(("Chrome:", "staging:", "profile "))
+                   for line in shown.splitlines())
+    assert env.ext.commands == []
+    assert not env.staging.exists()
+    assert list(env.input_dir.rglob("*.csv")) == []
+
+
+@pytest.mark.parametrize("offset,start,end,month,fragment", [
+    (-8, "2026-10-31T15:59", "2026-10-31T16:01", None, "UTC ではすでに 2026-11"),
+    (-8, "2026-10-31T15:59", "2026-10-31T16:01", "2026-09", "手動でダウンロード"),
+    (9, "2026-10-31T23:59", "2026-11-01T00:01", None, "計画した対象（当月 2026-10）"),
+    (9, "2026-10-31T23:59", "2026-11-01T00:01", "2026-09", "計画した対象（前月 2026-09）"),
+    (0, "2026-10-31T23:59", "2026-11-01T00:01", "2026-09", "再実行してください"),
+])
+def test_collect_claude_rechecks_before_each_profile(
+    claude_env, monkeypatch, capsys, offset, start, end, month, fragment
+):
+    """最初の取得中に月の境界を越えても、次のプロファイルは副作用の前に止める。"""
+    env = claude_env
+    tz = dt.timezone(dt.timedelta(hours=offset))
+    moments = [dt.datetime.fromisoformat(value).replace(tzinfo=tz) for value in (start, end)]
+    moment = moments[0]
+    monkeypatch.setattr(claude_export, "local_today", lambda: moment.date())
+    monkeypatch.setattr(claude_export, "local_now", lambda: moment)
+    monkeypatch.setattr(claude_export, "utc_now", lambda: moment.astimezone(dt.UTC))
+    monkeypatch.setattr(claude_export, "local_timezone", lambda: tz)
+    _write_preferences(env.profiles / "group", env.staging)
+
+    def launch_then_advance(command, **kwargs):
+        nonlocal moment
+        env.ext.launch(command, **kwargs)
+        moment = moments[1]
+
+    monkeypatch.setattr(claude_export, "launch_chrome", launch_then_advance)
+    # 最初の取得は期間の検証も通し、次のプロファイルだけが失敗することを確認する
+    if month is not None:
+        for rel, uuid in [("example", CLAUDE_UUID1), ("example2/main", CLAUDE_UUID2),
+                          ("example2/second", CLAUDE_UUID3), ("org-a", CLAUDE_UUID4)]:
+            env.ext.names[(rel, "spend")] = (
+                f"spend-report-{uuid}-2026-09-01-to-2026-09-30.csv")
+            env.ext.names[(rel, "code")] = "claude_code_team_2026_09_01_to_2026_09_30.csv"
+    extra = [] if month is None else ["--month", month]
+    assert _collect_claude(env, "--org", "example", "--org", "org-a", *extra) == 1
+    captured = capsys.readouterr()
+    assert fragment in captured.err
+    assert all(line.startswith("  ") for line in captured.err.splitlines())
+    assert "profile group:" in captured.out
+    assert len(env.ext.commands) == 1
+    assert [spec["run_id"].split("-")[0] for spec in env.ext.specs] == ["corp"]
+    assert "  配置 3 件・失敗 0 件" in captured.out
+    assert not (env.staging / "group.lock").exists()
+    assert len(list(env.staging.glob("*/run.json"))) == 1
+    assert not (env.input_dir / "org-a" / "spend").exists()
+    assert env.terminated == [[CLAUDE_PID]]
 
 
 def test_collect_claude_places_every_file_and_closes_chrome(claude_env, capsys):
