@@ -208,7 +208,10 @@ def local_today() -> dt.date:
 
 
 def utc_now() -> dt.datetime:
-    """現在時刻（UTC・aware。ログインの期限までの日数に使う。テストから差し替えられるようにする）。"""
+    """現在時刻（UTC・aware。ログインの期限までの日数と取得の時期に使う）。
+
+    テストから差し替えられるようにする。
+    """
     return dt.datetime.now(dt.UTC)
 
 
@@ -222,7 +225,7 @@ def local_now() -> dt.datetime:
 
 
 def local_timezone() -> dt.tzinfo | None:
-    """期限の表示に使うタイムゾーン（テストから固定のタイムゾーンへ差し替えられるようにする）。
+    """期限・取得できる時刻の表示に使うタイムゾーン（テストから固定値へ差し替えられるようにする）。
 
     None は実行機のローカル時刻で、期限の日時の夏時間も OS の規則で反映される（今の時点の
     UTC との差を固定で使うと、夏時間の切り替えをまたぐ期限が 1 時間ずれる）。
@@ -250,6 +253,64 @@ def resolve_mode(month: str | None, today: dt.date) -> tuple[str, str]:
     raise ValueError(
         f"--month {month}: 取得できるのは当月と前月だけです（当月 {current}・前月 {previous}）"
     )
+
+
+def not_ready_reason(
+    mode: str, month: str, *, now: dt.datetime, tz: dt.tzinfo | None,
+    today: dt.date | None = None,
+) -> str | None:
+    """計画した対象を取得できなければ理由、取得できれば None を返す（設計書 §14.1）。
+
+    claude.ai の期間は UTC 基準で、支出の月累計は UTC で完了した日まで、members と
+    Claude Code analytics の取得日は UTC の日付になる。基準月は当月モードなら対象月、
+    前月モードなら対象月の翌月。取得を始められる時点は、当月モードは基準月の 2 日、
+    前月モードは基準月の 1 日の 0:00 UTC。その時点より前なら取得できるローカル時刻を示し、
+    UTC の年月が基準月を過ぎていれば、当月分はローカルが翌月になってから前月モードで、
+    前月分は手動で取得するよう示す。それ以外は取得できる。これで別の月の期間の CSV を
+    取得・配置することを防ぐ。
+
+    起動直前だけ today を渡し、ローカル日付でモードと月を引き直して計画のずれも調べる。
+    UTC が同じ月でもローカルだけ翌月へ進むと、ブラウザのローカル時刻による analytics の
+    表示月が変わるため。時計はすべて引数で受け、理由の文言もここで組み立てる。
+    """
+    label = "当月" if mode == MODE_CURRENT else "前月"
+    if today is not None:
+        try:
+            matches = resolve_mode(month, today) == (mode, month)
+        except ValueError:
+            matches = False
+        if not matches:
+            return (
+                f"計画した対象（{label} {month}）がいまの実行機の日付（{today:%Y-%m-%d}）"
+                "と合いません。再実行してください"
+            )
+    first = dt.date.fromisoformat(f"{month}-01")
+    following = (first + dt.timedelta(days=32)).replace(day=1)
+    base = first if mode == MODE_CURRENT else following
+    ready = dt.datetime(base.year, base.month, 2 if mode == MODE_CURRENT else 1, tzinfo=dt.UTC)
+    now = now.astimezone(dt.UTC)
+    if now < ready:
+        detail = (
+            "当月に UTC で完了した日がまだありません" if mode == MODE_CURRENT
+            else f"UTC ではまだ {month} が終わっていません"
+        )
+        return (
+            f"{label}（{month}）はまだ取得できません（claude.ai の期間は UTC 基準で、{detail}）。"
+            f"{format_expiry(ready, tz)} 以降に取得できます"
+        )
+    if (now.year, now.month) > (base.year, base.month):
+        detail = f"claude.ai の期間は UTC 基準で、UTC ではすでに {now:%Y-%m}"
+        if mode == MODE_CURRENT:
+            return (
+                f"{label}（{month}）は取得できません（{detail} です）。"
+                f"実行機の日付が {following:%Y-%m} になってから --month {month}（前月モード）"
+                "で取得してください"
+            )
+        return (
+            f"{label}（{month}）は取得できません（{detail} のため、claude.ai の「先月」は"
+            f" {month} ではありません）。{month} の CSV は手動でダウンロードして置いてください"
+        )
+    return None
 
 
 def check_target_names(targets: Iterable[ExportTarget]) -> None:

@@ -59,6 +59,7 @@ from seat_analyzer.claude_export import (
     manifest_path,
     match_results,
     new_run_id,
+    not_ready_reason,
     orgs_path,
     place_export,
     placement_name,
@@ -251,6 +252,72 @@ def test_resolve_mode_rejects_other_months_and_names_both(month):
 
 def test_resolve_mode_crosses_the_year_boundary():
     assert resolve_mode("2025-12", dt.date(2026, 1, 1)) == (MODE_PREVIOUS, "2025-12")
+
+
+@pytest.mark.parametrize("mode,month,offset,local,expected", [
+    (MODE_CURRENT, "2026-11", 9, "2026-11-01T02:00", "2026-11-02 09:00"),
+    (MODE_CURRENT, "2026-11", 9, "2026-11-02T02:00", "2026-11-02 09:00"),
+    (MODE_CURRENT, "2026-11", 9, "2026-11-02T08:59", "2026-11-02 09:00"),
+    (MODE_CURRENT, "2026-11", 9, "2026-11-02T09:00", None),
+    (MODE_PREVIOUS, "2026-10", 9, "2026-11-01T08:59", "2026-11-01 09:00"),
+    (MODE_PREVIOUS, "2026-10", 9, "2026-11-01T09:00", None),
+    (MODE_CURRENT, "2026-11", 0, "2026-11-01T12:00", "2026-11-02 00:00"),
+    (MODE_CURRENT, "2026-11", 0, "2026-11-02T00:00", None),
+    (MODE_CURRENT, "2026-11", 14, "2026-11-02T02:00", "2026-11-02 14:00"),
+    (MODE_CURRENT, "2026-11", -12, "2026-11-02T02:00", None),
+    (MODE_CURRENT, "2027-01", 9, "2027-01-01T05:00", "2027-01-02 09:00"),
+    (MODE_PREVIOUS, "2026-12", 9, "2027-01-01T05:00", "2027-01-01 09:00"),
+])
+def test_not_ready_reason_checks_utc_boundaries(mode, month, offset, local, expected):
+    """固定オフセットの各地域で境界の直前と当日を調べ、案内の時刻も地域に合わせる。"""
+    tz = dt.timezone(dt.timedelta(hours=offset))
+    now = dt.datetime.fromisoformat(local).replace(tzinfo=tz).astimezone(dt.UTC)
+    reason = not_ready_reason(mode, month, now=now, tz=tz, today=now.astimezone(tz).date())
+    if expected is None:
+        assert reason is None
+    else:
+        label = "当月" if mode == MODE_CURRENT else "前月"
+        detail = ("当月に UTC で完了した日がまだありません" if mode == MODE_CURRENT
+                  else f"UTC ではまだ {month} が終わっていません")
+        assert reason == (
+            f"{label}（{month}）はまだ取得できません（claude.ai の期間は UTC 基準で、{detail}）。"
+            f"{expected} 以降に取得できます"
+        )
+
+
+@pytest.mark.parametrize("mode,month,local", [
+    (MODE_CURRENT, "2026-10", "2026-10-31T18:00"),
+    (MODE_PREVIOUS, "2026-09", "2026-10-31T18:00"),
+    (MODE_PREVIOUS, "2026-11", "2026-12-31T18:00"),
+])
+def test_not_ready_reason_when_utc_has_passed_the_base_month(mode, month, local):
+    tz = dt.timezone(dt.timedelta(hours=-8))
+    now = dt.datetime.fromisoformat(local).replace(tzinfo=tz).astimezone(dt.UTC)
+    reason = not_ready_reason(mode, month, now=now, tz=tz, today=now.astimezone(tz).date())
+    assert f"UTC ではすでに {now:%Y-%m}" in reason
+    if mode == MODE_CURRENT:
+        assert "当月（2026-10）は取得できません" in reason
+        assert ("実行機の日付が 2026-11 になってから --month 2026-10（前月モード）"
+                "で取得してください") in reason
+    else:
+        assert f"前月（{month}）は取得できません" in reason
+        assert f"claude.ai の「先月」は {month} ではありません" in reason
+        assert f"{month} の CSV は手動でダウンロードして置いてください" in reason
+
+
+@pytest.mark.parametrize("mode,month,label", [
+    (MODE_CURRENT, "2026-10", "当月"),
+    (MODE_PREVIOUS, "2026-09", "前月"),
+])
+def test_not_ready_reason_rejects_a_plan_that_no_longer_matches_local_date(mode, month, label):
+    tz = dt.timezone(dt.timedelta(hours=9))
+    now = dt.datetime(2026, 10, 31, 15, 1, tzinfo=dt.UTC)
+    # UTC の時期はまだ範囲内でも、ローカルでは翌月になっている
+    assert not_ready_reason(mode, month, now=now, tz=tz) is None
+    assert not_ready_reason(mode, month, now=now, tz=tz, today=now.astimezone(tz).date()) == (
+        f"計画した対象（{label} {month}）がいまの実行機の日付（2026-11-01）"
+        "と合いません。再実行してください"
+    )
 
 
 TARGETS = [

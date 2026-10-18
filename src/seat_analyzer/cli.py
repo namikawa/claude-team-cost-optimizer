@@ -1274,6 +1274,16 @@ def _run_collect_claude(args: argparse.Namespace, cfg: dict, input_dir: Path) ->
             file=sys.stderr,
         )
         return 1
+    reason = claude_export.not_ready_reason(
+        runs[0].mode, runs[0].month, now=claude_export.utc_now(),
+        tz=claude_export.local_timezone(),
+    )
+    if reason is not None:
+        if args.month is None:
+            print(reason)
+            return 0
+        print(f"エラー: {reason}", file=sys.stderr)
+        return 1
     if args.dry_run:
         _print_claude_plan(runs, settings, input_dir)
         return 0
@@ -1558,6 +1568,13 @@ def _claude_collect_run(
     セキュリティ検証を人が済ませれば取得は続くので、その後に --import で配置できる）。
     """
     print(f"profile {run.profile}: {_CLAUDE_MODE_TEXT[run.mode]}（{run.month}）", flush=True)
+    reason = claude_export.not_ready_reason(
+        run.mode, run.month, now=claude_export.utc_now(), tz=claude_export.local_timezone(),
+        today=claude_export.local_today(),
+    )
+    if reason is not None:
+        print(f"  {reason}", file=sys.stderr)
+        return False
     if not _claude_profile_ready(run.profile, profiles_dir, staging_dir):
         return False
     now = claude_export.local_now()
