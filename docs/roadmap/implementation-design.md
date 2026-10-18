@@ -1173,14 +1173,17 @@ orgs.json・session.jsonの固定名は拡張機能自身が始めたダウン�
   `seat-analyzer.collect-monthly.plist`（launchdのジョブ定義。パスは`__HOME__`・`__WORKSPACE__`の
   プレースホルダ。launchdは`~`や環境変数をパスに展開しない）、`install.zsh`（プレースホルダを埋めて
   `~/Library/LaunchAgents/`に置き`launchctl bootstrap`する。再実行は入れ替え、`--uninstall`は
-  bootoutとplistの削除。本体は`~/.seat-analyzer/scheduled/`へ写すので、実行時にリポジトリは要らない）
+  bootoutとplistの削除。ワークスペースに`config.yaml`が無ければ止める。
+  埋める値をXMLとしてエスケープし、`plutil -lint`を通してからplistを置く。
+  本体は`~/.seat-analyzer/scheduled/`へ写すので、実行時にリポジトリは要らない）
 - 本体の動き: 引数はweekly / monthly。作業ディレクトリはplistの`WorkingDirectory`（ワークスペース）を
-  そのまま使う。launchdが起動するzshは`.zprofile`・`.zshrc`を読まないので、コマンドの場所はplistの
+  そのまま使う。zshは`-f`で起動し、`.zshenv`も読まない。launchdが起動するzshは
+  `.zprofile`・`.zshrc`を読まないので、コマンドの場所はplistの
   `EnvironmentVariables`で与える: PATHは`__HOME__/.local/bin`（`uv tool install`の置き場所）・
   Homebrew・OS標準の順、コマンドは`SEAT_ANALYZER_CMD`（既定`seat-analyzer`。開発機のように
   `uv run seat-analyzer`にもできる。本体はzshの`${=SEAT_ANALYZER_CMD}`で空白で単語に分けて
   実行する。引用符は解釈せず、空白を含むパスは非対応＝`uv tool install`の置き場所に空白は無く、
-  必要ならsymlinkで避ける）。
+  必要ならsymlinkで避ける）。`PYTHONUNBUFFERED=1`で標準出力・標準エラーのログの行の順序を保つ。
   weeklyは`collect --source claude`（当月）、monthlyは`--month <前月>`（前月はzshの算術で求め、
   macOS固有の`date -v`は使わない）。どちらもそのあと`--check-login`。取得か`--check-login`の
   終了コードが0でなければmacOSの通知（`osascript`の`display notification`）を出し、全体の終了コードを
@@ -1192,7 +1195,7 @@ orgs.json・session.jsonの固定名は拡張機能自身が始めたダウン�
   ゾーンによってはツールの時期の判定（§14.1・Step 55）が「まだ」と表示して取得せずに終わる
   （UTC+14では2日2:00がUTCの1日12:00、UTC-12では2日14:00）。雛形は日付の規則を持たない
 - plistは`caffeinate -is`（実行中の再スリープを止める。`-s`はAC電源のとき有効）→`lockf -k`（週次と
-  月次が同じ時刻に重なっても順番に実行する。既定でロックが外れるまで待つ）→`/bin/zsh`の順に包む
+  月次が同じ時刻に重なっても順番に実行する。既定でロックが外れるまで待つ）→`/bin/zsh -f`の順に包む
 - 起床の予約（`pmset`）は持たない。無人で予約するにはsudoersの変更が要るため。スリープするMacの
   扱いはdocs/setup.mdで案内する（電源接続時にスリープしない設定にするか、`sudo pmset repeat
   wakeorpoweron`を1回手で登録する。`pmset repeat`は1件しか持てない）。あわせてlaunchdの前提も
@@ -1202,9 +1205,10 @@ orgs.json・session.jsonの固定名は拡張機能自身が始めたダウン�
 - 雛形に個人のパス・ラベル・組織名を含めない。ラベルは`seat-analyzer.collect-weekly`・
   `seat-analyzer.collect-monthly`
 - テスト: plistの雛形を`plistlib`で読めること・必要なキーとプレースホルダだけを含むことを全OSで見る。
-  `zsh`がある環境では`zsh -n`で構文を見る。macOSでは偽の`seat-analyzer`をPATHに置いて、weekly /
-  monthlyの呼び出し列と終了コード（取得か`--check-login`の失敗で1）を見る。偽のコマンドは
-  `SEAT_ANALYZER_CMD`の単語分割（複数語）も確かめる
+  `zsh`がある環境では`zsh -n`で構文を見る。Windows以外でzshがあれば偽の`seat-analyzer`をPATHに
+  置いて、weekly / monthlyの呼び出し列と終了コード（取得か`--check-login`の失敗で1）を見る。
+  偽のコマンドは`SEAT_ANALYZER_CMD`の単語分割（複数語）も確かめる。macOSでは偽の`launchctl`と
+  一時的なHOMEで、`install.zsh`の配置・置換・再実行・`--uninstall`を見る
 
 ## 15. GitHub collection
 
