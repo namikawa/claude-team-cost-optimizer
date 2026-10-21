@@ -1,4 +1,4 @@
-"""同梱の拡張機能（browser_extension/）の静的な検査。
+"""同梱の拡張機能（browser_extension/）の静的検査とダウンロード処理の回帰検査。
 
 ブラウザは起動しない。見るのは、JavaScript の構文（node があれば `node --check`）、
 manifest.json の権限と参照するファイル、key（公開鍵）から導いた拡張機能の ID、拡張機能と
@@ -125,14 +125,27 @@ def test_staging_names_match_the_cli():
     assert f'const LOGIN_URL = "{claude_export.LOGIN_URL}";' in run_js
 
 
-def test_fixed_names_apply_only_to_the_extensions_own_downloads():
-    """固定名（manifest.json 等）は拡張機能自身が始めたダウンロードにだけ付ける。
-
-    ページが始めたダウンロード（押し直しの後に遅れて届いた CSV 等）が固定名を奪わない。
-    """
+def test_json_names_are_specified_without_shared_routing():
+    """JSON 自身の保存先を指定し、並行したページの取得に JSON の保存先を使わせない。"""
     background = _text("background.js")
     assert "item.byExtensionId === chrome.runtime.id" in background
-    assert "own && routing.name ? routing.name : item.filename" in background
+    assert "routing.name" not in background
+    save_json = _function(_text("run.js"), "saveJson")
+    assert 'const filename = `${runId}/${name}`' in save_json
+    assert 'const key = `jsonDownload:${url}`' in save_json
+    assert "trackDownload(WAIT.savedFile, id)" in save_json
+    assert "routing" not in save_json
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node が無い環境では動作モックを検査しない")
+def test_json_download_behavior_with_real_extension_functions():
+    """本番関数で既知 ID の待機、別件との分離、保存先、全終了経路の後片付けを検査する。"""
+    proc = subprocess.run(
+        ["node", str(Path(__file__).with_name("browser_extension_downloads.cjs")), str(EXT)],
+        capture_output=True, text=True, check=False, timeout=15,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(json.loads(proc.stdout)["passed"]) == 18
 
 
 def test_run_page_confirms_the_org_on_every_page():

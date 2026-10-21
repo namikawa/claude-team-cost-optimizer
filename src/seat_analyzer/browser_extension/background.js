@@ -43,16 +43,21 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 });
 
 // 2. ダウンロードの保存先の振り分け。実行ページが chrome.storage.session の routing に
-//    {prefix, name} を置いている間だけ、既定のダウンロード先（staging）の下の prefix/ に
-//    保存する。固定名の name は拡張機能自身が始めたダウンロード（manifest.json 等の blob）に
-//    だけ付け、ページが始めたダウンロードはサイトが付けた元のファイル名のまま置く（遅れて
-//    届いた CSV が固定名を奪わないため）。同名は上書きする。
+//    CSV 取得中に {prefix} を置いている間だけ、自拡張以外のダウンロードを
+//    staging の下の prefix/ に保存する。
+//    拡張機能自身の JSON は Blob URL ごとの登録に完全一致したときだけ保存先を指定する。
+//    CSV はサイトが付けた元のファイル名のまま置き、同名は上書きする。
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-  chrome.storage.session.get("routing").then(({ routing }) => {
-    if (routing && routing.prefix) {
-      const own = item.byExtensionId === chrome.runtime.id;
-      const name = own && routing.name ? routing.name : item.filename;
-      suggest({ filename: `${routing.prefix}/${name}`, conflictAction: "overwrite" });
+  const own = item.byExtensionId === chrome.runtime.id;
+  const key = `jsonDownload:${item.url}`;
+  chrome.storage.session.get(own ? key : "routing").then((data) => {
+    if (own) {
+      const filename = data[key];
+      if (typeof filename === "string" && filename) suggest({ filename, conflictAction: "overwrite" });
+      else suggest();
+    } else if (data.routing && data.routing.prefix) {
+      const routing = data.routing;
+      suggest({ filename: `${routing.prefix}/${item.filename}`, conflictAction: "overwrite" });
     } else {
       suggest();
     }
