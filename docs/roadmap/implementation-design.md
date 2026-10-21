@@ -1074,10 +1074,15 @@ stagingの配置（run.jsonはCLI、それ以外は拡張機能が書く）:
 
 `dir`は`<org>`か`<org>/<workspace>`（区切りはOSによらず`/`）、`kind_dir`は種別の入力
 サブディレクトリ（members→`members`、spend→`spend`、code→`code-analytics`）。`run_id`は
-`<profile>-<mode>-<YYYYMMDD-HHMMSS>`（ローカル時刻）。拡張機能はダウンロードを、stagingを
-既定のダウンロード先にしたうえで`<run_id>/`以下へ振り分ける。manifest.json・progress.json・
-orgs.json・session.jsonの固定名は拡張機能自身が始めたダウンロードにだけ付け、ページが始めたダウンロードは
-元のファイル名のまま置く（押し直しの後に遅れて届いたCSVが固定名を奪わないため）。
+`<profile>-<mode>-<YYYYMMDD-HHMMSS>`（ローカル時刻）。stagingを既定のダウンロード先にし、
+manifest.json・progress.json・orgs.json・session.jsonは
+`download`に`<run_id>/<固定名>`を直接指定し、返却IDだけを追跡する。listener登録後の検索で、
+ID返却前に保存が完了した場合も拾う。JSONは共有routingを操作せず、開始前に
+`jsonDownload:<Blob URL>`を独立したstorage.sessionキーとして登録し、
+自拡張IDとURLが完全一致する場合だけ登録済みの相対名とoverwriteをbackgroundで指定する。
+完了後は期待パスとの終端一致を確認し、登録削除とBlob URL解放を行う。登録・削除失敗でもURLを解放し、
+後片付け失敗で元の例外を隠さない。CSV取得中はroutingのprefixで自拡張以外の取得を元のファイル名のまま
+振り分ける。CSVの先着採用・遅着による取り違えは残課題で、対象操作との一意な対応付けは別途調べる。
 
 ```json
 {

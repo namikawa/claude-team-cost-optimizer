@@ -6,7 +6,7 @@
 //   ログインの確認 {run_id, action: "check-login"}
 //   再ログイン    {run_id, action: "login"}
 //
-// staging に書くもの（保存先の振り分けは background.js が routing に従って行う）:
+// staging に書くもの（CSV は background.js が routing に従って振り分け、JSON は保存先を直接指定）:
 //   <run_id>/<dir>/<kind_dir>/<元のファイル名>   ダウンロードした CSV
 //   <run_id>/progress.json                       各手順の後に上書きする途中経過（status: "running"）
 //   <run_id>/session.json                        ログインセッションの観測（ログインの確認と、取得の最後）
@@ -418,9 +418,9 @@ async function openPage(tabId, url) {
 }
 
 // ダウンロード 1 件の完了を待つ。page から始まるダウンロードは、待ち始めてから最初に
-// 作られた 1 件を採る。拡張機能が自分で始めたものは adopt で id を渡す
-function trackDownload(timeoutMs) {
-  let id = null;
+// 作られた 1 件を採る。拡張機能が自分で始めたものは返却された既知の ID だけを待つ
+function trackDownload(timeoutMs, knownId = null) {
+  let id = knownId;
   let done = false;
   let resolveFn;
   let rejectFn;
@@ -438,10 +438,14 @@ function trackDownload(timeoutMs) {
   };
   const check = async () => {
     if (id === null || done) return;
-    const [item] = await chrome.downloads.search({ id });
-    if (!item) return;
-    if (item.state === "complete") finish(resolveFn, item);
-    else if (item.state === "interrupted") finish(rejectFn, new Error(`download interrupted: ${item.error || ""}`));
+    try {
+      const [item] = await chrome.downloads.search({ id });
+      if (done || !item || item.id !== id) return;
+      if (item.state === "complete") finish(resolveFn, item);
+      else if (item.state === "interrupted") finish(rejectFn, new Error(`download interrupted: ${item.error || ""}`));
+    } catch (error) {
+      finish(rejectFn, error);
+    }
   };
   const onCreated = (item) => {
     if (id === null) {
@@ -459,10 +463,10 @@ function trackDownload(timeoutMs) {
   chrome.downloads.onCreated.addListener(onCreated);
   chrome.downloads.onChanged.addListener(onChanged);
   promise.catch(() => {});
+  check();
   return {
     promise,
     created: () => id !== null,
-    adopt: (knownId) => { id = knownId; check(); },
     dispose: () => finish(rejectFn, new Error("stopped")),
   };
 }
@@ -508,17 +512,33 @@ async function exportWith(prefix, trigger, { retries = 0, retryAfterMs = 0 } = {
 async function saveJson(name, data) {
   const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], { type: "application/json" });
   const url = URL.createObjectURL(blob);
-  // blob の既定のファイル名は UUID になるので、routing の name で固定する
-  await chrome.storage.session.set({ routing: { prefix: runId, name } });
-  const tracker = trackDownload(WAIT.savedFile);
+  const filename = `${runId}/${name}`;
+  const key = `jsonDownload:${url}`;
+  let tracker = null;
+  let failed = false;
   try {
-    const id = await chrome.downloads.download({ url, conflictAction: "overwrite", saveAs: false });
-    tracker.adopt(id);
-    await tracker.promise;
+    await chrome.storage.session.set({ [key]: filename });
+    const id = await chrome.downloads.download({
+      url, filename, conflictAction: "overwrite", saveAs: false,
+    });
+    if (!Number.isInteger(id) || id < 0) throw new Error("download did not return an id");
+    tracker = trackDownload(WAIT.savedFile, id);
+    const item = await tracker.promise;
+    if (!String(item.filename || "").replace(/\\/g, "/").endsWith(`/${filename}`)) {
+      throw new Error("JSON download saved to an unexpected path");
+    }
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    tracker.dispose();
-    await chrome.storage.session.remove("routing");
-    URL.revokeObjectURL(url);
+    if (tracker) tracker.dispose();
+    try {
+      await chrome.storage.session.remove(key);
+    } catch (error) {
+      if (!failed) throw error;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
 }
 
