@@ -14,7 +14,8 @@ claude-team-cost-optimizer のドキュメント一覧。ツールの概要と�
 
 - [release.md](./release.md) — リリース手順（タグと GitHub Releases）とブランチ運用
 - [../CHANGELOG.md](../CHANGELOG.md) — バージョンごとの変更履歴
-- [BACKLOG.md](./BACKLOG.md) — 実施要否の検討から始める候補（実装・納期の確約なし）
+- [BACKLOG.md](./BACKLOG.md) — 候補と採否判断の記録（実装・納期の確約なし）
+- [download-probe.md](./download-probe.md) — 合成ダウンロード検証の手順と記録
 
 ## 開発ロードマップ
 

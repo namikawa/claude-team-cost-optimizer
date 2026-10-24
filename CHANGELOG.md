@@ -1,10 +1,11 @@
 # 変更履歴
 
-## [未リリース]
+## [1.4.4] - 2026-10-25
 
 ### 修正
 
 - `collect --source claude` の当月モードで、支出レポートの期間が「今月」と表示されると取得できなかった（従来の「月累計」・「Month to date」とあわせて認識するようにした）
+- `collect --source claude` の結果 JSON の保存で、並行ダウンロードの完了判定や保存先を取り違えることがあった（JSON ごとに ID と保存先を確認し、CSV の保存先に干渉しないようにした）
 
 ## [1.4.3] - 2026-10-19
 
@@ -223,6 +224,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.4.4]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.4
 [1.4.3]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.3
 [1.4.2]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.2
 [1.4.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.1
