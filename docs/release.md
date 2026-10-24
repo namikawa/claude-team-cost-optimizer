@@ -42,10 +42,10 @@ wheel の URL を指定して `uv tool install` で導入するので、リリ�
    収集するため、`input/`・`reports/` をリポジトリの外に置いている場合は
    `--input-dir` / `--output-dir` でその場所を指定する
 
-4. コミットして PR を作り、CI（ubuntu / windows / macos のテストと配布物の検査）が
-   通ることを確認してからマージする
+4. リリース準備の変更を main へ直接コミット・push し、CI（ubuntu / windows / macos の
+   テストと配布物の検査）が通ることを確認する。リリース準備だけの PR は作らない
 
-5. マージ後の main でタグを打って push する
+5. CI が通った main でタグを打って push する
 
    ```sh
    git switch main && git pull --ff-only
@@ -86,8 +86,8 @@ wheel の URL を指定して `uv tool install` で導入するので、リリ�
 
 ## ブランチ運用
 
-trunk-based で進める。作業は Step ごとに main へ PR し、リリースは main のコミットに
-タグを打つ。
+trunk-based で進める。通常の開発は Step ごとに main へ PR する。リリース準備は PR を
+作らず main へ直接反映し、CI が通った main のコミットにタグを打つ。
 
 - 未完成の機能を main にマージするときは、リリースに含めて配布されても利用者の判定・成果物に
   影響しない状態にする。未完成の機能は設定の opt-in（既定は無効）か CLI のオプションの下に置き、
