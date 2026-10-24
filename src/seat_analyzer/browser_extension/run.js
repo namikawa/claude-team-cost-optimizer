@@ -39,7 +39,7 @@ const LOGIN_URL = "https://claude.ai/login";
 const LABEL = {
   membersExport: "CSVをエクスポート|Export CSV",
   spendExport: "支出レポートをエクスポート|Export spend report",
-  monthToDate: "^(?:月累計|Month to date)(?:\\s|$)",
+  monthToDate: "^(?:今月|月累計|Month to date)(?:\\s|$)",
   lastMonth: "^(?:先月|Last month)(?:\\s|$)",
   download: "^(?:ダウンロード|Download)$",
   codeExport: "エクスポート|Export",
