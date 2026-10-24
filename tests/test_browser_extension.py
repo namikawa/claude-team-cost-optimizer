@@ -148,6 +148,59 @@ def test_json_download_behavior_with_real_extension_functions():
     assert len(json.loads(proc.stdout)["passed"]) == 18
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node が無い環境では動作モックを検査しない")
+@pytest.mark.parametrize("current_label", ["今月", "月累計", "Month to date"])
+@pytest.mark.parametrize("previous", [False, True], ids=["current", "previous"])
+@pytest.mark.parametrize("was_checked", [False, True], ids=["unselected", "selected"])
+def test_spend_dialog_selects_the_requested_period(current_label, previous, was_checked):
+    """本番のラベルと関数で当月の新旧表記、前月の選択、選択済みの扱いを検査する。"""
+    run_js = _text("run.js")
+    labels = re.search(r"^const LABEL = \{.*?^\};", run_js, re.MULTILINE | re.DOTALL)
+    assert labels is not None
+    script = (
+        'const assert = require("node:assert/strict");\n'
+        + labels[0] + "\nasync " + _function(run_js, "spendDialog") + "\n}\n"
+        + "const currentLabel = " + json.dumps(current_label) + ";\n"
+        + "const previous = " + json.dumps(previous) + ";\n"
+        + "const wasChecked = " + json.dumps(was_checked) + ";\n"
+        + """
+const currentRange = "2026-10-01 to 2026-10-24";
+const previousRange = "2026-09-01 to 2026-09-30";
+const targetRange = previous ? previousRange : currentRange;
+const targetLabel = previous ? "先月" : currentLabel;
+const radios = ["過去90日間", previous ? currentLabel : "先月", targetLabel, "カスタム"]
+  .map((label, index) => ({
+    innerText: label, checked: index === (wasChecked ? 2 : 1),
+    clicks: 0,
+    getAttribute(name) { return name === "aria-checked" ? String(this.checked) : null; },
+    click() {
+      this.clicks++;
+      for (const radio of radios) radio.checked = radio === this;
+      dialog.innerText = targetRange;
+    },
+  }));
+const dialog = {
+  innerText: wasChecked ? targetRange : (previous ? currentRange : previousRange),
+  querySelectorAll(selector) { assert.equal(selector, "[role=radio]"); return radios; },
+};
+global.document = {
+  querySelector(selector) { assert.equal(selector, "[role=dialog]"); return dialog; },
+};
+global.setTimeout = (callback) => { callback(); };
+(async () => {
+  const result = await spendDialog(previous ? LABEL.lastMonth : LABEL.monthToDate, previous);
+  assert.deepEqual(result, {ok: true, wasChecked, checked: true, range: targetRange});
+  assert.deepEqual(radios.map((radio) => radio.clicks),
+    [0, 0, previous || !wasChecked ? 1 : 0, 0]);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    proc = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, check=False, timeout=10,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_run_page_confirms_the_org_on_every_page():
     """組織の切替の直後だけでなく、支出レポートと Claude Code のページでも組織を確かめる。"""
     run_js = _text("run.js")
