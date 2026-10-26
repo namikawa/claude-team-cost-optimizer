@@ -526,30 +526,36 @@ def test_non_finite_values_are_not_settled_as_zero(policy):
     assert features.loc["bob@x.jp", "code_demand_usd"] == 10.0
 
 
-def test_excluded_rows_do_not_settle_a_nonzero_unknown_contribution(policy):
-    """不明行に非ゼロの寄与があるユーザを確定させない。
+def test_excluded_rows_do_not_hide_a_difference_between_scenario_sums(policy):
+    """直接合計では異なるシナリオを、除外行の 0 埋めで一致させない。
 
-    除外する行を 0 で埋めて合計すると加算のブロック割りが「その行だけを合計した場合」と
-    変わり、確定分の合計と全部入りの合計が同じ丸め先へ落ちて欠損の伝播が解けることがある。
-    行の組をそのまま合計していれば2つのシナリオは別の値になり、確定しない。
+    この入力では不明行を入れない直接合計と全部入れた直接合計が異なる一方、除外行を
+    0 で埋めると両者が同じ値へ丸められ、欠損の伝播が解けてしまう。
     """
     frame = detail([
+        ("alice@x.jp", 5e-17, 1.0, "Claude Code"),
+        ("alice@x.jp", 1e-17, 1.0, ""),
+        ("alice@x.jp", 1e-17, 1.0, "Claude Code"),
+        ("alice@x.jp", 5e-17, 1.0, ""),
         ("alice@x.jp", 0.0, 1.0, "Other"),
-        ("alice@x.jp", 1e-16, 1.0, "Claude Code"),
         ("alice@x.jp", 0.0, 1.0, "Other"),
-        ("alice@x.jp", 1e-16, 1.0, "Claude Code"),
-        ("alice@x.jp", 1e-16, 1.0, "Claude Code"),
+        ("alice@x.jp", 5e-17, 1.0, "Claude Code"),
+        ("alice@x.jp", 1e-17, 1.0, "Claude Code"),
+        ("alice@x.jp", 2e-16, 1.0, "Claude Code"),
         ("alice@x.jp", 0.0, 1.0, "Other"),
         ("alice@x.jp", 1.0, 1.0, "Claude Code"),
         ("alice@x.jp", 1e-16, 1.0, ""),
-        ("alice@x.jp", 1e-17, 1.0, ""),
-        ("alice@x.jp", 0.0, 1.0, "Other"),
     ])
     is_code = frame["product"] == "Claude Code"
     unknown = frame["product"] == ""
     lowest = frame[is_code].groupby("email")["cost_usd"].sum()["alice@x.jp"]
     highest = frame[is_code | unknown].groupby("email")["cost_usd"].sum()["alice@x.jp"]
     assert lowest != highest
+    zero_filled_lowest = frame["cost_usd"].where(is_code, 0.0).groupby(frame["email"]).sum()
+    zero_filled_highest = (
+        frame["cost_usd"].where(is_code | unknown, 0.0).groupby(frame["email"]).sum()
+    )
+    assert zero_filled_lowest["alice@x.jp"] == zero_filled_highest["alice@x.jp"]
 
     features = product_usage.compute(frame, policy).features
     assert pd.isna(features.loc["alice@x.jp", "code_demand_usd"])
