@@ -201,6 +201,41 @@ global.setTimeout = (callback) => { callback(); };
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node が無い環境では動作モックを検査しない")
+@pytest.mark.parametrize("label", ["CSVをエクスポート", "CSV をエクスポート", "Export CSV"])
+def test_members_export_button_matches_the_label_with_or_without_a_space(label):
+    """本番のラベルと関数でメンバー一覧のエクスポートの新旧表記を押し、似た名前のボタンは押さない。"""
+    run_js = _text("run.js")
+    labels = re.search(r"^const LABEL = \{.*?^\};", run_js, re.MULTILINE | re.DOTALL)
+    assert labels is not None
+    script = (
+        'const assert = require("node:assert/strict");\n'
+        + labels[0] + "\nasync " + _function(run_js, "clickButton") + "\n}\n"
+        + "const label = " + json.dumps(label) + ";\n"
+        + """
+const buttons = ["アプリに戻る", "役割\\nすべて", label, "メンバーを追加", "Premium"]
+  .map((text) => ({
+    innerText: text, disabled: false, clicks: 0,
+    getAttribute() { return null; },
+    click() { this.clicks++; },
+  }));
+global.document = {
+  querySelectorAll(selector) { assert.equal(selector, "button, [role=button]"); return buttons; },
+  querySelector() { return null; },
+};
+(async () => {
+  const result = await clickButton(LABEL.membersExport, null, 1000);
+  assert.deepEqual(result, {ok: true, text: label});
+  assert.deepEqual(buttons.map((button) => button.clicks), [0, 0, 1, 0, 0]);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    proc = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, check=False, timeout=10,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_run_page_confirms_the_org_on_every_page():
     """組織の切替の直後だけでなく、支出レポートと Claude Code のページでも組織を確かめる。"""
     run_js = _text("run.js")
