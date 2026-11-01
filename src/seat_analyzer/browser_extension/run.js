@@ -37,7 +37,7 @@ const LOGIN_URL = "https://claude.ai/login";
 
 // ボタンと選択肢の名前（日本語と英語を併記した正規表現）
 const LABEL = {
-  membersExport: "CSVをエクスポート|Export CSV",
+  membersExport: "CSV\\s*をエクスポート|Export\\s*CSV",  // 「CSV をエクスポート」と空白が入ることがある
   spendExport: "支出レポートをエクスポート|Export spend report",
   monthToDate: "^(?:今月|月累計|Month to date)(?:\\s|$)",
   lastMonth: "^(?:先月|Last month)(?:\\s|$)",
