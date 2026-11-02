@@ -249,7 +249,9 @@ input/<org>/
     organization-YYYY-MM-DD.csv
     users-YYYY-MM-DD.csv
   github-cache/
-    prs-YYYY-MM.json
+    prs-YYYY-MM.json      （schema 2 から PR ごとのコミットを含む。§7.6）
+  otel-cache/
+    otel-YYYY-MM.json     （Claude Code の OpenTelemetry の集計。§7.7・§27）
 ```
 
 ### 6.2 出力
@@ -288,12 +290,17 @@ reports/<org>/<month>/
   decision-audit.csv
   follow-up.csv
   github-summary.csv
+  maturity-panel.csv       # §27.8。読者は CTO と開発責任者
+  maturity-dashboard.html  # 同上
   review.md
   history/
     <snapshot-id>/
       decision-evidence.csv
       source-manifest.json
 ```
+
+`maturity-panel`・`maturity-dashboard`は読者が違う（§27.8）。既存の成果物と同じ月ディレクトリに
+置くが、組織の担当者へ共有する成果物の集合には含めない。
 
 ### 6.3 取得のstaging
 
@@ -423,6 +430,19 @@ user@example.com,架空推進3部,Nebula-AI,エンジニア,250,,example-user
 - isDraft
 - author type
 
+schema 2 から、PR ごとのコミットも保存する（§15.7。行数をコミットの作者に帰属させるため）:
+
+- oid（SHA）
+- author login（GitHub アカウントに結び付く場合。結び付かなければ null）
+- author email（コミットの作者のメールアドレス。login が無いときの突き合わせに使う）
+- additions
+- deletions
+- committedDate
+- コミットの総数（保存した件数と一致しなければその PR は未完了）
+
+schema 1 のキャッシュはそのまま読める。コミットの無い PR は`collect`の再実行で埋める（PR の行は
+upsert・コミットは PR 単位で置き換える）。
+
 保存しない:
 
 - title
@@ -432,12 +452,46 @@ user@example.com,架空推進3部,Nebula-AI,エンジニア,250,,example-user
 - files
 - diff
 - commit message
+- commit author name
 - code
 
 一意キー:
 
 ```text
 repository + "#" + PR number
+```
+
+### 7.7 OpenTelemetry cache
+
+Claude Code の OpenTelemetry（§27）を BigQuery から読み、人 × 日 × 次元の集計だけを月ごとに
+保存する。
+
+保存する:
+
+- schema
+- organization（入力ディレクトリの組織名）
+- month
+- source（project・dataset・table の名前と、使った SQL テンプレートの名前と版）
+- organization_ids（絞り込みに使った claude.ai の組織 UUID）
+- query（読み取り量の見積もりと実績 byte・実行日時 UTC）
+- rows: 1 行が 人（`user.email`）× 日（UTC）× 集計名 × 属性の組 × 値
+  - 集計名と属性は §27.5 の表に閉じる（それ以外の属性は SQL に書かない）
+  - 値は件数・合計・秒・USD・トークン数のいずれか
+
+保存しない:
+
+- プロンプト本文・応答本文（`prompt`・`prompt_text`・`response`）
+- ツールの引数・入力・出力（`tool_parameters`・`tool_input`・Bash のコマンド）
+- API の本文（`body`）
+- エラー文（`error`）
+- ホストのパス（`workspace.host_paths`）
+- リポジトリの URL（`vcs.repository.url.full`。owner と name だけを保存する）
+- セッション ID・request ID（集計の粒度より細かい識別子）
+
+一意キー:
+
+```text
+email + "|" + date + "|" + 集計名 + "|" + 属性の組
 ```
 
 ## 8. Identity
@@ -1300,6 +1354,30 @@ doctorの対応表の検査も同じ対象者だけを見る（入れ子の組�
 - 因果関係を断定しない
 - 個人ランキングを作らない
 
+### 15.7 コミット単位の帰属（行数）
+
+PR の件数と lead time は PR の作成者に帰属させたまま（§15.5）、行数はコミットの作者に帰属
+させる（Step 58〜59）。PR の作成者と中のコミットの作者は別の人であることがあり（引き継ぎ・
+共同作業。複数組織で確認し、多い組織では行数の過半が作成者以外の PR が 4 本に 1 本あった）、
+PR の additions / deletions を作成者に足すと別の人の成果が混ざる。
+
+- 取得: 検索の GraphQL に`commits`を足し、PR ごとに oid・作者の login とメール・additions・
+  deletions・committedDate を取る（§7.6）。1 回で取り切れない PR（総数が 1 回の上限を超える）は
+  PR ごとに続きを辿る。コミットのメッセージ・ファイル一覧は問い合わせそのものに書かない
+- 作者の解決: login が GitHub ID の対応表に当たればその人。login が無い（GitHub アカウントに
+  結び付かない）コミットは、作者のメールアドレスを対象者のメールアドレス（members）と小文字で
+  突き合わせる。どちらにも当たらなければ`unresolved`として件数だけ残す
+- 上限つき合計: 1 コミットの追加行が`github.large_commit_lines`（既定 5,000）を超える
+  コミットは「大きな変更」として合計から外し、件数を別に数える（lock ファイル・生成物・
+  外部コードの取り込みが行数の合計を決めてしまうため）。ファイル単位の除外はしない（PR ごとの
+  追加の問い合わせが要り、「files を保存しない」を変えることになる）
+- 母集団は §15.5 と同じ（その月にシートを持つ人）。Bot・draft の PR のコミットは数えない
+- github-summary に列を足す（`commit_count`・`lines_added`・`lines_removed`・
+  `lines_added_capped`・`large_commits`。組織全体行に`unresolved_author_commits`）。既存の列は
+  変えない
+- コミットを持たないキャッシュ（schema 1）では新しい列を空欄にして、`collect`の再実行を案内する
+  （`GH_COMMITS_MISSING`）
+
 ## 16. CLI
 
 ### 16.1 既存
@@ -1354,6 +1432,12 @@ uv run seat-analyzer collect \
   --org <org> \
   --source github \
   --month YYYY-MM
+
+uv run seat-analyzer collect \
+  --org <org> \
+  --source otel \
+  --month YYYY-MM \
+  [--dry-run]
 ```
 
 `--source claude`の`--month`は当月か前月で、省略時は当月（§14.1）。取得できる時期（UTCの今日が
@@ -1372,6 +1456,11 @@ Chromeをログイン画面で起動し、人が行う手順（ログイン・�
 `--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--check-login`・`--import`は単独で使う
 （`--list-orgs`と`--check-login`だけは`--timeout`・`--keep-browser`を併用できる）。claude専用の
 オプションを`--source github`に付けると終了コード2。
+
+`--source otel`は`organizations.<組織名>.otel`を設定した組織だけで、BigQuery を`bq` CLI で読んで
+月の集計を`otel-cache/`へ保存する（§27.3）。`--dry-run`は読み取り量の見積もりだけを表示して
+終わる。見積もりが`otel.maximum_bytes_billed`を超えるときは実行しない。定期実行（§14.5）には
+含めない（サブスクリプションの外の課金が生じるため、人が都度実行する）。
 
 V2が安定するまで既定値は`v1`。`--decision-version`を省略した場合は
 `decision_v2.enabled`に従い、明示指定はそれに優先する。`enabled: true`は「V1の成果物に
@@ -1438,12 +1527,27 @@ V2判定の根拠（decision-evidence）を併記する」opt-inで、主判定�
 - `GH_PERMISSION_INCOMPLETE`
 - `GH_RATE_LIMITED`
 - `GH_PARTIAL_RESULT`
+- `GH_COMMITS_MISSING`
 - `GITHUB_CONFIG_UNMATCHED`
 
 `GITHUB_CONFIG_UNMATCHED`は、`organizations`のキーが入力の組織ディレクトリのどれとも
 一致しない場合のwarning。綴り違いはGitHubの検査がまるごと飛ぶ形で表に出ないため、
 有効にしたつもりの組織が黙って対象外になる。組織に属さないissueなのでscopeはorgではなく
 `config_org`を持つ。
+
+### OpenTelemetry issue
+
+- `OTEL_BQ_NOT_AUTHENTICATED`
+- `OTEL_BQ_NOT_ACCESSIBLE`
+- `OTEL_QUERY_TOO_LARGE`
+- `OTEL_PARTIAL_RESULT`
+- `OTEL_ATTRIBUTE_MISSING`
+- `OTEL_COVERAGE_LOW`
+- `OTEL_USER_MISSING`
+
+`OTEL_COVERAGE_LOW`と`OTEL_USER_MISSING`は §27.4 の網羅率の検査。テレメトリが届いていない人を
+「使っていない人」と読ませないための issue で、パネルではその人の OTel 由来の列を空欄にする。
+`otel`を設定していない組織では OTel の issue は一切出ない。
 
 ### Policy
 
@@ -3778,6 +3882,280 @@ dashboardで読めるようにする。
 - 同じ両端日の区間の増分は既存の月中の利用推移と一致する
 - 同じ終了日のファイルが複数ある日付は使わない
 
+### Track 10: Claude Code の習熟度の時系列
+
+仕様は§27。読者は CTO と開発責任者で、組織の担当者へ共有する成果物とは別に出す。Step 57 は
+調査（コードを変えない）。Step 58〜59 は GitHub のコミット単位の帰属で OpenTelemetry に依存せず、
+Step 60〜61 で OpenTelemetry の取得と網羅率、Step 62〜65 でパネル・段階・検知・dashboard。
+どの Step で止めても手前までが動く。後続候補（番号は着手時に振る）: コミット SHA による PR と
+セッションの結合、週次の粒度（§27.10）。
+
+#### Step 57: BigQuery の実態確認（調査）
+
+依存:
+
+- なし
+
+対象:
+
+- `docs/roadmap/implementation-status.md`（検証記録）
+- ワークスペースの`config.yaml`（project・dataset の名前。公開しない）
+
+実装:
+
+- `bq` CLI で`INFORMATION_SCHEMA`と`--dry_run`だけを使い、テーブルの形（collector から BigQuery
+  までの経路）、信号（メトリクス・イベント）、属性（`user.email`・`organization.id`・`vcs.*`・
+  `app.version`）、content logging の有無、蓄積の開始日と保持期間、導入している組織、1 か月の
+  読み取り量と費用を確かめる
+- 読む前に dry-run の読み取り量を提示して許可を得る。本文・引数の列は SELECT しない
+
+受け入れ条件:
+
+- §27.3 の SQL テンプレートを書くのに要る事実（テーブル名・列名・属性の有無・パーティション列）が
+  検証記録にある（一般化して書く。project・dataset・組織名は書かない）
+- 網羅率（§27.4）の初期値の見当（導入した組織で、spend の Claude Code 需要に対する OpenTelemetry の
+  費用の比）
+- `otel.maximum_bytes_billed`の既定の根拠
+
+今回は行わない:
+
+- コードの変更
+
+#### Step 58: PR キャッシュにコミットを保存
+
+依存:
+
+- Step 35
+
+対象:
+
+- `src/seat_analyzer/github_collect.py`
+- `tests/test_github_collect.py`
+- `docs/reference.md`
+
+実装:
+
+- 検索の GraphQL に`commits`を足す（§7.6・§15.7）。総数が 1 回の上限を超える PR は PR ごとに続きを
+  辿る
+- schema 2。schema 1 のキャッシュは読め、コミットの無い PR は`collect`の再実行で埋める
+
+受け入れ条件:
+
+- コミットのメッセージ・ファイル一覧・作者の名前を問い合わせに書かない（禁止フィールドのテスト）
+- 上限を超えるコミット数の PR も全件
+- 読めない要素があればページ全体を読めなかった扱い（既存の規則）
+- rate limit の cost が既存の取得と同じ桁に収まる（fixture で計測）
+- 再実行はコミットの無い PR だけを取り直す
+
+今回は行わない:
+
+- 集計・出力
+
+#### Step 59: コミットの作者で行数を集計
+
+依存:
+
+- Step 58
+
+対象:
+
+- `src/seat_analyzer/github_metrics.py`
+- `src/seat_analyzer/report/github_csv.py`
+- `src/seat_analyzer/default-config.yaml`（`github.large_commit_lines`）
+- `tests/test_github_metrics.py`・`tests/test_github_csv.py`
+- `docs/reference.md`
+
+実装:
+
+- §15.7
+
+受け入れ条件:
+
+- 既存の列（PR 数・lead time・内訳）はバイト一致
+- 作者の解決は login → メール → `unresolved`の順で、メールは小文字で突き合わせる
+- 上限を超えるコミットは合計から外れ、件数に残る
+- schema 1 のキャッシュでは新しい列が空欄で`GH_COMMITS_MISSING`
+
+今回は行わない:
+
+- パネル
+
+#### Step 60: collect --source otel
+
+依存:
+
+- Step 57
+
+対象:
+
+- `src/seat_analyzer/otel_collect.py`（新規・層 15）
+- `src/seat_analyzer/sql/`（SQL テンプレート。`.py`でない同梱物）
+- `src/seat_analyzer/cli.py`
+- `src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`
+- `tests/test_otel_collect.py`
+- `docs/setup.md`・`docs/usage.md`・`docs/reference.md`
+
+実装:
+
+- §27.2・§27.3・§7.7
+
+受け入れ条件:
+
+- 本文・引数・パスの列をテンプレートに書かない（テストがテンプレートを検査する）
+- dry-run の見積もりが上限を超えたら実行しない
+- `bq`の出力は fixture で検証し、unit test はネットワークに出ない
+- 同じ入力から同じ JSON（行の順序を固定）
+- 認証なし・権限なし・途中失敗で部分結果を完全な結果として保存しない
+- wheel に`sql/`が入る
+
+今回は行わない:
+
+- doctor・指標
+
+#### Step 61: OpenTelemetry の網羅率
+
+依存:
+
+- Step 60
+
+対象:
+
+- `src/seat_analyzer/data_quality.py`
+- `src/seat_analyzer/cli.py`
+- `tests/test_data_quality.py`
+- `docs/reference.md`
+
+実装:
+
+- §27.4
+
+受け入れ条件:
+
+- 比率の閾値は config
+- `otel`の無い組織では issue が出ない
+- 網羅率の低い人 × 月を後続が参照できる形（純粋関数の戻り値）で返す
+
+今回は行わない:
+
+- パネル
+
+#### Step 62: 人 × 月パネル
+
+依存:
+
+- Step 59
+- Step 61
+
+対象:
+
+- `src/seat_analyzer/maturity.py`（新規・層 25）
+- `src/seat_analyzer/report/maturity_csv.py`（新規）
+- `src/seat_analyzer/report/naming.py`
+- `src/seat_analyzer/cli.py`
+- `src/seat_analyzer/default-config.yaml`（`maturity.enabled`）
+- `tests/test_maturity.py`・`tests/test_maturity_csv.py`
+- `docs/reference.md`
+
+実装:
+
+- §27.5・§27.8（段階の列はまだ出さない）
+
+受け入れ条件:
+
+- `maturity.enabled: false`で既存の成果物がバイト一致
+- GitHub・OpenTelemetry の無い組織でも書ける（該当の列が空欄）
+- 網羅率の低い人 × 月は OpenTelemetry 由来の列が空欄
+- 行はメール昇順・月昇順で、件数の多い順に並べない
+- 他組織の禁止語の収集（leakcheck）の対象になる
+
+今回は行わない:
+
+- 段階・dashboard
+
+#### Step 63: 習熟の段階
+
+依存:
+
+- Step 62
+
+対象:
+
+- `src/seat_analyzer/maturity.py`
+- `src/seat_analyzer/default-config.yaml`（`maturity.stages`）
+- `src/seat_analyzer/report/maturity_csv.py`
+- `tests/test_maturity.py`
+- `docs/reference.md`
+
+実装:
+
+- §27.6。実データの分布を見てから既定の閾値を決める（決め方は検証記録へ一般化して残す）
+
+受け入れ条件:
+
+- 段階はルールだけで再現できる（合成スコアを作らない）
+- 網羅率の低い人 × 月は`不明`
+- 組織行に段階ごとの人数と前月からの遷移
+
+今回は行わない:
+
+- dashboard
+
+#### Step 64: 管轄外の検知
+
+依存:
+
+- Step 62
+
+対象:
+
+- `src/seat_analyzer/maturity.py`
+- `src/seat_analyzer/otel_collect.py`（リポジトリ属性の集計）
+- `tests/test_maturity.py`・`tests/test_otel_collect.py`
+- `docs/reference.md`
+
+実装:
+
+- §27.7
+
+受け入れ条件:
+
+- 母集団から外さない
+- owner 名・リポジトリ名を成果物に書かない
+- 属性の無い組織では件数の差の方式に落ちる
+
+今回は行わない:
+
+- SHA 結合
+
+#### Step 65: 管理職向け dashboard
+
+依存:
+
+- Step 63
+- Step 64
+
+対象:
+
+- `src/seat_analyzer/report/maturity_html.py`（新規）
+- `src/seat_analyzer/templates/maturity-dashboard.html.j2`（CSS・JS を含む。新規）
+- `src/seat_analyzer/report/naming.py`
+- `tests/test_maturity_html.py`
+- `docs/reference.md`
+
+実装:
+
+- §27.8 の 4 つの図
+
+受け入れ条件:
+
+- 既存 dashboard が不変
+- 外部通信なし・JS 無効でも全内容が読める・メールはローカル部のみ
+- 出力に HTML コメントを残さない
+
+今回は行わない:
+
+- 週次の粒度・SHA 結合
+
 ## 19. Milestone
 
 ### Milestone A: Core data
@@ -3839,9 +4217,18 @@ Step 43〜49
 - V2の合算
 - 切替の観測（Phase 2）
 
+### Milestone G: Maturity
+
+Step 57〜65
+
+- GitHub のコミット単位の帰属
+- OpenTelemetry（BigQuery）の取得と網羅率
+- 人 × 月パネル・習熟の段階・管轄外の検知
+- 管理職向け dashboard
+
 ### Future
 
-- OpenTelemetry
+- OpenTelemetry のコミット SHA による結合と週次の粒度（§27.10）
 - Jira
 - CI/CD
 - DORA
@@ -3876,6 +4263,10 @@ uv run pytest
 - GitHub本文・コードを保存しない
 - browser-assisted取得はエクスポート以外の管理画面の操作をしない（シート・creditの設定変更を行わない）
 - 不明値を0として扱わない
+- OpenTelemetryなしでも分析できる
+- テレメトリが届いていない人を未使用と扱わない（網羅率で区別する）
+- 習熟の段階は合成スコアではなく、configのルールで再現できる
+- 行数の帰属はPRの作成者ではなくコミットの作者
 
 ### 20.3 Security
 
@@ -3883,6 +4274,8 @@ uv run pytest
 - org path traversal
 - Cookie・token非表示
 - GitHub cache禁止フィールド
+- OpenTelemetry cache禁止フィールド（プロンプト・ツール引数・本文・パス・URL）
+- BigQueryの読み取り量の上限（dry-runの見積もりが上限を超えたら実行しない）
 - download元ファイルを変更・削除しない
 
 ## 21. Config
@@ -3893,6 +4286,15 @@ uv run pytest
 organizations:
   example:
     github_org: example-org
+    # Claude CodeのOpenTelemetryをBigQueryに集めている組織だけ書く（組織ごとのopt-in。§27.2）
+    otel:
+      bigquery:
+        project: example-project
+        dataset: claude_code_otel
+        metrics_table: metrics
+        logs_table: logs          # イベントを集めていなければ省略
+      # 絞り込みに使うclaude.aiの組織UUID。省略時はclaude_export.org_id（複数スペースは各workspace）
+      organization_ids: []
     # 複数のTeamスペースを運用する組織だけ書く（§26.3）
     workspaces:
       main:
@@ -3951,6 +4353,7 @@ github:
   exclude_forks: true
   exclude_templates: true
   repository_denylist: []
+  large_commit_lines: 5000                  # これを超える追加行のコミットは上限つき合計から外す（§15.7）
 
 claude_export:
   chrome_path: ""                           # 空文字 = OSごとの既定の場所を自動検出
@@ -3958,6 +4361,15 @@ claude_export:
   staging_dir: ~/.seat-analyzer/exports     # ブラウザがダウンロードする一時置き場
   timeout_minutes: 15                       # manifestを待つ上限
   login_warning_days: 3                     # --check-loginで「期限間近」にする残り日数
+
+otel:
+  bq_path: ""                               # 空文字 = PATHのbq
+  maximum_bytes_billed: 2000000000          # 1回の問い合わせで読む量の上限（byte）。見積もりが超えたら実行しない
+  coverage_warning_ratio: 0.8               # OTelの費用 ÷ spendのClaude Code需要がこれを下回る人×月を警告（§27.4）
+
+maturity:
+  enabled: false                            # 人×月パネルと段階（§27.8）。既定は不活性
+  stages: {}                                # 段階のルール（§27.6）。既定はStep 63で分布を見てから決める
 ```
 
 新しいセクションはすべて省略可能とする。`decision_v2.enabled=false`が既定。
@@ -4034,6 +4446,15 @@ V1のallowanceモデルに依存する出力（込み枠推定の3scenario、⚠
 - 2 workspaceの合成組織で`init-org` → `analyze` → `doctor`が通る
 - 実データで主workspaceの各アカウント行が単独実行と一致
 
+### Maturity release
+
+- Step 57〜65完了
+- `otel`も`maturity.enabled`も無い組織の全goldenが不変
+- OpenTelemetry cacheとmaturityの成果物に禁止フィールド（§7.7・§27.9）が無い
+- 網羅率の低い人×月が段階`不明`になる
+- maturityの成果物にリポジトリ名・owner名・他組織の情報が無い
+- `bq`の実行がdry-runの見積もりと上限の確認を経ないと起きない
+
 ## 24. 実装依頼テンプレート
 
 各実装は次の形式で依頼する。
@@ -4071,14 +4492,8 @@ docs/roadmap/implementation-design.md の「Step N: <名称>」だけを実装�
 
 ### OpenTelemetry
 
-次が整ってから別設計として追加する。
-
-- 端末設定配布
-- 収集endpoint
-- セキュリティ合意
-- 小規模pilot
-
-現在の設計へplaceholderや未使用抽象化を追加しない。
+Track 10（§27）で着手した。前提（端末設定の配布・収集endpoint・セキュリティ合意・小規模pilot）は
+利用側の組織で整っていることをStep 57で確かめる。残る拡張は§27.10。
 
 ### Jira・CI/CD
 
@@ -4367,3 +4782,168 @@ V2（decision-evidence）も§26.4の両軸に従う。複数アカウント保�
 
 - Phase 1（Step 43〜48）: §26.2〜§26.9の全部。v1.3.0として出す
 - Phase 2（Step 49）: 切替の観測。両workspaceの週次エクスポートが同じ日に揃うことが前提
+
+## 27. Claude Code の習熟度の時系列
+
+Claude Code の活用度と習熟度を人 × 月で追い、GitHub にマージされた成果と並べて見るための仕様。
+実装順は Track 10（§18）。読者は CTO と開発責任者で、シートの判定には使わない。
+
+### 27.1 背景と前提
+
+- claude.ai のエクスポート（spend・code-analytics）だけでは「どれだけ使ったか」までしか分からず、
+  「どう使ったか」（受け入れ・却下、自律の度合い、手戻り）は見えない。Claude Code の
+  OpenTelemetry（以下 OTel）にはそれがある
+- OTel は組織ごとに導入の有無が違う。導入した組織だけが`otel`を設定し（§27.2）、未設定の組織は
+  OTel 関連の処理と警告から一切除外される（GitHub の`github_org`と同じゲート）
+- OTel は利用側の収集基盤（collector → BigQuery）に蓄積されている前提で、このツールは BigQuery を
+  読むだけ。collector の設定・配布・保持はこのツールの範囲外
+- BigQuery のテーブルの形は収集基盤に依存する。Step 57 で実物を確かめてから SQL テンプレートを
+  その形に合わせて書く。別の形に合わせるときはテンプレートを差し替える
+- 測るのは参考値。因果を断定せず、個人ランキングを作らない（§15.6 と同じ）。評価の根拠には
+  使わない
+
+### 27.2 Config
+
+```yaml
+organizations:
+  example:
+    otel:
+      bigquery:
+        project: example-project
+        dataset: claude_code_otel
+        metrics_table: metrics
+        logs_table: logs
+      organization_ids: []
+otel:
+  bq_path: ""
+  maximum_bytes_billed: 2000000000
+  coverage_warning_ratio: 0.8
+maturity:
+  enabled: false
+  stages: {}
+```
+
+- `organizations.<組織名>.otel`を書いた組織だけが対象
+- `organization_ids`は OTel の`organization.id`で絞る claude.ai の組織 UUID。省略時は
+  `claude_export.org_id`（複数スペースの組織は各 workspace のもの）を使う。両方無ければロード時に
+  エラー
+- `logs_table`を省略した組織はメトリクスだけで集計し、イベント由来の集計（§27.5 の表で元データが
+  「イベント」の行）は空欄になる
+- project・dataset の名前は workspace の`config.yaml`にだけ書く（公開リポジトリの docs・既定設定には
+  書かない）
+
+### 27.3 取得（`collect --source otel`）
+
+- `bq` CLI を subprocess で呼ぶ（`gh`と同じ流儀。認証は gcloud に任せ、token を Python へ取り出さ
+  ない）
+- 読む前に`--dry_run`で読み取り量（byte）を出し、`otel.maximum_bytes_billed`を超えるときは実行
+  しない。実行時も同じ値を`--maximum_bytes_billed`に渡す
+- SQL は同梱のテンプレート（`src/seat_analyzer/sql/`。`.py`でない同梱物なので wheel に入ることを
+  確かめる）に、月の範囲（UTC）・`organization.id`・テーブル名を埋める。日付のパーティション列で
+  絞る
+- SELECT する列は §27.5 の集計に要るものだけ。本文・引数・パスの列（§7.7 の「保存しない」）は
+  テンプレートに書かない（テストがテンプレートを検査する）
+- 集計は SQL 側で人 × 日 × 次元まで行い、行の単位のデータをローカルへ持ち込まない
+- 結果は`otel-cache/otel-YYYY-MM.json`（§7.7）。同じ月の再実行は置き換え
+- 認証なし・権限なし・上限超過・途中失敗はそれぞれ issue（§17）にし、部分結果を完全な結果として
+  保存しない
+- 定期実行（§14.5）には含めない。サブスクリプションの外の課金が生じるため、人が都度実行する
+
+### 27.4 網羅率
+
+テレメトリが届いていない人を「使っていない人」と読む誤りを防ぐため、OTel の値を使う前に網羅率を
+確かめる。
+
+- 人 × 月で、OTel の`cost.usage`の合計と spend の Claude Code product の API 換算需要
+  （`computed_cost_usd`）を比べる。比が`otel.coverage_warning_ratio`を下回る人 × 月は
+  `OTEL_COVERAGE_LOW`、spend に Claude Code の需要があって OTel に行が無い人は`OTEL_USER_MISSING`
+- 組織の網羅率（需要の合計に対する OTel で説明できる割合）を doctor と analyze の警告に出す
+- 網羅率の低い人 × 月は、パネルで OTel 由来の列を空欄にし、段階を`不明`にする
+
+### 27.5 指標
+
+人 × 月で次を持つ。元データの名前は Claude Code の OTel リファレンスのもの。
+
+| 軸 | 指標 | 元データ |
+|---|---|---|
+| 活用 | 稼働日数・セッション数（新規・再開の別） | `session.count`（`start_type`） |
+| 活用 | 利用者の操作時間・CLI の稼働時間 | `active_time.total`（`type`） |
+| 活用 | プロンプト数 | イベント`user_prompt`（件数のみ） |
+| 活用 | Claude Code が加えた行・消した行 | `lines_of_code.count`（`type`） |
+| 活用 | トークン・費用（モデル別） | `token.usage`・`cost.usage`（`model`・`type`） |
+| 自律 | 編集の受け入れ・却下と判断の出どころ（自動承認か都度か） | `code_edit_tool.decision`（`tool_name`・`decision`・`source`） |
+| 自律 | 権限モードの構成 | イベント`tool_decision`（`permission_mode`） |
+| 自律 | サブエージェント・補助クエリの割合 | `cost.usage`・`token.usage`（`query_source`） |
+| 自律 | スキル・エージェント・MCP の利用 | `cost.usage`（`skill.name`・`agent.name`・`mcp_server.name`の有無。名前は件数に畳む） |
+| 自律 | スラッシュコマンドの利用（組込み・カスタム・MCP の別） | イベント`user_prompt`（`command_source`） |
+| 自律 | API エラー率 | イベント`api_error`（件数のみ） |
+| 成果 | Claude Code が作ったコミット・PR | `commit.count`・`pull_request.count` |
+| 成果 | コミット単位のマージ行（上限つき）・コミット数・lead time | GitHub（§15.5・§15.7） |
+| 効率 | マージ行あたりの費用、消した行 ÷ 加えた行 | 上の組み合わせ |
+| 検知 | リポジトリの owner 別のセッション・費用 | `vcs.owner.name`（§27.7。属性が有効な組織のみ） |
+
+- 比率は分子・分母を列に持ち、比率そのものはパネルで計算して列にする（元の値を失わない）
+- 中央値のように日次から月次へ畳めない統計は持たない（件数・合計・秒・USD・トークンに閉じる）
+- スキル・エージェント・MCP・コマンドの名前は保存しない（有無と件数だけ）
+
+### 27.6 段階
+
+1 人の 1 か月を次のどれかに分ける。ルールは`maturity.stages`に置き、既定は Step 63 で実データの
+分布を見てから決める。1 つの合成スコアにはしない（何が効いて動いたかが読めず、閾値の置き方に
+結論が引きずられる）。
+
+- `未使用`: セッションが無い
+- `試用`: 稼働日数・セッション数が少ない
+- `定着`: 継続して使い、Claude Code が加えた行がある
+- `自律`: 自動承認・サブエージェント・スキルを使い、Claude Code がコミットや PR を作っている
+- `高度`: `自律`に加えて、カスタムコマンド・MCP を使い、効率の指標が組織の上位にある
+- `不明`: 網羅率が低い（§27.4）
+
+組織の見せ方は、段階ごとの人数の月次推移と、前月からの遷移（上がった人・下がった人の数）。
+
+### 27.7 管轄外の検知
+
+OTel の利用のうち、この組織の GitHub Organization の外で行われた分を人ごとに数える。母集団から
+外さない（§15.5 の`なし`は GitHub 側の数え方で、ここでは使わない）。
+
+- リポジトリ属性（`vcs.owner.name`・`vcs.repository.name`。`OTEL_METRICS_INCLUDE_REPOSITORY`が
+  有効な端末だけが送る）がある組織: owner が`github_org`と一致しないセッション・費用の割合を
+  `outside_org_share`に出す。owner 名・リポジトリ名は成果物に書かない
+- 属性が無い組織: OTel の`commit.count`と GitHub のその人のコミット数（§15.7）の差を
+  `unexplained_commits`に出す（Claude Code が作ったコミットのうち、この Organization に現れなかった
+  分）
+- どちらも参考値。ローカルだけの作業・未マージ・別 org の正当な業務を区別できないので、人に
+  確かめるきっかけとして扱う
+
+### 27.8 パネルと管理職向け成果物
+
+- `maturity-panel-<YYYYMM>-<org>.csv`: 1 行が 1 人の 1 か月。その月までの全月（入力にある月）を
+  含む。列は活用・自律・成果と効率・検知・段階・文脈（シート種別・部署・チーム・職種・
+  code-analytics の有無・GitHub と OTel の網羅）。行はメール昇順・月昇順
+- `maturity-dashboard-<YYYYMM>-<org>.html`: 散布図（LoC × マージ行。両対数）、個人の推移、段階
+  ごとの人数の推移、コホート（利用開始月で束ねて経過月数ごとの中央値）。外部通信なし・JS 無効でも
+  全内容が読める・メールはローカル部のみ（既存 dashboard と同じ 3 点）
+- 読者は CTO と開発責任者。組織の担当者へ共有する成果物（report・details・dashboard・
+  recommendations・usage-summary・preview・preview-dashboard と opt-in の decision-evidence・
+  github-summary）の集合には含めない。docs にその旨を書く
+- `maturity.enabled: false`が既定。有効でも、GitHub・OTel の無い組織では該当の列が空欄になるだけで
+  書ける
+- 組織横断の比較は`reports/summary/<month>.md`にだけ書く
+- 複数スペースの組織は人の層（§26.4）で合算する
+- 生データ（月次ファイル・週次累積・github-cache・otel-cache）が正で、パネルは毎回それから作り直す
+  （追記型の履歴ファイルを持たない）
+
+### 27.9 保存しないもの
+
+§7.7 の「保存しない」に加えて、成果物にも次を書かない。
+
+- プロンプト・応答・ツールの引数・コマンド
+- リポジトリ名・owner 名・ファイルパス
+- スキル・エージェント・MCP・コマンドの名前
+- 他組織の情報
+
+### 27.10 後続
+
+- コミット SHA による結合: イベント`tool_result`の`vcs.ref.head.revision`と PR のコミットの oid を
+  突き合わせ、「Claude Code のセッションを経た PR の割合」を出す
+- 週次の粒度: 週次の累積スナップショットと OTel の日次から、月内の推移を出す
