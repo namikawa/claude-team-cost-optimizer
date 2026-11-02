@@ -11,7 +11,7 @@ GitHub ID の2列だけであることも固定する。
 probe では、gh を実行できない場合の分類と、応答の解釈（HTTP ステータス・ヘッダ・本文）を
 見る。repository の発見では、除外（archived / fork / template）と pagination のほか、
 完全な一覧を得られなかった場合に一覧を返さないことを固定する。PR の収集では、保存する
-項目が §7.6 の9項目だけであること・repository と number で一意になること・取り切れなかった
+項目が §7.6 の PR とコミットの項目だけであること・repository と number で一意になること・取り切れなかった
 窓の結果を採らないことを固定する。実際の gh もネットワークも呼ばない。issue への変換は
 tests/test_data_quality.py が見る。
 
@@ -24,24 +24,29 @@ import datetime as dt
 import json
 import re
 import subprocess
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
 
 from seat_analyzer.github_collect import (
+    _COMMIT_ENTRY_KEYS,
+    _COMMIT_PAGE_SIZES,
     _MAX_ATTEMPTS,
-    _MAX_SEARCH_PAGES,
+    _PR_COMMITS_LIMIT,
+    _PR_COMMITS_QUERY,
     _PR_ENTRY_KEYS,
     _PR_SEARCH_QUERY,
     _REPOS_PER_PAGE,
     _RETRY_PAUSES,
-    _SEARCH_PER_PAGE,
+    _SEARCH_PAGE_SIZES,
     _SEARCH_RESULT_CAP,
     _TRANSIENT_STATUSES,
     GH_EXIT_AUTH_REQUIRED,
     LEGACY_GITHUB_MEMBERS_FILENAME,
     PR_CACHE_DIRNAME,
     PR_CACHE_SCHEMA,
+    CachedCommit,
     CachedPr,
     DateWindow,
     GhFailure,
@@ -1122,8 +1127,9 @@ def test_repo_discovery_accepts_a_complete_listing():
 # ---------------------------------------------------- 呼び出しが読み取りだけであること
 #
 # GitHub 上の情報（repository・PR・設定）を変更する呼び出しを作らないことを、全入口の
-# 引数をまとめて検査して固定する。引数を組み立てるのはモジュール側の3箇所だけなので、
-# 構造（`_AUTH_STATUS_ARGS` / `_read_args` / `_graphql_args`）とこの検査の両方で守る。
+# 引数をまとめて検査して固定する。引数を組み立てる4箇所の構造
+# （`_AUTH_STATUS_ARGS` / `_read_args` / `_graphql_args` / `_commit_graphql_args`）と
+# この検査の両方で守る。
 
 # 件数に許す字句（10進整数だけ）
 _COUNT_RE = re.compile(r"[0-9]+")
@@ -1153,26 +1159,31 @@ def _assert_rest_read(args: tuple[str, ...]) -> None:
 
 
 def _assert_graphql_read(args: tuple[str, ...]) -> None:
-    """GraphQL の呼び出しが、読み取り専用の検索1本の形であることを確かめる。
-
-    GraphQL の入口は POST なのでフィールドは要るが、渡してよいのは query 文書・検索
-    文字列・件数と、2ページ目以降の cursor だけ。並びと数まで固定して、ほかのフラグや
-    2つ目の文書を混ぜられないようにする。
-    """
-    assert len(args) in (9, 11), f"GraphQL の引数の数が想定と違います: {args}"
-    assert args[:4] == ("api", "-i", "graphql", "-f"), f"先頭が想定と違います: {args}"
-    assert args[5] == "-f" and args[7] == "-F", f"フラグの並びが想定と違います: {args}"
+    """検索と PR 単位の続き取得だけを許す（変数・型・並びまで固定する）。"""
+    assert len(args) in (11, 13, 15), args
+    assert args[:4] == ("api", "-i", "graphql", "-f"), args
     document = _value_after(args[4], "query=", args)
-    _value_after(args[6], "search=", args)
-    count = _value_after(args[8], "first=", args)
-    assert _COUNT_RE.fullmatch(count), f"first は10進整数です: {count!r}"
-    assert document.lstrip().startswith("query"), (
-        f"GraphQL 文書は query で始めます: {document[:40]!r}"
-    )
-    assert "mutation" not in document, "GraphQL 文書に mutation を含めません"
-    if len(args) == 11:
-        assert args[9] == "-f", f"cursor は -f で渡します: {args}"
-        _value_after(args[10], "after=", args)
+    assert document.lstrip().startswith("query"), document
+    assert "mutation" not in document, document
+    if args[6].startswith("search="):
+        assert len(args) in (11, 13), args
+        fields = (("-f", "search=", False), ("-F", "first=", True),
+                  ("-F", "commitsFirst=", True))
+    else:
+        assert len(args) in (13, 15), args
+        fields = (("-f", "owner=", False), ("-f", "name=", False),
+                  ("-F", "number=", True), ("-F", "first=", True))
+    for index, (flag, prefix, count) in enumerate(fields):
+        pos = 5 + index * 2
+        assert args[pos] == flag, args
+        value = _value_after(args[pos + 1], prefix, args)
+        if count:
+            assert _COUNT_RE.fullmatch(value), value
+    end = 5 + len(fields) * 2
+    assert len(args) in (end, end + 2), args
+    if len(args) == end + 2:
+        assert args[end] == "-f", args
+        _value_after(args[end + 1], "after=", args)
 
 
 def assert_read_only(calls: list[tuple[str, ...]]) -> None:
@@ -1201,7 +1212,8 @@ def _graphql_call(*extra: str, document: str = "query { viewer { login } }",
     """形の整った GraphQL の呼び出し（extra で余分な要素を足せる）。"""
     return (
         "api", "-i", "graphql", "-f", f"query={document}",
-        "-f", "search=org:example-org is:pr", "-F", f"first={first}", *extra,
+        "-f", "search=org:example-org is:pr", "-F", f"first={first}",
+        "-F", "commitsFirst=100", *extra,
     )
 
 
@@ -1243,14 +1255,14 @@ def test_the_read_only_check_accepts_no_calls_as_a_failure():
 
 
 def test_the_read_only_check_accepts_the_cursor_form():
-    """2ページ目以降の実際の呼び出し（after 付きの 11 要素形）も読み取り専用として通る。
+    """2ページ目以降の実際の呼び出し（after 付きの13要素形）も読み取り専用として通る。
 
     収集の記録用 runner は 1 ページで終わるため、この形は `_graphql_args` の出力を直接流して
     確かめる（cursor の付け方を変える退行を、構造の検査が弾かないことを固定する）。
     """
     from seat_analyzer.github_collect import _graphql_args
 
-    assert_read_only([_graphql_args("org:example-org is:pr is:merged", "Y3Vyc29yOjE=")])
+    assert_read_only([_graphql_args("org:example-org is:pr is:merged", "Y3Vyc29yOjE=", *_SEARCH_PAGE_SIZES[0])])
 
 
 # ------------------------------------------------------ PR の収集（共通の道具）
@@ -1295,6 +1307,26 @@ def _window(index: int) -> DateWindow:
     return DateWindow(start=dt.date.fromisoformat(start), end=dt.date.fromisoformat(end))
 
 
+def _commit_node(index: int = 1, **overrides) -> dict:
+    """合成のコミット（余分なフィールドも与えられる）。"""
+    commit = {
+        "oid": f"{index:040x}", "additions": 10, "deletions": 2,
+        "committedDate": "2026-08-02T00:00:00Z", "parents": {"totalCount": 1},
+        "author": {"user": {"login": "synthetic-dev"}, "email": "Dev@Example.INVALID"},
+    }
+    commit.update(overrides)
+    return {"commit": commit}
+
+
+def _connection(nodes, total=None, has_next=False, cursor=None):
+    """コミットのページを作る（総数・続きの有無・cursor を上書きできる）。"""
+    return {
+        "totalCount": len(nodes) if total is None else total,
+        "pageInfo": {"hasNextPage": has_next, "endCursor": cursor},
+        "nodes": nodes,
+    }
+
+
 def _node(number: int = 12, repository: str = "repo-a", login: str | None = "octocat",
           author_type: str = "User", created: str = "2026-08-01T00:00:00Z",
           merged: str = "2026-08-03T10:30:00Z", additions: int = 10,
@@ -1313,6 +1345,8 @@ def _node(number: int = 12, repository: str = "repo-a", login: str | None = "oct
         "deletions": deletions,
         "repository": {"name": repository},
         "author": None if login is None else {"login": login, "__typename": author_type},
+        "mergeCommit": None,
+        "commits": _connection([]),
     }
     node.update(extra)
     return node
@@ -1405,7 +1439,7 @@ REPOS = _discovery("repo-a", "repo-b")
 
 def _collect(tmp_path: Path, gh, *, today: dt.date = TODAY, month: str = MONTH,
              org: str = GH_ORG, sleep: _Pauses | None = None,
-             repos: RepoDiscovery | None = None) -> PrCollection:
+             repos: RepoDiscovery | None = None, on_window=None) -> PrCollection:
     """収集を1回実行する（キャッシュは tmp_path 配下の組織ディレクトリ相当に置く）。
 
     待ちは常に差し替える（既定の `time.sleep` を通すと、再試行するケースでテストが
@@ -1413,7 +1447,7 @@ def _collect(tmp_path: Path, gh, *, today: dt.date = TODAY, month: str = MONTH,
     """
     return collect_merged_prs(
         org, month, tmp_path / PR_CACHE_DIRNAME, repos=REPOS if repos is None else repos,
-        runner=gh, today=today, sleep=sleep or _Pauses(),
+        runner=gh, today=today, sleep=sleep or _Pauses(), on_window=on_window,
     )
 
 
@@ -1651,19 +1685,26 @@ def test_pr_collection_rejects_a_path_that_is_not_a_path():
 # ------------------------------------------------------------ 禁止フィールド
 
 
-def test_the_search_query_asks_for_no_content():
-    """title・本文・files・commits・comments・reviews は問い合わせに書かない。
+@pytest.mark.parametrize("query", [_PR_SEARCH_QUERY, _PR_COMMITS_QUERY])
+def test_the_search_query_asks_for_no_content(query):
+    """title・本文・files・コミットのメッセージ・comments・reviews は問い合わせに書かない。
 
     保存側で落とすのではなく、そもそも受け取らない形にしておく（設計書 §20.3）。
     """
     for forbidden in (
-        "title", "body", "bodyText", "files", "commits", "comments", "reviews",
+        "title", "body", "bodyText", "files", "comments", "reviews", "committer",
+        "message", "messageHeadline", "messageBody", "diff", "tree", "changedFiles",
+        "baseRefName", "headRefName",
     ):
-        assert forbidden not in _PR_SEARCH_QUERY
+        assert not re.search(r"\b" + forbidden + r"\b", query)
+    assert "parents { totalCount }" in query
+    assert "parents(" not in query
+    assert re.search(r"author\s*\{\s*user\s*\{\s*login\s*\}\s*email\s*\}", query)
+    assert not re.search(r"author\s*\{[^}]*\bname\b", query)
 
 
-def test_collect_saves_only_the_nine_fields(tmp_path):
-    """応答に禁止フィールドが載っていても、保存する項目は9つだけ。"""
+def test_collect_saves_only_the_allowed_fields(tmp_path):
+    """応答に禁止フィールドが載っていても、保存する項目は許可したものだけ。"""
     gh = _windows_returning({1: [_node(
         title="機密のタイトル",
         body="機密の本文",
@@ -1671,7 +1712,7 @@ def test_collect_saves_only_the_nine_fields(tmp_path):
         url="https://github.example.invalid/repo-a/pull/12",
         headRefName="feature/secret",
         files={"nodes": [{"path": "src/secret.py"}]},
-        commits={"nodes": [{"message": "機密のコミットメッセージ"}]},
+        commits=_connection([_commit_node(message="機密のコミットメッセージ")]),
         comments={"nodes": [{"body": "機密のコメント"}]},
         reviews={"nodes": [{"body": "機密のレビュー"}]},
     )]})
@@ -1679,7 +1720,8 @@ def test_collect_saves_only_the_nine_fields(tmp_path):
 
     entry = _entries(tmp_path)["repo-a#12"]
     assert set(entry) == set(_PR_ENTRY_KEYS)
-    assert len(_PR_ENTRY_KEYS) == 9
+    assert len(_PR_ENTRY_KEYS) == 12
+    assert set(entry["commits"][0]) == set(_COMMIT_ENTRY_KEYS)
     assert "機密" not in _cache_file(tmp_path).read_text(encoding="utf-8")
 
 
@@ -1703,6 +1745,9 @@ def test_collect_writes_the_expected_shape(tmp_path):
             "additions": 10,
             "deletions": 2,
             "is_draft": False,
+            "merge_commit_oid": None,
+            "commit_count": 0,
+            "commits": [],
         }},
     }
     assert (result.total, result.upserted, result.complete) == (1, 1, True)
@@ -1717,7 +1762,7 @@ def test_collect_searches_every_window_in_order(tmp_path):
     _collect(tmp_path, gh)
 
     assert gh.expressions == [_window_expression(index) for index in range(1, 6)]
-    assert _argument(gh.calls[0], "first") == str(_SEARCH_PER_PAGE)
+    assert _argument(gh.calls[0], "first") == str(_SEARCH_PAGE_SIZES[0][0])
     assert _argument(gh.calls[0], "after") is None   # 1ページ目は after を渡さない
 
 
@@ -2040,7 +2085,7 @@ def test_collect_stops_after_repeated_timeouts(tmp_path):
 
 
 def test_collect_retries_a_later_page_too(tmp_path):
-    """再試行は窓の1ページ目に限らない（cursor 付きのページも同じ引数で呼び直す）。"""
+    """再試行は窓の1ページ目に限らない（cursor 付きのページも同じ位置から小さくして読む）。"""
     pauses = _Pauses()
     gh = _Flaky({
         (_window_expression(1), None): [_search_response(
@@ -2063,7 +2108,6 @@ def test_collect_retries_a_later_page_too(tmp_path):
     _search_response([], status=403, headers=(("Retry-After", "60"),)),
     _search_response([], status=500),                                   # 5xx でも対象外
     _search_response([], status=404),
-    _response("{"),                                                     # 解釈できない本文
     _search_response([_node(merged="2026-08-09T00:00:00Z")]),           # 読めない node
     _response({"errors": [{"type": "FORBIDDEN"}]}),
     GhResult(ok=False, failure=GhFailure.UNAUTHENTICATED),
@@ -2185,12 +2229,13 @@ class _AlwaysNext:
         )
 
 
-def test_collect_stops_with_an_error_at_the_page_limit(tmp_path):
-    """上限までページが続いたら、切り詰めた結果ではなくエラーにする。"""
+def test_collect_stops_with_an_error_at_the_count_limit(tmp_path):
+    """受信した PR の累計が上限を超えたら、切り詰めた結果ではなくエラーにする。"""
     gh = _AlwaysNext()
     result = _collect(tmp_path, gh)
 
-    assert len(gh.calls) == _MAX_SEARCH_PAGES
+    assert len(gh.calls) == _SEARCH_RESULT_CAP + 1
+    assert_read_only(gh.calls)
     assert result.failure is GhFailure.ERROR
     assert result.stopped == _window(1)
     assert _entries(tmp_path) == {}
@@ -2444,6 +2489,9 @@ def _valid_payload(**overrides) -> dict:
             "additions": 10,
             "deletions": 2,
             "is_draft": False,
+            "merge_commit_oid": None,
+            "commit_count": 0,
+            "commits": [],
         }},
     }
     payload.update(overrides)
@@ -2465,7 +2513,7 @@ def test_load_pr_cache_reads_what_collect_wrote(tmp_path):
 
     assert cache.complete is True
     assert [pr.key for pr in cache.prs] == ["repo-a#12", "repo-b#3"]
-    assert cache.prs[0] == _pr()
+    assert cache.prs[0] == _pr(commits=(), commit_count=0)
 
 
 def test_load_pr_cache_sorts_the_prs_numerically(tmp_path):
@@ -2481,7 +2529,7 @@ def test_load_pr_cache_sorts_the_prs_numerically(tmp_path):
 @pytest.mark.parametrize(("payload", "message"), [
     ("{", "JSON として読めません"),
     ("[]", "JSON のオブジェクトではありません"),
-    (_valid_payload(schema=2), "対応していない形式です"),
+    (_valid_payload(schema=3), "対応していない形式です"),
     # Python では True == 1・1.0 == 1 なので、版の比較は int の1だけを受ける
     (_valid_payload(schema=True), "対応していない形式です"),
     (_valid_payload(schema=1.0), "対応していない形式です"),
@@ -2628,7 +2676,7 @@ def test_load_pr_cache_rejects_a_repository_listing_it_cannot_read(
 
 def test_collect_writes_nothing_when_the_cache_is_broken(tmp_path):
     """壊れたキャッシュの上に upsert しない（取りこぼしを抱えて「完了」になりうる）。"""
-    path = _write_payload(tmp_path, _valid_payload(schema=2))
+    path = _write_payload(tmp_path, _valid_payload(schema=3))
     before = path.read_bytes()
     gh = _windows_returning({1: [_node()]})
 
@@ -2691,3 +2739,639 @@ def test_every_gh_call_only_reads(tmp_path):
     assert any(call[-1].startswith(f"orgs/{GH_ORG}/repos") for call in gh.calls)
     assert any(call[:3] == ("api", "-i", "graphql") for call in gh.calls)
     assert_read_only(gh.calls)
+
+
+# ------------------------------------------------------ コミットと schema 2
+
+
+def _commit_response(connection) -> GhResult:
+    """PR 単位のコミット取得で返す GraphQL の応答を作る。"""
+    return _response({"data": {"repository": {"pullRequest": {"commits": connection}}}})
+
+
+def test_collect_commits_keeps_authors_merge_flags_and_order(tmp_path):
+    """作者の欠損・メールの原文・マージの印を保ち、保存順と JSON が一定になる。"""
+    nodes = [
+        _commit_node(3, author=None),
+        _commit_node(2, author={"user": None, "email": ""}, parents={"totalCount": 2}),
+        _commit_node(1, committedDate="2026-08-03T00:00:00Z"),
+        _commit_node(4, author={"user": None, "email": "Mixed@Example.INVALID"},
+                     parents={"totalCount": 3}),
+    ]
+    result = _collect(tmp_path, _windows_returning({1: [
+        _node(commits=_connection(nodes), mergeCommit={"oid": "a" * 40}),
+        _node(number=13, login="synthetic-bot[bot]", author_type="Bot", draft=True,
+              commits=_connection([_commit_node()])),
+    ]}))
+    cache = load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+    pr = cache.prs[0]
+    assert pr.commit_count == 4
+    assert [commit.oid for commit in pr.commits] == [f"{i:040x}" for i in (2, 3, 4, 1)]
+    assert [commit.is_merge for commit in pr.commits] == [True, False, True, False]
+    assert [(commit.author_login, commit.author_email) for commit in pr.commits] == [
+        (None, ""), (None, None), (None, "Mixed@Example.INVALID"),
+        ("synthetic-dev", "Dev@Example.INVALID"),
+    ]
+    assert pr.merge_commit_oid == "a" * 40
+    assert cache.prs[1].merge_commit_oid is None
+    assert len(cache.prs[1].commits) == 1  # Bot・draft も保存する
+    assert result.commit_total == 5
+    before = _cache_file(tmp_path).read_bytes()
+    # 入力の順番に依存しない JSON。
+    _collect(tmp_path, _windows_returning({}), today=TODAY)
+    assert _cache_file(tmp_path).read_bytes() == before
+
+
+@pytest.mark.parametrize("total,received,complete", [
+    (300, 250, True), (300, 200, False), (120, 100, False), (250, 250, True),
+])
+def test_commit_pages_and_github_limit(tmp_path, total, received, complete):
+    """コミットの続きをつなぎ、総数か GitHub の上限と保存件数が一致した窓だけを完了にする。"""
+    nodes = [_commit_node(i) for i in range(1, received + 1)]
+    gh = _FakeSearch({
+        (_window_expression(1), None): _search_response([
+            _node(commits=_connection(nodes[:100], total, True, "PAGE-2")),
+        ]),
+        (None, "PAGE-2"): _commit_response(_connection(
+            nodes[100:200], total, received > 200, "PAGE-3" if received > 200 else None,
+        )),
+        (None, "PAGE-3"): _commit_response(_connection(nodes[200:], total)),
+    }, default=_search_response([]))
+    result = _collect(tmp_path, gh)
+    assert result.complete is complete
+    assert result.failure is (None if complete else GhFailure.ERROR)
+    assert_read_only(gh.calls)
+    if complete:
+        pr = _entries(tmp_path)["repo-a#12"]
+        assert pr["commit_count"] == total
+        assert len(pr["commits"]) == received
+    else:
+        assert _entries(tmp_path) == {}
+        assert result.stopped == _window(1)
+    call = gh.calls[1]
+    assert _argument(call, "owner") == GH_ORG
+    assert _argument(call, "name") == "repo-a"
+    assert _argument(call, "number") == "12"
+    assert _argument(call, "first") == str(_COMMIT_PAGE_SIZES[0])
+    assert _argument(gh.calls[0], "commitsFirst") == str(_SEARCH_PAGE_SIZES[0][1])
+
+
+@pytest.mark.parametrize("failure,expected,attempts", [
+    (_response({}, status=403), GhFailure.ERROR, 1),
+    (_response({}, status=502), GhFailure.ERROR, _MAX_ATTEMPTS),
+    (_response({}, status=503), GhFailure.ERROR, _MAX_ATTEMPTS),
+    (_response({}, status=504), GhFailure.ERROR, _MAX_ATTEMPTS),
+    (GhResult(ok=False, failure=GhFailure.TIMEOUT), GhFailure.TIMEOUT, _MAX_ATTEMPTS),
+    (_response({}, status=429), GhFailure.RATE_LIMITED, 1),
+    (_response({}, status=403, headers=(("X-RateLimit-Remaining", "0"),)),
+     GhFailure.RATE_LIMITED, 1),
+    (_response({"errors": [{"type": "RATE_LIMITED"}]}), GhFailure.RATE_LIMITED, 1),
+    (_response({"errors": [{"type": "FORBIDDEN"}]}), GhFailure.ERROR, 1),
+])
+def test_commit_page_failures_stop_the_whole_window(tmp_path, failure, expected, attempts):
+    """続きの失敗を分類して窓全体を採らず、前の完了済みの窓を保存する。"""
+    gh = _FakeSearch({
+        (_window_expression(1), None): _search_response([_node(number=1)]),
+        (_window_expression(2), None): _search_response([
+            _node(number=2, merged="2026-08-09T00:00:00Z"),
+            _node(number=3, merged="2026-08-09T00:00:00Z",
+                  commits=_connection([_commit_node()], 2, True, "NEXT")),
+        ]),
+        (None, "NEXT"): failure,
+    })
+    pauses = _Pauses()
+    result = _collect(tmp_path, gh, sleep=pauses)
+    assert result.failure is expected
+    assert result.stopped == _window(2)
+    assert set(_entries(tmp_path)) == {"repo-a#1"}
+    assert _payload(tmp_path)["complete_windows"] == [list(WINDOWS[0])]
+    assert len(gh.calls) == 2 + attempts
+    assert pauses.seconds == list(_RETRY_PAUSES[:attempts - 1])
+    assert [_argument(call, "first") for call in gh.calls[2:]] == [
+        str(size) for size in _COMMIT_PAGE_SIZES[:attempts]
+    ]
+    assert all(_argument(call, "after") == "NEXT" for call in gh.calls[2:])
+    assert_read_only(gh.calls)
+
+
+def test_commit_page_recovers_after_transient_failure(tmp_path):
+    """続きの一時的な失敗は同じ位置から小さくして読み、成功すれば全件を保存する。"""
+    responses = [_response({}, status=503), _commit_response(_connection([_commit_node(2)], 2))]
+    gh = _FakeSearch({
+        (_window_expression(1), None): _search_response([
+            _node(commits=_connection([_commit_node()], 2, True, "NEXT")),
+        ]),
+    }, default=_search_response([]))
+
+    def run(args):
+        if _argument(args, "search") is None:
+            gh.calls.append(tuple(args))
+            return responses.pop(0)
+        return gh(args)
+
+    pauses = _Pauses()
+    result = _collect(tmp_path, run, sleep=pauses)
+    assert result.complete
+    assert result.commit_total == 2
+    assert pauses.seconds == [_RETRY_PAUSES[0]]
+    assert [_argument(call, "first") for call in gh.calls[1:3]] == ["100", "50"]
+    assert all(_argument(call, "after") == "NEXT" for call in gh.calls[1:3])
+    assert_read_only(gh.calls)
+
+
+@pytest.mark.parametrize("connection", [
+    None, {}, _connection([None]), _connection([{}]),
+    _connection([_commit_node(oid="A" * 40)]),
+    _connection([_commit_node(oid="a" * 39)]),
+    _connection([_commit_node(committedDate="2026-08-02T00:00:00+00:00")]),
+    _connection([_commit_node(committedDate="2026-02-30T00:00:00Z")]),
+    _connection([_commit_node(additions=True)]),
+    _connection([_commit_node(deletions=-1)]),
+    _connection([_commit_node(parents={"totalCount": True})]),
+    _connection([_commit_node(parents={})]),
+    _connection([_commit_node(author={"email": "dev@example.invalid"})]),
+    _connection([_commit_node(author={"user": None})]),
+    _connection([_commit_node(author={"user": {}, "email": ""})]),
+    _connection([_commit_node(), _commit_node()]),
+    _connection([_commit_node()], 2),
+    _connection([], has_next=True),
+    _connection([], total=True),
+    _connection([], has_next="true"),
+    _connection([], cursor=123),
+    _connection([{"commit": _without(_commit_node()["commit"], "author")}]),
+])
+def test_unreadable_commits_stop_the_window(tmp_path, connection):
+    """コミットの欠落・不正値・重複・件数不足を見逃さず、その窓全体を採らない。"""
+    result = _collect(tmp_path, _windows_returning({1: [
+        _node(number=1), _node(number=2, commits=connection),
+    ]}))
+    assert result.failure is GhFailure.ERROR
+    assert result.stopped == _window(1)
+    assert _entries(tmp_path) == {}
+
+
+@pytest.mark.parametrize("connection", [
+    _connection([_commit_node()], 2),  # ページをまたいだ重複
+    _connection([_commit_node(2)], 3),  # totalCount の変化
+    _connection([_commit_node(2, oid="invalid")], 2),
+    None,
+])
+def test_unreadable_followup_commits_stop_the_window(tmp_path, connection):
+    """ページをまたぐ重複・総数の変化・読めない続きを含む窓は保存しない。"""
+    gh = _FakeSearch({
+        (_window_expression(1), None): _search_response([
+            _node(commits=_connection([_commit_node()], 2, True, "NEXT")),
+        ]),
+        (None, "NEXT"): _commit_response(connection),
+    })
+    assert _collect(tmp_path, gh).failure is GhFailure.ERROR
+    assert _entries(tmp_path) == {}
+
+
+def test_commit_count_limit_stops_the_window(tmp_path):
+    """PR の受信コミット数が上限を超えたら、切り詰めず窓全体を採らない。"""
+    nodes = [_commit_node(i) for i in range(_PR_COMMITS_LIMIT + 1)]
+    gh = _FakeSearch({
+        (_window_expression(1), None): _search_response([
+            _node(commits=_connection(nodes[:50], len(nodes), True, "NEXT")),
+        ]),
+        (None, "NEXT"): _commit_response(_connection(nodes[50:], len(nodes))),
+    })
+    assert _collect(tmp_path, gh).failure is GhFailure.ERROR
+    assert len(gh.calls) == 2
+    assert _entries(tmp_path) == {}
+    assert_read_only(gh.calls)
+
+
+def _legacy_payload():
+    """コミットの材料を持たない schema 1 のキャッシュを作る。"""
+    payload = _valid_payload(schema=1)
+    for pr in payload["prs"].values():
+        for key in ("commits", "commit_count", "merge_commit_oid"):
+            del pr[key]
+    return payload
+
+
+def test_schema_one_is_readable_and_refetched_completely(tmp_path):
+    """schema 1 は読めるが収集時は全窓を取り直し、schema 2 の完了済みの窓は問い合わせない。"""
+    payload = _legacy_payload()
+    payload["complete_windows"] = [list(window) for window in WINDOWS]
+    _write_payload(tmp_path, payload)
+    cache = load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+    assert cache.schema == 1
+    assert cache.prs[0] == _pr()
+    assert cache.prs[0].commits is None
+    assert cache.prs[0].commit_count is None
+    assert cache.prs[0].merge_commit_oid is None
+    gh = _windows_returning({2: [_node(number=2, merged="2026-08-09T00:00:00Z")]})
+    result = _collect(tmp_path, gh)
+    assert result.refreshed_schema
+    assert result.complete
+    assert gh.expressions == [_window_expression(i) for i in range(1, 6)]
+    assert _payload(tmp_path)["schema"] == 2
+    assert set(_entries(tmp_path)) == {"repo-a#2"}
+    again = _windows_returning({})
+    assert not _collect(tmp_path, again).refreshed_schema
+    assert again.calls == []
+
+
+@pytest.mark.parametrize("field", ["commits", "commit_count", "merge_commit_oid"])
+def test_cache_requires_schema_specific_pr_keys(tmp_path, field):
+    """schema 2 のコミット項目の欠落と、schema 1 への同項目の追加を拒む。"""
+    payload = _valid_payload()
+    del payload["prs"]["repo-a#12"][field]
+    _write_payload(tmp_path, payload)
+    with pytest.raises(ValueError, match="項目がありません"):
+        load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+    payload = _legacy_payload()
+    payload["prs"]["repo-a#12"][field] = None
+    _write_payload(tmp_path, payload)
+    with pytest.raises(ValueError, match="未知のキー"):
+        load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+
+
+def _cached_commit(**overrides):
+    """保存形式のコミット1件を作る（項目を上書きできる）。"""
+    fields = {
+        "oid": "a" * 40, "author_login": None, "author_email": "",
+        "additions": 1, "deletions": 0, "committed_at": "2026-08-02T00:00:00Z",
+        "is_merge": False,
+    }
+    fields.update(overrides)
+    return fields
+
+
+@pytest.mark.parametrize("overrides", [
+    {"oid": "A" * 40}, {"oid": "a" * 39}, {"oid": None},
+    {"committed_at": "2026-08-02"}, {"committed_at": "2026-02-30T00:00:00Z"},
+    {"author_login": "bad login"}, {"author_email": 1}, {"additions": True},
+    {"deletions": -1}, {"is_merge": 1},
+])
+def test_cached_commit_and_reader_reject_invalid_values(tmp_path, overrides):
+    """コミットの不正値は値オブジェクトの構築とキャッシュの読み取りの両方で拒む。"""
+    fields = _cached_commit(**overrides)
+    with pytest.raises((TypeError, ValueError)):
+        CachedCommit(**fields)
+    payload = _valid_payload()
+    payload["prs"]["repo-a#12"].update(commits=[fields], commit_count=1)
+    _write_payload(tmp_path, payload)
+    with pytest.raises(ValueError):
+        load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+
+
+@pytest.mark.parametrize("overrides", [
+    {"commits": None}, {"commit_count": None}, {"commit_count": True},
+    {"commit_count": 2}, {"merge_commit_oid": "A" * 40},
+    {"merge_commit_oid": "a" * 39},
+    {"commits": [_cached_commit(note="extra")]},
+    {"commits": [_without(_cached_commit(), "author_email")]},
+    {"commits": [_cached_commit(), _cached_commit()], "commit_count": 2},
+    {"commits": [_cached_commit(oid="b" * 40), _cached_commit()], "commit_count": 2},
+])
+def test_schema_two_rejects_invalid_commit_material(tmp_path, overrides):
+    """schema 2 の項目不足・未知の項目・不正値・重複・並びの不整合を拒む。"""
+    payload = _valid_payload()
+    payload["prs"]["repo-a#12"].update(commits=[_cached_commit()], commit_count=1)
+    payload["prs"]["repo-a#12"].update(overrides)
+    _write_payload(tmp_path, payload)
+    with pytest.raises(ValueError):
+        load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+
+
+@pytest.mark.parametrize("count,saved,valid", [(300, 250, True), (300, 200, False), (120, 100, False)])
+def test_cached_pr_and_reader_check_commit_counts(tmp_path, count, saved, valid):
+    """総数と保存件数の整合を、PR の構築とキャッシュの読み取りの両方で確かめる。"""
+    commits = tuple(CachedCommit(**_cached_commit(oid=f"{i:040x}")) for i in range(saved))
+    payload = _valid_payload()
+    payload["prs"]["repo-a#12"].update(
+        commits=[_cached_commit(oid=commit.oid) for commit in commits], commit_count=count,
+    )
+    _write_payload(tmp_path, payload)
+    if valid:
+        assert _pr(commits=commits, commit_count=count).commits == commits
+        assert len(load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG).prs[0].commits) == saved
+    else:
+        with pytest.raises(ValueError, match="件数が一致しません"):
+            _pr(commits=commits, commit_count=count)
+        with pytest.raises(ValueError, match="件数が一致しません"):
+            load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG)
+
+
+@pytest.mark.parametrize("after", [None, "NEXT"])
+def test_read_only_check_accepts_commit_query(after):
+    """PR 単位のコミット取得は cursor の有無にかかわらず読み取り専用の検査を通る。"""
+    from seat_analyzer.github_collect import _commit_graphql_args
+
+    assert_read_only([_commit_graphql_args(GH_ORG, "repo-a", 12, after, _COMMIT_PAGE_SIZES[0])])
+
+
+def _commit_call(*extra, document="query { viewer { login } }"):
+    """読み取り専用の検査に使う PR 単位の呼び出しを作る。"""
+    return (
+        "api", "-i", "graphql", "-f", f"query={document}",
+        "-f", "owner=synthetic-org", "-f", "name=synthetic-repo",
+        "-F", "number=12", "-F", "first=100", *extra,
+    )
+
+
+@pytest.mark.parametrize("call", [
+    _commit_call("--jq", ".data"), _commit_call("-X", "POST"),
+    _commit_call("-f", "after=A", "-f", "after=B"),
+    _commit_call(document="mutation { addComment { id } }"),
+    _commit_call(document="query { viewer { login } } mutation { addComment { id } }"),
+    _commit_call(document="{ viewer { login } }"),
+    tuple("repo=synthetic-repo" if s == "name=synthetic-repo" else s for s in _commit_call()),
+    tuple("number=1e2" if s == "number=12" else s for s in _commit_call()),
+    tuple("first=1.0" if s == "first=100" else s for s in _commit_call()),
+    _commit_call()[:5] + _commit_call()[7:9] + _commit_call()[5:7] + _commit_call()[9:],
+    _commit_call()[:9] + ("-f",) + _commit_call()[10:],
+    _commit_call("-F", "after=A"),
+    _commit_call("-f", "cursor=A"),
+])
+def test_read_only_check_rejects_other_commit_query_shapes(call):
+    """PR 単位の呼び出しも、文書・変数・フラグ・並びが許可形と違えば検査で落とす。"""
+    with pytest.raises(AssertionError):
+        assert_read_only([call])
+
+
+@pytest.mark.parametrize("merge", [{}, {"oid": "A" * 40}, {"oid": "a" * 39}, {"oid": None}, "invalid"])
+def test_collect_rejects_invalid_merge_commit_oid(tmp_path, merge):
+    """PR のマージコミットの SHA が読めなければ、その窓全体を保存しない。"""
+    result = _collect(tmp_path, _windows_returning({1: [_node(mergeCommit=merge)]}))
+    assert result.failure is GhFailure.ERROR
+    assert _entries(tmp_path) == {}
+
+
+@pytest.mark.parametrize("field", ["mergeCommit", "commits"])
+def test_collect_rejects_missing_commit_material(tmp_path, field):
+    """PR のマージコミットか commits の項目自体が欠けた応答は採らない。"""
+    result = _collect(tmp_path, _windows_returning({1: [_without(_node(), field)]}))
+    assert result.failure is GhFailure.ERROR
+    assert _entries(tmp_path) == {}
+
+
+def test_empty_schema_one_cache_is_refetched_with_current_repositories(tmp_path):
+    """PR が空の schema 1 も全窓を取り直し、repository の一覧は今回の値で書き直す。"""
+    payload = _legacy_payload()
+    payload.update(
+        prs={}, complete_windows=[list(window) for window in WINDOWS],
+        repositories={"names": ["synthetic-old-repo"], "excluded": 0},
+    )
+    _write_payload(tmp_path, payload)
+    gh = _windows_returning({})
+    result = _collect(tmp_path, gh)
+    assert result.complete
+    assert result.refreshed_schema
+    assert len(gh.calls) == len(WINDOWS)
+    assert _payload(tmp_path)["repositories"] == {"names": list(REPOS.repos), "excluded": 0}
+
+
+@pytest.mark.parametrize("overrides", [
+    {"commits": ()}, {"commit_count": 0}, {"commits": [], "commit_count": 0},
+    {"commits": ("invalid",), "commit_count": 1},
+    {"commits": (), "commit_count": True},
+    {"commits": (), "commit_count": -1},
+    {"merge_commit_oid": "invalid"},
+])
+def test_cached_pr_rejects_invalid_commit_material(overrides):
+    """PR のコミット材料の型・件数・SHA を検査し、片方だけが欠けた状態も拒む。"""
+    with pytest.raises((TypeError, ValueError)):
+        _pr(**overrides)
+
+
+@pytest.mark.parametrize("user,expected_login", [
+    (None, None), ({"login": "synthetic-dev"}, "synthetic-dev"),
+])
+def test_collect_accepts_null_author_email(tmp_path, user, expected_login):
+    """メールが null の作者も保存し、GitHub login の有無は user の値を保つ。"""
+    result = _collect(tmp_path, _windows_returning({1: [
+        _node(commits=_connection([_commit_node(author={"user": user, "email": None})])),
+    ]}))
+    assert result.complete
+    entry = _entries(tmp_path)["repo-a#12"]["commits"][0]
+    assert entry["author_login"] == expected_login
+    assert entry["author_email"] is None
+    commit = load_pr_cache(tmp_path / PR_CACHE_DIRNAME, MONTH, GH_ORG).prs[0].commits[0]
+    assert commit.author_login == expected_login
+    assert commit.author_email is None
+
+
+# ------------------------------------------------------ 段階的な縮小と進捗
+
+
+def test_page_sizes_match_attempts_and_strictly_decrease():
+    """大きさの段数を試行回数にそろえ、検索と続きの各件数が厳密に小さくなる。"""
+    assert len(_SEARCH_PAGE_SIZES) == len(_COMMIT_PAGE_SIZES) == _MAX_ATTEMPTS
+    assert _SEARCH_PAGE_SIZES == ((10, 50), (5, 20), (1, 10))
+    assert _COMMIT_PAGE_SIZES == (100, 50, 20)
+    for before, after in pairwise(_SEARCH_PAGE_SIZES):
+        assert all(0 < smaller < larger for larger, smaller in zip(before, after))
+    assert all(0 < after < before for before, after in pairwise(_COMMIT_PAGE_SIZES))
+
+
+def test_search_retries_shrink_at_the_same_cursor_and_reset_next_page(tmp_path):
+    """検索を同じ位置から3段階で縮め、成功した次のページは通常の大きさに戻す。"""
+    expression = _window_expression(1)
+    gh = _Flaky({
+        (expression, None): [_search_response([_node(number=1)], 3, True, "START")],
+        (expression, "START"): [
+            _response({}, status=502), GhResult(ok=False, failure=GhFailure.TIMEOUT),
+            _search_response([_node(number=2)], 3, True, "END"),
+        ],
+        (expression, "END"): [_search_response([_node(number=3)], 3)],
+    })
+    pauses = _Pauses()
+    result = _collect(tmp_path, gh, sleep=pauses)
+    assert result.complete
+    assert result.total == 3
+    assert pauses.seconds == list(_RETRY_PAUSES)
+    retried = gh.calls[1:4]
+    assert [_argument(call, "after") for call in retried] == ["START"] * _MAX_ATTEMPTS
+    assert [(int(_argument(call, "first")), int(_argument(call, "commitsFirst")))
+            for call in retried] == list(_SEARCH_PAGE_SIZES)
+    assert _argument(gh.calls[4], "after") == "END"
+    assert (_argument(gh.calls[4], "first"), _argument(gh.calls[4], "commitsFirst")) == ("10", "50")
+    assert_read_only(gh.calls)
+
+
+def test_commit_retries_shrink_at_the_same_cursor_and_reset_next_page(tmp_path):
+    """PR 単位の続きも3段階で縮め、成功した次のページは100件に戻す。"""
+    gh = _Flaky({
+        (_window_expression(1), None): [_search_response([
+            _node(commits=_connection([_commit_node(1)], 3, True, "START")),
+        ])],
+        (None, "START"): [
+            _response({}, status=503), _response({}, status=504),
+            _commit_response(_connection([_commit_node(2)], 3, True, "END")),
+        ],
+        (None, "END"): [_commit_response(_connection([_commit_node(3)], 3))],
+    })
+    pauses = _Pauses()
+    result = _collect(tmp_path, gh, sleep=pauses)
+    assert result.complete
+    assert result.commit_total == 3
+    assert pauses.seconds == list(_RETRY_PAUSES)
+    assert [_argument(call, "after") for call in gh.calls[1:5]] == ["START", "START", "START", "END"]
+    assert [int(_argument(call, "first")) for call in gh.calls[1:5]] == [100, 50, 20, 100]
+    assert_read_only(gh.calls)
+
+
+def _page_failure_runner(kind, failure, recovers):
+    """検索かコミットの続きで、一時的な失敗と任意の成功を返す runner を作る。"""
+    if kind == "search":
+        key = (_window_expression(1), None)
+        success = _search_response([_node()])
+        sequences = {}
+    else:
+        key = (None, "NEXT")
+        success = _commit_response(_connection([_commit_node(2)], 2))
+        sequences = {(_window_expression(1), None): [_search_response([
+            _node(commits=_connection([_commit_node(1)], 2, True, "NEXT")),
+        ])]}
+    sequences[key] = [failure, failure, success] if recovers else [failure]
+    return _Flaky(sequences)
+
+
+@pytest.mark.parametrize("kind", ["search", "commit"])
+@pytest.mark.parametrize("recovers", [True, False])
+@pytest.mark.parametrize("failure", [
+    _response(""), _response("<html>temporary response</html>"), _response("{"),
+    _response({"errors": [{"message": "Operation TIMEOUT"}]}),
+    _response({"errors": [{"message": "Request TiMeD OuT"}]}),
+])
+def test_graphql_timeout_responses_retry_or_exhaust(tmp_path, kind, recovers, failure):
+    """JSON でない200と時間切れの errors は縮小して再試行し、使い切れば200のエラーで止める。"""
+    gh = _page_failure_runner(kind, failure, recovers)
+    pauses = _Pauses()
+    result = _collect(tmp_path, gh, sleep=pauses)
+    assert pauses.seconds == list(_RETRY_PAUSES)
+    calls = gh.calls[:3] if kind == "search" else gh.calls[1:4]
+    assert len(calls) == _MAX_ATTEMPTS
+    assert len({_argument(call, "after") for call in calls}) == 1
+    sizes = _SEARCH_PAGE_SIZES if kind == "search" else _COMMIT_PAGE_SIZES
+    actual = [(int(_argument(call, "first")), int(_argument(call, "commitsFirst")))
+              if kind == "search" else int(_argument(call, "first")) for call in calls]
+    assert actual == list(sizes)
+    if recovers:
+        assert result.complete
+        assert set(_entries(tmp_path)) == {"repo-a#12"}
+    else:
+        assert (result.failure, result.status) == (GhFailure.ERROR, 200)
+        assert result.stopped == _window(1)
+        assert _entries(tmp_path) == {}
+    assert_read_only(gh.calls)
+
+
+@pytest.mark.parametrize("kind", ["search", "commit"])
+@pytest.mark.parametrize("response,expected", [
+    (_response({"errors": [{"message": "timeout"}, {"type": "RATE_LIMITED"}]}), GhFailure.RATE_LIMITED),
+    (_response({"errors": [{"type": "RATE_LIMITED"}, {"message": "timed out"}]}), GhFailure.RATE_LIMITED),
+    (_response({"errors": [{"type": "FORBIDDEN", "message": "denied"}]}), GhFailure.ERROR),
+    (_response({"errors": [{"message": 123}]}), GhFailure.ERROR),
+    (_response([]), GhFailure.ERROR),
+    (_response({"data": []}), GhFailure.ERROR),
+    (_response({"data": None}), GhFailure.ERROR),
+])
+def test_graphql_nontransient_responses_do_not_shrink(tmp_path, kind, response, expected):
+    """利用上限は時間切れより優先し、権限や JSON の構造の不正も再試行せずに止める。"""
+    gh = _page_failure_runner(kind, response, False)
+    pauses = _Pauses()
+    result = _collect(tmp_path, gh, sleep=pauses)
+    assert (result.failure, result.status) == (expected, 200)
+    assert pauses.seconds == []
+    assert len(gh.calls) == (1 if kind == "search" else 2)
+    assert _entries(tmp_path) == {}
+    assert_read_only(gh.calls)
+
+
+@pytest.mark.parametrize("later", [False, True])
+def test_search_rejects_empty_pages_with_a_next_page(tmp_path, later):
+    """次があるのに PR が0件なら、最初でも途中でも止めて窓を保存しない。"""
+    responses = {(_window_expression(1), None): _search_response([], 2, True, "NEXT")}
+    if later:
+        responses[(_window_expression(1), None)] = _search_response([_node()], 2, True, "NEXT")
+        responses[(_window_expression(1), "NEXT")] = _search_response([], 2, True, "AGAIN")
+    gh = _FakeSearch(responses)
+    assert _collect(tmp_path, gh).failure is GhFailure.ERROR
+    assert _entries(tmp_path) == {}
+    assert len(gh.calls) == (2 if later else 1)
+    assert_read_only(gh.calls)
+
+
+@pytest.mark.parametrize("later", [False, True])
+def test_commits_reject_empty_pages_with_a_next_page(tmp_path, later):
+    """次があるのにコミットが0件なら、検索内の最初のページも続きも採らない。"""
+    connection = _connection([_commit_node()] if later else [], 2, True, "NEXT")
+    gh = _FakeSearch({
+        (_window_expression(1), None): _search_response([_node(commits=connection)]),
+        (None, "NEXT"): _commit_response(_connection([], 2, True, "AGAIN")),
+    })
+    assert _collect(tmp_path, gh).failure is GhFailure.ERROR
+    assert _entries(tmp_path) == {}
+    assert len(gh.calls) == (2 if later else 1)
+    assert_read_only(gh.calls)
+
+
+def test_commit_count_limit_includes_the_search_page(tmp_path):
+    """検索内の最初のページだけでコミットの上限を超えても窓を採らない。"""
+    gh = _windows_returning({1: [_node(commits=_connection([
+        _commit_node(i) for i in range(_PR_COMMITS_LIMIT + 1)
+    ]))]})
+    assert _collect(tmp_path, gh).failure is GhFailure.ERROR
+    assert _entries(tmp_path) == {}
+    assert len(gh.calls) == 1
+    assert_read_only(gh.calls)
+
+
+def test_search_count_limit_counts_repeated_prs(tmp_path):
+    """同じ PR が繰り返されても、上限は重複を除く前の受信件数で判定する。"""
+    gh = _FakeSearch({
+        (_window_expression(1), None): _search_response([_node()] * 500, 1, True, "NEXT"),
+        (_window_expression(1), "NEXT"): _search_response([_node()] * 501, 1),
+    })
+    assert _collect(tmp_path, gh).failure is GhFailure.ERROR
+    assert _entries(tmp_path) == {}
+    assert_read_only(gh.calls)
+
+
+def test_window_progress_skips_completed_and_future_windows(tmp_path):
+    """完了済みと未来の窓を数えず、今回問い合わせる窓だけを順番と総数つきで通知する。"""
+    payload = _valid_payload()
+    _write_payload(tmp_path, payload)
+    seen = []
+    gh = _windows_returning({})
+    result = _collect(tmp_path, gh, today=dt.date(2026, 8, 18),
+                      on_window=lambda *args: seen.append(args))
+    assert result.failure is None
+    assert seen == [(_window(2), 1, 2), (_window(3), 2, 2)]
+    assert gh.expressions == [_window_expression(2), _window_expression(3)]
+    assert_read_only(gh.calls)
+
+
+def test_window_progress_stops_at_the_failed_window(tmp_path):
+    """中断した窓の直前までは進捗を通知し、それ以降の窓では通知も問い合わせもしない。"""
+    seen = []
+    gh = _FakeSearch({
+        (_window_expression(1), None): _search_response([]),
+        (_window_expression(2), None): _response({}, status=403),
+    })
+    def run(args):
+        """問い合わせの時点で、その窓の進捗が既に通知されていることを確かめる。"""
+        assert seen[-1] == (_window(len(gh.calls) + 1), len(gh.calls) + 1, 5)
+        return gh(args)
+
+    result = _collect(tmp_path, run, on_window=lambda *args: seen.append(args))
+    assert result.stopped == _window(2)
+    assert seen == [(_window(1), 1, 5), (_window(2), 2, 5)]
+    assert len(gh.calls) == 2
+    assert_read_only(gh.calls)
+
+
+def test_window_progress_is_not_called_when_nothing_is_pending(tmp_path):
+    """全窓が完了済みなら進捗を通知せず、検索も呼ばない。"""
+    _collect(tmp_path, _windows_returning({}))
+    seen = []
+    gh = _windows_returning({})
+    assert _collect(tmp_path, gh, on_window=lambda *args: seen.append(args)).complete
+    assert seen == []
+    assert gh.calls == []
