@@ -175,7 +175,7 @@ model_prices:
 #   computed  = tokens×単価のAPI等価計算（キャッシュ実効単価込み）
 #   net_spend = スペンドレポートの net_spend 列
 #   auto      = net_spend 合計が computed の 50% 未満なら computed を採用
-# 実データ検証（2026-07-05）: net_spend はシート込み利用が $0 になる「実課金額」であり
+# net_spend はシート込み利用が $0 になる「実課金額」であり
 # 需要指標には使えないため computed を採用する。net_spend は「実課金（従量課金分）」
 # として別列でレポートに表示する。
 cost_basis: computed
@@ -309,8 +309,8 @@ usage_credits:
   grant_suggested_cap_usd: 150  # 付与候補に提示する推奨初期上限（表示のみ）
 
 # キャッシュトークンの実効単価係数（入力単価に対する倍率）。
-# 実データで net_spend = uncached×1.0 + cache_read×0.1 + write_5m×1.25 + write_1h×2.0
-# + completion×出力単価 と一致することを確認済み（2026-07-05）。
+# 入力内訳の各トークン数に対応する倍率と入力単価を掛け、出力に出力単価を掛ける。
+# トークン数は1M単位に換算する。実データでも検証した。
 # read は全モデル共通の既定で、model_prices.patterns 側に cache_read があればそれを優先する。
 cache_multipliers:
   read: 0.1

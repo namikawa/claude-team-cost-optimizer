@@ -1,10 +1,13 @@
 # Claude利活用・シート適正化機能提案書
 
 - ステータス: Proposal
-- 最終更新: 2026-07-30
+- 最終更新: 2026-11-03
 - 対象: `claude-team-cost-optimizer`
 - 関連文書: [実装設計書](./implementation-design.md)
 - 進捗管理: [実装ステータス](./implementation-status.md)
+
+本書は初期提案である。OpenTelemetryの現在の仕様は[実装設計書](./implementation-design.md)の
+§27、実装状況は[実装ステータス](./implementation-status.md)のTrack 10を参照。
 
 注記: 収集補助の方式（§8.1などの「通常ブラウザ＋download watcher」）は、実装のときに専用
 プロファイルのChromeと同梱の拡張機能で取得する方式へ変えた。CLIの形（`collect --source claude`・
@@ -34,9 +37,8 @@
 - Code以外のClaude利用も費用には含めるが、活用評価はCodeを主軸にする
 - 追加の月次手作業は5分以内を目標とする
 
-コア機能の実現性は高い。一方、OpenTelemetryを必要とするeffort、subagent、セッション、
-retry、compaction等の分析は、現在の端末管理・収集基盤を前提にすると実装対象外とし、
-将来候補として残す。
+OpenTelemetryを必要とするeffort、subagent、セッション、retry、compaction等の分析は、
+収集基盤・端末設定の配布・運用合意を満たす環境を対象とする（§12.1）。
 
 ## 2. 目的
 
@@ -480,14 +482,8 @@ Billing情報がない場合もシート候補は出せるが、実請求への�
 
 ### 12.1 OpenTelemetry
 
-現在は次の理由で実装しない。
-
-- 開発者端末の設定一括配布を前提にできない
-- 組織内に収集endpointがない
-- 外部endpointへの送信を現時点で前提にしない
-- 小規模パイロットも現時点では行わない
-
-将来、収集基盤と運用合意が整った場合に以下を検討する。
+導入には、端末設定の配布、収集endpoint、セキュリティと運用の合意、小規模パイロットでの
+検証が必要となる。以下は初期提案の検討項目であり、現在の対象範囲は実装設計書§27を参照する。
 
 - effort
 - speed

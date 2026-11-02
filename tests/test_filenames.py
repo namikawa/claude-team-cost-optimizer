@@ -19,7 +19,7 @@ from seat_analyzer.report import PREVIEW
 
 from .conftest import CONFIG, SPEND_HEADER, spend_row
 
-UUID = "bd3f72b4-64ad-4756-bb58-3434644041ec"
+UUID = "00000000-0000-4000-8000-000000000001"
 
 
 # --- ファイル名からの期間解釈 ---

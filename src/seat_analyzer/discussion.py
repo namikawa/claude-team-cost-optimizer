@@ -60,8 +60,8 @@ class DiscussionError(RuntimeError):
 #
 # 主たる保証は `--tools ""`（組み込みツールを空集合にする許可リスト方式）で、以下は
 # それが効かなくなった場合に残る追加防御にすぎない。**denylist は網羅していない**:
-# 実測（`--tools default` で init イベントのツール一覧を確認）では、この列挙を通した
-# 後も 20件以上のツールが残る。ツール名は環境とバージョンに依存するため網羅は諦め、
+# `--tools default` の init イベントで、この列挙だけではツールが残ることを確認した。
+# ツール名は環境とバージョンに依存するため網羅は諦め、
 # 混入・外部送信に直接つながる種類だけを挙げている。
 # - ファイル・Web の読み取り: 他組織情報をモデルへ持ち込む経路
 # - 外向きの送信・共有: 対象組織のデータを外へ出す経路
@@ -365,7 +365,7 @@ def run_claude(prompt: str, s: dict) -> str:
         "--disallowedTools", *DISALLOWED_TOOLS,
         # 設定ファイル由来の MCP 設定を無視する。空の作業ディレクトリに .mcp.json を
         # 置かれた場合の保険。claude.ai 管理の MCP サーバには効かず、それを落として
-        # いるのは --safe-mode（実測: --safe-mode を外すと claude mcp list に3件残る）。
+        # いるのは --safe-mode（外すと claude mcp list にサーバが残ることを確認した）。
         # つまり MCP は組み込みツールのような二重防御になっていない
         "--strict-mcp-config",
         # 対象組織のレポート全文が ~/.claude のトランスクリプトに残らないようにする

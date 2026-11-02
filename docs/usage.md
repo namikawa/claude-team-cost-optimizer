@@ -450,9 +450,11 @@ seat-analyzer collect --source claude --check-login <名前>   # 1 つのプロ�
 セキュリティ検証が出ても人の操作は待たず、見えたままを判定する。確認が終わると Chrome を
 終了させる（`--keep-browser` で残せる）。
 
+表示例（2027-01-01 17:00 に確認した場合）:
+
 ```text
-profile corp: 有効（API の読み取り OK・Cookie の期限 2026-11-04 17:56 まであと 25 日）
-profile corp: 期限間近（API の読み取り OK・Cookie の期限 2026-10-12 09:00 まであと 2 日）。collect --source claude --login corp でログインし直してください
+profile corp: 有効（API の読み取り OK・Cookie の期限 2027-01-15 17:00 まであと 14 日）
+profile corp: 期限間近（API の読み取り OK・Cookie の期限 2027-01-03 17:00 まであと 2 日）。collect --source claude --login corp でログインし直してください
 profile corp: 無効（ログイン画面が表示された）。collect --source claude --login corp でログインし直してください
 profile corp: 不明（セキュリティ検証が表示された）。collect --source claude --check-login corp --keep-browser で再確認し、ブラウザの表示を確認してください
 ```
@@ -484,7 +486,7 @@ Cookie の期限は上限の目安で、サーバー側のセッションがそ�
 こと自体がセッションの有効な証拠なので、API は読まない）。
 
 ```text
-  ログインの Cookie の期限: 2026-11-04 17:56（あと 25 日）
+  ログインの Cookie の期限: 2027-01-15 17:00（あと 14 日）
 ```
 
 Cookie が見つからないときや期限が分からないときは `ログインの Cookie の期限: 不明（<理由>）`

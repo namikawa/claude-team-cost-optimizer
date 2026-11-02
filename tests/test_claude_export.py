@@ -762,14 +762,14 @@ def test_session_path(tmp_path):
     assert session_path(staging, "run-1") == staging / "run-1" / "session.json"
 
 
-# 拡張機能が書く session.json（ログインの確認）。期限は 2026-11-04 08:56:50 UTC
+# 拡張機能が書く session.json の合成入力。確認日時から14日後を期限にする。
 SESSION = {
-    "run_id": "corp-check-login-20261007-110009",
-    "checked_at": "2026-10-07T02:00:09.000Z",
+    "run_id": "corp-check-login-20270101-080045",
+    "checked_at": "2027-01-01T08:00:45.000Z",
     "cookie_found": True,
-    "cookie_expires_at": "2026-11-04T08:56:50.000Z",
+    "cookie_expires_at": "2027-01-15T08:00:45.000Z",
     "page": "app",
-    "api": {"ok": True, "status": 200, "organizations": 4},
+    "api": {"ok": True, "status": 200, "organizations": 1},
     "log": ["..."],
     "extra": "ignored",
 }
@@ -786,10 +786,10 @@ def _write_session(tmp_path: Path, payload) -> Path:
 def test_read_session(tmp_path):
     check = read_session(_write_session(tmp_path, SESSION))
     assert check == SessionCheck(
-        run_id="corp-check-login-20261007-110009",
-        checked_at=dt.datetime(2026, 10, 7, 2, 0, 9, tzinfo=UTC),
+        run_id="corp-check-login-20270101-080045",
+        checked_at=dt.datetime(2027, 1, 1, 8, 0, 45, tzinfo=UTC),
         cookie_found=True,
-        cookie_expires_at=dt.datetime(2026, 11, 4, 8, 56, 50, tzinfo=UTC),
+        cookie_expires_at=dt.datetime(2027, 1, 15, 8, 0, 45, tzinfo=UTC),
         page="app",
         api_ok=True,
         api_status=200,
@@ -799,10 +799,10 @@ def test_read_session(tmp_path):
 
 
 def test_read_session_converts_offsets_to_utc_and_reads_a_failed_api(tmp_path):
-    payload = {**SESSION, "cookie_expires_at": "2026-11-04T17:56:50+09:00",
+    payload = {**SESSION, "cookie_expires_at": "2027-01-15T17:00:45+09:00",
                "api": {"ok": False, "status": None, "reason": "signal timed out"}}
     check = read_session(_write_session(tmp_path, payload))
-    assert check.cookie_expires_at == dt.datetime(2026, 11, 4, 8, 56, 50, tzinfo=UTC)
+    assert check.cookie_expires_at == dt.datetime(2027, 1, 15, 8, 0, 45, tzinfo=UTC)
     assert (check.api_ok, check.api_status, check.api_reason) == (False, None, "signal timed out")
 
 
@@ -822,9 +822,9 @@ def test_read_session_of_a_regular_export(tmp_path):
      "cookie_expires_at がありません"),
     ({**SESSION, "run_id": 1}, "run_id が文字列ではありません"),
     ({**SESSION, "cookie_found": "true"}, "cookie_found が真偽値ではありません"),
-    ({**SESSION, "cookie_expires_at": "2026-11-04T08:56:50"}, "タイムゾーンがありません"),
+    ({**SESSION, "cookie_expires_at": "2027-01-15T08:00:45"}, "タイムゾーンがありません"),
     ({**SESSION, "cookie_expires_at": "next month"}, "ISO 8601 の日時ではありません"),
-    ({**SESSION, "cookie_expires_at": 1793782610}, "cookie_expires_at が ISO 8601 の日時では"),
+    ({**SESSION, "cookie_expires_at": 1_800_000_000}, "cookie_expires_at が ISO 8601 の日時では"),
     ({**SESSION, "checked_at": "2026-10-07"}, "checked_at にタイムゾーンがありません"),
     ({**SESSION, "page": 1}, "page が文字列でも null でもありません"),
     ({**SESSION, "api": {"status": 200}}, "api が null でも ok を持つオブジェクトでも"),
@@ -925,16 +925,16 @@ def test_remaining_text(days, text):
 
 
 def test_format_expiry_uses_the_given_time_zone():
-    moment = dt.datetime(2026, 11, 4, 8, 56, 50, tzinfo=UTC)
-    assert format_expiry(moment, dt.timezone(dt.timedelta(hours=9))) == "2026-11-04 17:56"
-    assert format_expiry(moment, UTC) == "2026-11-04 08:56"
-    assert format_expiry(moment, dt.timezone(dt.timedelta(hours=-10))) == "2026-11-03 22:56"
+    moment = dt.datetime(2027, 1, 15, 8, 0, 45, tzinfo=UTC)
+    assert format_expiry(moment, dt.timezone(dt.timedelta(hours=9))) == "2027-01-15 17:00"
+    assert format_expiry(moment, UTC) == "2027-01-15 08:00"
+    assert format_expiry(moment, dt.timezone(dt.timedelta(hours=-10))) == "2027-01-14 22:00"
 
 
 def test_format_expiry_defaults_to_the_local_time_of_that_moment():
     """既定（None）は実行機のローカル時刻で、その時点の夏時間の規則を使う（今の差を固定しない）。"""
     assert claude_export.local_timezone() is None
-    moment = dt.datetime(2026, 11, 4, 8, 56, 50, tzinfo=UTC)
+    moment = dt.datetime(2027, 1, 15, 8, 0, 45, tzinfo=UTC)
     assert format_expiry(moment, None) == f"{moment.astimezone():%Y-%m-%d %H:%M}"
 
 

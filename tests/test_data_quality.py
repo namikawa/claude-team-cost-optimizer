@@ -672,10 +672,10 @@ def _rate(core: int = 4999, graphql: int = 5000) -> GhResult:
     """`gh api rate_limit` の応答（残量を見るのは core と graphql の2区分）。"""
     payload = {
         "resources": {
-            "core": {"limit": 5000, "remaining": core, "reset": 1788233103},
-            "graphql": {"limit": 5000, "remaining": graphql, "reset": 1788230720},
+            "core": {"limit": 5000, "remaining": core, "reset": 1700000000},
+            "graphql": {"limit": 5000, "remaining": graphql, "reset": 1700003600},
             # 見ない区分（PR の検索は GraphQL で行うため REST の search は消費しない）
-            "search": {"limit": 30, "remaining": 0, "reset": 1788230720},
+            "search": {"limit": 30, "remaining": 0, "reset": 1700003600},
         }
     }
     return GhResult(ok=True, stdout=json.dumps(payload))
@@ -914,7 +914,7 @@ def test_github_rate_limit_message_has_no_reset_time(tmp_path, cfg):
     """回復時刻は実行のたびに変わるので message へ入れない。"""
     issues = _inspect(_org_input(tmp_path), cfg, _fake_gh(rate_limit=_rate(core=0)))
 
-    assert "1788233103" not in issues[0].message
+    assert "1700000000" not in issues[0].message
     assert "reset" not in issues[0].message
 
 

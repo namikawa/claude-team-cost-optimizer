@@ -2091,11 +2091,11 @@ CLAUDE_NOW = dt.datetime(2026, 10, 7, 3, 0, tzinfo=dt.UTC)
 CLAUDE_TZ = dt.timezone(dt.timedelta(hours=9))
 # 取得の時刻（run_id・run.json の created_at）。取得日はこの UTC の日付 2026-10-07
 CLAUDE_LOCAL_NOW = dt.datetime(2026, 10, 7, 12, 0, tzinfo=CLAUDE_TZ)
-# Cookie の期限: 25 日と 5 時間 56 分後（表示は 2026-11-01 17:56）と、1 日と 21 時間後
+# 合成の Cookie の期限: 14 日と 5 時間 45 秒後（表示は 2026-10-21 17:00）と、1 日と 21 時間後
 # （表示は 2026-10-09 09:00。既定の login_warning_days 3 を下回る）
-CLAUDE_EXPIRES_LATER = "2026-11-01T08:56:50.000Z"
+CLAUDE_EXPIRES_LATER = "2026-10-21T08:00:45.000Z"
 CLAUDE_EXPIRES_SOON = "2026-10-09T00:00:00.000Z"
-CLAUDE_API_OK = {"ok": True, "status": 200, "organizations": 4}
+CLAUDE_API_OK = {"ok": True, "status": 200, "organizations": 1}
 
 
 def _claude_filename(kind: str, uuid: str) -> str:
@@ -3204,7 +3204,7 @@ def _session(expires: str | None = CLAUDE_EXPIRES_LATER, *, page: str | None = "
             "cookie_expires_at": expires, "page": page, "api": api, "log": []}
 
 
-VALID_LINE = "profile corp: 有効（API の読み取り OK・Cookie の期限 2026-11-01 17:56 まであと 25 日）"
+VALID_LINE = "profile corp: 有効（API の読み取り OK・Cookie の期限 2026-10-21 17:00 まであと 14 日）"
 
 
 def test_collect_claude_check_login_checks_every_configured_profile(claude_env, capsys):
@@ -3400,7 +3400,7 @@ def test_collect_claude_check_login_with_an_unreadable_session(
 
 
 @pytest.mark.parametrize("session,line", [
-    (_session(page=None, api=None), "  ログインの Cookie の期限: 2026-11-01 17:56（あと 25 日）"),
+    (_session(page=None, api=None), "  ログインの Cookie の期限: 2026-10-21 17:00（あと 14 日）"),
     (_session(CLAUDE_EXPIRES_SOON, page=None, api=None),
      ("  ログインの Cookie の期限: 2026-10-09 09:00（あと 1 日）。"
       "collect --source claude --login corp でログインし直してください")),

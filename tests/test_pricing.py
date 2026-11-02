@@ -57,21 +57,23 @@ def test_validate_spend_ok_when_consistent(cfg):
 
 
 def test_cache_aware_computed_cost(cfg):
-    # 実スペンドレポートの実測行（opus-4-7, 2026-06）で検算:
-    # 18108×5 + 761,608,431×5×0.1 + 38,726,201×5×2.0 (1h) + 6,380,679×25 ≒ 927.67
+    # 合成入力。既定の Sonnet 単価は入力 $3/1M・出力 $15/1M。
+    # 入力内訳は未キャッシュ 1M・読取 5M・書込5分 4M・書込1時間 3M（計13M）。
+    # cache_multipliers の既定値より、(1×1.0 + 5×0.1 + 4×1.25 + 3×2.0)×3
+    # + 出力2M×15 = 37.5 + 30 = $67.5。
     df = pd.DataFrame({
         "email": ["a@x.jp"],
-        "model": ["claude-opus-4-7"],
-        "prompt_tokens": [800_352_740],
-        "completion_tokens": [6_380_679],
-        "uncached_input_tokens": [18_108],
-        "cache_read_tokens": [761_608_431],
-        "cache_write_5m_tokens": [0],
-        "cache_write_1h_tokens": [38_726_201],
-        "net_spend": [927.67],
+        "model": ["claude-sonnet-4-6"],
+        "prompt_tokens": [13_000_000],
+        "completion_tokens": [2_000_000],
+        "uncached_input_tokens": [1_000_000],
+        "cache_read_tokens": [5_000_000],
+        "cache_write_5m_tokens": [4_000_000],
+        "cache_write_1h_tokens": [3_000_000],
+        "net_spend": [67.5],
     })
     out = pricing.add_computed_cost(df, cfg)
-    assert abs(out["computed_cost_usd"].iloc[0] - 927.67) < 1.0
+    assert out["computed_cost_usd"].iloc[0] == 67.5
     assert pricing.validate_spend(out, cfg) == []
 
 
