@@ -39,9 +39,9 @@ Organization の参照可否だけを調べ、PR も repository も取得しな�
 結果は値として返すだけで gh の生出力も token も保持しない。
 
 4つ目は merged PR のメタデータの収集とキャッシュ（設計書 §15.4・§7.6）。保存するのは
-9項目（repository・PR number・author の login と type・createdAt・mergedAt・additions・
-deletions・isDraft）だけで、title・本文・レビュー本文・files・diff・commit message・
-コードは取得も保存もしない（設計書 §20.3 の禁止フィールド）。応答からは明示した項目だけを
+PR のメタデータとコミットの帰属に使う項目（設計書 §7.6）だけで、title・本文・レビュー本文・
+files・diff・commit message・コードは取得も保存もしない（設計書 §20.3 の禁止フィールド）。
+応答からは明示した項目だけを
 取り出すので、問い合わせに無い項目が返ってきても保存物には入らない。一意キーは
 `repository + "#" + number` で、キャッシュはこのキーの dict として持つ（一意性を構造で
 保証する）。
@@ -571,7 +571,7 @@ def run_gh(args: Sequence[str]) -> GhResult:
     """gh を1回実行する（読み取りだけを行う参照に限って使う）。
 
     このモジュールは GitHub を読むだけで、書き込む API は呼ばない。引数を組み立てるのは
-    `_AUTH_STATUS_ARGS`・`_read_args`・`_graphql_args` の3つだけで、いずれも GET と
+    `_AUTH_STATUS_ARGS`・`_read_args`・`_graphql_args`・`_commit_graphql_args` だけで、いずれも GET と
     読み取り専用の GraphQL query しか作らない。
 
     token を Python 側へ取り出さない。`--show-token` を渡さず、環境変数の token も読まず、
@@ -624,11 +624,13 @@ def _read_args(path: str, *, headers: bool = True) -> tuple[str, ...]:
     return ("api", "-i", path) if headers else ("api", path)
 
 
-def _graphql_args(search: str, after: str | None) -> tuple[str, ...]:
+def _graphql_args(
+    search: str, after: str | None, first: int, commits_first: int,
+) -> tuple[str, ...]:
     """GraphQL を読むだけの引数（`_PR_SEARCH_QUERY` だけを渡す）。
 
     GraphQL の入口は POST だが、送るのは読み取り専用の query 文書だけで mutation は
-    持たない。渡す変数は検索文字列と件数と cursor のみ。`$first` は Int なので `-F`
+    持たない。渡す変数は検索文字列・PR とコミットの件数・cursor のみ。件数は Int なので `-F`
     （型付き）、文字列は `-f` を使う。
 
     1ページ目は `after` を渡さない（変数を省くと GraphQL 側で null になる。空文字を
@@ -638,7 +640,22 @@ def _graphql_args(search: str, after: str | None) -> tuple[str, ...]:
         "api", "-i", "graphql",
         "-f", f"query={_PR_SEARCH_QUERY}",
         "-f", f"search={search}",
-        "-F", f"first={_SEARCH_PER_PAGE}",
+        "-F", f"first={first}",
+        "-F", f"commitsFirst={commits_first}",
+    ]
+    if after is not None:
+        args += ["-f", f"after={after}"]
+    return tuple(args)
+
+
+def _commit_graphql_args(
+    owner: str, name: str, number: int, after: str | None, first: int,
+) -> tuple[str, ...]:
+    """PR ごとのコミットの続きを読む引数（変数の型と並びを固定する）。"""
+    args = [
+        "api", "-i", "graphql", "-f", f"query={_PR_COMMITS_QUERY}",
+        "-f", f"owner={owner}", "-f", f"name={name}",
+        "-F", f"number={number}", "-F", f"first={first}",
     ]
     if after is not None:
         args += ["-f", f"after={after}"]
@@ -1018,7 +1035,7 @@ def discover_repositories(
 # キャッシュの置き場所（組織ディレクトリ直下）と、書き出す形式の版。
 # 版は読み側が「この形として読める」ことを確かめるためだけに使う（互換の変換はしない）
 PR_CACHE_DIRNAME = "github-cache"
-PR_CACHE_SCHEMA = 1
+PR_CACHE_SCHEMA = 2
 
 # 対象月の形。ファイル名に入るため ASCII 数字のみ・全体一致で見る（`\d` は全角数字にも
 # 一致する）。cli の同名の検査と同じ規則で、層をまたげないため実装は共有しない
@@ -1027,6 +1044,7 @@ _CACHE_MONTH_RE = re.compile(r"[0-9]{4}-(?:0[1-9]|1[0-2])")
 # GitHub が返す UTC の日時表記（秒まで・Z 終端）。字句のまま保存し、日時への変換は
 # 指標計算の側（Step 37）が行う
 _TIMESTAMP_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+_OID_RE = re.compile(r"[0-9a-f]{40}")
 
 # キャッシュに書く暦日の表記。`date.fromisoformat` は "20260801" のような区切りの無い
 # 形も受けるため、保存した形そのものかどうかは字句で確かめる
@@ -1041,11 +1059,18 @@ _AUTHOR_TYPE_RE = re.compile(r"[A-Za-z]+")
 # とるため字句の規則までは課さず、長さと空白・制御文字の不在だけを見る
 _MAX_AUTHOR_LOGIN_LENGTH = 100
 
-# 1ページあたりの件数（GraphQL の search の上限）と、1クエリで辿れる件数の上限。
-# 上限は GitHub 側の仕様で、超える期間は日単位へ割って取り直す
-_SEARCH_PER_PAGE = 100
+# GitHub の GraphQL は約10秒で打ち切る。ネストしたコミットの行数の計算を含む検索は
+# 小さなページで読み、一時的な失敗では同じ位置から段階的に小さくして読み直す。
+# 検索は（PR、ネストしたコミット）の件数、PR 単位の続きはコミットの件数を持ち、
+# 段の数は _MAX_ATTEMPTS と一致させる
+_SEARCH_PAGE_SIZES = ((10, 50), (5, 20), (1, 10))
+_COMMIT_PAGE_SIZES = (100, 50, 20)
+
+# 1つの検索で辿れる PR の件数と、GitHub が PR ごとに返すコミットの件数の上限（どちらも
+# GitHub 側の仕様）。検索は超える期間を日単位へ割って取り直す。読み切れたかはページ数では
+# なく受け取った件数の累計で見る（1ページの件数は失敗のたびに変わるため）
 _SEARCH_RESULT_CAP = 1000
-_MAX_SEARCH_PAGES = _SEARCH_RESULT_CAP // _SEARCH_PER_PAGE
+_PR_COMMITS_LIMIT = 250
 
 # 一時的な障害として再試行する HTTP ステータス。規模の大きい Organization では GraphQL の
 # search が散発的に 5xx を返すことがあり、同じページを呼び直せば通る
@@ -1059,15 +1084,15 @@ _MAX_ATTEMPTS = 1 + len(_RETRY_PAUSES)
 # 置換用の一時ファイルの接頭辞（`_write_cache`）。最終ファイル名に依らない固定長にする
 _TMP_PREFIX = ".seat-tmp-"
 
-# 検索に使う GraphQL 文書。取るのは §7.6 の9項目に対応するフィールドだけで、title・
-# 本文・files・commits・comments・reviews は問い合わせそのものに書かない（保存側で
+# 検索に使う GraphQL 文書。取るのは §7.6 の PR とコミットの項目だけで、title・
+# 本文・files・コミットのメッセージ・comments・reviews は問い合わせそのものに書かない（保存側で
 # 落とすのではなく、そもそも受け取らない）。
 #
 # REST の search/issues は additions / deletions を返さず PR ごとの追加呼び出しが要る
 # ため使わない。並びは `sort:created-asc` で固定する（既定の best match は cursor で
 # 辿る間に順位が動き、取りこぼしが黙って起きる）。
 _PR_SEARCH_QUERY = """\
-query($search: String!, $first: Int!, $after: String) {
+query($search: String!, $first: Int!, $commitsFirst: Int!, $after: String) {
   search(query: $search, type: ISSUE, first: $first, after: $after) {
     issueCount
     pageInfo { hasNextPage endCursor }
@@ -1081,6 +1106,34 @@ query($search: String!, $first: Int!, $after: String) {
         deletions
         repository { name }
         author { login __typename }
+        mergeCommit { oid }
+        commits(first: $commitsFirst) {
+          totalCount
+          pageInfo { hasNextPage endCursor }
+          nodes { commit {
+            oid additions deletions committedDate
+            parents { totalCount }
+            author { user { login } email }
+          } }
+        }
+      }
+    }
+  }
+}
+"""
+
+_PR_COMMITS_QUERY = """\
+query($owner: String!, $name: String!, $number: Int!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      commits(first: $first, after: $after) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes { commit {
+          oid additions deletions committedDate
+          parents { totalCount }
+          author { user { login } email }
+        } }
       }
     }
   }
@@ -1193,8 +1246,41 @@ class DateWindow:
 
 
 @dataclass(frozen=True)
+class CachedCommit:
+    """コミットの帰属に使う7項目。メールは原文の大小と空文字列を保つ。"""
+
+    oid: str
+    author_login: str | None
+    author_email: str | None
+    additions: int
+    deletions: int
+    committed_at: str
+    is_merge: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.oid, str) or not _OID_RE.fullmatch(self.oid):
+            raise ValueError(f"oid には40桁の小文字の16進が必要です: {self.oid!r}")
+        if self.author_login is not None and not _is_author_login(self.author_login):
+            raise ValueError(f"author_login として読めない値です: {self.author_login!r}")
+        if self.author_email is not None and not isinstance(self.author_email, str):
+            raise TypeError("author_email には文字列か None が必要です")
+        for name in ("additions", "deletions"):
+            if not _is_count(getattr(self, name)):
+                raise ValueError(f"{name} には0以上の件数が必要です")
+        if not _is_timestamp(self.committed_at):
+            raise ValueError("committed_at には UTC の日時表記が必要です")
+        if not isinstance(self.is_merge, bool):
+            raise TypeError("is_merge には真偽値が必要です")
+
+
+def _commit_order(commit: CachedCommit) -> tuple[str, str]:
+    """コミットの保存順（同時刻でも SHA で一意に決まる）。"""
+    return commit.committed_at, commit.oid
+
+
+@dataclass(frozen=True)
 class CachedPr:
-    """キャッシュへ保存する merged PR 1件（設計書 §7.6 の9項目だけ）。
+    """キャッシュへ保存する merged PR 1件（設計書 §7.6）。
 
     日時は GitHub が返した UTC の字句のまま持つ（保存物を再現可能にするため。日時への
     変換は指標計算の責務）。author_login と author_type は対で、author が null＝削除済みの
@@ -1210,6 +1296,9 @@ class CachedPr:
     additions: int
     deletions: int
     is_draft: bool
+    merge_commit_oid: str | None = None
+    commit_count: int | None = None
+    commits: tuple[CachedCommit, ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.repository, str) or not _REPO_NAME_RE.fullmatch(
@@ -1257,6 +1346,30 @@ class CachedPr:
             raise TypeError(
                 f"is_draft には真偽値が必要です: {type(self.is_draft).__name__}"
             )
+        if self.merge_commit_oid is not None and (
+            not isinstance(self.merge_commit_oid, str)
+            or not _OID_RE.fullmatch(self.merge_commit_oid)
+        ):
+            raise ValueError("merge_commit_oid には40桁の小文字の16進が必要です")
+        if (self.commits is None) != (self.commit_count is None):
+            raise ValueError("commits と commit_count は両方に値を持たせてください")
+        if self.commits is None:
+            return
+        if not isinstance(self.commits, tuple) or not all(
+            isinstance(commit, CachedCommit) for commit in self.commits
+        ):
+            raise TypeError("commits には CachedCommit の tuple が必要です")
+        if not _is_count(self.commit_count) or not (
+            len(self.commits) == self.commit_count
+            or (self.commit_count > _PR_COMMITS_LIMIT
+                and len(self.commits) == _PR_COMMITS_LIMIT)
+        ):
+            raise ValueError("commit_count と保存したコミットの件数が一致しません")
+        oids = [commit.oid for commit in self.commits]
+        if len(set(oids)) != len(oids):
+            raise ValueError("commits の oid が重複しています")
+        if list(self.commits) != sorted(self.commits, key=_commit_order):
+            raise ValueError("commits は committed_at と oid の昇順で並べてください")
 
     @property
     def key(self) -> str:
@@ -1305,6 +1418,8 @@ class PrCache:
     持たないキャッシュでは None。持つ場合は同じ Organization の完全な一覧に限る——
     部分的な一覧を載せられると、集計の側がそれを完全な一覧として扱い、一覧に載らなかった
     repository の PR が「対象外」へ流れて参考指標が黙って小さく出る。
+
+    schema は読み取った形式。空の schema 1 でも全窓を取り直すために保持する。
     """
 
     github_org: str
@@ -1312,6 +1427,7 @@ class PrCache:
     prs: tuple[CachedPr, ...] = ()
     complete_windows: tuple[DateWindow, ...] = ()
     repositories: RepoDiscovery | None = None
+    schema: int = PR_CACHE_SCHEMA
 
     def __post_init__(self) -> None:
         if not is_github_org_name(self.github_org):
@@ -1319,6 +1435,8 @@ class PrCache:
                 f"github_org には Organization 名が必要です: {self.github_org!r}"
             )
         _month_parts(self.month)
+        if not _is_count(self.schema) or self.schema not in (1, PR_CACHE_SCHEMA):
+            raise ValueError("対応していないキャッシュの形式です")
         if not isinstance(self.prs, tuple) or not all(
             isinstance(pr, CachedPr) for pr in self.prs
         ):
@@ -1390,6 +1508,8 @@ class PrCollection:
 
     repository_count は集計の対象にした repository の数、excluded_repository_count は
     archived / fork / template として除外した数（どちらも渡された一覧そのままの値）。
+    commit_total は保存したコミットの件数（PR 間の重複は除かない）。refreshed_schema は
+    schema 1 の PR と完了済みの窓を引き継がずに取り直したことを表す。
     """
 
     github_org: str
@@ -1403,6 +1523,8 @@ class PrCollection:
     failure: GhFailure | None = None
     repository_count: int = 0
     excluded_repository_count: int = 0
+    commit_total: int = 0
+    refreshed_schema: bool = False
 
     def __post_init__(self) -> None:
         if not is_github_org_name(self.github_org):
@@ -1414,11 +1536,14 @@ class PrCollection:
             raise TypeError(f"path には Path が必要です: {type(self.path).__name__}")
         for name in (
             "upserted", "total", "repository_count", "excluded_repository_count",
+            "commit_total",
         ):
             if not _is_count(getattr(self, name)):
                 raise ValueError(
                     f"{name} には0以上の件数が必要です: {getattr(self, name)!r}"
                 )
+        if not isinstance(self.refreshed_schema, bool):
+            raise TypeError("refreshed_schema には真偽値が必要です")
         if self.upserted > self.total:
             raise ValueError(
                 f"upserted は total 以下です: {self.upserted} / {self.total}"
@@ -1465,7 +1590,7 @@ _CACHE_KEYS = tuple(sorted(_CACHE_REQUIRED_KEYS + _CACHE_OPTIONAL_KEYS))
 # repository の一覧を保存する形（`RepoDiscovery` のうち、完全な一覧が持つ2項目だけ）
 _REPOSITORIES_KEYS = ("excluded", "names")
 
-_PR_ENTRY_KEYS = (
+_PR_LEGACY_KEYS = (
     "additions",
     "author_login",
     "author_type",
@@ -1476,10 +1601,18 @@ _PR_ENTRY_KEYS = (
     "number",
     "repository",
 )
+_PR_COMMIT_KEYS = ("merge_commit_oid", "commit_count", "commits")
+_PR_ENTRY_KEYS = _PR_LEGACY_KEYS + _PR_COMMIT_KEYS
+_COMMIT_ENTRY_KEYS = (
+    "oid", "author_login", "author_email", "additions", "deletions",
+    "committed_at", "is_merge",
+)
 
 
 def _pr_entry(pr: CachedPr) -> dict:
-    """PR 1件を保存する形にする（明示した9項目だけを写す）。"""
+    """PR 1件を schema 2 で保存する形にする（明示した項目だけを写す）。"""
+    if pr.commits is None:
+        raise ValueError("schema 2 で書く PR にはコミットの材料が必要です")
     return {
         "repository": pr.repository,
         "number": pr.number,
@@ -1490,6 +1623,12 @@ def _pr_entry(pr: CachedPr) -> dict:
         "additions": pr.additions,
         "deletions": pr.deletions,
         "is_draft": pr.is_draft,
+        "merge_commit_oid": pr.merge_commit_oid,
+        "commit_count": pr.commit_count,
+        "commits": [
+            {name: getattr(commit, name) for name in _COMMIT_ENTRY_KEYS}
+            for commit in pr.commits
+        ],
     }
 
 
@@ -1640,22 +1779,34 @@ def _cache_repositories(
         raise _cache_error(path, f"repositories を読めません: {exc}") from exc
 
 
-def _cache_pr(key: object, value: object, path: Path) -> CachedPr:
+def _cache_pr(key: object, value: object, path: Path, schema: int) -> CachedPr:
     """prs の1要素を CachedPr にする（キーと内容の一致まで確かめる）。"""
     if not isinstance(value, dict):
         raise _cache_error(path, f"prs.{key} が PR の内容ではありません: {value!r}")
-    unknown = sorted(set(value) - set(_PR_ENTRY_KEYS))
+    keys = _PR_LEGACY_KEYS if schema == 1 else _PR_ENTRY_KEYS
+    unknown = sorted(set(value) - set(keys))
     if unknown:
         raise _cache_error(
             path,
             f"prs.{key} に未知のキーがあります: {unknown}"
-            f"（保存する項目は {', '.join(_PR_ENTRY_KEYS)} だけです）",
+            f"（保存する項目は {', '.join(keys)} だけです）",
         )
-    missing = sorted(set(_PR_ENTRY_KEYS) - set(value))
+    missing = sorted(set(keys) - set(value))
     if missing:
         raise _cache_error(path, f"prs.{key} に項目がありません: {missing}")
     try:
-        pr = CachedPr(**value)
+        fields = dict(value)
+        if schema == 2:
+            commits = fields["commits"]
+            if not isinstance(commits, list):
+                raise ValueError("commits には配列が必要です")
+            found = []
+            for commit in commits:
+                if not isinstance(commit, dict) or set(commit) != set(_COMMIT_ENTRY_KEYS):
+                    raise ValueError("commits の項目が不足しているか未知のキーがあります")
+                found.append(CachedCommit(**commit))
+            fields["commits"] = tuple(found)
+        pr = CachedPr(**fields)
     except (TypeError, ValueError) as exc:
         raise _cache_error(path, f"prs.{key} を読めません: {exc}") from exc
     if pr.key != key:
@@ -1703,11 +1854,11 @@ def load_pr_cache(cache_dir: Path, month: str, github_org: str) -> PrCache:
     # 真偽値と浮動小数点は版として受けない（Python では True == 1・1.0 == 1 が成り立ち、
     # JSON の true / 1.0 が版 1 のキャッシュとして通ってしまう）
     schema = payload["schema"]
-    if not _is_count(schema) or schema != PR_CACHE_SCHEMA:
+    if not _is_count(schema) or schema not in (1, PR_CACHE_SCHEMA):
         raise _cache_error(
             path,
             f"対応していない形式です（schema={schema!r}・"
-            f"読めるのは {PR_CACHE_SCHEMA}）",
+            f"読めるのは 1 と {PR_CACHE_SCHEMA}）",
         )
     if payload["github_org"] != github_org:
         raise _cache_error(
@@ -1734,7 +1885,7 @@ def load_pr_cache(cache_dir: Path, month: str, github_org: str) -> PrCache:
         if "repositories" in payload else None
     )
 
-    found = [_cache_pr(key, value, path) for key, value in prs.items()]
+    found = [_cache_pr(key, value, path, schema) for key, value in prs.items()]
     seen: dict[tuple[str, int], str] = {}
     for pr in found:
         other = seen.setdefault(_pr_order(pr), pr.key)
@@ -1754,6 +1905,7 @@ def load_pr_cache(cache_dir: Path, month: str, github_org: str) -> PrCache:
                 key=lambda window: window.start,
             )),
             repositories=repositories,
+            schema=schema,
         )
     except (TypeError, ValueError) as exc:
         raise _cache_error(path, f"キャッシュの内容が不正です（{exc}）") from exc
@@ -1829,10 +1981,13 @@ def _pr_author(author: object) -> tuple[str | None, str | None] | None:
     return (login, kind)
 
 
-def _pr_node(node: object, window: DateWindow) -> CachedPr | None:
+def _pr_node(
+    node: object, window: DateWindow, commits: tuple[CachedCommit, ...],
+    commit_count: int,
+) -> CachedPr | None:
     """検索結果の1要素を CachedPr にする（読めなければ None）。
 
-    読むのは §7.6 の9項目に対応するフィールドだけで、node に余分な項目（title 等）が
+    読むのは §7.6 に対応するフィールドだけで、node に余分な項目（title 等）が
     あっても触らない。必須フィールドの欠落・型不一致・repository 名として読めない値・
     要求した期間の外の mergedAt・createdAt が mergedAt より後、はいずれも「読めない」に
     倒す（期間の外が混ざると、月をまたいだ PR が別の月のキャッシュへ入る）。
@@ -1863,7 +2018,20 @@ def _pr_node(node: object, window: DateWindow) -> CachedPr | None:
     if author is None:
         return None
     login, kind = author
+    if "mergeCommit" not in node:
+        return None
+    merge = node["mergeCommit"]
+    if merge is not None and not isinstance(merge, dict):
+        return None
+    merge_oid = merge.get("oid") if isinstance(merge, dict) else None
+    if merge is not None and (
+        not isinstance(merge_oid, str) or not _OID_RE.fullmatch(merge_oid)
+    ):
+        return None
     return CachedPr(
+        merge_commit_oid=merge_oid,
+        commits=commits,
+        commit_count=commit_count,
         repository=name,
         number=number,
         author_login=login,
@@ -1876,33 +2044,185 @@ def _pr_node(node: object, window: DateWindow) -> CachedPr | None:
     )
 
 
-def _search_body(body: str, window: DateWindow, status: int) -> _Page:
-    """検索の応答本文を1ページの結果にする。
+class _CommitPage(NamedTuple):
+    """コミットの1ページ。None は失敗で、空の tuple は0件の成功。"""
 
-    要素を1つでも解釈できなければページ全体を読めなかったものとして扱う（読めない要素
-    だけを飛ばすと、その PR が黙って集計から落ちる。応答の形が変わった兆候でもあるので
-    静かに続けない）。規則は repository の発見（`_repo_page`）と同じ。
-    """
-    unreadable = _Page(None, status=status, failure=GhFailure.ERROR)
+    commits: tuple[CachedCommit, ...] | None
+    total: int = 0
+    has_next: bool = False
+    cursor: str | None = None
+    status: int | None = None
+    failure: GhFailure | None = None
+
+
+class _GraphqlData(NamedTuple):
+    """検索とコミットの問い合わせに共通の応答・失敗分類。"""
+
+    data: dict | None
+    status: int | None = None
+    failure: GhFailure | None = None
+    transient: bool = False
+
+
+def _graphql_once(run: Runner, args: tuple[str, ...]) -> _GraphqlData:
+    """読み取り query を1回実行し、HTTP と GraphQL のエラーを分類する。"""
+    result = run(args)
+    if result.failure is not None:
+        return _GraphqlData(
+            None, failure=result.failure, transient=result.failure is GhFailure.TIMEOUT,
+        )
+    status, headers, body = _parse_response(result.stdout)
+    if status is None:
+        return _GraphqlData(None, failure=GhFailure.ERROR)
+    if _is_rate_limited(status, headers):
+        return _GraphqlData(None, status, GhFailure.RATE_LIMITED)
+    if status != 200:
+        return _GraphqlData(
+            None, status, GhFailure.ERROR, transient=status in _TRANSIENT_STATUSES,
+        )
     try:
         payload = json.loads(body)
     except ValueError:
-        return unreadable
+        return _GraphqlData(None, status, GhFailure.ERROR, transient=True)
     if not isinstance(payload, dict):
-        return unreadable
+        return _GraphqlData(None, status, GhFailure.ERROR)
     errors = payload.get("errors")
     if errors is not None:
-        # GraphQL は上限も 200 + errors で返す。再実行で解消するかどうかが違うので分ける
         rate_limited = isinstance(errors, list) and any(
             isinstance(error, dict) and error.get("type") == "RATE_LIMITED"
             for error in errors
         )
-        return _Page(
-            None, status=status,
-            failure=GhFailure.RATE_LIMITED if rate_limited else GhFailure.ERROR,
+        timed_out = isinstance(errors, list) and any(
+            isinstance(error, dict) and isinstance(error.get("message"), str)
+            and any(word in error["message"].lower() for word in ("timeout", "timed out"))
+            for error in errors
+        )
+        return _GraphqlData(
+            None, status,
+            GhFailure.RATE_LIMITED if rate_limited else GhFailure.ERROR,
+            transient=timed_out and not rate_limited,
         )
     data = payload.get("data")
-    search = data.get("search") if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return _GraphqlData(None, status, GhFailure.ERROR)
+    return _GraphqlData(data, status)
+
+
+def _graphql_page(
+    run: Runner, args_for_attempt: Callable[[int], tuple[str, ...]], sleep: Sleeper,
+) -> _GraphqlData:
+    """一時的な失敗だけ、同じ位置のページを小さくして読み直す。"""
+    page = _graphql_once(run, args_for_attempt(0))
+    for attempt, pause in enumerate(_RETRY_PAUSES, start=1):
+        if not page.transient:
+            return page
+        sleep(pause)
+        page = _graphql_once(run, args_for_attempt(attempt))
+    return page
+
+
+def _commit_node(node: object) -> CachedCommit | None:
+    """コミットから保存する7項目だけを取り出す。欠落と null を区別する。"""
+    if not isinstance(node, dict):
+        return None
+    commit = node.get("commit")
+    if not isinstance(commit, dict) or "author" not in commit:
+        return None
+    author = commit["author"]
+    login, email = None, None
+    if author is not None:
+        if not isinstance(author, dict) or not {"user", "email"} <= set(author):
+            return None
+        user, email = author["user"], author["email"]
+        if email is not None and not isinstance(email, str):
+            return None
+        if user is not None:
+            if not isinstance(user, dict) or not _is_author_login(user.get("login")):
+                return None
+            login = user["login"]
+    parents = commit.get("parents")
+    if not isinstance(parents, dict) or not _is_count(parents.get("totalCount")):
+        return None
+    try:
+        return CachedCommit(
+            oid=commit.get("oid"), author_login=login, author_email=email,
+            additions=commit.get("additions"), deletions=commit.get("deletions"),
+            committed_at=commit.get("committedDate"),
+            is_merge=parents["totalCount"] >= 2,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _commit_connection(value: object, status: int) -> _CommitPage:
+    """commits connection を読む（要素が1つでも読めなければ全体を失敗にする）。"""
+    unreadable = _CommitPage(None, status=status, failure=GhFailure.ERROR)
+    if not isinstance(value, dict):
+        return unreadable
+    total, info, nodes = value.get("totalCount"), value.get("pageInfo"), value.get("nodes")
+    if not _is_count(total) or not isinstance(info, dict) or not isinstance(nodes, list):
+        return unreadable
+    has_next, cursor = info.get("hasNextPage"), info.get("endCursor")
+    if not isinstance(has_next, bool) or (cursor is not None and not isinstance(cursor, str)):
+        return unreadable
+    found = []
+    for node in nodes:
+        commit = _commit_node(node)
+        if commit is None:
+            return unreadable
+        found.append(commit)
+    return _CommitPage(tuple(found), total, has_next, cursor, status)
+
+
+def _collect_commits(
+    run: Runner, github_org: str, node: dict, status: int, sleep: Sleeper,
+) -> _CommitPage:
+    """検索に含まれた最初のページと、PR 単位で取得した続きを連結する。"""
+    first = _commit_connection(node.get("commits"), status)
+    if first.commits is None:
+        return first
+    found = list(first.commits)
+    page = first
+    while True:
+        if len(found) > _PR_COMMITS_LIMIT or (
+            page.has_next and (not page.commits or not page.cursor)
+        ):
+            return _CommitPage(None, status=page.status, failure=GhFailure.ERROR)
+        if not page.has_next:
+            break
+        repository = node.get("repository")
+        name = repository.get("name") if isinstance(repository, dict) else None
+        number = node.get("number")
+        if (not isinstance(name, str) or not _REPO_NAME_RE.fullmatch(name)
+                or not _is_count(number) or number < 1):
+            return _CommitPage(None, status=status, failure=GhFailure.ERROR)
+        response = _graphql_page(
+            run, lambda attempt, name=name, number=number, cursor=page.cursor: _commit_graphql_args(
+                github_org, name, number, cursor, _COMMIT_PAGE_SIZES[attempt],
+            ), sleep,
+        )
+        if response.data is None:
+            return _CommitPage(None, status=response.status, failure=response.failure)
+        repo = response.data.get("repository")
+        pr = repo.get("pullRequest") if isinstance(repo, dict) else None
+        connection = pr.get("commits") if isinstance(pr, dict) else None
+        page = _commit_connection(connection, response.status)
+        if page.commits is None:
+            return page
+        if page.total != first.total:
+            return _CommitPage(None, status=page.status, failure=GhFailure.ERROR)
+        found.extend(page.commits)
+    # 件数・重複の検査は CachedPr が行う。ここでは保存順を固定する。
+    return _CommitPage(tuple(sorted(found, key=_commit_order)), first.total, status=status)
+
+
+def _search_body(
+    data: dict, window: DateWindow, status: int, run: Runner,
+    github_org: str, sleep: Sleeper,
+) -> _Page:
+    """検索を解釈し、全 PR のコミットを読み切る。失敗したページは一切採らない。"""
+    unreadable = _Page(None, status=status, failure=GhFailure.ERROR)
+    search = data.get("search")
     if not isinstance(search, dict):
         return unreadable
     total = search.get("issueCount")
@@ -1919,7 +2239,15 @@ def _search_body(body: str, window: DateWindow, status: int) -> _Page:
         return unreadable
     found: list[CachedPr] = []
     for node in nodes:
-        pr = _pr_node(node, window)
+        if not isinstance(node, dict):
+            return unreadable
+        commits = _collect_commits(run, github_org, node, status, sleep)
+        if commits.commits is None:
+            return _Page(None, status=commits.status, failure=commits.failure)
+        try:
+            pr = _pr_node(node, window, commits.commits, commits.total)
+        except (TypeError, ValueError):
+            return unreadable
         if pr is None:
             return unreadable
         found.append(pr)
@@ -1928,53 +2256,19 @@ def _search_body(body: str, window: DateWindow, status: int) -> _Page:
     )
 
 
-def _is_transient(page: _Page) -> bool:
-    """その失敗が呼び直しで解消しうるか。
-
-    対象は上流の一時的な障害（`_TRANSIENT_STATUSES`）と応答待ちの打ち切りだけにする。
-    利用上限を呼び直すと上限をさらに消費し、本文の解釈不能・認証と権限の不足・gh の
-    不在は何度呼んでも同じ結果になるため、いずれも即座に止める側へ残す。
-    """
-    if page.prs is not None:
-        return False
-    if page.failure is GhFailure.TIMEOUT:
-        return True
-    return page.failure is GhFailure.ERROR and page.status in _TRANSIENT_STATUSES
-
-
 def _search_page(
     run: Runner, github_org: str, window: DateWindow, cursor: str | None,
     sleep: Sleeper,
 ) -> _Page:
-    """検索を1ページ読む（一時的な失敗は少し待って数回まで呼び直す）。
-
-    呼び直すのは同じ引数の同じページなので、成功したときの結果は1回で成功した場合と
-    変わらない。試行を使い切ったら最後の失敗をそのまま返す（呼び出し側はその窓で止める）。
-    """
-    page = _search_once(run, github_org, window, cursor)
-    for pause in _RETRY_PAUSES:
-        if not _is_transient(page):
-            return page
-        sleep(pause)
-        page = _search_once(run, github_org, window, cursor)
-    return page
-
-
-def _search_once(
-    run: Runner, github_org: str, window: DateWindow, cursor: str | None
-) -> _Page:
-    """検索を1回呼んで1ページ分の結果にする。"""
-    result = run(_graphql_args(_search_expression(github_org, window), cursor))
-    if result.failure is not None:
-        return _Page(None, failure=result.failure)
-    status, headers, body = _parse_response(result.stdout)
-    if status is None:
-        return _Page(None, failure=GhFailure.ERROR)
-    if _is_rate_limited(status, headers):
-        return _Page(None, status=status, failure=GhFailure.RATE_LIMITED)
-    if status != 200:
-        return _Page(None, status=status, failure=GhFailure.ERROR)
-    return _search_body(body, window, status)
+    """検索を再試行付きで読み、コミットの続きを同じ失敗分類で取得する。"""
+    response = _graphql_page(
+        run, lambda attempt: _graphql_args(
+            _search_expression(github_org, window), cursor, *_SEARCH_PAGE_SIZES[attempt],
+        ), sleep,
+    )
+    if response.data is None:
+        return _Page(None, status=response.status, failure=response.failure)
+    return _search_body(response.data, window, response.status, run, github_org, sleep)
 
 
 def _collect_window(
@@ -2003,18 +2297,20 @@ def _collect_window(
         return _Collected(tuple(found[key] for key in sorted(found)), first.status)
 
     found = {_pr_order(pr): pr for pr in first.prs}
-    has_next, cursor, pages = first.has_next, first.cursor, 1
-    while has_next:
-        pages += 1
-        if pages > _MAX_SEARCH_PAGES or cursor is None:
-            # 上限までページが続く（＝上限を超える件数を辿れている）のも、次があるのに
-            # cursor が無いのも、読み切れたことにしてよい状態ではない
-            return _Collected(None, first.status, GhFailure.ERROR)
-        page = _search_page(run, github_org, window, cursor, sleep)
+    received = len(first.prs)
+    page = first
+    while True:
+        if received > _SEARCH_RESULT_CAP or (
+            page.has_next and (not page.prs or not page.cursor)
+        ):
+            return _Collected(None, page.status, GhFailure.ERROR)
+        if not page.has_next:
+            break
+        page = _search_page(run, github_org, window, page.cursor, sleep)
         if page.prs is None:
             return _Collected(None, page.status, page.failure)
+        received += len(page.prs)
         found.update((_pr_order(pr), pr) for pr in page.prs)
-        has_next, cursor = page.has_next, page.cursor
     return _Collected(tuple(found[key] for key in sorted(found)), first.status)
 
 
@@ -2022,10 +2318,11 @@ def collect_merged_prs(
     github_org: str, month: str, cache_dir: Path, *, repos: RepoDiscovery,
     runner: Runner | None = None, today: dt.date | None = None,
     sleep: Sleeper | None = None,
+    on_window: Callable[[DateWindow, int, int], None] | None = None,
 ) -> PrCollection:
     """対象月の merged PR のメタデータを収集して cache_dir へ保存する（設計書 §15.4）。
 
-    取るのは §7.6 の9項目だけで、title・本文・レビュー本文・files・diff・commit
+    取るのは §7.6 の PR とコミットの項目だけで、title・本文・レビュー本文・files・diff・commit
     message・コードは取得も保存もしない。月を固定の窓に割って順に取り、既に完了済みの
     窓と、まだ始まっていない窓は問い合わせない。窓の取得に失敗したらそこで止め、それ
     までの結果と完了済みの窓を保存して理由を返す（再実行は続きから進む）。
@@ -2039,8 +2336,12 @@ def collect_merged_prs(
     別の Organization の一覧・完全でない一覧は何も書かずに中止する（一覧に載らなかった
     repository の PR が「対象外」へ流れ、参考指標が黙って小さく出るため）。
 
-    一時的な障害（`_TRANSIENT_STATUSES`・応答待ちの打ち切り）は、同じページを少し待って
-    `_MAX_ATTEMPTS` 回まで呼び直す。それでも通らなければ従来どおりその窓で止める。
+    一時的な障害（`_TRANSIENT_STATUSES`・応答待ちの打ち切り・JSON でない200・時間切れを
+    示す GraphQL のエラー）は、少し待って同じ位置のページを段階的に小さくして読む。
+    最大 `_MAX_ATTEMPTS` 回で、次のページは通常の大きさへ戻す。通らなければその窓で止める。
+
+    on_window は実際に問い合わせる窓の直前に、その窓・今回の何番目か・今回の窓の総数で呼ぶ。
+    完了済みと未来の窓は数えず、中断後の窓では呼ばない。
 
     today を渡すと「今日」を、runner を渡すと gh の呼び出しを、sleep を渡すと再試行の
     待ちを差し替えられる（いずれもテスト用。sleep の既定は `time.sleep`）。
@@ -2072,6 +2373,9 @@ def collect_merged_prs(
     # 壊れたキャッシュは読めた時点で中止する（何も書かない）。不完全な状態のうえに
     # upsert すると、取りこぼしを抱えたまま「完了」になりうる
     cache = load_pr_cache(cache_dir, month, github_org)
+    refreshed_schema = cache.schema == 1
+    if refreshed_schema:
+        cache = PrCache(github_org=github_org, month=month)
     run = run_gh if runner is None else runner
     pause = time.sleep if sleep is None else sleep
     day = _today() if today is None else today
@@ -2083,10 +2387,10 @@ def collect_merged_prs(
     stopped: DateWindow | None = None
     status: int | None = None
     failure: GhFailure | None = None
-    for window in windows:
-        if window in done or window.start > day:
-            # 完了済みと、まだ始まっていない窓は問い合わせない（未来の窓は完了にもしない）
-            continue
+    pending = tuple(window for window in windows if window not in done and window.start <= day)
+    for index, window in enumerate(pending, start=1):
+        if on_window is not None:
+            on_window(window, index, len(pending))
         collected = _collect_window(run, github_org, window, sleep=pause)
         if collected.prs is None:
             # 取り切れなかった窓の PR は採らない（窓の粒度で all-or-nothing）
@@ -2117,4 +2421,6 @@ def collect_merged_prs(
         failure=failure,
         repository_count=len(repos.repos),
         excluded_repository_count=repos.excluded,
+        commit_total=sum(len(pr.commits) for pr in written.prs),
+        refreshed_schema=refreshed_schema,
     )

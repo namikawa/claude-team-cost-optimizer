@@ -1160,7 +1160,7 @@ def _run_collect(args: argparse.Namespace) -> int:
     """外部データを収集してローカルへ保存する（設計書 §16.2）。
 
     github の対象は GitHub 分析を有効にした組織だけで、保存するのは merged PR の
-    メタデータ（設計書 §7.6 の9項目）と、そのとき参照できた repository の一覧。claude は
+    メタデータとコミット（設計書 §7.6）と、そのとき参照できた repository の一覧。claude は
     `_run_collect_claude` が受け持つ。どちらもレポートは書かず、判定にも影響しない。
     """
     cfg = load_config(args.config)
@@ -1193,11 +1193,21 @@ def _run_collect(args: argparse.Namespace) -> int:
         )
         return 1
 
+    def on_window(window: github_collect.DateWindow, index: int, total: int) -> None:
+        print(
+            f"{org} {month}: {window.start}〜{window.end} を取得しています（{index}/{total}）",
+            flush=True,
+        )
+
     collected = github_collect.collect_merged_prs(
-        enabled[org], month, org_input / github_collect.PR_CACHE_DIRNAME, repos=repos
+        enabled[org], month, org_input / github_collect.PR_CACHE_DIRNAME, repos=repos,
+        on_window=on_window,
     )
+    if collected.refreshed_schema:
+        print("  キャッシュが以前の形式だったため、その月の全期間を再取得の対象にしました")
     print(
         f"{org} {month}: merged PR {collected.total} 件"
+        f"・コミット {collected.commit_total} 件"
         f"（今回 {collected.upserted} 件を更新）→ {collected.path}"
     )
     print(

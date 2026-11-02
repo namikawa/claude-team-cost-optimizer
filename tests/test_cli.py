@@ -478,12 +478,13 @@ def _mapping(input_dir: Path, org: str, rows: tuple[str, ...]) -> None:
 
 def _pr_entry(number: int = 12, repository: str = "repo-a", login: str = "alice-dev",
               author_type: str = "User", merged: str = "2026-06-03T12:00:00Z") -> dict:
-    """キャッシュに保存された merged PR 1件（9項目）。"""
+    """キャッシュに保存された merged PR 1件（schema 2）。"""
     return {
         "repository": repository, "number": number,
         "author_login": login, "author_type": author_type,
         "created_at": "2026-06-01T00:00:00Z", "merged_at": merged,
         "additions": 10, "deletions": 2, "is_draft": False,
+        "merge_commit_oid": None, "commit_count": 0, "commits": [],
     }
 
 
@@ -1628,8 +1629,13 @@ def test_collect_writes_the_cache_and_prints_one_line(
 
     out = capsys.readouterr().out
     path = _cache_path(input_dir)
+    progress = [
+        f"org-a {COLLECT_MONTH}: {window.start}〜{window.end} を取得しています（{i}/5）"
+        for i, window in enumerate(month_windows(COLLECT_MONTH), start=1)
+    ]
     assert out.splitlines() == [
-        f"org-a {COLLECT_MONTH}: merged PR 0 件（今回 0 件を更新）→ {path}",
+        *progress,
+        f"org-a {COLLECT_MONTH}: merged PR 0 件・コミット 0 件（今回 0 件を更新）→ {path}",
         "  対象 repository 1 件（archived / fork / template を除外 0 件）",
     ]
     assert json.loads(path.read_text(encoding="utf-8"))["github_org"] == GH_ORG
@@ -4326,3 +4332,72 @@ def test_init_org_without_workspaces_refuses_a_mixed_org(make_input, capsys):
     assert main(["init-org", "org-x", "--input-dir", str(input_dir),
                  "--output-dir", str(input_dir.parent / "reports")]) == 1
     assert "second" in capsys.readouterr().err
+
+
+def test_collect_prints_the_saved_commit_total(make_input, tmp_path, monkeypatch, capsys):
+    """完了済みのキャッシュから保存コミット件数を表示し、検索は呼ばない。"""
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    entry = _pr_entry(merged="2026-08-03T00:00:00Z")
+    entry.update(commit_count=1, commits=[{
+        "oid": "a" * 40, "author_login": None, "author_email": "dev@example.invalid",
+        "additions": 10, "deletions": 2, "committed_at": "2026-08-02T00:00:00Z",
+        "is_merge": False,
+    }])
+    _write_pr_cache(input_dir, month=COLLECT_MONTH, entries=[entry])
+    calls = _stub_search(monkeypatch)
+    assert _collect(config, input_dir, "--org", "org-a") == 0
+    out = capsys.readouterr().out
+    assert "merged PR 1 件・コミット 1 件（今回 0 件を更新）" in out
+    assert "形式を更新" not in out
+    assert not any(_graphql(call) for call in calls)
+
+
+def test_collect_prints_schema_migration_notice(make_input, tmp_path, monkeypatch, capsys):
+    """schema 1 の全期間を取り直した後に完了の案内と schema 2 の要約を表示する。"""
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    path = _write_pr_cache(input_dir, month=COLLECT_MONTH,
+                           entries=[_pr_entry(merged="2026-08-03T00:00:00Z")])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema"] = 1
+    for entry in payload["prs"].values():
+        for key in ("commits", "commit_count", "merge_commit_oid"):
+            del entry[key]
+    path.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+    calls = _stub_search(monkeypatch)
+    assert _collect(config, input_dir, "--org", "org-a") == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines[0] == "org-a 2026-08: 2026-08-01〜2026-08-07 を取得しています（1/5）"
+    assert lines[5] == "  キャッシュが以前の形式だったため、その月の全期間を再取得の対象にしました"
+    assert "merged PR 0 件・コミット 0 件（今回 0 件を更新）" in out
+    assert sum(_graphql(call) for call in calls) == len(month_windows(COLLECT_MONTH))
+    assert json.loads(path.read_text(encoding="utf-8"))["schema"] == 2
+
+
+def test_collect_flushes_window_progress_before_the_summary(
+    make_input, tmp_path, monkeypatch, capsys
+):
+    """期間の進捗を1行ずつ即座に送り、最後の要約より前に表示する。"""
+    input_dir = _clean_org(make_input)
+    config = _gh_config(tmp_path, **{"org-a": GH_ORG})
+    _stub_search(monkeypatch)
+    original_print = print
+    progress = []
+
+    def record_print(*args, **kwargs):
+        """進捗行の flush 指定を記録し、標準出力への表示も行う。"""
+        if args and "を取得しています" in str(args[0]):
+            assert kwargs.get("flush") is True
+            assert kwargs.get("file") is None
+            progress.append(args[0])
+        original_print(*args, **kwargs)
+
+    monkeypatch.setattr("builtins.print", record_print)
+    assert _collect(config, input_dir, "--org", "org-a") == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(progress) == 5
+    assert lines[:5] == progress
+    assert progress[1] == "org-a 2026-08: 2026-08-08〜2026-08-14 を取得しています（2/5）"
+    assert "merged PR" in lines[5]
