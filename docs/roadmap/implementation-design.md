@@ -1362,8 +1362,7 @@ doctorの対応表の検査も同じ対象者だけを見る（入れ子の組�
 
 PR の件数と lead time は PR の作成者に帰属させたまま（§15.5）、行数はコミットの作者に帰属
 させる（Step 58〜59）。PR の作成者と中のコミットの作者は別の人であることがあり（引き継ぎ・
-共同作業。複数組織で確認し、多い組織では行数の過半が作成者以外の PR が 4 本に 1 本あった）、
-PR の additions / deletions を作成者に足すと別の人の成果が混ざる。
+共同作業）、PR の additions / deletions を作成者に足すと別の人の成果が混ざる。
 
 - 取得: 検索の GraphQL に`commits`を足し、PR ごとに oid・作者の login とメール・additions・
   deletions・committedDate を取る（§7.6）。1 回で取り切れない PR（総数が 1 回の上限を超える）は
