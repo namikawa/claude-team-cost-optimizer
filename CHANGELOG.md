@@ -1,6 +1,6 @@
 # 変更履歴
 
-## [未リリース]
+## [1.4.6] - 2026-11-08
 
 ### 追加
 
@@ -10,8 +10,8 @@
 
 ### 修正
 
-- `collect --source github` で時間切れになったページを同じ位置から小さくして読み直し、本文が JSON でない応答も再試行するようにした
 - Claude Code analytics の CSV の LoC の列の見出しが「Lines accepted」になると、`collect --source claude` で配置できず、`analyze` も LoC を出力しなかった（従来の「Lines this Month」とあわせて認識するようにした）
+- `collect --source github` で時間切れになったページを同じ位置から小さくして読み直し、本文が JSON でない応答も再試行するようにした
 
 ## [1.4.5] - 2026-11-02
 
@@ -243,6 +243,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.4.6]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.6
 [1.4.5]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.5
 [1.4.4]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.4
 [1.4.3]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.3

@@ -91,6 +91,9 @@ CSV はヘッダを正規化してから、`config.yaml` の `columns.<種別>` 
 `cache_write_5m_tokens`・`cache_write_1h_tokens`）は任意だが、4列のうち一部だけが見つかった
 場合もエラーになる（4列とも無い CSV は、入力分を `prompt_tokens` 全量で計算する）。
 
+Claude Code 分析の LoC の列（`loc_with_cc`）は任意だが、見つからない場合は実ファイルのヘッダを
+示して警告する（このときレポートに LoC は出ない）。
+
 ヘッダの正規化は、前後の空白を除いて小文字にし、`_` と `-` を空白に置き換え、連続する空白を
 1つにまとめる。エイリアス表に挙げた名前のほか、正準の列名そのもの（`prompt_tokens` なら
 `prompt tokens`）も照合の対象になる。
