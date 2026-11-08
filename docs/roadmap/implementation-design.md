@@ -114,8 +114,11 @@ Premium → Standard:
 - Claude Codeをprimaryとする
 - Chat、Cowork、Design等はsupplementaryとする
 - 費用には全プロダクトを含める
-- 活用評価はCodeを主軸とする
-- Cowork、Design等は利用可視化まで
+- シートの判定（昇格・降格・credit）は全プロダクトの需要で行い、primary / supplementaryの
+  区別を条件にしない（Track 11）。開発者以外が主に使う組織では、CoworkやChatが主な利用先に
+  なるため
+- 活用の可視化（Code / 全productの特徴量、usage-summary、dashboardのproduct軸、§27）は
+  primaryをClaude Codeとして続ける
 - 禁止機能はpolicy warningとする
 
 ### 3.6 分析単位
@@ -578,9 +581,9 @@ product_policy:
 
 ### 9.3 判定への利用
 
-- 費用比較は`total_demand_usd`
-- 活用判定は`code_demand_usd`を主にする
-- Code低・supplementary高は自動downgradeせず`REVIEW_NON_CODE_USAGE`
+- シート判定（§12）は`total_demand_usd`だけを見る。`code_demand_usd`・`supplementary_high`は
+  判定の条件にしない（Track 11で分類軸を外した）
+- 活用の可視化と習熟の時系列（§27）は`code_demand_usd`を主にする
 - 禁止productはseat判定へ影響させずpolicy warning
 
 ## 10. Seat change event
@@ -695,7 +698,6 @@ class SeatAction(StrEnum):
     KEEP = "keep"
     UPGRADE_TO_PREMIUM = "upgrade_to_premium"
     DOWNGRADE_TO_STANDARD = "downgrade_to_standard"
-    REVIEW_ASSIGNMENT = "review_assignment"
     NONE = "none"
 
 
@@ -713,8 +715,6 @@ StrEnumは文字列と等値になるため、語彙をまたいだ等値比較�
 
 ### 12.2 reason code
 
-- `ONE_MONTH_STRONG_CODE_DEMAND`
-- `SUSTAINED_LOW_CODE_DEMAND`
 - `SUSTAINED_LOW_TOTAL_DEMAND`
 - `TOTAL_DEMAND_ABOVE_PREMIUM_LINE`
 - `SUSTAINED_OVERAGE`
@@ -723,8 +723,6 @@ StrEnumは文字列と等値になるため、語彙をまたいだ等値比較�
 - `CREDIT_SETTING_UNKNOWN`
 - `STANDARD_BILLING_ABOVE_SEAT_GAP`
 - `CREDIT_CONSUMPTION_RISING`
-- `HIGH_SUPPLEMENTARY_USAGE`
-- `REVIEW_NON_CODE_USAGE`
 - `RECENT_MEMBER`
 - `RECENT_SEAT_CHANGE`
 - `PARTIAL_MONTH`
@@ -732,7 +730,12 @@ StrEnumは文字列と等値になるため、語彙をまたいだ等値比較�
 - `IDENTITY_CONFLICT`
 - `CURRENT_SEAT_UNKNOWN`
 - `CAPACITY_SIGNAL_UNAVAILABLE`
-- `DATA_CONFIDENCE_LOW`
+- `DATA_CONFIDENCE_LOW`（分類できない観測（§10.4）がrecent窓に重なるときの保留理由）
+
+Track 11で削除した語彙（それ以前のdecision-evidenceにだけ現れる）: `SeatAction.REVIEW_ASSIGNMENT`、
+`ReasonCode`の`ONE_MONTH_STRONG_CODE_DEMAND`・`SUSTAINED_LOW_CODE_DEMAND`・`HIGH_SUPPLEMENTARY_USAGE`・
+`REVIEW_NON_CODE_USAGE`。いずれも需要の中身（Codeか補助productか）をシート判定の条件にしていた
+名残で、§3.5・§9.3の変更で不要になった。
 
 ### 12.3 Cost
 
@@ -753,11 +756,12 @@ V1は従来どおりallowanceを使う。需要の方針線は課金額の推定
 実課金が観測できない組織の昇格は対象月の全product需要が方針線以上であることを条件とする。
 方針線は推定値ではないので、allowanceとの大小関係は検証しない。
 
-昇格と降格を毎月往復しないための歯止めは、Codeゲートとヒステリシスが担う。昇格は対象月の
-Code需要が`min_code_demand_usd`以上であることを要し、降格は評価窓の全完全月でCode需要が
-`max_code_demand_usd`未満であることを要するため、往復には実際の利用の変化が必要になる。
-加えてrecent窓（`recent_seat_change_days`）と降格の評価窓（`downgrade.min_complete_months`
-完全月）が、1か月の振れで席が動くことを防ぐ。
+昇格と降格を毎月往復しないための歯止めは、ヒステリシスだけが担う。降格は評価窓
+（`downgrade.min_complete_months`完全月）の全月で条件が成立することを要し、κ無効の昇格は
+方針線以上が2完全月続くこと（または月内の継続上昇）を要し、recent窓（`recent_seat_change_days`）
+がシート変更の直後の判定を観察へ倒す。方針線の付近を行き来する利用者の席は、最短でも数か月の
+周期でしか動かない。往復が起きても戻せばよい（昇格・降格はいずれも可逆な操作）という運用を
+前提に、需要の中身（Code需要）によるゲートは置かない（§3.5）。
 
 5時間枠・週次上限を観測できないため、`CAPACITY_SIGNAL_UNAVAILABLE`を情報として付ける。
 この理由だけで全候補を保留にはしない。
@@ -770,30 +774,23 @@ Code需要が`min_code_demand_usd`以上であることを要し、降格は評�
 decision_v2:
   upgrade:
     min_complete_months: 1
-    min_code_demand_usd: 200.0
 ```
 
 候補条件:
 
 1. current seatがStandard
 2. 完全月が1か月以上
-3. Code需要が設定閾値以上
-4. usage credit上限κの状態に応じた信号が成立
-5. partial month、identity conflictではない
+3. usage credit上限κの状態に応じた信号が成立
+4. partial month、identity conflictではない
 
-条件3の閾値は`min_code_demand_usd`（既定はシート差額の2倍）。シート差額程度の需要は
-軽度の利用でも生じうるため、Code主体であることの証明には差額の2倍を要求する。Code需要を
-確定できない場合は、Code主体であることを証明できないまま自動で推奨しないため
-`OBSERVE`とする。
-
-条件4は費用の軸で、シートの込み枠がproduct共通であることから全product合算で評価する。使う
+条件3は費用の軸で、シートの込み枠がproduct共通であることから全product合算で評価する。使う
 信号は3つあり、どれを見るかはκの状態が決める。
 
 | κ | 候補化の信号 | 結論 |
 |---|---|---|
-| 有効（正の有限値・無制限） | 実課金がシート差額を上回る、またはκへ到達 | 成立なら条件3の分類軸へ。不成立なら現状維持 |
-| 無効（0） | 全product需要が方針線以上 | 継続性があれば分類軸へ、無ければ`ENABLE_WITH_CAP`（§12.6） |
-| 不明（None） | 実課金がシート差額を上回る | 成立なら分類軸 + `CreditAction.REVIEW`。不成立で需要が方針線以上なら席は動かさず`REVIEW`だけ |
+| 有効（正の有限値・無制限） | 実課金がシート差額を上回る、またはκへ到達 | 成立なら`UPGRADE_TO_PREMIUM`。不成立なら現状維持 |
+| 無効（0） | 全product需要が方針線以上 | 継続性があれば`UPGRADE_TO_PREMIUM`、無ければ`ENABLE_WITH_CAP`（§12.6） |
+| 不明（None） | 実課金がシート差額を上回る | 成立なら`UPGRADE_TO_PREMIUM` + `CreditAction.REVIEW`。不成立で需要が方針線以上なら席は動かさず`REVIEW`だけ |
 
 実課金の経路は`observed_billing_margin_usd`以上の超過を要求し、超過が正であることも要求
 する（`observed_billing_margin_usd: 0`の設定でも、シート差額とちょうど同額の実課金は
@@ -808,9 +805,9 @@ decision_v2:
 （記入ミス、または月中の設定変更）。この場合はκ不明として扱い、実課金という観測を捨てない。
 見るのは対象月の実課金だけとする（前月の課金は設定変更より前のものでありうる）。
 
-条件3は費用の軸を満たした候補を振り分けるゲートとして働く。Code需要が低く全product
-需要だけ高い場合は`REVIEW_ASSIGNMENT`とし、statusは`RECOMMENDED`とする。シートを変える
-のではなくアサインを人が見直す作業として出すためで、保留（`OBSERVE`）ではない。
+需要の中身（Codeか補助productか）は昇格の条件にしない（§3.5・§9.3）。費用の軸が成立した候補は
+そのまま昇格の推奨とし、理由コードには候補化の信号（§12.6）と`CAPACITY_SIGNAL_UNAVAILABLE`を
+添える。
 
 ### 12.5 Downgrade
 
@@ -820,38 +817,31 @@ decision_v2:
 decision_v2:
   downgrade:
     min_complete_months: 2
-    max_code_demand_usd: 200.0
 ```
 
 候補条件:
 
 1. current seatがPremium
-2. 直近2完全月でCode需要が低い
-3. 直近2完全月で全product需要も低い
-4. 実課金・credit上限到達がない
-5. 直近のシート変更ではない
-6. partial month、identity conflictではない
+2. 直近2完全月で全product需要が低い
+3. 実課金・credit上限到達がない
+4. 直近のシート変更ではない
+5. partial month、identity conflictではない
 
-条件2〜4の評価窓は直近の完全月`min_complete_months`ヶ月で、間に部分月が挟まる場合は
+条件2〜3の評価窓は直近の完全月`min_complete_months`ヶ月で、間に部分月が挟まる場合は
 飛ばして完全月だけを採る。誤ったdowngradeは業務を止めるため、条件は窓の全月で成立する
 ことを要求する。
 
-条件2の閾値は`max_code_demand_usd`（既定は昇格側の`min_code_demand_usd`と同額）。この値
-以上のCode需要が窓のいずれかの月にあるユーザは自動downgradeの対象にしない。Code需要を
-確定できない月がある場合は、低いことを証明できないまま自動でdowngradeしないため
-`OBSERVE`とする（upgradeのNA扱いと同じ）。
-
-条件4は窓のいずれかの月に実課金があれば候補から外す（Premiumでの実課金は、需要が
+条件3は窓のいずれかの月に実課金があれば候補から外す（Premiumでの実課金は、需要が
 Premiumの込み枠を超えた観測）。credit上限への到達は実課金の発生を伴うため、この検査に
 含まれる。
 
-条件3は費用の軸で、窓の全月で全product需要が方針線（`premium_justification_usd`）未満で
+条件2は費用の軸で、窓の全月で全product需要が方針線（`premium_justification_usd`）未満で
 あることを要求する。境界（ちょうど同額）は方針線以上として扱い、降格の候補にしない。
+成立した降格の理由コードは`SUSTAINED_LOW_TOTAL_DEMAND`と`CAPACITY_SIGNAL_UNAVAILABLE`。
 
-Code需要が低くsupplementaryが高い場合は、自動downgradeせず`REVIEW_ASSIGNMENT`とし、
-statusは`RECOMMENDED`とする（upgradeの条件3と同じ扱い）。この振り分けは条件3より先に
-行う。全product需要が大きく条件3が成立しない場合に現状維持で終わらせると、Premiumの枠を
-非Code利用で使っている状態が誰の作業としても残らないため。
+需要の中身（Codeか補助productか）は降格の条件にしない（§3.5・§9.3）。Code需要の大きい利用者も、
+全product需要が方針線未満の月が窓に続けば降格の候補になる。方針線はシート差額の数倍の水準に
+置いてあり、その未満の需要はStandardの枠で足りるとみなす。
 
 ### 12.6 Credit
 
@@ -875,8 +865,7 @@ credit設定が不明なら金額を断定せず`CreditAction.REVIEW`とする�
 
 κ=0で需要が方針線以上になったのが1か月だけの場合は、席を変えず`ENABLE_WITH_CAP`とする。
 上限つきcreditの付与は可逆な計測手段で、1か月の課金実測を取ることが「実課金が構造的に0の
-ためPremium昇格の根拠が永久に出ない」行き詰まりへの回答になる。この結論には分類軸
-（Codeゲート）をかけない。シートの込み枠はproduct共通で、付与は席の変更ではないため。
+ためPremium昇格の根拠が永久に出ない」行き詰まりへの回答になる。
 
 週次snapshotの継続上昇は2完全月連続と同等の継続性として扱い、対象月内の当月消費の観測点が
 3点以上あって取得日順に狭義単調増加していることを要求する。当月消費は月次でリセットされる
@@ -884,8 +873,8 @@ credit設定が不明なら金額を断定せず`CreditAction.REVIEW`とする�
 
 継続性はいずれの形（2完全月連続・月内の継続上昇）でも、対象月で需要が方針線以上であること
 を前提とする（継続性は「その状態が続いているか」を見る条件で、それ自体は候補化の根拠に
-ならない）。κ=0の結論は次の3つに分かれる: 方針線以上で継続性もあれば分類軸へ進む。方針線
-以上だが継続性が無ければ`ENABLE_WITH_CAP`に留まる。方針線に届かなければ現状維持で、継続
+ならない）。κ=0の結論は次の3つに分かれる: 方針線以上で継続性もあれば`UPGRADE_TO_PREMIUM`。
+方針線以上だが継続性が無ければ`ENABLE_WITH_CAP`に留まる。方針線に届かなければ現状維持で、継続
 上昇だけでは候補にならない。
 
 credit設定が不明な場合、席を動かす判断は実課金だけで行う（§12.4）。credit側は上限も有効・
@@ -894,7 +883,7 @@ credit設定が不明な場合、席を動かす判断は実課金だけで行�
 （設定の不明だけで人へ回すと、確認すべき相手が組織の全員になる）。
 
 statusは人が取るべきアクションがあるかで決まる。seat actionが`UPGRADE_TO_PREMIUM`・
-`REVIEW_ASSIGNMENT`のとき、またはcredit actionが`ENABLE_WITH_CAP`・`REVIEW`のときは
+`DOWNGRADE_TO_STANDARD`のとき、またはcredit actionが`ENABLE_WITH_CAP`・`REVIEW`のときは
 `RECOMMENDED`とする。seat側が`OBSERVE`でもcredit側に作業があれば`RECOMMENDED`になり、
 どちらの側の作業かはseat actionとcredit actionが示す。
 
@@ -1472,10 +1461,12 @@ Chromeをログイン画面で起動し、人が行う手順（ログイン・�
 終わる。見積もりが`otel.maximum_bytes_billed`を超えるときは実行しない。定期実行（§14.5）には
 含めない（サブスクリプションの外の課金が生じるため、人が都度実行する）。
 
-V2が安定するまで既定値は`v1`。`--decision-version`を省略した場合は
-`decision_v2.enabled`に従い、明示指定はそれに優先する。`enabled: true`は「V1の成果物に
-V2判定の根拠（decision-evidence）を併記する」opt-inで、主判定をV2へ切り替えるものではない。
-速報モード（`--preview`）はV2判定を行わないため、このオプションと併用できない。
+判定の版は「`--decision-version`の明示指定 > `config.yaml`の`decision.version` > `v2`」で決まる
+（Track 11で既定を`v2`にした。それまでは`decision_v2.enabled`による併記のopt-inで、既定は`v1`）。
+`v2`は主判定がV2で、report・details・dashboard・recommendationsの判定がV2の結論になり、
+decision-evidenceを常に併記する。`v1`は従来の判定（allowanceモデル）で、decision-evidenceを
+書かない。`v1`はV2の既定化から最低3か月は選べる（§22.1）。速報モード（`--preview`）は
+どちらの版でもV1の一次判断のままで、このオプションと併用できない。
 
 ## 17. 構造化issue
 
@@ -4158,6 +4149,293 @@ Step 60〜61 で OpenTelemetry の取得と網羅率、Step 62〜65 でパネル
 
 - 週次の粒度・SHA 結合
 
+### Track 11: V2判定の既定化
+
+仕様は§12（分類軸を外した形で書いてある）・§16.2・§21・§22・§26.9。シートの判定を全productの
+需要で行い（§3.5・§9.3）、V2の結論をreport・details・dashboard・recommendationsに出す。
+Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論を主成果物へ出す経路がCLIに
+無く、Step 69でも`v2`を選んだ実行だけが変わる）、Step 70で既定を`v2`へ切り替える。V1は
+`--decision-version v1`で最低3か月選べる（§22.1）。速報（`--preview`）はこのTrackでは触らない
+（一次判断はallowanceモデルのまま）。後続候補（番号は着手時に振る）: 速報の一次判断を方針線へ
+置き換える、V1を撤去する（§22.1）。
+
+#### Step 66: シート判定から分類軸（Code）を外す
+
+依存:
+
+- Step 19
+
+対象:
+
+- `src/seat_analyzer/domain.py`（`SeatAction`・`ReasonCode`）
+- `src/seat_analyzer/decision_v2.py`
+- `src/seat_analyzer/default-config.yaml`・`src/seat_analyzer/config.py`（削除するキーの検証）
+- `src/seat_analyzer/decision_evidence.py`・`src/seat_analyzer/report/evidence_csv.py`（列）
+- `src/seat_analyzer/cli.py`（V2の内訳の表示ラベル表から`REVIEW_ASSIGNMENT`を外す）
+- `tests/test_decision_v2.py`・`tests/test_decision_evidence.py`・`tests/test_config.py`・
+  `tests/golden/full-all/`（decision-evidenceの再生成）
+- `docs/reference.md`（decision-evidenceの列）
+
+`cli.py`・`config.py`の変更は語彙と設定キーの削除に伴う参照側の数行で、語彙と同じStepで行う
+（Enumの参照が残るとモジュールの読み込みで失敗し、検証が残ると既定設定のロードで失敗する）。
+
+実装:
+
+- 昇格（§12.4）: 費用の軸が成立した候補をそのまま`UPGRADE_TO_PREMIUM`にする。分類軸と
+  `REVIEW_ASSIGNMENT`を削除する
+- 降格（§12.5）: Code需要のゲートとsupplementary高の分岐を削除する。窓の全月で実課金なし・
+  全product需要が方針線未満なら`DOWNGRADE_TO_STANDARD`
+- 語彙: `SeatAction.REVIEW_ASSIGNMENT`と、`ReasonCode`の`ONE_MONTH_STRONG_CODE_DEMAND`・
+  `SUSTAINED_LOW_CODE_DEMAND`・`HIGH_SUPPLEMENTARY_USAGE`・`REVIEW_NON_CODE_USAGE`を削除する
+  （§12.2）。`DATA_CONFIDENCE_LOW`は残す（分類できない観測がrecent窓に重なるときの保留理由。
+  §10.4・§12.7）
+- config: `decision_v2.upgrade.min_code_demand_usd`・`decision_v2.downgrade.max_code_demand_usd`を
+  既定設定と検証から削除する（利用者の設定に書いてあれば未知キーとしてロード時エラー）
+- decision-evidence: `code_demand_usd`・`supplementary_high`の列を外す（判定に使わない値を材料
+  として出さない。Codeの内訳はusage-summaryにある）
+
+受け入れ条件:
+
+- 合成データで、Code需要$0・全product需要が方針線以上のStandard（κ=0・2完全月連続）が
+  `UPGRADE_TO_PREMIUM`になる
+- 合成データで、全product需要が窓の全月で方針線未満のPremiumは、Code需要の大小によらず
+  `DOWNGRADE_TO_STANDARD`になる
+- `review_assignment`がどの経路でも出ない（語彙にも無い）
+- 分類できない観測（§10.4）がrecent窓に重なるとき、従来どおり`DATA_CONFIDENCE_LOW`で`OBSERVE`になる
+- `policy_stability`は経済軸だけで決まり、Code需要の値を変えても変わらない
+- 既定（`v1`）と`--preview`の成果物がバイト一致（golden）。`full-all`のdecision-evidenceだけが
+  列と理由コードの変更で変わり、意図どおりか目視して再生成する
+
+今回は行わない:
+
+- V2の結論を主成果物へ出すこと（Step 67〜69）
+- 速報
+
+#### Step 67: V2の結論を写す処理（apply）と設定キー
+
+依存:
+
+- Step 66
+
+対象:
+
+- `src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`（`decision.version`の追加と
+  `decision_v2.enabled`の廃止）
+- `src/seat_analyzer/decision_evidence.py`（`apply`: V2の結論をusers・summary・付与候補・人の層へ
+  写す純粋な関数）
+- `src/seat_analyzer/analyze/pipeline.py`（`analyze(..., decision_version=)`: 判定窓に基づく警告の
+  抑止・summaryの`decision_version`・新しい判定ラベル「対象外（副スペース）」の定数）
+- `src/seat_analyzer/cli.py`（decision-evidenceを併記するかの判断を`decision_v2.enabled`から
+  `decision.version`へ移す。挙動は従来と同じ）
+- `src/seat_analyzer/data_quality.py`（`doctor`の部分月・欠月の説明を`decision.version`で分ける）
+- `tests/test_decision_evidence.py`・`tests/test_analyze.py`・`tests/test_config.py`・`tests/test_cli.py`・
+  `tests/test_data_quality.py`
+
+実装:
+
+- 設定キー`decision.version: v1 | v2`を追加する。このStepの既定は`v1`。`decision_v2.enabled`は
+  未知キーとしてロード時エラーにし、メッセージで`decision.version`へ案内する。CLIは
+  `--decision-version` > `decision.version` > 既定の順で版を決め、このStepでは`v2`のときに
+  decision-evidenceを併記するだけ（従来の`enabled: true`と同じ挙動。主成果物をV2にする結線は
+  Step 69）
+- `apply(org_result, rows, cfg) -> OrgAnalysisResult`: V2の判定行（`evaluate_org`の出力）を
+  アカウントの行へ写し、summary・付与候補・人の層を組み直して返す。CLIからはまだ呼ばない
+  - `status`: 昇格・降格 → 変更推奨、`OBSERVE` → 要観察、`NO_DECISION`のうち`PARTIAL_MONTH`・
+    `INSUFFICIENT_HISTORY` → 要観察（データ蓄積待ち）、`IDENTITY_CONFLICT` → 要観察、
+    `CURRENT_SEAT_UNKNOWN` → シート不明、`EXCLUDED` → 対象外（シート未割当／固定シート）。
+    credit側だけに作業がある人（`ENABLE_WITH_CAP`・`REVIEW`）のシートの判定は現状維持
+  - `recommended_seat`: 昇格→`premium`、降格→`standard`、それ以外は現シート
+  - `monthly_saving_usd`: シート差額ベース。降格は+差額、昇格は実課金−差額（実課金ゼロなら
+    −差額。κの記入によらずこの式）、現状維持は0、判定しない行は空。変更先の従量課金は
+    見積もらない（§12.3）
+  - `confidence`: `policy_stability`の3/2/1を高/中/低、Noneは`—`
+  - `reason`: 理由コードの日本語ラベルを`; `で連結した新しい列。ラベルの表はapplyが唯一の源で、
+    decision-evidenceの`reason_codes`と順も対応する
+  - V1だけの列（`cost_if_standard_usd`・`cost_if_premium_usd`・`rec_low`・`rec_high`・
+    `cap_suspected`）はusersから落とす
+  - summary: `n_change_recommended`・`n_watching`・`est_monthly_saving_usd`を再計算し、
+    `decision_version`を持たせる。`n_cap_suspected`は持たない
+  - 付与候補: `credit_action`が`ENABLE_WITH_CAP`の人（需要・推奨初期上限）と`REVIEW`の人
+    （設定の確認）。allowanceの超過見込みは使わない
+  - 人の層（§26.5）はapplyの後に組み直す（人の`status`はアカウントの新しい`status`から決まる）
+- 複数workspace（§26.9）: 主のアカウントは`evaluate_org`（合算）の行を写す。副のStandard /
+  Premiumのアカウントは V2の判定を持たないので、`fixed_seat`があれば従来どおり「対象外（固定
+  シート）」、無ければ新しいラベル「対象外（副スペース）」にする（種別の判定を行わず、続けるか
+  戻すかは§26.5の継続判定が担う）。副の`unknown`（membersに居ないのにspendに現れた）は
+  「シート不明」、`unassigned`は「対象外（シート未割当）」のまま。副の行はdecision-evidenceに
+  足さない
+- `analyze(..., decision_version=)`（既定`v1`）: `v2`では判定窓に基づく3つの警告（主の欠月・
+  副の欠け・判定窓のあいだの加入とシート変更）を出さず、部分月の警告は観測の事実だけにする
+  （「変更推奨を出していません」はV1の規則の説明なので、V2の結論と並べない）。summaryには
+  `decision_version`と、昇格・降格の`min_complete_months`（表示の注記が設定値を使うため）を
+  持たせる
+- `doctor`（`data_quality.inspect_input`）の部分月・欠月の説明は設定の`decision.version`で分ける
+  （`doctor`には`--decision-version`が無い）。`v2`では「対象月が部分月なら判定を保留し、過去の
+  部分月は完全月に数えない」「欠月より前の月は履歴に入らない」とし、V1の判定窓の説明は`v1`の
+  ときだけ出す
+
+受け入れ条件:
+
+- 既定（`v1`）と`--decision-version v2`の成果物がどちらもバイト一致（golden。applyはまだ結線
+  しないので`full-all`も変わらない）
+- applyの単体テストで、V2の判定行ごとに`status`・`recommended_seat`・`monthly_saving_usd`・
+  `confidence`・`reason`が上の対応表どおりになる（昇格→変更推奨+`premium`、`OBSERVE`→要観察、
+  `PARTIAL_MONTH`→要観察（データ蓄積待ち）、κ=0で実課金$150の昇格→+$50 など）
+- applyの出力のsummary（変更推奨の人数・削減見込み・要観察）がusersの行から数えた値と一致し、
+  `n_cap_suspected`を持たない
+- 付与候補に`ENABLE_WITH_CAP`の人だけが載り、推奨初期上限が`suggested_credit_cap_usd`と同じ
+- 複数workspaceの合成データで、人の層の`status`が主の行のV2の結論から決まり、`fixed_seat`の副の
+  Standard / Premiumは対象外（固定シート）、`fixed_seat`の無い副のStandard / Premiumは対象外
+  （副スペース）になる。副にだけ現れる`unknown`はシート不明、副の`unassigned`は対象外（シート
+  未割当）のまま
+- `decision_version="v2"`の`analyze`が判定窓に基づく警告を出さず、`v1`の警告は従来どおり
+- `decision.version: v2`の設定で`doctor`の部分月・欠月の説明がV2の文になり、`v1`では従来の文のまま
+- `decision_v2.enabled`を書いた設定はロード時エラー（移行の案内つき）。`decision.version: v2`は
+  従来の`enabled: true`と同じ成果物を書く
+
+今回は行わない:
+
+- 表示の版対応（Step 68）
+- CLIの結線（Step 69）
+
+#### Step 68: 表示をV2に合わせる
+
+依存:
+
+- Step 67
+
+対象:
+
+- `src/seat_analyzer/report/text.py`・`markdown.py`・`details.py`・`html.py`・`spaces.py`
+- `src/seat_analyzer/templates/dashboard.html.j2`・`partials/grant.html.j2`・`partials/snapshot.html.j2`
+- `src/seat_analyzer/prompts/aspects-full.md`
+- 表示のテスト（applyの出力を`report.write_all`に通して確かめる。CLIの結線はまだ無い）
+
+実装:
+
+- summaryの`decision_version`で分岐する。`v2`のとき、ユーザ表（report・details・dashboardの
+  推奨一覧とユーザ別）にStandard時・Premium時・⚠上限フラグ・感度分析を出さず、判定の次に理由の
+  列を足す
+- 凡例・注意事項・「前提と注意」を版ごとの文にする（確度＝方針線を±$100ずらしても結論が同じか、
+  判定の条件）。固定文言は`text.py`の`_TEXT`に版ごとのキーで持つ
+- 削減見込み（`monthly_saving_usd`・サマリのKPI・人別の表・組織横断サマリ）は列名を変えず、`v2`の
+  凡例と注記に「シート差額ベースの比較額で、変更後の従量課金を含まない。負は費用増」と書く
+- サマリの「上限到達疑い（Standard）」行は`v2`で出さない。「判定に使用した月」は履歴の月と
+  「昇格は直近N完全月・降格は直近M完全月」の注記にする（N・Mはsummaryに載せた設定値。既定は
+  1と2）
+- 付与候補の節を、上限つき付与の一覧（需要・推奨初期上限）と設定確認の一覧の2段にする
+- 月中の利用推移（§8）の停止疑いは観測なので残し、`v2`では「実効込み量の実測候補」の語を出さない
+  （上限で止まった可能性に本人確認が要る旨は従来どおり）
+- 複数workspaceの人別の表（`spaces.py`）の凡例を版ごとにする（「アカウントのV1判定」「上限到達
+  疑い」の文言）
+- 考察の観点（`aspects-full.md`）は版を受け取らないので、両方の版に通る書き方にする: 上限到達疑いの
+  観点に「資料にあれば」を付け、追加クレジットの付与候補・設定確認の観点と、理由の列を根拠に
+  変更推奨の妥当性を評価する観点を「資料にあれば」で足す
+- HTML出力にコメントを残さない・外部通信なし・メールはローカル部のみ・JS無効でも読める、は従来
+  どおり
+
+受け入れ条件:
+
+- applyの出力を`write_all`に通したreport・details・dashboardに、込み利用量の推定値（allowanceの
+  3シナリオ）に基づく表示（Standard時・Premium時・⚠上限?・3シナリオの確度・超過見込み・
+  感度分析）が現れない
+- 理由の列の文言が、decision-evidenceの`reason_codes`の順と1対1で対応する
+- 複数workspaceの合成データで、人別の表の凡例が`v2`の文になり、「対象外（副スペース）」の行が
+  表示順・バッジを持つ
+- 既定（`v1`）の成果物がバイト一致（golden不変）
+
+今回は行わない:
+
+- 速報の表示
+- CLIの結線（Step 69）
+
+#### Step 69: CLIの結線
+
+依存:
+
+- Step 68
+
+対象:
+
+- `src/seat_analyzer/cli.py`（実行順・残存evidenceの通知・結果の表示）
+- `src/seat_analyzer/analyze/workspaces.py`（`summarize_org`が`decision_version`を運び、
+  `n_cap_suspected`の合計は`v1`のときだけ持つ）
+- `tests/test_cli.py`・`tests/test_golden.py`（`full-all-v1`と`full-v2`の新設・`full-all`の再生成）
+- `docs/reference.md`・`docs/usage.md`（`--decision-version v2`の意味の更新）
+
+実装:
+
+- 先に`full-all-v1`（`full-all`と同じ月・組織で`--decision-version v1`を明示。decision-evidenceを
+  含まない）をgoldenに加える。この時点の`v1`の主成果物はTrack 11の前と同じなので、複数workspaceの
+  V1の基準はここで固定する（Step 70で作ると、`full-all`の主成果物がすでにV2になっていて基準が
+  残らない）
+- `v2`のとき、analyze → SeatChanges → `evaluate_org` → `apply` → 成果物（report・details・
+  dashboard・recommendations・usage-summary・decision-evidence）の順で実行する。`v1`は従来どおり
+  （applyを通らず、decision-evidenceを書かない）。既定は`v1`のまま
+- `_stale_evidence_notices`（`v1`の実行で前回のdecision-evidenceが残っているとき）の文言を、
+  「主成果物とdecision-evidenceの版が違う。`--decision-version v2`で再実行すると主成果物もV2に
+  なる。比較用は別の`--output-dir`へ」に変える
+- `_print_result`の「上限到達疑い」は`v2`では出さず、V2の内訳（既存の`_print_decision_evidence`）
+  を出す
+
+受け入れ条件:
+
+- 既定（`v1`）の成果物がバイト一致（`full`・`full-snapshots`・`preview*`）
+- `--decision-version v2`で、recommendationsの`status`・`recommended_seat`・`monthly_saving_usd`・
+  `confidence`・`reason`がdecision-evidenceの同じ行と整合する
+- `v2`のreportのサマリ（変更推奨の人数・削減見込み・要観察）がrecommendationsの行から数えた
+  値と一致し、組織横断サマリの件数とも一致する
+- `full-all-v1`の主成果物が、結線前の`full-all`の主成果物（decision-evidenceを除く）とバイト一致する
+- `--decision-version v2`のgolden（`full-v2`。org-a / org-bの2026-06）を新設し、`full-all`（複数
+  workspaceを含む`v2`）を再生成して固定する
+- 同じ出力先で`v2`の後に`v1`を実行すると、残存evidenceの新しい通知が出て、主成果物は`v1`になる
+
+今回は行わない:
+
+- 既定の切り替え（Step 70）
+
+#### Step 70: 既定をV2へ切り替える
+
+依存:
+
+- Step 69
+
+対象:
+
+- `src/seat_analyzer/default-config.yaml`（`decision.version: v2`）
+- `tests/golden/`（`full`・`full-snapshots`を`v2`で再生成し、`full-v2`は`full`へ統合する。
+  切り替え前の`full`・`full-snapshots`を`full-v1`・`full-snapshots-v1`として残す。`full-all-v1`は
+  Step 69で作ってある）
+- `README.md`・`docs/usage.md`・`docs/reference.md`・`CHANGELOG.md`
+- `docs/roadmap/implementation-design.md`（§22の状態）
+
+実装:
+
+- 既定を`v2`にする。`--decision-version v1`と`decision.version: v1`で従来の判定に戻せる
+- V1の不変を固定するgoldenを3つ持つ（`--decision-version v1`を明示。単一workspace・月中差分・
+  複数workspaceの3つの形）。`full-v1`・`full-snapshots-v1`は切り替え前の`full`・`full-snapshots`を
+  名前を変えて残したもので、再生成しない
+- docs: 判定ロジック概要をV2を主にして書き直し、V1は「`--decision-version v1`」の節に移す。
+  recommendations・decision-evidenceの列、成果物の一覧、usageの手順。CHANGELOGと
+  reference.mdに移行の節を書く（削除した設定キー3つ・`decision.version`の選び方・
+  decision-evidenceから外した2列・既存の月を再生成すると考察は引き継がれるので判定が変わった月は
+  `--force-discussion`か手で書き直すこと）
+- 版はMINOR（判定と成果物が変わる）
+
+受け入れ条件:
+
+- 引数を省略した`analyze`がV2の判定で成果物を書き、decision-evidenceを併記する
+- `--decision-version v1`の成果物が切り替え前とバイト一致（`full-v1`・`full-snapshots-v1`・
+  `full-all-v1`）
+- `--preview`の成果物が不変
+- 設定例・手順に`decision_v2.enabled`・`min_code_demand_usd`・`max_code_demand_usd`が残らず、
+  移行の節にその3つが削除したキーとして書いてある
+
+今回は行わない:
+
+- V1の撤去（既定化から最低3か月後。allowance・上限フラグ・付与候補の旧実装の削除と、速報の
+  一次判断の置き換えを含む）
+
 ## 19. Milestone
 
 ### Milestone A: Core data
@@ -4228,6 +4506,14 @@ Step 57〜65
 - 人 × 月パネル・習熟の段階・管轄外の検知
 - 管理職向け dashboard
 
+### Milestone H: V2 default
+
+Step 66〜70
+
+- シート判定から分類軸（Code）を外す
+- V2 の結論を写す処理（apply）・表示の版対応・CLI の結線
+- 既定を V2 へ（V1 は `--decision-version v1` で最低 3 か月）
+
 ### Future
 
 - OpenTelemetry のコミット SHA による結合と週次の粒度（§27.10）
@@ -4252,11 +4538,12 @@ uv run pytest
 
 ### 20.2 必須不変条件
 
-- V1指定時の判定は、V2導入（Track 4）の前後で変わらない。判定窓による保留（§26.4）は別
+- `--decision-version v1`の判定と成果物は、V2導入（Track 4）・既定化（Track 11）の前後で
+  変わらない。判定窓による保留（§26.4）は別
 - partial monthから変更推奨を出さない
 - upgradeは1完全月で候補になり得る
 - downgradeは2完全月未満で候補にならない
-- Code低・supplementary高を自動downgradeしない
+- 需要の中身（product）をシート判定の条件にしない（Track 11以降）
 - シート変更eventは重複しない
 - 未来の推奨を過去変更へ照合しない
 - follow-up coverage不足はnot evaluable
@@ -4333,15 +4620,17 @@ product_policy:
     - "Claude in Slack"
   prohibited: []
 
+decision:
+  version: v2                 # 主判定の版（v1 | v2）。CLIの--decision-versionが優先する（§16.2）。
+                              # hysteresis_months・buffer_ratio・censoring_marginは既存のキーで、
+                              # V1の判定と速報の注記が使う
+
 decision_v2:
-  enabled: false
   premium_justification_usd: 450.0
   upgrade:
     min_complete_months: 1
-    min_code_demand_usd: 200.0
   downgrade:
     min_complete_months: 2
-    max_code_demand_usd: 200.0
   recent_seat_change_days: 28
   observed_billing_margin_usd: 20.0
 
@@ -4374,7 +4663,9 @@ maturity:
   stages: {}                                # 段階のルール（§27.6）。既定はStep 63で分布を見てから決める
 ```
 
-新しいセクションはすべて省略可能とする。`decision_v2.enabled=false`が既定。
+新しいセクションはすべて省略可能とする。`decision.version`の既定は`v2`（Track 11以降。
+`decision_v2.enabled`はTrack 11で廃止し、書いてあればロード時エラー）。それ以外の新しい
+セクションの既定は不活性。
 
 `claude_export.profiles_dir`・`staging_dir`の相対パスは、`paths`と同じくそれを書いた設定
 ファイルの置き場所が基準になる（`~`は展開し、絶対パスはそのまま使う）。パッケージの既定
@@ -4387,21 +4678,25 @@ maturity:
 ### 22.1 V1/V2並行
 
 1. V1をdefaultのまま維持
-2. V2 evidenceだけ追加
+2. V2 evidenceだけ追加（Step 19）
 3. 複数月並行出力
 4. 差異をreview
-5. V2 ruleを調整
-6. 明示承認後にdefaultをV2へ変更
-7. V1を最低3か月残す
+5. V2 ruleを調整（Step 66: 分類軸を外す）
+6. 明示承認後にdefaultをV2へ変更（Step 67〜70）
+7. V1を最低3か月残す（`--decision-version v1`・`decision.version: v1`）
 
 V1のallowanceモデルに依存する出力（込み枠推定の3scenario、⚠️上限到達疑い、追加クレジットの
-付与候補）は、V2を既定で有効にする時点で方針線と`ENABLE_WITH_CAP`へ置き換わる。V1が既定の
-あいだは両方が出力に並ぶ（V2はopt-inで、V1の判定・注記には影響しない）。
+付与候補、感度分析）は、`v2`では出さず、方針線に基づく判定・理由・`ENABLE_WITH_CAP`の付与候補に
+置き換わる（§18 Track 11）。`v1`を指定した実行は従来の成果物だけを出し、decision-evidenceを
+書かない。
+
+V1の撤去は既定化から最低3か月後の別Step（番号は着手時に振る）。allowanceの設定・上限フラグ・
+付与候補の旧実装の削除と、速報の一次判断（allowanceモデル）の方針線への置き換えを含む。
 
 ### 22.2 Rollback
 
 - `--decision-version v1`
-- `decision_v2.enabled=false`
+- `decision.version: v1`
 - browser機能を無効化
 - GitHub入力を無視
 - 新出力を削除しても既存分析は動く
@@ -4768,6 +5063,9 @@ V2（decision-evidence）も§26.4の両軸に従う。複数アカウント保�
 現シート・κ・実課金・シート変更event・加入の判定は主のもの。副の行はV2に持たない（副を
 どうするかは§26.5の継続判定が担う）。V2の昇格・降格は主シートに対する結論と読む約束に
 するので、語彙（`SeatAction`・`ReasonCode`）は増やさない。`workspace`列は主の名前を書く。
+主判定がV2のとき（Track 11）、副のStandard / Premiumのアカウントの判定ラベルは、`fixed_seat`が
+あれば従来どおり「対象外（固定シート）」、無ければ「対象外（副スペース）」とし、どちらも種別の
+判定・削減額・付与候補の対象にしない。
 
 - Code・補助の判定は閾値を含むので、workspaceごとの判定結果を足し合わせず、明細を連結して
   計算し直す
