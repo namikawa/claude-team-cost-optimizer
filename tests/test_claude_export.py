@@ -990,6 +990,14 @@ def test_verify_export_accepts_matching_files(tmp_path, kind, name, header, mont
         == claude_export.Verdict(True, None)
 
 
+@pytest.mark.parametrize("header", ["User,Lines this Month", "User,Lines accepted"])
+def test_verify_export_accepts_both_loc_labels_of_code_analytics(tmp_path, header):
+    """claude.ai の Claude Code analytics の LoC の見出しは新旧どちらでも配置する。"""
+    path = _csv(tmp_path, "claude_code_team_2026_10_01_to_2026_10_31.csv", header,
+                'user1@example.com,"51,282"\n')
+    assert _verify(path, "code", "2026-10") == claude_export.Verdict(True, None)
+
+
 def test_verify_export_accepts_quoted_and_bom_headers(tmp_path):
     path = tmp_path / f"members-{UUID1}-2026-10-07.csv"
     path.write_bytes('\ufeff"User Email", "Seat Type"\nuser1@example.com,Premium\n'

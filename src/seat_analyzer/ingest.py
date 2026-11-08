@@ -1221,14 +1221,26 @@ def load_members_info_file(path: Path, cfg: dict) -> pd.DataFrame:
 
 
 def _read_code_df(path: Path, cfg: dict) -> tuple[pd.DataFrame, list[str]]:
-    """1つの code-analytics CSV を読み、カラム正規化・数値化・email 正規化を施す。"""
+    """1つの code-analytics CSV を読み、カラム正規化・数値化・email 正規化を施す。
+
+    LoC の列（loc_with_cc）は必須にしないが、エイリアスに当たらなければ見出しを添えて
+    警告する。列が無いとレポートの LoC 列が省かれるだけで、「任意カラムなし」の一覧に
+    紛れて気づきにくいため。
+    """
     df = read_csv(path)
+    header = [str(column) for column in df.columns]
     df, warnings = map_columns(
         df,
         cfg["columns"]["code_analytics"],
         required=REQUIRED_COLUMNS["code_analytics"],
         source=path,
     )
+    if "loc_with_cc" not in df.columns:
+        warnings.append(
+            f"{path.name}: LoC の列が見つからないため、Claude Code の LoC を出力しません"
+            f"（ヘッダ: {header}。config.yaml > columns.code_analytics.loc_with_cc に"
+            "エイリアスを追記してください）"
+        )
     _to_numeric(df, ["prs_with_cc", "prs_total", "loc_with_cc", "loc_total"])
     df["email"] = df["email"].astype(str).str.strip().str.lower()
     df = df.drop_duplicates(subset="email", keep="last")
