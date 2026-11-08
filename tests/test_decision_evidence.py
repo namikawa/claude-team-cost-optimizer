@@ -1230,6 +1230,7 @@ def test_apply_real_decisions_and_input_are_stable(make_input, cfg):
         DecisionStatus.RECOMMENDED, SeatAction.UPGRADE_TO_PREMIUM, CreditAction.NONE, (),
     ))
     before = copy.deepcopy(org)
+    persons = org.persons
     first = decision_evidence.apply(org, rows, cfg)
     second = decision_evidence.apply(org, rows, cfg)
     source, result = org.workspaces[org.primary], first.workspaces[org.primary]
@@ -1237,7 +1238,10 @@ def test_apply_real_decisions_and_input_are_stable(make_input, cfg):
     assert source.summary == before.workspaces[org.primary].summary
     assert source.grant_candidates == before.workspaces[org.primary].grant_candidates
     assert source.credit_reviews == []
-    assert org.persons.persons == before.persons.persons
+    # 人の層には NaN（追加クレジット上限が未記入）が入る。Python 3.13 以降の dataclass の等値比較は
+    # 項目ごとで NaN が自身と等しくならないため、置き換えられていないことを同一性で、中身を表で確かめる
+    # （Person・Account は frozen で、その場では書き換わらない）
+    assert org.persons is persons
     pd.testing.assert_frame_equal(org.persons.frame, before.persons.frame)
     pd.testing.assert_frame_equal(result.users, second.workspaces[org.primary].users)
     assert result.summary == second.workspaces[org.primary].summary
@@ -1288,7 +1292,8 @@ def test_apply_secondary_accounts_and_person_status(make_input, tmp_path):
     before = copy.deepcopy(org)
     applied = decision_evidence.apply(org, rows, cfg)
     assert applied.persons.frame.set_index("email").loc[email, "status"] == "変更推奨"
-    assert org.persons.persons != applied.persons.persons
+    # NaN を含む Person どうしの == は Python 3.13 以降で常に偽になるので、組み直したことは表で比べる
+    assert not applied.persons.frame.equals(org.persons.frame)
     for workspace, label in (("fixed", "対象外（固定シート）"), ("second", "対象外（副スペース）")):
         result = applied.workspaces[workspace]
         users = result.users.set_index("email")
