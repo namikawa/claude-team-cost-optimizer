@@ -60,6 +60,9 @@ STATUS_UNKNOWN = "シート不明"
 # 運用方針でシート種別が決まっている workspace（config の fixed_seat）のアカウント。
 # 損益分岐で選び直す対象ではないので、未割当と同じく判定の対象外に置く
 STATUS_FIXED_SEAT = "対象外（固定シート）"
+# 主判定が V2 のとき、fixed_seat の無い副の Standard / Premium は種別を判定しない。
+# 続けるか戻すかは人の層の継続判定が担う
+STATUS_SECONDARY = "対象外（副スペース）"
 STATUS_EXCLUDED = "対象外（シート未割当）"
 
 # 速報モードの一次判断ラベル（report パッケージの表示順・バッジ分岐と結合。値は変更しないこと）。
@@ -146,6 +149,8 @@ class AnalysisResult:
     e_distribution: dict | None = None
     # 追加クレジット付与候補（昇格前に上限つきクレジットで課金実測を薦めるユーザ）
     grant_candidates: list = field(default_factory=list)
+    # 追加クレジットの設定確認（V1 は常に空）
+    credit_reviews: list = field(default_factory=list)
     # 対象月の product 利用特徴量（費用は全 product・活用は Code。判定には使わない）
     product_usage: ProductUsage | None = None
     # V2 判定の材料（decision_context=True で分析したときだけ入る）
@@ -297,6 +302,7 @@ def _load_spend_history(
     decision_context: bool = False,
     assume_no_usage: bool = False,
     window: Collection[str] = (),
+    decision_version: str = "v1",
 ) -> _SpendHistory:
     """対象月までのスペンドを読み、全月へ同じ需要基準を適用する。
 
@@ -307,6 +313,7 @@ def _load_spend_history(
     代替する。過去月は従来どおりファイルから読む。
 
     window は V1 の判定窓の月で、部分月の警告の文言を窓の内外で分けるためだけに使う。
+    decision_version が v2 なら、部分月の警告は観測の事実だけを伝える。
     """
     warnings: list[str] = []
     raw: dict[str, pd.DataFrame] = {}
@@ -345,12 +352,15 @@ def _load_spend_history(
                     f"{result.source.name}: {current_month} は部分月データ"
                     f"（{period.start:%m-%d}〜{period.end:%m-%d} の {period.days}日分）"
                 )
-                warnings.append(
-                    f"{observed}のため、この月が判定窓に入るあいだは変更推奨を出しません。"
-                    "月中の一次判断には --preview を利用してください"
-                    if current_month in window else
-                    f"{observed}です。判定窓の外の月なので変更推奨の判定には使っていません"
-                )
+                if decision_version == "v2":
+                    warnings.append(f"{observed}です")
+                else:
+                    warnings.append(
+                        f"{observed}のため、この月が判定窓に入るあいだは変更推奨を出しません。"
+                        "月中の一次判断には --preview を利用してください"
+                        if current_month in window else
+                        f"{observed}です。判定窓の外の月なので変更推奨の判定には使っていません"
+                    )
 
     warnings.extend(
         _warn_unknown_models(
@@ -999,6 +1009,7 @@ def analyze(
     org: str,
     *,
     decision_context: bool = False,
+    decision_version: str = "v1",
     workspace: WorkspaceContext | None = None,
     members_info_dir: str | Path | None = None,
     assume_no_usage: bool = False,
@@ -1012,6 +1023,9 @@ def analyze(
 
     decision_context=True のとき、V2 判定の材料（DecisionContext）も組んで結果に載せる。
     既定では組まない。V1 の users・summary・warnings はどちらでも同じ。
+
+    decision_version は警告と summary の版を選ぶ（v1 / v2）。v2 は V1 の判定窓に
+    基づく警告を出さず、部分月は観測の事実だけを伝える。users の V1 計算は同じ。
 
     workspace はその workspace の運用設定（κ の既定値・固定シート）。
     members_info_dir は members-info を置くディレクトリ（既定は input_dir。複数
@@ -1031,6 +1045,8 @@ def analyze(
     あいだに加入・シート種別の変更が members で確かめられた人は、変更推奨を出さず
     「要観察（データ蓄積待ち）」にする。それ以外の人は判定窓の各月の推奨と削減額で決める。
     """
+    if decision_version not in ("v1", "v2"):
+        raise ValueError("decision_version は v1 / v2 で指定してください")
     input_dir = Path(input_dir)
     secondary_results = secondary_results or {}
     n_hyst = int(cfg["decision"]["hysteresis_months"])
@@ -1059,6 +1075,7 @@ def analyze(
         decision_context=decision_context,
         assume_no_usage=assume_no_usage,
         window=window,
+        decision_version=decision_version,
     )
     warnings = history.warnings
     monthly = history.monthly
@@ -1113,11 +1130,12 @@ def analyze(
         judged_monthly, months_used, emails, seat_by_email, cfg,
         fixed_seat=fixed_seat, window_ready=window_ready, held=held,
     )
-    warnings.extend(_window_warnings(window, months_used, secondary_results))
-    warnings.extend(_warn_seat_history_held(sorted(
-        users.loc[(users["status"] == STATUS_WATCH_WAIT) & users["email"].isin(list(held)),
-                  "email"].astype(str)
-    )))
+    if decision_version == "v1":
+        warnings.extend(_window_warnings(window, months_used, secondary_results))
+        warnings.extend(_warn_seat_history_held(sorted(
+            users.loc[(users["status"] == STATUS_WATCH_WAIT) & users["email"].isin(list(held)),
+                      "email"].astype(str)
+        )))
 
     # 部署・職種・備考・追加クレジット上限（任意ファイル members-info）の結合
     warnings.extend(
@@ -1156,6 +1174,12 @@ def analyze(
     warnings.extend(_credit_integrity_warnings(users, cfg, "billed_extra_usd"))
 
     summary = _summarize(users, monthly[month], cfg, months_used, n_hyst)
+    summary["decision_version"] = decision_version
+    if decision_version == "v2":
+        for direction in ("upgrade", "downgrade"):
+            summary[f"{direction}_min_complete_months"] = (
+                cfg["decision_v2"][direction]["min_complete_months"]
+            )
     summary["org_service_cost_usd"] = history.org_usage.get("cost_usd", 0.0)
     summary["org_service_by_product"] = history.org_usage.get("by_product", {})
     # E 分布は cost_basis=computed のときのみ（net_spend 基準では需要=課金で E が無意味）
@@ -1247,24 +1271,31 @@ def _warn_orphan_users(users: pd.DataFrame) -> list[str]:
     ]
 
 
-def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
-               months_used: list[str], n_hyst: int) -> dict:
+def decision_counts(users: pd.DataFrame) -> dict:
+    """アカウントの判定から変更推奨・要観察の人数と削減見込みを数える。"""
     to_change = users[users["status"] == STATUS_CHANGE]
     watching = users[users["status"].str.startswith(STATUS_WATCH)]
     savings = float(to_change["monthly_saving_usd"].fillna(0).sum())
 
+    return {
+        "n_change_recommended": len(to_change),
+        "n_watching": len(watching),
+        "est_monthly_saving_usd": round(savings, 2),
+    }
+
+
+def _summarize(users: pd.DataFrame, month_agg: pd.DataFrame, cfg: dict,
+               months_used: list[str], n_hyst: int) -> dict:
     summary = _seat_summary(users, cfg)
     summary.update({
         "seat_price_standard_usd": float(cfg["seats"]["standard"]["price_usd"]),
         "seat_price_premium_usd": float(cfg["seats"]["premium"]["price_usd"]),
         "total_api_cost_usd": round(float(month_agg["api_cost"].sum()), 2),
-        "n_change_recommended": len(to_change),
-        "n_watching": len(watching),
+        **decision_counts(users),
         "n_cap_suspected": int(users["cap_suspected"].sum()),
         "total_billed_extra_usd": round(
             float(users["billed_extra_usd"].fillna(0).sum())
             if "billed_extra_usd" in users.columns else 0.0, 2),
-        "est_monthly_saving_usd": round(savings, 2),
         "months_used": months_used,
         "judgment_months": [
             m for m in judgment_window(months_used[-1], n_hyst) if m in months_used

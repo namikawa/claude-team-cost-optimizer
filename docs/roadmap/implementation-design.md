@@ -4226,11 +4226,14 @@ Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論
   写す純粋な関数）
 - `src/seat_analyzer/analyze/pipeline.py`（`analyze(..., decision_version=)`: 判定窓に基づく警告の
   抑止・summaryの`decision_version`・新しい判定ラベル「対象外（副スペース）」の定数）
+- `src/seat_analyzer/analyze/workspaces.py`（`analyze_org` の引数の受け渡し）・
+  `src/seat_analyzer/analyze/__init__.py`（公開名）・`src/seat_analyzer/decision_v2.py`（docstring）
 - `src/seat_analyzer/cli.py`（decision-evidenceを併記するかの判断を`decision_v2.enabled`から
   `decision.version`へ移す。挙動は従来と同じ）
 - `src/seat_analyzer/data_quality.py`（`doctor`の部分月・欠月の説明を`decision.version`で分ける）
 - `tests/test_decision_evidence.py`・`tests/test_analyze.py`・`tests/test_config.py`・`tests/test_cli.py`・
-  `tests/test_data_quality.py`
+  `tests/test_data_quality.py`・`tests/test_decision_v2.py`・`tests/test_hardening.py`
+- `README.md`・`docs/usage.md`・`docs/reference.md`・`CHANGELOG.md`
 
 実装:
 
@@ -4240,7 +4243,8 @@ Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論
   decision-evidenceを併記するだけ（従来の`enabled: true`と同じ挙動。主成果物をV2にする結線は
   Step 69）
 - `apply(org_result, rows, cfg) -> OrgAnalysisResult`: V2の判定行（`evaluate_org`の出力）を
-  アカウントの行へ写し、summary・付与候補・人の層を組み直して返す。CLIからはまだ呼ばない
+  アカウントの行へ写し、summary・付与候補・人の層を組み直して返す。CLIからはまだ呼ばない。
+  `analyze_org(..., decision_version="v2")`で分析した結果だけを受け付ける
   - `status`: 昇格・降格 → 変更推奨、`OBSERVE` → 要観察、`NO_DECISION`のうち`PARTIAL_MONTH`・
     `INSUFFICIENT_HISTORY` → 要観察（データ蓄積待ち）、`IDENTITY_CONFLICT` → 要観察、
     `CURRENT_SEAT_UNKNOWN` → シート不明、`EXCLUDED` → 対象外（シート未割当／固定シート）。
@@ -4256,8 +4260,8 @@ Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論
     `cap_suspected`）はusersから落とす
   - summary: `n_change_recommended`・`n_watching`・`est_monthly_saving_usd`を再計算し、
     `decision_version`を持たせる。`n_cap_suspected`は持たない
-  - 付与候補: `credit_action`が`ENABLE_WITH_CAP`の人（需要・推奨初期上限）と`REVIEW`の人
-    （設定の確認）。allowanceの超過見込みは使わない
+  - 付与候補: `credit_action`が`ENABLE_WITH_CAP`の人（需要・推奨初期上限）。`REVIEW`の人は
+    別の一覧（設定確認。`credit_reviews`）へ載せる。allowanceの超過見込みは使わない
   - 人の層（§26.5）はapplyの後に組み直す（人の`status`はアカウントの新しい`status`から決まる）
 - 複数workspace（§26.9）: 主のアカウントは`evaluate_org`（合算）の行を写す。副のStandard /
   Premiumのアカウントは V2の判定を持たないので、`fixed_seat`があれば従来どおり「対象外（固定
@@ -4273,7 +4277,7 @@ Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論
 - `doctor`（`data_quality.inspect_input`）の部分月・欠月の説明は設定の`decision.version`で分ける
   （`doctor`には`--decision-version`が無い）。`v2`では「対象月が部分月なら判定を保留し、過去の
   部分月は完全月に数えない」「欠月より前の月は履歴に入らない」とし、V1の判定窓の説明は`v1`の
-  ときだけ出す
+  ときだけ出す。検出する月は版によらず同じで、説明の文だけを分ける
 
 受け入れ条件:
 

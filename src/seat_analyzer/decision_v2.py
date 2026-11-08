@@ -343,7 +343,7 @@ class _Settings(NamedTuple):
 def _settings(cfg: Mapping) -> _Settings:
     """検証済み config から必要な値を取り出す（欠けていれば設定の破損として落ちる）。
 
-    decision_v2.enabled はここでは見ない。有効・無効の分岐は結線側の責務で、この関数は
+    decision.version はここでは見ない。版の分岐は結線側の責務で、この関数は
     「呼ばれたら判定する」ことだけを担う。
     """
     seats = cfg["seats"]

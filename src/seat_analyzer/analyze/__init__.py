@@ -49,6 +49,7 @@ from .pipeline import (
     STATUS_EXCLUDED as STATUS_EXCLUDED,
     STATUS_FIXED_SEAT as STATUS_FIXED_SEAT,
     STATUS_KEEP as STATUS_KEEP,
+    STATUS_SECONDARY as STATUS_SECONDARY,
     STATUS_UNKNOWN as STATUS_UNKNOWN,
     STATUS_WATCH as STATUS_WATCH,
     STATUS_WATCH_WAIT as STATUS_WATCH_WAIT,
@@ -58,6 +59,7 @@ from .pipeline import (
     add_demand as add_demand,
     aggregate_month as aggregate_month,
     analyze as analyze,
+    decision_counts as decision_counts,
     own_demand_users as own_demand_users,
 )
 from .preview import (
@@ -101,6 +103,7 @@ __all__ = [
     "STATUS_EXCLUDED",
     "STATUS_FIXED_SEAT",
     "STATUS_KEEP",
+    "STATUS_SECONDARY",
     "STATUS_UNKNOWN",
     "STATUS_WATCH",
     "STATUS_WATCH_WAIT",
@@ -127,6 +130,7 @@ __all__ = [
     "build_person_layer",
     "build_persons",
     "credits_mode",
+    "decision_counts",
     "holds_seat",
     "own_demand_users",
     "person_frame",

@@ -193,6 +193,7 @@ def analyze_org(
     org: str,
     *,
     decision_context: bool = False,
+    decision_version: str = "v1",
     allow_missing: Collection[str] = (),
 ) -> OrgAnalysisResult:
     """1組織分の分析。input_dir はその組織の入力ディレクトリ。
@@ -200,6 +201,8 @@ def analyze_org(
     従来レイアウト（直下に spend/）では workspace を1つだけ持つ容れ物になり、中身は
     analyze() の戻りと完全に同じ。入れ子レイアウト（<workspace>/spend/）では config の
     workspaces と発見した名前を突き合わせてから workspace ごとに analyze() を呼ぶ。
+
+    decision_version は各 analyze() へ渡す判定の版（既定 v1）。
 
     allow_missing は「対象月の spend が無くても需要 0 として続行してよい」workspace の
     名前（CLI の --allow-missing-workspace）。まだ始まっていない workspace（対象月
@@ -215,7 +218,8 @@ def analyze_org(
             missing, unexpected = ingest.compare_workspaces([], settings)
             raise ValueError(_mismatch_message(org, missing, unexpected))
         result = analyze(
-            org_input, month, cfg, org, decision_context=decision_context
+            org_input, month, cfg, org, decision_context=decision_context,
+            decision_version=decision_version,
         )
         single = OrgAnalysisResult(
             org=org, month=month, primary=org,
@@ -262,6 +266,7 @@ def analyze_org(
         return analyze(
             org_input / name, month, cfg, org,
             decision_context=decision_context,
+            decision_version=decision_version,
             workspace=contexts[name],
             # members-info は人単位の任意入力なので組織直下の1つを全 workspace で読む
             members_info_dir=org_input,

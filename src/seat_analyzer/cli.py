@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         "--decision-version", choices=("v1", "v2"), default=None,
         help="判定の版。v2 は V1 の成果物に加えて V2 判定の decision-evidence を書く"
              f"（V1 の判定・成果物は変わらない）。省略時は {WORKSPACE_CONFIG_NAME} の"
-             " decision_v2.enabled に従う（既定は v1）。速報モードでは指定できない",
+             " decision.version に従う（既定は v1）。速報モードでは指定できない",
     )
     p.add_argument(
         "--allow-missing-workspace", action="append", metavar="WORKSPACE名",
@@ -905,11 +905,9 @@ def _run_analyze(args: argparse.Namespace) -> int:
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
     output_dir = _resolve_dir(args.output_dir, cfg, "output")
 
-    # 判定の版: CLI の明示指定 > 設定の decision_v2.enabled > v1。
-    # enabled は「V1 の成果物に V2 判定の根拠を併記する」opt-in で、主判定は V1 のまま
-    decision_version = args.decision_version or (
-        "v2" if cfg["decision_v2"]["enabled"] else "v1"
-    )
+    # 判定の版: CLI の明示指定 > 設定の decision.version。
+    # v2 は「V1 の成果物に V2 判定の根拠を併記する」opt-in で、主判定は V1 のまま
+    decision_version = args.decision_version or cfg["decision"]["version"]
 
     # GitHub の参考値は config で有効にした組織だけ。書かれていない組織は GitHub 関連の
     # 処理と通知の一切から外れる（設計書 §15.1）
@@ -947,7 +945,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 # V2 判定の材料になる完全月の履歴を持たない）
                 print(
                     f"{org}: 速報モードでは V2 判定を行いません"
-                    "（decision_v2.enabled は正式分析にだけ適用）"
+                    "（decision.version の v2 は正式分析にだけ適用）"
                 )
             if org in gated:
                 # 有効にした GitHub 分析を速報で黙って無視しない

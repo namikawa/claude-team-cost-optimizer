@@ -28,6 +28,7 @@ from seat_analyzer.analyze import (
 from seat_analyzer.analyze.pipeline import add_demand, credit_limit_for
 from seat_analyzer.config import load_config
 from tests.conftest import spend_row
+from tests.test_judgment_input import _write_spend
 
 
 def _user(result, email):
@@ -991,3 +992,85 @@ def test_own_demand_users_matches_users_without_other_workspaces(cfg, make_input
                            members=["alice@example.com,premium"])
     result = analyze(input_dir, "2026-06", cfg, org=ORG)
     assert own_demand_users(result).equals(result.users)
+
+
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_decision_version_summary_and_gap_warnings(make_input, cfg, version):
+    root = make_input({month: [spend_row("user@example.com", 10, net=0)]
+                       for month in ("2026-04", "2026-06")},
+                      members=["user@example.com,Premium"])
+    cfg["decision_v2"]["upgrade"]["min_complete_months"] = 3
+    cfg["decision_v2"]["downgrade"]["min_complete_months"] = 4
+    default = analyze(root, "2026-06", cfg, "org-x")
+    result = analyze(root, "2026-06", cfg, "org-x", decision_version=version)
+    assert_frame_equal(default.users, result.users)
+    assert default.summary["decision_version"] == "v1"
+    assert default.credit_reviews == result.credit_reviews == []
+    assert result.summary["decision_version"] == version
+    assert any("判定窓" in warning for warning in result.warnings) == (version == "v1")
+    for direction, months in (("upgrade", 3), ("downgrade", 4)):
+        key = f"{direction}_min_complete_months"
+        if version == "v2":
+            assert result.summary[key] == months
+        else:
+            assert key not in result.summary
+
+
+@pytest.mark.parametrize("hysteresis", [2, 3])
+def test_v2_partial_month_warning_only_reports_observation(make_input, cfg, hysteresis):
+    root = make_input({"2026-06": [spend_row("user@example.com", 10, net=0)]},
+                      members=["user@example.com,Premium"])
+    cfg["decision"]["hysteresis_months"] = hysteresis
+    (root / "spend" / "spend_2026-06.csv").unlink()
+    for month in ("04", "06"):
+        _write_spend(root, f"spend-2026-{month}-01-to-2026-{month}-15.csv",
+                     [spend_row("user@example.com", 10, net=0)])
+    default = analyze(root, "2026-06", cfg, "org-x")
+    result = analyze(root, "2026-06", cfg, "org-x", decision_version="v2")
+    assert_frame_equal(default.users, result.users)
+    assert [warning for warning in result.warnings if "部分月データ" in warning] == [
+        f"spend-2026-{month}-01-to-2026-{month}-15.csv: 2026-{month} は部分月データ"
+        f"（{month}-01〜{month}-15 の 15日分）です" for month in ("04", "06")
+    ]
+    assert any("変更推奨を出しません" in warning for warning in default.warnings)
+    assert not any("判定窓" in warning or "--preview" in warning for warning in result.warnings)
+
+
+def test_v2_suppresses_secondary_gap_warning(make_input, tmp_path):
+    root = make_input({month: [spend_row("user@example.com", 10, net=0)]
+                       for month in ("2026-04", "2026-05", "2026-06")},
+                      members=["user@example.com,Premium"], org="org-x", workspace="main")
+    make_input({month: [spend_row("user@example.com", 10, net=0)]
+                for month in ("2026-04", "2026-06")},
+               members=["user@example.com,Premium"], org="org-x", workspace="second")
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    v1 = analyze_org(root / "org-x", "2026-06", cfg, "org-x")
+    v2 = analyze_org(root / "org-x", "2026-06", cfg, "org-x", decision_version="v2")
+    assert any("副 workspace" in warning for warning in v1.workspaces["main"].warnings)
+    for name in v1.workspaces:
+        assert_frame_equal(v1.workspaces[name].users, v2.workspaces[name].users)
+        assert v2.workspaces[name].summary["decision_version"] == "v2"
+        assert not any("判定窓" in warning for warning in v2.workspaces[name].warnings)
+
+
+@pytest.mark.parametrize("change", ["joined", "seat_changed"])
+def test_v2_suppresses_seat_history_warning(make_input, cfg, write_member_snapshots, change):
+    root = make_input({month: [spend_row("user@example.com", 10, net=0)]
+                       for month in ("2026-05", "2026-06")})
+    write_member_snapshots(root, {
+        "2026-04-30": [] if change == "joined" else ["user@example.com,Standard"],
+        "2026-05-10": ["user@example.com,Premium"],
+        "2026-06-30": ["user@example.com,Premium"],
+    })
+    v1 = analyze(root, "2026-06", cfg, "org-x")
+    v2 = analyze(root, "2026-06", cfg, "org-x", decision_version="v2")
+    assert any("判定窓のあいだに加入・シート種別の変更" in warning for warning in v1.warnings)
+    assert not any("判定窓" in warning for warning in v2.warnings)
+    assert_frame_equal(v1.users, v2.users)
+
+
+@pytest.mark.parametrize("version", ["v3", "", None, True])
+def test_analyze_rejects_invalid_decision_version(make_input, cfg, version):
+    root = make_input({"2026-06": [spend_row("user@example.com", 10)]})
+    with pytest.raises(ValueError, match="decision_version"):
+        analyze(root, "2026-06", cfg, "org-x", decision_version=version)
