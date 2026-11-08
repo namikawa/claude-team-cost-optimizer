@@ -2540,7 +2540,6 @@ def _print_github_metrics(metrics: github_metrics.GithubMetrics) -> None:
 _V2_SEAT_LABELS = {
     SeatAction.UPGRADE_TO_PREMIUM: "昇格候補",
     SeatAction.DOWNGRADE_TO_STANDARD: "降格候補",
-    SeatAction.REVIEW_ASSIGNMENT: "アサイン見直し",
     SeatAction.KEEP: "現状維持",
 }
 # seat action が none の行は、なぜ席を動かさないのかを結論の側が持つ

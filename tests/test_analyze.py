@@ -565,7 +565,7 @@ def test_allow_missing_workspace_is_analyzed_as_zero_usage(tmp_path, make_input)
 
 
 def test_zero_usage_month_keeps_decision_context(tmp_path, make_input):
-    # V2 の材料も需要 0 の月を含めて組める（対象月の集計と特徴量は行ゼロで並ぶ）
+    # V2 の材料も需要 0 の月を含めて組める（対象月の集計と可視化用の特徴量は行ゼロ）
     input_dir = _missing_month_input(make_input)
     cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
 
@@ -575,7 +575,7 @@ def test_zero_usage_month_keeps_decision_context(tmp_path, make_input):
     assert context.months == ("2026-05", "2026-06")
     assert context.complete == {"2026-05": True, "2026-06": True}
     assert context.aggregates["2026-06"].empty
-    assert context.product_usage["2026-06"].features.empty
+    assert result.workspaces["second"].product_usage.features.empty
     assert list(context.identity_rows.columns) == ["email", "account_uuid", "user_id"]
 
 

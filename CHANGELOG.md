@@ -1,5 +1,14 @@
 # 変更履歴
 
+## [未リリース]
+
+### 変更
+
+- V2 のシート判定が、需要の中身を条件にせず全 product の需要で昇格・降格を判定するようにした
+- V2 の `review_assignment` と理由コード `ONE_MONTH_STRONG_CODE_DEMAND`・`SUSTAINED_LOW_CODE_DEMAND`・`HIGH_SUPPLEMENTARY_USAGE`・`REVIEW_NON_CODE_USAGE` を廃止した
+- decision-evidence.csv の `code_demand_usd`・`supplementary_high` の 2 列を削除した
+- 設定 `decision_v2.upgrade.min_code_demand_usd`・`decision_v2.downgrade.max_code_demand_usd` を廃止し、書いてある場合は読み込み時にエラーとするようにした
+
 ## [1.4.6] - 2026-11-08
 
 ### 追加

@@ -4171,9 +4171,10 @@ Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論
 - `src/seat_analyzer/decision_v2.py`
 - `src/seat_analyzer/default-config.yaml`・`src/seat_analyzer/config.py`（削除するキーの検証）
 - `src/seat_analyzer/decision_evidence.py`・`src/seat_analyzer/report/evidence_csv.py`（列）
+- `src/seat_analyzer/analyze/pipeline.py`（使われなくなるV2の材料の削除）
 - `src/seat_analyzer/cli.py`（V2の内訳の表示ラベル表から`REVIEW_ASSIGNMENT`を外す）
-- `tests/test_decision_v2.py`・`tests/test_decision_evidence.py`・`tests/test_config.py`・
-  `tests/golden/full-all/`（decision-evidenceの再生成）
+- `tests/test_decision_v2.py`・`tests/test_decision_evidence.py`・`tests/test_hardening.py`・
+  `tests/test_analyze.py`・`tests/test_cli.py`・`tests/golden/full-all/`（decision-evidenceの再生成）
 - `docs/reference.md`（decision-evidenceの列）
 
 `cli.py`・`config.py`の変更は語彙と設定キーの削除に伴う参照側の数行で、語彙と同じStepで行う
@@ -5059,7 +5060,7 @@ Standardの運用でも同じ規則で動く。
 ### 26.9 V2との関係
 
 V2（decision-evidence）も§26.4の両軸に従う。複数アカウント保有者は主の行1本にし、
-`SubjectHistory`の需要（全product・Code・補助の判定）を全workspaceの月別合算で組む。
+`SubjectHistory`の需要（全product）を全workspaceの月別合算で組む。
 現シート・κ・実課金・シート変更event・加入の判定は主のもの。副の行はV2に持たない（副を
 どうするかは§26.5の継続判定が担う）。V2の昇格・降格は主シートに対する結論と読む約束に
 するので、語彙（`SeatAction`・`ReasonCode`）は増やさない。`workspace`列は主の名前を書く。
@@ -5067,8 +5068,6 @@ V2（decision-evidence）も§26.4の両軸に従う。複数アカウント保�
 あれば従来どおり「対象外（固定シート）」、無ければ「対象外（副スペース）」とし、どちらも種別の
 判定・削減額・付与候補の対象にしない。
 
-- Code・補助の判定は閾値を含むので、workspaceごとの判定結果を足し合わせず、明細を連結して
-  計算し直す
 - 履歴と完全性は人ごとに決める。副に払い出した月（§26.5）以降、副の部分月はその月を不完全月に
   し、副のspendが無い月（欠月）はその月以前を履歴から外す（主の欠月と同じ打ち切り。不完全月と
   して飛ばすと、降格の評価窓が古い月で補われて判定が変わる）。副にシートの無い人（未割当を

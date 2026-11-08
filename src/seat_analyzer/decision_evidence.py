@@ -9,8 +9,7 @@
 - 履歴の切り出し: 対象月から古い方へ遡り、暦で連続する月だけを履歴にする。判定エンジンは
   渡された並びの隣接を「連続」と数えるので、暦の隣接は組み立て側が保証する
 - 欠けた月の観測: spend に行の無い月は需要ゼロの観測として入れる（利用ゼロは観測であって
-  欠損ではない）。逆に product 名が分からず確定できない Code 需要は None のまま渡し、
-  0 や False で埋めない
+  欠損ではない）
 - 加入の考慮: その subject の加入 event があれば、加入前の月を履歴から除き、加入が
   またがる月を完全月に数えない（在籍が月全体に及んでいない月を完全月として扱わない）
 - 帰属: シート変更 event と分類できない観測を、event ごとに決めた手掛かりでユーザへ
@@ -21,12 +20,11 @@
   由来の subject_id と一致しないため、email しか手が無い）。subject を確定できない未分類
   観測は、関係する email を持つ対象ユーザ全員へ帰属させて保留側へ倒す
 - 複数 workspace の合算: 複数アカウントを持つ人は主 workspace の行1本にまとめる。
-  需要は add_demand で api_cost だけを足し、Code・補助の特徴量は連結した明細に
-  product_usage.compute を掛け直して作る（supplementary_high は閾値判定なので真偽値では
-  合算できない）。実課金・κ・現シート・シート変更 event・Identity の subject_id は
-  主 workspace のものを使う。履歴と完全性は人ごとに決め、副にシートのあるアカウント
-  （Standard / Premium と、spend にだけ現れる不明）を持ち副に払い出した月（first_seen）が
-  ある人だけ、副の部分月を不完全月とし、副を使い始めた後の副の欠月で履歴を打ち切る。
+  需要は add_demand で api_cost だけを足す。実課金・κ・現シート・シート変更 event・
+  Identity の subject_id は主 workspace のものを使う。履歴と完全性は人ごとに決め、
+  副にシートのあるアカウント（Standard / Premium と、spend にだけ現れる不明）を持ち
+  副に払い出した月（first_seen）がある人だけ、副の部分月を不完全月とし、副を使い始めた
+  後の副の欠月で履歴を打ち切る。
   欠月を不完全月にすると、降格の評価窓が完全月だけを末尾から採るため、欠けた月を飛ばして
   古い月で補い、主で実課金があった月が窓から外れて降格が成立しうる。欠月は主の欠月と同じく
   打ち切りに揃え、副にシートの無い人（副で未割当の人を含む）は主の履歴のままにする。
@@ -70,7 +68,6 @@ from .decision_v2 import (
 )
 from .domain import CreditAction, DecisionStatus, ReasonCode, SeatAction
 from .identity import IdentityEvidence, ResolvedIdentity
-from .product_usage import ProductUsage, compute as compute_product_usage
 from .seat_changes import SeatChangeEvent, SeatChanges, UnclassifiedObservation
 
 # 判定を振り分ける現シートの値（ingest が正規化した seat_type）
@@ -81,10 +78,6 @@ _UNKNOWN = "unknown"
 
 # 加入を表す event 種別（seat_changes.EVENT_TYPES の1つ）
 _MEMBER_ADDED = "member_added"
-
-# 判定エンジンが要求する Code 需要・supplementary の列名（product_usage の特徴量）
-_CODE_DEMAND = "code_demand_usd"
-_SUPPLEMENTARY_HIGH = "supplementary_high"
 
 # Identity を解決できなかったユーザの品質（identity.IdentityQuality の1つ）
 _UNRESOLVED = "unresolved"
@@ -112,8 +105,6 @@ class EvidenceRow:
     complete: bool
     complete_months: tuple[str, ...]
     total_demand_usd: float
-    code_demand_usd: float | None
-    supplementary_high: bool | None
     billed_extra_usd: float
     credit_limit_usd: float | None
     premium_justification_usd: float
@@ -171,7 +162,6 @@ def evaluate_org(
                 context.aggregates, list(context.months),
                 [result.decision_context.aggregates for _, result in secondaries],
             ),
-            product_usage=_combined_product_usage(context, secondaries, cfg),
         )
         overrides = _person_overrides(primary, org, secondaries)
         rows = _evaluate(
@@ -179,29 +169,6 @@ def evaluate_org(
             persons=overrides, fixed_seat=fixed_seat,
         )
     return tuple(replace(row, workspace=org.primary) for row in rows)
-
-
-def _combined_product_usage(
-    primary: DecisionContext,
-    secondaries: list[tuple[str, AnalysisResult]],
-    cfg: Mapping,
-) -> dict[str, ProductUsage]:
-    """副に明細がある月だけ、価格適用済みの明細から特徴量を計算し直す。"""
-    features = dict(primary.product_usage)
-    for month in primary.months:
-        extra_rows = [
-            result.decision_context.user_rows[month]
-            for _, result in secondaries
-            if month in result.decision_context.user_rows
-            and not result.decision_context.user_rows[month].empty
-        ]
-        if extra_rows:
-            joined = pd.concat(
-                [rows for rows in [primary.user_rows[month], *extra_rows] if not rows.empty],
-                ignore_index=True,
-            )
-            features[month] = compute_product_usage(joined, cfg["product_policy"])
-    return features
 
 
 @dataclass(frozen=True)
@@ -416,8 +383,6 @@ def _row(
             month.month for month in history.months if month.complete
         ),
         total_demand_usd=target.total_demand_usd,
-        code_demand_usd=target.code_demand_usd,
-        supplementary_high=target.supplementary_high,
         billed_extra_usd=target.billed_usd,
         credit_limit_usd=credit_limit_usd,
         premium_justification_usd=shared.justification,
@@ -514,37 +479,15 @@ def _observation(
             month=month,
             complete=complete,
             total_demand_usd=0.0,
-            code_demand_usd=0.0,
             billed_usd=0.0,
-            supplementary_high=False,
         )
     row = frame.loc[email]
-    features = shared.context.product_usage[month].features
     return MonthObservation(
         month=month,
         complete=complete,
         total_demand_usd=float(row["api_cost"]),
-        code_demand_usd=_number(_feature(features, email, _CODE_DEMAND)),
         billed_usd=float(row["billed"]),
-        supplementary_high=_flag(_feature(features, email, _SUPPLEMENTARY_HIGH)),
     )
-
-
-def _feature(features: pd.DataFrame, email: str, name: str) -> object:
-    """product 特徴量の1セル（そのユーザの行が無ければ欠損）。"""
-    if email not in features.index:
-        return pd.NA
-    return features.loc[email, name]
-
-
-def _number(value: object) -> float | None:
-    """欠損を None のまま保つ float（0 で埋めない）。"""
-    return None if pd.isna(value) else float(value)
-
-
-def _flag(value: object) -> bool | None:
-    """欠損を None のまま保つ真偽値（False で埋めない）。"""
-    return None if pd.isna(value) else bool(value)
 
 
 def _credit_limit(value: object) -> float | None:

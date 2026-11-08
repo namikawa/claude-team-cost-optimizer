@@ -153,7 +153,6 @@ def test_idle_premium_over_two_complete_months_is_downgraded(make_input, cfg):
     assert row.decision.status is DecisionStatus.RECOMMENDED
     assert row.decision.seat_action is SeatAction.DOWNGRADE_TO_STANDARD
     assert row.decision.reason_codes == (
-        ReasonCode.SUSTAINED_LOW_CODE_DEMAND,
         ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
@@ -488,9 +487,8 @@ def test_standard_upgrade_paths_by_credit_setting(make_input, cfg):
     _write_info(input_dir, ["billed@x.jp,,,,250,", "disabled@x.jp,,,,0,"])
     _, by_email = _evaluate(input_dir, "2026-06", cfg)
 
-    billed = by_email["billed@x.jp"]   # κ 有効: 実課金の観測で候補になり Code 主体
+    billed = by_email["billed@x.jp"]   # κ 有効: 実課金の観測で候補になる
     assert billed.credit_limit_usd == 250.0
-    assert billed.code_demand_usd == pytest.approx(250.0, abs=0.01)
     assert billed.decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP in billed.decision.reason_codes
     assert billed.suggested_credit_cap_usd is None
@@ -512,8 +510,8 @@ def test_standard_upgrade_paths_by_credit_setting(make_input, cfg):
         float(cfg["usage_credits"]["grant_suggested_cap_usd"])
 
 
-def test_unknown_product_leaves_the_code_demand_undetermined(make_input, cfg):
-    """product 名が分からない行しか無いユーザの Code 需要は確定しない（0 で埋めない）。"""
+def test_unknown_product_still_upgrades_on_billing(make_input, cfg):
+    """product 名が分からなくても、実課金が条件を満たせば昇格を推奨する。"""
     input_dir = make_input(
         {"2026-06": [spend_row("blank@x.jp", 250.0, net=150.0, product="")]},
         members=["blank@x.jp,Standard"],
@@ -521,13 +519,10 @@ def test_unknown_product_leaves_the_code_demand_undetermined(make_input, cfg):
     _write_info(input_dir, ["blank@x.jp,,,,250,"])
     _, by_email = _evaluate(input_dir, "2026-06", cfg)
     row = by_email["blank@x.jp"]
-    assert row.code_demand_usd is None
-    assert row.supplementary_high is None
-    # 実課金の観測で候補にはなるが、Code 主体を証明できないので自動で昇格させない
-    assert row.decision.status is DecisionStatus.OBSERVE
-    assert row.decision.seat_action is SeatAction.NONE
+    assert row.decision.status is DecisionStatus.RECOMMENDED
+    assert row.decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP in row.decision.reason_codes
-    assert ReasonCode.DATA_CONFIDENCE_LOW in row.decision.reason_codes
+    assert ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE in row.decision.reason_codes
 
 
 def test_identity_conflict_blocks_the_decision(make_input, cfg):
@@ -577,8 +572,6 @@ def _row(**overrides) -> decision_evidence.EvidenceRow:
         "complete": True,
         "complete_months": ("2026-05", "2026-06"),
         "total_demand_usd": 123.456,
-        "code_demand_usd": None,
-        "supplementary_high": None,
         "billed_extra_usd": 0.0,
         "credit_limit_usd": math.inf,
         "premium_justification_usd": 450.0,
@@ -601,6 +594,12 @@ def _cells(path: Path) -> list[dict[str, str]]:
 
 
 def test_csv_header_is_the_declared_column_order(tmp_path):
+    assert EVIDENCE_COLUMNS == (
+        "email", "subject_id", "identity_quality", "current_seat", "month",
+        "complete", "complete_months", "total_demand_usd", "billed_extra_usd",
+        "credit_limit_usd", "premium_justification_usd", "status", "seat_action",
+        "credit_action", "reason_codes", "policy_stability", "suggested_credit_cap_usd",
+    )
     path = tmp_path / "decision-evidence.csv"
     write_decision_evidence([_row()], path)
     with path.open(encoding="utf-8-sig", newline="") as handle:
@@ -611,8 +610,6 @@ def test_csv_writes_missing_values_as_blank_cells(tmp_path):
     path = tmp_path / "decision-evidence.csv"
     write_decision_evidence([_row()], path)
     cells = _cells(path)[0]
-    assert cells["code_demand_usd"] == ""
-    assert cells["supplementary_high"] == ""
     assert cells["policy_stability"] == ""
     assert cells["suggested_credit_cap_usd"] == ""
 
@@ -620,16 +617,14 @@ def test_csv_writes_missing_values_as_blank_cells(tmp_path):
 def test_csv_formats_amounts_flags_and_lists(tmp_path):
     path = tmp_path / "decision-evidence.csv"
     write_decision_evidence(
-        [_row(code_demand_usd=12.0, supplementary_high=False, policy_stability=2,
+        [_row(policy_stability=2,
               suggested_credit_cap_usd=150.0)],
         path,
     )
     cells = _cells(path)[0]
     assert cells["total_demand_usd"] == "123.46"
-    assert cells["code_demand_usd"] == "12.00"
     assert cells["credit_limit_usd"] == "inf"      # 無制限の追加クレジット上限
     assert cells["complete"] == "True"
-    assert cells["supplementary_high"] == "False"
     assert cells["policy_stability"] == "2"
     assert cells["suggested_credit_cap_usd"] == "150.00"
     assert cells["complete_months"] == "2026-05;2026-06"
@@ -652,13 +647,12 @@ def test_csv_keeps_negative_amounts_unquoted(tmp_path):
     """金額には式のエスケープを掛けない（負の値の "-" が式の先頭文字と一致するため）。"""
     path = tmp_path / "decision-evidence.csv"
     write_decision_evidence(
-        [_row(total_demand_usd=-1.0, billed_extra_usd=-12.5, code_demand_usd=-0.5)],
+        [_row(total_demand_usd=-1.0, billed_extra_usd=-12.5)],
         path,
     )
     cells = _cells(path)[0]
     assert cells["total_demand_usd"] == "-1.00"
     assert cells["billed_extra_usd"] == "-12.50"
-    assert cells["code_demand_usd"] == "-0.50"
     assert "'" not in path.read_text(encoding="utf-8-sig")
 
 
@@ -787,7 +781,7 @@ def test_single_workspace_org_keeps_evaluate_bytes(make_input, tmp_path, cfg):
     assert (tmp_path / "nested.csv").read_bytes() == baseline
 
 
-def test_org_recomputes_product_features_from_joined_rows(make_input, tmp_path):
+def test_org_combines_total_demand_from_all_products(make_input, tmp_path):
     input_dir = make_input(
         {"2026-06": [spend_row("alice@example.com", 60.0, product="Cowork"),
                      spend_row("alice@example.com", 40.0)]},
@@ -800,11 +794,10 @@ def test_org_recomputes_product_features_from_joined_rows(make_input, tmp_path):
     )
     cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
     _, rows = _org_rows(input_dir, "2026-06", cfg)
-    assert rows[0].supplementary_high is True
-    assert rows[0].code_demand_usd == pytest.approx(70.0, abs=0.01)
+    assert rows[0].total_demand_usd == pytest.approx(190.0, abs=0.01)
 
 
-def test_unknown_secondary_product_propagates_unknown_code(make_input, tmp_path):
+def test_unknown_secondary_product_still_contributes_total_demand(make_input, tmp_path):
     input_dir = make_input(
         {"2026-06": [spend_row("alice@example.com", 40.0)]},
         members=["alice@example.com,Premium"], org="org-x", workspace="main",
@@ -816,9 +809,9 @@ def test_unknown_secondary_product_propagates_unknown_code(make_input, tmp_path)
     )
     cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
     _, rows = _org_rows(input_dir, "2026-06", cfg)
-    assert rows[0].code_demand_usd is None
+    assert rows[0].total_demand_usd == pytest.approx(60.0, abs=0.01)
     write_decision_evidence(rows, tmp_path / "unknown.csv", workspace_column=True)
-    assert _cells(tmp_path / "unknown.csv")[0]["code_demand_usd"] == ""
+    assert _cells(tmp_path / "unknown.csv")[0]["total_demand_usd"] == "60.00"
 
 
 def test_secondary_partial_month_affects_only_involved_person(make_input, tmp_path):
@@ -952,7 +945,7 @@ def test_assumed_zero_secondary_month_keeps_primary_completeness(make_input, tmp
     assert rows[0].total_demand_usd == pytest.approx(40.0, abs=0.01)
 
 
-def test_assumed_zero_primary_month_uses_secondary_product_rows(make_input, tmp_path):
+def test_assumed_zero_primary_month_uses_secondary_demand(make_input, tmp_path):
     input_dir = make_input(
         {"2026-05": [spend_row("alice@example.com", 100.0, net=0.0)]},
         members=["alice@example.com,Premium"], org="org-x", workspace="main",
@@ -964,11 +957,9 @@ def test_assumed_zero_primary_month_uses_secondary_product_rows(make_input, tmp_
     )
     cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
     org, rows = _org_rows(input_dir, "2026-06", cfg, allow_missing=["main"])
-    assert org.workspaces["main"].decision_context.user_rows["2026-06"].empty
+    assert org.workspaces["main"].decision_context.aggregates["2026-06"].empty
     assert len(rows) == 1
     assert rows[0].total_demand_usd == pytest.approx(90.0, abs=0.01)
-    assert rows[0].code_demand_usd == pytest.approx(30.0, abs=0.01)
-    assert rows[0].supplementary_high is False
     assert rows[0].billed_extra_usd == 0.0
 
 
@@ -1103,3 +1094,43 @@ def test_empty_workspace_csv_has_workspace_header(tmp_path):
     write_decision_evidence([], path, workspace_column=True)
     with path.open(encoding="utf-8-sig", newline="") as handle:
         assert next(csv.reader(handle)) == ["email", "workspace", *EVIDENCE_COLUMNS[1:]]
+
+
+@pytest.mark.parametrize(
+    ("seat", "credit", "totals", "billed", "action", "stability"),
+    [
+        ("Standard", 0.0, (500.0, 500.0), 0.0, SeatAction.UPGRADE_TO_PREMIUM, 2),
+        ("Standard", 0.0, (100.0, 500.0), 0.0, SeatAction.KEEP, 3),
+        ("Standard", 0.0, (100.0, 100.0), 0.0, SeatAction.KEEP, 3),
+        ("Standard", 250.0, (100.0, 200.0), 120.0, SeatAction.UPGRADE_TO_PREMIUM, 3),
+        ("Standard", 100.0, (100.0, 200.0), 95.0, SeatAction.UPGRADE_TO_PREMIUM, 3),
+        ("Standard", 250.0, (500.0, 500.0), 0.0, SeatAction.KEEP, 3),
+        ("Standard", None, (100.0, 200.0), 120.0, SeatAction.UPGRADE_TO_PREMIUM, 3),
+        ("Standard", None, (500.0, 500.0), 0.0, SeatAction.KEEP, 3),
+        ("Premium", 0.0, (0.0, 0.0), 0.0, SeatAction.DOWNGRADE_TO_STANDARD, 3),
+        ("Premium", 0.0, (300.0, 300.0), 0.0, SeatAction.DOWNGRADE_TO_STANDARD, 3),
+        ("Premium", 0.0, (400.0, 400.0), 0.0, SeatAction.DOWNGRADE_TO_STANDARD, 2),
+        ("Premium", 0.0, (500.0, 100.0), 0.0, SeatAction.KEEP, 2),
+        ("Premium", 0.0, (100.0, 500.0), 0.0, SeatAction.KEEP, 2),
+    ],
+)
+def test_product_classification_does_not_change_decision_or_policy_stability(
+    make_input, cfg, seat, credit, totals, billed, action, stability,
+):
+    """Code $0・全額 Code・分類不明でも、全需要と実課金が同じなら結論と感度は同じ。"""
+    rows = []
+    for product in ("Claude Code", "Cowork", "Chat", ""):
+        input_dir = make_input(
+            {
+                "2026-05": [spend_row("sample@example.co.jp", totals[0], product=product, net=0.0)],
+                "2026-06": [spend_row("sample@example.co.jp", totals[1], product=product, net=billed)],
+            },
+            members=[f"sample@example.co.jp,{seat}"],
+        )
+        if credit is not None:
+            _write_info(input_dir, [f"sample@example.co.jp,,,,{credit},"])
+        row = _evaluate(input_dir, "2026-06", cfg)[0][0]
+        assert row.decision.seat_action is action
+        assert row.policy_stability == stability
+        rows.append(row)
+    assert all(row == rows[0] for row in rows)
