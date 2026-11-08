@@ -115,17 +115,14 @@ class DecisionContext:
     食い違いうる。判定に使う月次の値は、この文脈に載せて1度の読み込みから配る。
 
     months は months_used（昇順・最後が対象月）、complete は月 → その月の spend が
-    全月データか、aggregates は月 → aggregate_month の結果、product_usage は月 →
-    product 特徴量、identity_rows は対象月の Identity 証拠行（email・account_uuid・
-    user_id の3列）。user_rows は月 → 価格適用済みのユーザ明細。
+    全月データか、aggregates は月 → aggregate_month の結果、identity_rows は対象月の
+    Identity 証拠行（email・account_uuid・user_id の3列）。
     """
 
     months: tuple[str, ...]
     complete: dict[str, bool]
     aggregates: dict[str, pd.DataFrame]
-    product_usage: dict[str, ProductUsage]
     identity_rows: pd.DataFrame
-    user_rows: dict[str, pd.DataFrame]
 
 
 @dataclass
@@ -276,8 +273,8 @@ class _SpendHistory:
     complete は月 → その月の spend が全月データか（ファイル名の期間が暦日数に届いて
     いれば全月。期間の無い命名は従来どおり全月として扱う）。
 
-    monthly_product_usage・identity_rows・user_rows は V2 判定の材料で、要求されたときだけ
-    埋まる（V1 の実行に過去月の product 特徴量という新しい計算経路を足さないため）。
+    identity_rows は V2 判定の Identity 証拠行で、要求されたときだけ埋まる。
+    product_usage は対象月の可視化に使う特徴量。
     """
 
     monthly: dict[str, pd.DataFrame]
@@ -287,9 +284,7 @@ class _SpendHistory:
     org_usage: dict
     product_usage: ProductUsage
     complete: dict[str, bool]
-    monthly_product_usage: dict[str, ProductUsage]
     identity_rows: pd.DataFrame | None
-    user_rows: dict[str, pd.DataFrame]
 
 
 def _load_spend_history(
@@ -305,8 +300,8 @@ def _load_spend_history(
 ) -> _SpendHistory:
     """対象月までのスペンドを読み、全月へ同じ需要基準を適用する。
 
-    decision_context=True のときだけ、V2 判定の材料（全月の product 特徴量と対象月の
-    Identity 証拠行）も併せて組み立てる。
+    decision_context=True のときだけ、V2 判定の材料（対象月の Identity 証拠行）も
+    併せて組み立てる。
 
     assume_no_usage=True は対象月のファイルを読まず、空の明細（＝需要 0 の観測）で
     代替する。過去月は従来どおりファイルから読む。
@@ -380,8 +375,6 @@ def _load_spend_history(
     monthly: dict[str, pd.DataFrame] = {}
     org_usage: dict = {}
     product_usage: ProductUsage | None = None
-    monthly_product_usage: dict[str, ProductUsage] = {}
-    user_rows: dict[str, pd.DataFrame] = {}
     for current_month, raw_df in raw.items():
         df = pricing.apply_cost_basis(raw_df, basis)
         # 行が無い月に突合を掛けると「spend 列が無い」と同じ結果になるため対象外にする
@@ -392,8 +385,6 @@ def _load_spend_history(
         # シート判定の対象外として分離し、別枠で計上する
         is_user = df["email"].str.contains("@", na=False)
         org_df = df[~is_user]
-        if decision_context:
-            user_rows[current_month] = df[is_user]
         if current_month == month and not org_df.empty:
             org_usage = {
                 "cost_usd": round(float(org_df["billed_usd"].sum()), 2),
@@ -422,13 +413,6 @@ def _load_spend_history(
                     features=product_usage.features,
                     issues=[*product_usage.issues, org_issue],
                 )
-            if decision_context:
-                monthly_product_usage[current_month] = product_usage
-        elif decision_context:
-            # 過去月の特徴量は V2 判定の履歴にだけ使う（issues は対象月のものだけを扱う）
-            monthly_product_usage[current_month] = compute_product_usage(
-                df[is_user], cfg["product_policy"]
-            )
         monthly[current_month] = aggregate_month(df[is_user])
 
     # 対象月の存在は呼び出し側で検証済みなので、通常は到達しない内部不変条件。
@@ -442,11 +426,9 @@ def _load_spend_history(
         org_usage=org_usage,
         product_usage=product_usage,
         complete=complete,
-        monthly_product_usage=monthly_product_usage,
         identity_rows=(
             target_user_rows[list(_IDENTITY_COLUMNS)] if decision_context else None
         ),
-        user_rows=user_rows,
     )
 
 
@@ -1029,8 +1011,7 @@ def analyze(
     渡さない従来どおりの呼び出しになる（任意引数はいずれも既定で従来と同じ挙動）。
 
     decision_context=True のとき、V2 判定の材料（DecisionContext）も組んで結果に載せる。
-    既定では組まない（V1 の実行に過去月の product 特徴量という新しい計算経路を足さない
-    ため）。V1 の users・summary・warnings はどちらでも同じ。
+    既定では組まない。V1 の users・summary・warnings はどちらでも同じ。
 
     workspace はその workspace の運用設定（κ の既定値・固定シート）。
     members_info_dir は members-info を置くディレクトリ（既定は input_dir。複数
@@ -1224,9 +1205,7 @@ def _decision_context(
         months=tuple(months_used),
         complete=dict(history.complete),
         aggregates=dict(history.monthly),
-        product_usage=dict(history.monthly_product_usage),
         identity_rows=identity_rows,
-        user_rows=dict(history.user_rows),
     )
 
 

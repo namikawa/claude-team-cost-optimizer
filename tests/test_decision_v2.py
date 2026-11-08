@@ -56,7 +56,6 @@ def test_seat_action_names_and_values_are_stable():
         "KEEP": "keep",
         "UPGRADE_TO_PREMIUM": "upgrade_to_premium",
         "DOWNGRADE_TO_STANDARD": "downgrade_to_standard",
-        "REVIEW_ASSIGNMENT": "review_assignment",
         "NONE": "none",
     }
 
@@ -73,8 +72,6 @@ def test_credit_action_names_and_values_are_stable():
 def test_reason_code_set_is_stable_in_design_order():
     """§12.2 の一覧と同じ顔ぶれ・同じ順序であること。値は名前と同一。"""
     assert [member.name for member in ReasonCode] == [
-        "ONE_MONTH_STRONG_CODE_DEMAND",
-        "SUSTAINED_LOW_CODE_DEMAND",
         "SUSTAINED_LOW_TOTAL_DEMAND",
         "TOTAL_DEMAND_ABOVE_PREMIUM_LINE",
         "SUSTAINED_OVERAGE",
@@ -83,8 +80,6 @@ def test_reason_code_set_is_stable_in_design_order():
         "CREDIT_SETTING_UNKNOWN",
         "STANDARD_BILLING_ABOVE_SEAT_GAP",
         "CREDIT_CONSUMPTION_RISING",
-        "HIGH_SUPPLEMENTARY_USAGE",
-        "REVIEW_NON_CODE_USAGE",
         "RECENT_MEMBER",
         "RECENT_SEAT_CHANGE",
         "PARTIAL_MONTH",
@@ -150,7 +145,7 @@ def test_cross_vocabulary_equality_exists_and_is_not_a_type_guard():
 #
 # 対象月は 2026-07（末日 07-31）。既定の recent_seat_change_days=28 なので、recent 窓は
 # 07-03..07-31 になる。金額は既定 config（Standard $25・Premium $125＝シート差額 $100、
-# 観測マージ $20、方針線 $450、Code 需要閾値 $200、上限の許容差 $5）を前提にする。
+# 観測マージ $20、方針線 $450、上限の許容差 $5）を前提にする。
 
 _MONTH = "2026-07"
 _PREVIOUS_MONTH = "2026-06"
@@ -170,17 +165,13 @@ def _month(
     *,
     complete: bool = True,
     total: float = 0.0,
-    code: float | None = 0.0,
     billed: float = 0.0,
-    supplementary: bool | None = False,
 ) -> MonthObservation:
     return MonthObservation(
         month=month,
         complete=complete,
         total_demand_usd=total,
-        code_demand_usd=code,
         billed_usd=billed,
-        supplementary_high=supplementary,
     )
 
 
@@ -254,31 +245,31 @@ def _observation(
 # 候補化の信号を1つずつ単独で成立させる観測（他の信号は成立しない）
 def _observed_path_month(**overrides) -> MonthObservation:
     """観測経路のみ: 実課金 $120 がシート差額 $100 をマージちょうど（$20）上回る。"""
-    return _month(**{"total": 130.0, "code": 120.0, "billed": 120.0, **overrides})
+    return _month(**{"total": 130.0, "billed": 120.0, **overrides})
 
 
 def _credit_path_month(**overrides) -> MonthObservation:
     """上限到達経路のみ: κ=$100 に対し実課金 $95（= κ − 許容差）。"""
-    return _month(**{"total": 130.0, "code": 120.0, "billed": 95.0, **overrides})
+    return _month(**{"total": 130.0, "billed": 95.0, **overrides})
 
 
-def _code_heavy_month(**overrides) -> MonthObservation:
-    """観測経路が成立し、中身も Code 主体の観測: 需要 $500・Code $300・実課金 $150。"""
-    return _month(**{"total": 500.0, "code": 300.0, "billed": 150.0, **overrides})
+def _high_demand_billing_month(**overrides) -> MonthObservation:
+    """観測経路が成立する観測: 全 product 需要 $500・実課金 $150。"""
+    return _month(**{"total": 500.0, "billed": 150.0, **overrides})
 
 
 def _above_line_month(**overrides) -> MonthObservation:
-    """方針線（$450）以上の需要で実課金なし: 需要 $500・Code $300。
+    """方針線（$450）以上の需要で実課金なし: 全 product 需要 $500。
 
     κ が有効な組織では候補にならない（実課金がない）。方針線を使う κ 無効・不明の
     経路のための観測。
     """
-    return _month(**{"total": 500.0, "code": 300.0, **overrides})
+    return _month(**{"total": 500.0, **overrides})
 
 
 def _below_line_month(**overrides) -> MonthObservation:
-    """方針線に届かない需要で実課金なし: 需要 $45・Code $20。"""
-    return _month(**{"total": 45.0, "code": 20.0, **overrides})
+    """方針線に届かない需要で実課金なし: 全 product 需要 $45。"""
+    return _month(**{"total": 45.0, **overrides})
 
 
 def test_default_config_values_the_cases_assume(cfg):
@@ -288,9 +279,7 @@ def test_default_config_values_the_cases_assume(cfg):
     assert cfg["decision_v2"]["premium_justification_usd"] == 450.0
     assert cfg["decision_v2"]["observed_billing_margin_usd"] == 20.0
     assert cfg["decision_v2"]["upgrade"]["min_complete_months"] == 1
-    assert cfg["decision_v2"]["upgrade"]["min_code_demand_usd"] == 200.0
     assert cfg["decision_v2"]["downgrade"]["min_complete_months"] == 2
-    assert cfg["decision_v2"]["downgrade"]["max_code_demand_usd"] == 200.0
     assert cfg["decision_v2"]["recent_seat_change_days"] == 28
     assert cfg["usage_credits"]["cap_tolerance_usd"] == 5.0
 
@@ -468,38 +457,33 @@ def test_old_seat_change_does_not_hold_the_decision(cfg):
     ],
 )
 def test_each_observed_signal_alone_makes_a_candidate(cfg, month, credit):
-    """実課金がシート差額を上回る経路と、上限到達の経路はそれぞれ単独で候補を作る。
-
-    seat_action は分類軸が決めるのでここでは見ない。この需要規模（$130）では Code 需要が
-    閾値（$200）に届かないため、いずれも REVIEW_ASSIGNMENT になる。
-    """
+    """実課金がシート差額を上回る経路と、上限到達の経路はそれぞれ単独で候補を作る。"""
     subject = _subject(month, credit=credit)
     decision = decide_upgrade(subject, cfg)
     assert decision.status is DecisionStatus.RECOMMENDED
-    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
+    assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
 
 
 def test_no_signal_keeps_the_current_seat(cfg):
     """どの信号も成立しなければ現状維持。理由コードは付けない。"""
-    subject = _subject(_month(total=100.0, code=100.0))
+    subject = _subject(_month(total=100.0))
     decision = decide_upgrade(subject, cfg)
     assert decision.status is DecisionStatus.KEEP
     assert decision.seat_action is SeatAction.KEEP
     assert decision.reason_codes == ()
 
 
-def test_code_heavy_billing_month_upgrades(cfg):
-    """実課金がシート差額を上回り、中身が Code 主体なら昇格推奨。
+def test_high_demand_billing_month_upgrades(cfg):
+    """実課金がシート差額を上回れば、全需要が大きくても昇格推奨。
 
     需要が大きくても成立する点が旧規則との違い。旧規則の観測経路は変更先の費用を
     「需要 − 込み枠推定」で試算していたため、需要が大きいほど成立しなくなっていた
     （実課金が同じでも需要 $130 なら候補・$1,500 なら候補にならない）。
     """
-    subject = _subject(_code_heavy_month(total=1500.0))
+    subject = _subject(_high_demand_billing_month(total=1500.0))
     decision = decide_upgrade(subject, cfg)
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
@@ -508,12 +492,12 @@ def test_code_heavy_billing_month_upgrades(cfg):
 @pytest.mark.parametrize("total", [130.0, 5000.0])
 def test_the_observed_path_does_not_depend_on_demand(cfg, total):
     """観測経路は実課金とシート差額だけを見る（需要の大小で結論が変わらない）。"""
-    subject = _subject(_month(total=total, code=120.0, billed=120.0))
+    subject = _subject(_month(total=total, billed=120.0))
     decision = decide_upgrade(subject, cfg)
-    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
+    assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.reason_codes == (
-        ReasonCode.REVIEW_NON_CODE_USAGE,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
+        ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
 
 
@@ -527,7 +511,7 @@ def test_the_observed_path_does_not_depend_on_demand(cfg, total):
 )
 def test_observed_path_margin_boundary(cfg, billed, candidate):
     """シート差額（$100）を観測マージ（$20）以上上回ったときだけ候補にする。"""
-    subject = _subject(_month(total=130.0, code=120.0, billed=billed))
+    subject = _subject(_month(total=130.0, billed=billed))
     decision = decide_upgrade(subject, cfg)
     assert (decision.status is DecisionStatus.RECOMMENDED) is candidate
 
@@ -540,7 +524,7 @@ def test_observed_path_needs_to_exceed_the_seat_gap(cfg, billed, candidate):
     """
     permissive = copy.deepcopy(cfg)
     permissive["decision_v2"]["observed_billing_margin_usd"] = 0.0
-    subject = _subject(_month(total=130.0, code=120.0, billed=billed))
+    subject = _subject(_month(total=130.0, billed=billed))
     decision = decide_upgrade(subject, permissive)
     assert (decision.status is DecisionStatus.RECOMMENDED) is candidate
 
@@ -568,7 +552,7 @@ def test_enabled_credit_does_not_use_the_policy_line(cfg):
 )
 def test_credit_limit_path_boundaries(cfg, credit, billed, reached):
     """上限へ到達したときだけ、上限到達を根拠として添える。"""
-    subject = _subject(_month(total=130.0, code=120.0, billed=billed), credit=credit)
+    subject = _subject(_month(total=130.0, billed=billed), credit=credit)
     decision = decide_upgrade(subject, cfg)
     assert (ReasonCode.CREDIT_LIMIT_REACHED in decision.reason_codes) is reached
 
@@ -582,90 +566,44 @@ def test_the_credit_limit_path_alone_does_not_report_the_billing_comparison(cfg)
 
 def test_both_observed_signals_are_reported_in_fixed_order(cfg):
     """上限到達と実課金の超過は同時に成立しうる（並びは固定）。"""
-    subject = _subject(_code_heavy_month(billed=130.0), credit=100.0)
+    subject = _subject(_high_demand_billing_month(billed=130.0), credit=100.0)
     decision = decide_upgrade(subject, cfg)
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.CREDIT_LIMIT_REACHED,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
 
 
-# ----------------------------------------------------------------- 分類軸（8）
+# ----------------------------------------------------------------- 経済軸の候補と根拠
 
 
-def test_code_demand_at_the_threshold_is_an_upgrade(cfg):
-    subject = _subject(_code_heavy_month(code=200.0))
-    decision = decide_upgrade(subject, cfg)
+def test_observed_billing_upgrades_at_low_total_demand(cfg):
+    """候補化の観測が成立すれば、product 特徴量を要求せず昇格を推奨する。"""
+    decision = decide_upgrade(_subject(_observed_path_month(), credit=_CREDIT_ENABLED), cfg)
     assert decision.status is DecisionStatus.RECOMMENDED
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
-
-
-def test_low_code_demand_becomes_review_assignment(cfg):
-    """費用は見合うが中身が Code でない候補は、人が見直す To-Do として出す。"""
-    subject = _subject(_code_heavy_month(code=199.99))
-    decision = decide_upgrade(subject, cfg)
-    assert decision.status is DecisionStatus.RECOMMENDED
-    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
     assert decision.reason_codes == (
-        ReasonCode.REVIEW_NON_CODE_USAGE,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
+        ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
 
 
-def test_review_assignment_reports_supplementary_usage(cfg):
-    subject = _subject(_observed_path_month(code=10.0, supplementary=True))
-    decision = decide_upgrade(subject, cfg)
-    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
-    assert decision.reason_codes == (
-        ReasonCode.REVIEW_NON_CODE_USAGE,
-        ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
-        ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
-    )
-
-
-def test_unknown_code_demand_falls_back_to_observe(cfg):
-    """Code 主体であることを証明できないまま自動で昇格を推奨しない。"""
-    subject = _subject(_observed_path_month(code=None))
-    decision = decide_upgrade(subject, cfg)
-    assert decision.status is DecisionStatus.OBSERVE
-    assert decision.seat_action is SeatAction.NONE
-    assert decision.reason_codes == (
-        ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
-        ReasonCode.DATA_CONFIDENCE_LOW,
-    )
-
-
-def test_unknown_code_demand_without_a_signal_still_keeps(cfg):
-    """候補化の信号が無ければ、Code 需要が分からなくても現状維持のまま。"""
-    subject = _subject(_month(total=100.0, code=None))
+def test_no_economic_signal_still_keeps(cfg):
+    """候補化の信号が無ければ現状維持のまま。"""
+    subject = _subject(_month(total=100.0))
     assert decide_upgrade(subject, cfg).status is DecisionStatus.KEEP
 
 
-def test_review_assignment_keeps_the_candidacy_evidence(cfg):
-    """分類軸の振り分けで、候補になった根拠を落とさない。
-
-    この観測は上限到達だけで候補になっていて、実課金はシート差額を上回っていない。
-    """
-    subject = _subject(_credit_path_month(code=50.0), credit=100.0)
-    decision = decide_upgrade(subject, cfg)
-    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
-    assert decision.reason_codes == (
-        ReasonCode.REVIEW_NON_CODE_USAGE,
-        ReasonCode.CREDIT_LIMIT_REACHED,
-    )
-
-
-def test_unknown_code_demand_keeps_the_candidacy_evidence(cfg):
-    """保留にする場合も、候補になった根拠は記録に残す。"""
-    subject = _subject(_credit_path_month(code=None), credit=100.0)
-    decision = decide_upgrade(subject, cfg)
-    assert decision.status is DecisionStatus.OBSERVE
+def test_cap_candidate_upgrades_with_its_evidence(cfg):
+    """候補化の観測が成立すれば、product 特徴量を要求せず昇格を推奨する。"""
+    decision = decide_upgrade(_subject(_credit_path_month(), credit=100.0), cfg)
+    assert decision.status is DecisionStatus.RECOMMENDED
+    assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.reason_codes == (
         ReasonCode.CREDIT_LIMIT_REACHED,
-        ReasonCode.DATA_CONFIDENCE_LOW,
+        ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
 
 
@@ -673,29 +611,26 @@ def test_unknown_code_demand_keeps_the_candidacy_evidence(cfg):
 
 
 def test_upgrade_reasons_are_in_fixed_order(cfg):
-    """主理由 → 補助（上限到達・継続超過・実課金の超過）→ 情報（枠不明・混在利用）の順。"""
+    """主理由 → 補助（上限到達・継続超過・実課金の超過）→ 情報（枠不明）の順。"""
     subject = _subject(
-        _month(month=_PREVIOUS_MONTH, total=250.0, code=200.0, billed=130.0),
-        _month(total=250.0, code=200.0, billed=130.0, supplementary=True),
+        _month(month=_PREVIOUS_MONTH, total=250.0, billed=130.0),
+        _month(total=250.0, billed=130.0),
         credit=135.0,
     )
     decision = decide_upgrade(subject, cfg)
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.CREDIT_LIMIT_REACHED,
         ReasonCode.SUSTAINED_OVERAGE,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
-        ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
     )
 
 
 def test_upgrade_always_reports_the_base_reason_and_capacity_gap(cfg):
-    """1完全月の需要に基づくことと、枠の観測ができないことは常に添える。"""
-    decision = decide_upgrade(_subject(_code_heavy_month()), cfg)
+    """候補化の観測と、枠の観測ができないことを添える。"""
+    decision = decide_upgrade(_subject(_high_demand_billing_month()), cfg)
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
@@ -711,7 +646,7 @@ def test_sustained_overage_needs_two_consecutive_complete_months(cfg):
 
 def test_sustained_overage_absent_when_previous_month_had_no_overage(cfg):
     subject = _subject(
-        _month(month=_PREVIOUS_MONTH, total=130.0, code=120.0), _observed_path_month()
+        _month(month=_PREVIOUS_MONTH, total=130.0), _observed_path_month()
     )
     assert ReasonCode.SUSTAINED_OVERAGE not in decide_upgrade(subject, cfg).reason_codes
 
@@ -733,9 +668,8 @@ def test_sustained_overage_absent_when_the_run_hits_a_partial_month(cfg):
         _subject(_observed_path_month(complete=False)),
         _subject(_observed_path_month(), events=(
             _event(dt.date(2026, 7, 5), dt.date(2026, 7, 20)),)),
-        _subject(_month(total=100.0, code=100.0)),
+        _subject(_month(total=100.0)),
         _subject(_observed_path_month()),
-        _subject(_observed_path_month(code=1.0)),
     ],
 )
 def test_credit_action_is_not_proposed_when_the_limit_is_enabled(cfg, subject):
@@ -773,8 +707,8 @@ def test_member_added_event_type_matches_seat_changes(cfg):
 
 
 def _low_demand_month(**overrides) -> MonthObservation:
-    """降格の経済軸が成立する観測: 需要 $100（うち Code $50）・実課金なし。"""
-    return _month(**{"total": 100.0, "code": 50.0, **overrides})
+    """降格の経済軸が成立する観測: 全 product 需要 $100・実課金なし。"""
+    return _month(**{"total": 100.0, **overrides})
 
 
 def _downgrade_months(**overrides) -> tuple[MonthObservation, MonthObservation]:
@@ -843,13 +777,12 @@ def test_downgrade_does_not_count_partial_months_as_history(cfg):
 
 
 def test_downgrade_at_exactly_two_complete_months_decides(cfg):
-    """受け入れ確認: 2完全月とも需要が方針線未満・Code 低・実課金なしなら降格推奨。"""
+    """受け入れ確認: 2完全月とも需要が方針線未満・実課金なしなら降格推奨。"""
     subject = _premium_subject(*_downgrade_months())
     decision = decide_downgrade(subject, cfg)
     assert decision.status is DecisionStatus.RECOMMENDED
     assert decision.seat_action is SeatAction.DOWNGRADE_TO_STANDARD
     assert decision.reason_codes == (
-        ReasonCode.SUSTAINED_LOW_CODE_DEMAND,
         ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
@@ -952,106 +885,23 @@ def test_downgrade_does_not_depend_on_the_credit_limit(cfg, credit):
     assert decision.seat_action is SeatAction.DOWNGRADE_TO_STANDARD
 
 
-# ----------------------------------------------------------------- 分類軸（8〜10）
+# ----------------------------------------------------------------- 評価窓の全需要
 
 
-@pytest.mark.parametrize(
-    "subject",
-    [
-        _premium_subject(
-            _low_demand_month(month=_PREVIOUS_MONTH, code=None), _low_demand_month()),
-        _premium_subject(
-            _low_demand_month(month=_PREVIOUS_MONTH), _low_demand_month(code=None)),
-    ],
-)
-def test_unknown_code_demand_in_the_window_falls_back_to_observe(cfg, subject):
-    """Code 需要が低いことを証明できないまま自動で降格しない。"""
-    decision = decide_downgrade(subject, cfg)
-    assert decision.status is DecisionStatus.OBSERVE
-    assert decision.seat_action is SeatAction.NONE
-    assert decision.reason_codes == (ReasonCode.DATA_CONFIDENCE_LOW,)
-
-
-@pytest.mark.parametrize(("code", "downgrade"), [(200.0, False), (199.99, True)])
-def test_downgrade_code_demand_threshold_boundary(cfg, code, downgrade):
-    """閾値ちょうどの Code 需要は「低い」とみなさない（Code 実務者の席は落とさない）。"""
-    subject = _premium_subject(*_downgrade_months(total=300.0, code=code))
-    decision = decide_downgrade(subject, cfg)
-    assert (decision.seat_action is SeatAction.DOWNGRADE_TO_STANDARD) is downgrade
-
-
-def test_high_code_demand_in_any_window_month_keeps_the_seat(cfg):
-    """窓のどの月かで Code 需要が高ければ降格しない。"""
-    older = _premium_subject(
-        _low_demand_month(month=_PREVIOUS_MONTH, total=300.0, code=200.0),
-        _low_demand_month(code=1.0),
-    )
-    assert decide_downgrade(older, cfg).seat_action is SeatAction.KEEP
-    target = _premium_subject(
-        _low_demand_month(month=_PREVIOUS_MONTH, code=1.0),
-        _low_demand_month(total=300.0, code=200.0),
-    )
-    assert decide_downgrade(target, cfg).seat_action is SeatAction.KEEP
-
-
-def test_high_code_demand_outweighs_high_supplementary_usage(cfg):
-    """Code 需要が高いユーザは、supplementary が高くても見直しへは回さない。"""
+@pytest.mark.parametrize("totals", [(0.0, 0.0), (100.0, 300.0), (300.0, 100.0)])
+def test_low_total_demand_in_every_window_month_downgrades(cfg, totals):
+    """全月で方針線未満なら、product 特徴量を要求せず降格を推奨する。"""
     subject = _premium_subject(
-        *_downgrade_months(total=1000.0, code=300.0, supplementary=True)
+        _low_demand_month(month=_PREVIOUS_MONTH, total=totals[0]),
+        _low_demand_month(total=totals[1]),
     )
-    decision = decide_downgrade(subject, cfg)
-    assert decision.status is DecisionStatus.KEEP
-    assert decision.seat_action is SeatAction.KEEP
-    assert decision.reason_codes == ()
-
-
-def test_high_supplementary_usage_becomes_review_assignment(cfg):
-    """Code が低く supplementary が高いユーザは、シートではなくアサインを見直す。"""
-    subject = _premium_subject(*_downgrade_months(supplementary=True))
     decision = decide_downgrade(subject, cfg)
     assert decision.status is DecisionStatus.RECOMMENDED
-    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
+    assert decision.seat_action is SeatAction.DOWNGRADE_TO_STANDARD
     assert decision.reason_codes == (
-        ReasonCode.REVIEW_NON_CODE_USAGE,
-        ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
+        ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,
+        ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
-
-
-def test_high_supplementary_usage_is_reviewed_above_the_policy_line(cfg):
-    """需要が方針線を上回って経済軸が成立しない場合も、見直しへ回す。
-
-    現状維持で終わらせると「Premium の枠を非 Code 利用で使っている」状態が誰の
-    To-Do にもならないため、分類軸を経済軸より先に見る。
-    """
-    high_total = _downgrade_months(total=1000.0, code=10.0)
-    assert decide_downgrade(
-        _premium_subject(*high_total), cfg
-    ).seat_action is SeatAction.KEEP    # 経済軸は成立しない（需要が方針線を上回る）
-
-    subject = _premium_subject(
-        *_downgrade_months(total=1000.0, code=10.0, supplementary=True)
-    )
-    decision = decide_downgrade(subject, cfg)
-    assert decision.status is DecisionStatus.RECOMMENDED
-    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
-
-
-@pytest.mark.parametrize("supplementary", [False, None])
-def test_supplementary_not_high_proceeds_to_the_economic_axis(cfg, supplementary):
-    """False も None（分からない）も、見直しへは回さない。"""
-    subject = _premium_subject(*_downgrade_months(supplementary=supplementary))
-    decision = decide_downgrade(subject, cfg)
-    assert decision.seat_action is SeatAction.DOWNGRADE_TO_STANDARD
-
-
-def test_only_the_target_month_supplementary_flag_is_consulted(cfg):
-    """混在利用は対象月の状態で見る（過去の月の高さは振り分けを変えない）。"""
-    subject = _premium_subject(
-        _low_demand_month(month=_PREVIOUS_MONTH, supplementary=True),
-        _low_demand_month(supplementary=False),
-    )
-    decision = decide_downgrade(subject, cfg)
-    assert decision.seat_action is SeatAction.DOWNGRADE_TO_STANDARD
 
 
 # ----------------------------------------------------------------- 経済軸（11〜12）
@@ -1133,10 +983,8 @@ def test_evaluation_window_length_follows_the_configured_month_count(cfg):
         _premium_subject(*_downgrade_months(), events=(
             _event(dt.date(2026, 7, 5), dt.date(2026, 7, 20)),)),
         _premium_subject(*_downgrade_months(billed=25.0)),
-        _premium_subject(*_downgrade_months(code=None)),
-        _premium_subject(*_downgrade_months(supplementary=True)),
-        _premium_subject(*_downgrade_months(total=1000.0)),
         _premium_subject(*_downgrade_months()),
+        _premium_subject(*_downgrade_months(total=1000.0)),
     ],
 )
 def test_downgrade_never_proposes_a_credit_action(cfg, subject):
@@ -1200,46 +1048,9 @@ def test_two_months_above_the_line_become_an_upgrade(cfg):
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.credit_action is CreditAction.NONE
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
         ReasonCode.SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
-    )
-
-
-def test_two_months_above_the_line_without_code_evidence_is_reviewed(cfg):
-    """継続していて中身が Code でなければアサインの見直し（分類軸は昇格側と同じ）。"""
-    subject = _subject(
-        _above_line_month(month=_PREVIOUS_MONTH, code=1.0),
-        _above_line_month(code=1.0),
-        credit=_CREDIT_DISABLED,
-    )
-    decision = decide_upgrade(subject, cfg)
-    assert decision.status is DecisionStatus.RECOMMENDED
-    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
-    assert decision.credit_action is CreditAction.NONE
-    assert decision.reason_codes == (
-        ReasonCode.REVIEW_NON_CODE_USAGE,
-        ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
-        ReasonCode.SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
-    )
-
-
-def test_two_months_above_the_line_without_a_code_figure_observes(cfg):
-    """継続していても Code 需要が確定しなければ観察（分類軸は昇格側と同じ）。"""
-    subject = _subject(
-        _above_line_month(month=_PREVIOUS_MONTH),
-        _above_line_month(code=None),
-        credit=_CREDIT_DISABLED,
-    )
-    decision = decide_upgrade(subject, cfg)
-    assert decision.status is DecisionStatus.OBSERVE
-    assert decision.seat_action is SeatAction.NONE
-    assert decision.credit_action is CreditAction.NONE
-    assert decision.reason_codes == (
-        ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
-        ReasonCode.SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
-        ReasonCode.DATA_CONFIDENCE_LOW,
     )
 
 
@@ -1256,29 +1067,18 @@ def test_below_the_line_keeps_the_seat_and_proposes_nothing(cfg):
 @pytest.mark.parametrize(("total", "candidate"), [(450.0, True), (449.99, False)])
 def test_disabled_credit_policy_line_boundary(cfg, total, candidate):
     """方針線ちょうどの需要は候補、$0.01 足りなければ候補にしない。"""
-    subject = _subject(_month(total=total, code=10.0), credit=_CREDIT_DISABLED)
+    subject = _subject(_month(total=total), credit=_CREDIT_DISABLED)
     decision = decide_upgrade(subject, cfg)
     assert (decision.credit_action is CreditAction.ENABLE_WITH_CAP) is candidate
 
 
-@pytest.mark.parametrize("code", [None, 0.0, 99.0])
-def test_the_credit_candidate_does_not_pass_through_the_code_gate(cfg, code):
-    """クレジットの付与に分類軸はかけない（込み枠は product 共通で、付与は可逆）。"""
-    subject = _subject(_above_line_month(code=code), credit=_CREDIT_DISABLED)
-    decision = decide_upgrade(subject, cfg)
-    assert decision.seat_action is SeatAction.KEEP
-    assert decision.credit_action is CreditAction.ENABLE_WITH_CAP
-    assert ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE in decision.reason_codes
-
-
 def test_credit_candidate_reasons_are_in_fixed_order(cfg):
-    """主理由（方針線）→ 情報（混在利用）の順。"""
+    """一時的な方針線超過では、全需要を候補化の根拠として残す。"""
     subject = _subject(
-        _above_line_month(supplementary=True), credit=_CREDIT_DISABLED
+        _above_line_month(), credit=_CREDIT_DISABLED
     )
     assert decide_upgrade(subject, cfg).reason_codes == (
         ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
-        ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
     )
 
 
@@ -1322,7 +1122,6 @@ def test_rising_credit_consumption_counts_as_continuity(cfg):
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.credit_action is CreditAction.NONE
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
         ReasonCode.CREDIT_CONSUMPTION_RISING,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
@@ -1372,13 +1171,12 @@ def test_disabled_credit_with_billing_is_treated_as_unknown(cfg):
     実課金だけ（前月の課金は設定変更より前のものでありうる）。
     """
     subject = _subject(
-        _month(total=300.0, code=300.0, billed=130.0), credit=_CREDIT_DISABLED
+        _month(total=300.0, billed=130.0), credit=_CREDIT_DISABLED
     )
     decision = decide_upgrade(subject, cfg)
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.credit_action is CreditAction.REVIEW
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.CREDIT_SETTING_UNKNOWN,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
@@ -1388,7 +1186,7 @@ def test_disabled_credit_with_billing_is_treated_as_unknown(cfg):
 def test_disabled_credit_with_small_billing_is_treated_as_unknown(cfg):
     """矛盾しているときは方針線での候補化も κ 不明の規則に従う（席は動かさない）。"""
     subject = _subject(
-        _month(total=500.0, code=300.0, billed=5.0), credit=_CREDIT_DISABLED
+        _month(total=500.0, billed=5.0), credit=_CREDIT_DISABLED
     )
     decision = decide_upgrade(subject, cfg)
     assert decision.status is DecisionStatus.RECOMMENDED
@@ -1407,15 +1205,14 @@ def test_disabled_credit_with_billing_only_in_a_previous_month_stays_disabled(cf
     昇格候補になる。REVIEW も CREDIT_SETTING_UNKNOWN も付かない。
     """
     subject = _subject(
-        _month(month=_PREVIOUS_MONTH, total=500.0, code=300.0, billed=130.0),
-        _month(total=500.0, code=300.0),
+        _month(month=_PREVIOUS_MONTH, total=500.0, billed=130.0),
+        _month(total=500.0),
         credit=_CREDIT_DISABLED,
     )
     decision = decide_upgrade(subject, cfg)
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.credit_action is CreditAction.NONE
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
         ReasonCode.SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
@@ -1443,26 +1240,13 @@ def test_unknown_credit_setting_above_the_line_asks_for_a_review(cfg):
     )
 
 
-@pytest.mark.parametrize("code", [300.0, 0.0, None])
-def test_unknown_credit_setting_above_the_line_does_not_consult_code(cfg, code):
-    """方針線だけで候補になった場合、Code 需要は結論を変えない（席を動かさないため）。"""
-    subject = _subject(_above_line_month(code=code), credit=_CREDIT_UNKNOWN)
-    decision = decide_upgrade(subject, cfg)
-    assert decision.seat_action is SeatAction.KEEP
-    assert decision.credit_action is CreditAction.REVIEW
-    assert decision.reason_codes == (
-        ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
-        ReasonCode.CREDIT_SETTING_UNKNOWN,
-    )
-
-
 def test_unknown_credit_setting_below_the_line_asks_for_nothing(cfg):
     """需要が方針線に届かないユーザには REVIEW を出さない。
 
     設定の不明だけで人へ回すと、確認すべき相手が組織の全員になる。
     """
     subject = _subject(
-        _month(total=449.99, code=10.0), credit=_CREDIT_UNKNOWN
+        _month(total=449.99), credit=_CREDIT_UNKNOWN
     )
     decision = decide_upgrade(subject, cfg)
     assert decision.status is DecisionStatus.KEEP
@@ -1477,31 +1261,30 @@ def test_unknown_credit_setting_moves_the_seat_on_observed_billing(cfg):
     方針線（$450）を上回る需要でもあるが、候補化の信号になったのは実課金なので
     `TOTAL_DEMAND_ABOVE_PREMIUM_LINE` は添えない。
     """
-    subject = _subject(_code_heavy_month(), credit=_CREDIT_UNKNOWN)
+    subject = _subject(_high_demand_billing_month(), credit=_CREDIT_UNKNOWN)
     decision = decide_upgrade(subject, cfg)
     assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.credit_action is CreditAction.REVIEW
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.CREDIT_SETTING_UNKNOWN,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
 
 
-def test_unknown_credit_setting_reviews_the_assignment_for_low_code(cfg):
-    """実課金で候補になり中身が Code でなければ、見直しとクレジット確認の両方を出す。"""
+def test_unknown_credit_setting_upgrades_billing_candidate(cfg):
+    """実課金で候補になれば、昇格とクレジット設定の確認を出す。"""
     subject = _subject(
-        _month(total=200.0, code=10.0, billed=120.0), credit=_CREDIT_UNKNOWN
+        _month(total=200.0, billed=120.0), credit=_CREDIT_UNKNOWN
     )
     decision = decide_upgrade(subject, cfg)
     assert decision.status is DecisionStatus.RECOMMENDED
-    assert decision.seat_action is SeatAction.REVIEW_ASSIGNMENT
+    assert decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM
     assert decision.credit_action is CreditAction.REVIEW
     assert decision.reason_codes == (
-        ReasonCode.REVIEW_NON_CODE_USAGE,
         ReasonCode.CREDIT_SETTING_UNKNOWN,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
+        ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
     )
 
 
@@ -1528,36 +1311,33 @@ def test_unknown_credit_setting_never_reports_a_reached_limit(cfg, billed):
 
 
 def test_status_is_recommended_when_only_the_credit_side_has_work(cfg):
-    """シート側が観察でも、クレジット側に作業があれば status は RECOMMENDED になる。
-
-    κ が不明で実課金の候補だが Code 需要が確定しないユーザは、シート判定は保留
-    （seat_action は NONE で DATA_CONFIDENCE_LOW）だが、設定を確認する作業が残る。
-    """
-    subject = _subject(_code_heavy_month(code=None), credit=_CREDIT_UNKNOWN)
+    """席は現状維持でも、設定を確認する作業があれば RECOMMENDED にする。"""
+    subject = _subject(_above_line_month(), credit=_CREDIT_UNKNOWN)
     decision = decide_upgrade(subject, cfg)
     assert decision.status is DecisionStatus.RECOMMENDED
-    assert decision.seat_action is SeatAction.NONE
+    assert decision.seat_action is SeatAction.KEEP
     assert decision.credit_action is CreditAction.REVIEW
-    assert ReasonCode.DATA_CONFIDENCE_LOW in decision.reason_codes
+    assert decision.reason_codes == (
+        ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
+        ReasonCode.CREDIT_SETTING_UNKNOWN,
+    )
 
 
 def test_credit_reasons_are_in_fixed_order(cfg):
     """主理由（設定不明）→ 補助（継続超過・実課金の超過・消費上昇）→ 情報 の順。"""
     subject = _subject(
-        _month(month=_PREVIOUS_MONTH, total=250.0, code=200.0, billed=130.0),
-        _month(total=250.0, code=200.0, billed=130.0, supplementary=True),
+        _month(month=_PREVIOUS_MONTH, total=250.0, billed=130.0),
+        _month(total=250.0, billed=130.0),
         credit=_CREDIT_UNKNOWN,
         points=_RISING_POINTS,
     )
     decision = decide_upgrade(subject, cfg)
     assert decision.reason_codes == (
-        ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
         ReasonCode.CREDIT_SETTING_UNKNOWN,
         ReasonCode.SUSTAINED_OVERAGE,
         ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,
         ReasonCode.CREDIT_CONSUMPTION_RISING,
         ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
-        ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
     )
     # 同じコードを2度出さない（月をまたいだ突き合わせのキーになるため）
     assert len(set(decision.reason_codes)) == len(decision.reason_codes)
@@ -1596,7 +1376,7 @@ def test_hard_blockers_are_not_overridden_by_the_credit_comparator(
 
 
 def _stability_subject(total: float, **kwargs) -> SubjectHistory:
-    """降格側の方針感度を見る履歴（2完全月・Code 低・実課金なし・混在利用なし）。"""
+    """降格側の方針感度を見る履歴（2完全月・実課金なし）。"""
     return _premium_subject(
         _low_demand_month(month=_PREVIOUS_MONTH, total=total),
         _low_demand_month(total=total),
@@ -1623,8 +1403,8 @@ def test_policy_stability_works_for_the_upgrade_side(cfg):
     では2完全月連続の成立で昇格候補になる。
     """
     subject = _subject(
-        _month(month=_PREVIOUS_MONTH, total=400.0, code=200.0),
-        _month(total=400.0, code=200.0),
+        _month(month=_PREVIOUS_MONTH, total=400.0),
+        _month(total=400.0),
         credit=_CREDIT_DISABLED,
     )
     assert policy_stability(subject, cfg) == 2
@@ -1702,9 +1482,9 @@ def test_decision_accepts_its_own_vocabularies():
     decision = _decision(
         status=DecisionStatus.RECOMMENDED,
         seat_action=SeatAction.UPGRADE_TO_PREMIUM,
-        reason_codes=(ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,),
+        reason_codes=(ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,),
     )
-    assert decision.reason_codes == (ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,)
+    assert decision.reason_codes == (ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP,)
 
 
 def test_history_requires_at_least_one_month():
@@ -1732,29 +1512,29 @@ def test_month_observation_requires_a_month_key(month):
 
 @pytest.mark.parametrize(
     "field",
-    ["total_demand_usd", "code_demand_usd", "billed_usd"],
+    ["total_demand_usd", "billed_usd"],
 )
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_month_observation_rejects_non_finite_amounts(field, value):
     """非有限値は比較を黙って偽にし、判定を変えてしまう。"""
-    amounts = {"total_demand_usd": 0.0, "code_demand_usd": 0.0, "billed_usd": 0.0}
+    amounts = {"total_demand_usd": 0.0, "billed_usd": 0.0}
     amounts[field] = value
     with pytest.raises(ValueError, match=field):
         MonthObservation(
-            month=_MONTH, complete=True, supplementary_high=False, **amounts
+            month=_MONTH, complete=True, **amounts
         )
 
 
 @pytest.mark.parametrize(
     "field",
-    ["total_demand_usd", "code_demand_usd", "billed_usd"],
+    ["total_demand_usd", "billed_usd"],
 )
 def test_month_observation_accepts_negative_amounts(field):
     """返金があると需要・実課金は負になりうるので、有限な負値は拒否しない（κ とは別の契約）。"""
-    amounts = {"total_demand_usd": 0.0, "code_demand_usd": 0.0, "billed_usd": 0.0}
+    amounts = {"total_demand_usd": 0.0, "billed_usd": 0.0}
     amounts[field] = -12.5
     observation = MonthObservation(
-        month=_MONTH, complete=True, supplementary_high=False, **amounts
+        month=_MONTH, complete=True, **amounts
     )
     assert getattr(observation, field) == -12.5
 

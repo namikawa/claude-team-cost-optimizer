@@ -5,6 +5,7 @@ import re
 
 import pandas as pd
 import pytest
+import yaml
 
 from seat_analyzer.analyze import analyze
 from seat_analyzer.cli import main
@@ -223,8 +224,8 @@ def test_decision_v2_defaults_exist(tmp_path):
     assert loaded["decision_v2"] == {
         "enabled": False,
         "premium_justification_usd": 450.0,
-        "upgrade": {"min_complete_months": 1, "min_code_demand_usd": 200.0},
-        "downgrade": {"min_complete_months": 2, "max_code_demand_usd": 200.0},
+        "upgrade": {"min_complete_months": 1},
+        "downgrade": {"min_complete_months": 2},
         "recent_seat_change_days": 28,
         "observed_billing_margin_usd": 20.0,
     }
@@ -337,49 +338,21 @@ def test_decision_v2_rejects_the_renamed_saving_key(tmp_path):
         load_config(path)
 
 
-# Code 需要の閾値は昇格・降格で向き（以上・未満）が逆なだけで、値の契約は同じなので
-# 同じ粒度で検査する
-_CODE_DEMAND_THRESHOLDS = [
+# 廃止した Code 需要の設定は、昇格・降格のどちらに書いてもロード時に拒否する
+@pytest.mark.parametrize(("direction", "key"), [
     ("upgrade", "min_code_demand_usd"),
     ("downgrade", "max_code_demand_usd"),
-]
-
-
-@pytest.mark.parametrize(("direction", "key"), _CODE_DEMAND_THRESHOLDS)
-@pytest.mark.parametrize(
-    "value",
-    [float("nan"), float("inf"), float("-inf"), True, "100", None, -0.01],
-)
-def test_decision_v2_code_demand_threshold_rejects_invalid(cfg, direction, key, value):
-    """Code 需要の閾値は 0 以上の有限な数値に限る。
-
-    NaN は閾値との比較を常に偽にし、昇格では Code 主体の候補を黙って見直し側へ回し、
-    降格では Code 需要が高いユーザの席を黙って落とす。
-    """
-    broken = copy.deepcopy(cfg)
-    broken["decision_v2"][direction][key] = value
+])
+@pytest.mark.parametrize("value", [0, 200.0, -0.01, None, True])
+def test_removed_code_demand_settings_are_unknown_keys(tmp_path, direction, key, value):
+    """廃止した設定は値によらず、ロード時に未知キーとして拒否する。"""
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump({"decision_v2": {direction: {key: value}}}),
+        encoding="utf-8", newline="\n",
+    )
     with pytest.raises(ValueError, match=f"decision_v2.{direction}.{key}"):
-        _validate(broken)
-
-
-@pytest.mark.parametrize(("direction", "key"), _CODE_DEMAND_THRESHOLDS)
-@pytest.mark.parametrize("value", [0, 0.0, 100, 250.5])
-def test_decision_v2_code_demand_threshold_accepts_zero_and_positive(
-    cfg, direction, key, value
-):
-    """0 は「Code 需要の多寡を問わない」の指定として正当なので拒否しない。"""
-    ok = copy.deepcopy(cfg)
-    ok["decision_v2"][direction][key] = value
-    _validate(ok)
-
-
-@pytest.mark.parametrize(("direction", "key"), _CODE_DEMAND_THRESHOLDS)
-def test_decision_v2_code_demand_threshold_requires_its_section(cfg, direction, key):
-    """向きの節そのものが壊れていても、閾値の欠落として報告する。"""
-    broken = copy.deepcopy(cfg)
-    broken["decision_v2"][direction] = None
-    with pytest.raises(ValueError, match=f"decision_v2.{direction}.{key}"):
-        _validate(broken)
+        load_config(path)
 
 
 def test_config_validation_price_ordering(cfg):

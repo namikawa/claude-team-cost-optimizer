@@ -431,17 +431,17 @@ def test_v1_run_adds_no_extra_computation(make_input, tmp_path, monkeypatch):
     assert detect == []
 
 
-def test_v2_run_computes_features_for_every_month_and_detects_changes(
+def test_v2_run_computes_only_target_month_features_and_detects_changes(
     make_input, tmp_path, monkeypatch
 ):
-    """V2 の実行では履歴の全月の特徴量を計算し、シート変更の検出を組織ごとに1度行う。"""
+    """V2 の実行でも対象月の特徴量だけを計算し、シート変更の検出を組織ごとに1度行う。"""
     input_dir = _make_two_orgs(make_input)
     features = _counting(monkeypatch, pipeline, "compute_product_usage")
     detect = _counting(monkeypatch, seat_changes, "detect_from_input")
 
     assert _run_with(input_dir, tmp_path / "reports", CONFIG,
                      "--decision-version", "v2") == 0
-    assert len(features) == 3     # org-a の2ヶ月 + org-b の1ヶ月
+    assert len(features) == 2     # org-a・org-b の対象月だけ（過去月は計算しない）
     assert len(detect) == 2       # 組織ごとに1度
 
 

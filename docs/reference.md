@@ -134,8 +134,8 @@ code-analytics も同じ月に日付付きスナップショットを複数置�
   supplementary に挙げた product の需要合計なので、どちらの分類にも書いていない product の
   需要は額には含まれても ⚑ には効かない
 
-読み方は「Code が低く他が高いユーザは、自動での変更ではなくレビューの対象」。この判断は
-機械化しておらず、シートの判定・推奨にも反映しない（表示専用のセクション）。
+活用の見え方を示す表示専用のセクションで、シートの判定・推奨には使わない
+（判定は全 product の需要で行う）。
 
 「詳細利用状況」の product構成 とは基準が違う。あちらは利用回数（リクエスト数）基準の構成比で、
 こちらは金額（API 換算需要）基準。回数の多い product と金額の大きい product は一致しないため、
@@ -256,7 +256,7 @@ recommendations）とは別系統の出力で、V1 の内容には影響しな�
 - `email` — ユーザのメールアドレス
 - `workspace` — 複数 workspace の組織（config の `workspaces` が2つ以上）でだけ `email` の
   次に出る列で、主 workspace の名前。複数アカウントを持つ人は主 workspace の行1本にまとめ、
-  需要（全 product・Code・補助）は全 workspace の合算、実課金・κ・現シート・シート変更は
+  需要（全 product）は全 workspace の合算、実課金・κ・現シート・シート変更は
   主 workspace の値を使う。副 workspace にだけアカウントがある人の行は無い
 - `subject_id` — 解決した stable ID（`account:` / `user:` / `email:` の接頭辞つき。確定できなければ空欄）
 - `identity_quality` — `stable` / `email_consistent` / `email_fallback` / `conflict` / `unresolved`
@@ -267,8 +267,6 @@ recommendations）とは別系統の出力で、V1 の内容には影響しな�
 - `complete` — 対象月のスペンドが全月ぶんか（True / False）
 - `complete_months` — 履歴のうち完全月（`;` 区切り・昇順）
 - `total_demand_usd` — 対象月の全 product の API 換算需要 [USD/月]
-- `code_demand_usd` — 対象月の primary product の需要（確定できなければ空欄）
-- `supplementary_high` — supplementary の需要が閾値以上か（確定できなければ空欄）
 - `billed_extra_usd` — 対象月の実課金
 - `credit_limit_usd` — 追加クレジット上限 κ（空欄は不明・`0.00` は無効・`inf` は上限なし）
 - `premium_justification_usd` — 判定に使った方針線（`decision_v2.premium_justification_usd`）
@@ -276,7 +274,7 @@ recommendations）とは別系統の出力で、V1 の内容には影響しな�
   `excluded` はシート未割当のほか、主 workspace に `fixed_seat` を設定した組織の
   Standard / Premium のアカウントにも付く
 - `seat_action` — シートへの推奨（`upgrade_to_premium` / `downgrade_to_standard` /
-  `review_assignment` / `keep` / `none`）
+  `keep` / `none`）
 - `credit_action` — 追加クレジットへの推奨（`enable_with_cap` / `review` / `keep` / `none`）
 - `reason_codes` — 判定の根拠・保留理由（`;` 区切り・主理由 → 補助 → 情報の固定順）
 - `policy_stability` — 方針線を ±$100 ずらしても同じ seat action になった数（1〜3。経済軸に

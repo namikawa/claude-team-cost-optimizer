@@ -1,23 +1,17 @@
 """V2判定のシート変更ルール（昇格・降格）を決める純粋なモジュール。
 
-判断は2つの軸でできている:
-
-- 経済軸: シートを変える金銭的な根拠があるか。変更先シートの従量課金は観測も推定も
-  できないので、変更先のコストは試算しない。使うのは観測できる事実（現シートの実課金・
-  追加クレジット上限 κ への到達）と、方針として決めた需要の線
-  （`decision_v2.premium_justification_usd`）だけ
-- 分類軸: その需要の中身が Code か。昇格では経済軸を満たした候補を「自動で昇格を推奨する」
-  ものと「アサインそのものを人が見直す（REVIEW_ASSIGNMENT）」ものへ振り分けるゲートに
-  なり、降格では Code 実務者の席を自動では落とさないための歯止めになる
+判断は経済軸で行う。シートを変える金銭的な根拠として、観測できる事実（現シートの
+実課金・追加クレジット上限 κ への到達）と、方針として決めた全 product 需要の線
+（`decision_v2.premium_justification_usd`）だけを使う。需要の中身は条件にしない。
 
 月次需要だけから変更先の課金は推定しないため、この判定では allowance を使わない。
 V1 は従来どおり allowance を使う。需要の方針線は課金額の推定値ではない。
 
-昇格と降格を毎月往復しないための歯止めは、Code ゲートとヒステリシスが担う。昇格は対象月の
-Code 需要が `upgrade.min_code_demand_usd` 以上であることを要し、降格は評価窓の全完全月で
-Code 需要が `downgrade.max_code_demand_usd` 未満であることを要するので、往復するには
-実際の利用の変化が必要になる。加えて recent 窓（`recent_seat_change_days`）と降格の評価窓
-（`downgrade.min_complete_months` 完全月）が、1ヶ月の振れで席が動くことを防ぐ。
+昇格と降格を毎月往復しないための歯止めは、ヒステリシスが担う。降格は評価窓
+（`downgrade.min_complete_months` 完全月）の全月で条件の成立を要求し、κ 無効の昇格は
+方針線以上が2完全月続くこと（または月内の消費の継続上昇）を要求する。recent 窓
+（`recent_seat_change_days`）はシート変更直後の判定を観察へ倒す。昇格・降格はいずれも
+戻せる操作なので、Code 需要によるゲートは置かない。
 
 設定は読み込まない。検証済みの config と、呼び出し側が組み立てた観測（SubjectHistory）
 だけを受けて結論を返す（product_usage が policy を引数で受けるのと同じ流儀）。ファイルを
@@ -28,7 +22,6 @@ Code 需要が `downgrade.max_code_demand_usd` 未満であることを要する
 重ねる追加クレジット（usage credits）の提案。降格側はクレジットの提案を持たない
 （credit_action は常に CreditAction.NONE）。判定できる現シート以外をどう扱うか
 （unknown を判定しない等）は呼び出し側の責務なので、ここでは ValueError にする。
-分析パイプライン・出力へは未結線。
 
 StrEnum は文字列として等値になり、語彙をまたいだ == が成立する（設計書 §12.1）。型では
 混同を防げないので、境界の値オブジェクト DecisionV2 が受け取る語彙を isinstance で
@@ -41,7 +34,7 @@ import calendar
 import datetime as dt
 import math
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import NamedTuple
@@ -73,7 +66,6 @@ _POLICY_STABILITY_OFFSET_USD = 100.0
 _ACTIONABLE_SEAT_ACTIONS = (
     SeatAction.UPGRADE_TO_PREMIUM,
     SeatAction.DOWNGRADE_TO_STANDARD,
-    SeatAction.REVIEW_ASSIGNMENT,
 )
 _ACTIONABLE_CREDIT_ACTIONS = (CreditAction.ENABLE_WITH_CAP, CreditAction.REVIEW)
 
@@ -89,10 +81,7 @@ _REASON_ORDER = (
     ReasonCode.INSUFFICIENT_HISTORY,
     ReasonCode.RECENT_MEMBER,
     ReasonCode.RECENT_SEAT_CHANGE,
-    ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND,
-    ReasonCode.SUSTAINED_LOW_CODE_DEMAND,
     ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,
-    ReasonCode.REVIEW_NON_CODE_USAGE,
     ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,
     ReasonCode.CREDIT_SETTING_UNKNOWN,
     # 補助: 主理由を補強する観測
@@ -103,7 +92,6 @@ _REASON_ORDER = (
     ReasonCode.CREDIT_CONSUMPTION_RISING,
     # 情報: 結論は変えないが、人が判断するときに要る文脈
     ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
-    ReasonCode.HIGH_SUPPLEMENTARY_USAGE,
     ReasonCode.DATA_CONFIDENCE_LOW,
 )
 
@@ -158,18 +146,12 @@ class MonthObservation:
 
     complete は全月ぶんのデータかどうか（部分月なら False）。total_demand_usd は全
     product の API 換算需要、billed_usd は実課金。
-
-    code_demand_usd と supplementary_high の None は「証明できない」を表す。0・False で
-    埋めない（product 名が分からない行があると Code 需要は確定しない。product_usage が
-    欠損で返すのと同じ扱い）。
     """
 
     month: str
     complete: bool
     total_demand_usd: float
-    code_demand_usd: float | None
     billed_usd: float
-    supplementary_high: bool | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.month, str) or not _MONTH_RE.match(self.month):
@@ -177,16 +159,6 @@ class MonthObservation:
         object.__setattr__(self, "complete", _flag(self.complete, "complete"))
         for name in ("total_demand_usd", "billed_usd"):
             object.__setattr__(self, name, _amount(getattr(self, name), name))
-        object.__setattr__(
-            self,
-            "code_demand_usd",
-            _amount(self.code_demand_usd, "code_demand_usd", allow_none=True),
-        )
-        object.__setattr__(
-            self,
-            "supplementary_high",
-            _flag(self.supplementary_high, "supplementary_high", allow_none=True),
-        )
 
     @property
     def end(self) -> dt.date:
@@ -352,8 +324,7 @@ class DecisionV2:
 class _Settings(NamedTuple):
     """判定が使う設定値だけを取り出したもの。
 
-    必要履歴と Code 需要の閾値は昇格・降格で別の値なので、どちらの向きの設定か
-    名前で分かるようにする（min/max は比較の向きも表す）。
+    必要履歴は昇格・降格で別の値なので、どちらの向きの設定か名前で分かるようにする。
 
     シート料はシート差額（Premium − Standard）を出すために持つ。込み枠の推定
     （`seats.*.allowance_usd`）は使わないので取り出さない。
@@ -363,9 +334,7 @@ class _Settings(NamedTuple):
     premium_price_usd: float
     premium_justification_usd: float
     upgrade_min_complete_months: int
-    min_code_demand_usd: float
     downgrade_min_complete_months: int
-    max_code_demand_usd: float
     billing_margin_usd: float
     recent_seat_change_days: int
     cap_tolerance_usd: float
@@ -386,9 +355,7 @@ def _settings(cfg: Mapping) -> _Settings:
         premium_price_usd=float(seats["premium"]["price_usd"]),
         premium_justification_usd=float(decision["premium_justification_usd"]),
         upgrade_min_complete_months=int(upgrade["min_complete_months"]),
-        min_code_demand_usd=float(upgrade["min_code_demand_usd"]),
         downgrade_min_complete_months=int(downgrade["min_complete_months"]),
-        max_code_demand_usd=float(downgrade["max_code_demand_usd"]),
         billing_margin_usd=float(decision["observed_billing_margin_usd"]),
         recent_seat_change_days=int(decision["recent_seat_change_days"]),
         cap_tolerance_usd=float(cfg["usage_credits"]["cap_tolerance_usd"]),
@@ -403,7 +370,7 @@ def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
     1. identity conflict・部分月・履歴不足は判定しない（hard blocker）
     2. 直近のシート変更・加入・分類できない観測に重なるユーザは観察へ倒す
     3. 追加クレジット上限 κ の3状態で、候補化に使う信号と結論の出し方が変わる（§12.6）
-    4. 候補になったら分類軸へ。Code 主体なら昇格推奨、そうでなければアサインの見直し
+    4. 費用の軸が成立した候補は昇格推奨にする
 
     候補化に使う信号は3つある。「Standard の実課金がシート差額をマージ以上上回った」
     （観測）、「追加クレジット上限 κ へ到達した」（観測）、「全 product 需要が方針線
@@ -412,7 +379,7 @@ def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
     - 有効（正の有限値・無制限）: 実課金という観測がある。実課金または κ 到達で候補にし、
       方針線は使わない
     - 無効（0）: 実課金が構造的に $0 で観測が候補化の材料にならないため、方針線で候補に
-      する。継続性（2完全月連続、または対象月内の消費の継続上昇）があれば分類軸へ進み、
+      する。継続性（2完全月連続、または対象月内の消費の継続上昇）があれば昇格を推奨し、
       一時的な成立では席を変えず、上限つきクレジットの付与で1ヶ月の課金を実測する
     - 不明（None）: 席を動かす判断は実課金だけで行う（有効か無効かが分からないので、
       実課金 $0 が「枠内に収まっている」のか「そもそも課金されない設定」なのか決められ
@@ -424,8 +391,8 @@ def decide_upgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
     実課金だけで、前月の課金は設定変更より前のものでありうるため参照しない。
 
     status は「人が取るべきアクションがあるか」で決まる。seat_action が
-    UPGRADE_TO_PREMIUM・REVIEW_ASSIGNMENT のとき、または credit_action が
-    ENABLE_WITH_CAP・REVIEW のときは RECOMMENDED になる。シート側が観察でも、
+    UPGRADE_TO_PREMIUM のとき、または credit_action が
+    ENABLE_WITH_CAP・REVIEW のときは RECOMMENDED になる。シート側が現状維持でも、
     クレジット側に作業（付与・設定の確認）があれば作業として出すため。
 
     current seat が Standard 以外のときは ValueError。unknown・unassigned・premium の
@@ -466,15 +433,21 @@ def _upgrade(subject: SubjectHistory, settings: _Settings) -> DecisionV2:
         # κ 不明: 席を動かす判断は実課金だけで行う。クレジット側は上限も有効・無効も
         # 分からず金額を断定できないので、付与ではなく設定の確認へ回す
         if billing:
-            status, action, reasons = _classification_axis(
-                target,
-                settings,
-                _observed_evidence(
-                    subject, settings, billing=billing, reached=reached, rising=rising
-                ),
+            reasons = _observed_evidence(
+                subject, settings, billing=billing, reached=reached, rising=rising
             )
-            reasons.append(ReasonCode.CREDIT_SETTING_UNKNOWN)
-            return _decision(status, action, reasons, CreditAction.REVIEW)
+            reasons.extend(
+                [
+                    ReasonCode.CREDIT_SETTING_UNKNOWN,
+                    ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
+                ]
+            )
+            return _decision(
+                DecisionStatus.RECOMMENDED,
+                SeatAction.UPGRADE_TO_PREMIUM,
+                reasons,
+                CreditAction.REVIEW,
+            )
         if above:
             # 需要は Premium を正当化する水準だが、κ が分からないと実課金 $0 の意味が
             # 決まらない。席は動かさず、設定の確認だけを作業として出す
@@ -504,32 +477,30 @@ def _upgrade(subject: SubjectHistory, settings: _Settings) -> DecisionV2:
         if rising:
             evidence.append(ReasonCode.CREDIT_CONSUMPTION_RISING)
         if sustained or rising:
-            status, action, reasons = _classification_axis(target, settings, evidence)
-            return _decision(status, action, reasons)
-        # 一時的な成立では席を変えず、上限つきクレジットで1ヶ月の課金を実測する。分類軸
-        # （Code ゲート）はかけない — 込み枠は product 共通で、上限つきの付与は可逆な
-        # 計測手段なので、昇格と同じ強さで Code 主体であることを要求しない
-        reasons = [*evidence]
-        if target.supplementary_high:
-            reasons.append(ReasonCode.HIGH_SUPPLEMENTARY_USAGE)
+            return _decision(
+                DecisionStatus.RECOMMENDED,
+                SeatAction.UPGRADE_TO_PREMIUM,
+                [*evidence, ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE],
+            )
+        # 一時的な成立では席を変えず、上限つきクレジットで1ヶ月の課金を実測する。
         return _decision(
             DecisionStatus.RECOMMENDED,
             SeatAction.KEEP,
-            reasons,
+            evidence,
             CreditAction.ENABLE_WITH_CAP,
         )
 
     # κ 有効: 実課金の観測がある。方針線は使わない（観測が語れる組織で方針で上書きしない）
     if not (billing or reached):
         return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
-    status, action, reasons = _classification_axis(
-        target,
-        settings,
-        _observed_evidence(
-            subject, settings, billing=billing, reached=reached, rising=rising
-        ),
+    evidence = _observed_evidence(
+        subject, settings, billing=billing, reached=reached, rising=rising
     )
-    return _decision(status, action, reasons)
+    return _decision(
+        DecisionStatus.RECOMMENDED,
+        SeatAction.UPGRADE_TO_PREMIUM,
+        [*evidence, ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE],
+    )
 
 
 def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
@@ -540,9 +511,7 @@ def decide_downgrade(subject: SubjectHistory, cfg: Mapping) -> DecisionV2:
     1. identity conflict・部分月・履歴不足は判定しない（hard blocker）
     2. 直近のシート変更・加入・分類できない観測に重なるユーザは観察へ倒す
     3. 評価窓に実課金のある月があれば現状維持（Premium の込み枠を超えた観測がある）
-    4. Code 需要が確定しない月があれば観察、Code 需要が高い月があれば現状維持
-    5. Code 需要が低く supplementary が高いならアサインの見直し
-    6. 評価窓の全月で全 product 需要が方針線を下回れば降格推奨、そうでなければ現状維持
+    4. 評価窓の全月で全 product 需要が方針線を下回れば降格推奨、そうでなければ現状維持
 
     誤った降格は業務を止めるため、判断は対象月だけでなく評価窓（直近の完全月
     `downgrade.min_complete_months` ヶ月）の全月で成立することを要求する。
@@ -565,7 +534,6 @@ def _downgrade(subject: SubjectHistory, settings: _Settings) -> DecisionV2:
     if blocked is not None:
         return blocked
 
-    target = subject.target
     # 評価窓は直近の完全月だけを新しい順に採る（間に部分月が挟まっても飛ばす）。必要な
     # 長さは `_pre_checks` の履歴不足の検査で保証されている
     complete = [month for month in subject.months if month.complete]
@@ -577,25 +545,6 @@ def _downgrade(subject: SubjectHistory, settings: _Settings) -> DecisionV2:
     if any(month.billed_usd > 0.0 for month in window):
         return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
 
-    if any(month.code_demand_usd is None for month in window):
-        # Code 需要が低いことを証明できないまま自動で降格しない（昇格側の None と同じ思想）
-        return _decision(
-            DecisionStatus.OBSERVE, SeatAction.NONE, [ReasonCode.DATA_CONFIDENCE_LOW]
-        )
-    if any(month.code_demand_usd >= settings.max_code_demand_usd for month in window):
-        # Code 実務者の席は自動で落とさない
-        return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
-
-    if target.supplementary_high:
-        # Code が低く supplementary が高いユーザは総需要が大きく、方針線を上回って
-        # 経済軸が成立しないことが多い。経済軸より先に見るのは、その場合に現状維持で
-        # 終わらせず「シートではなくアサインを人が見直す」To-Do として出すため（§12.5）
-        return _decision(
-            DecisionStatus.RECOMMENDED,
-            SeatAction.REVIEW_ASSIGNMENT,
-            [ReasonCode.REVIEW_NON_CODE_USAGE, ReasonCode.HIGH_SUPPLEMENTARY_USAGE],
-        )
-
     if any(_above_policy_line(month, settings) for month in window):
         return _decision(DecisionStatus.KEEP, SeatAction.KEEP, [])
 
@@ -603,7 +552,6 @@ def _downgrade(subject: SubjectHistory, settings: _Settings) -> DecisionV2:
         DecisionStatus.RECOMMENDED,
         SeatAction.DOWNGRADE_TO_STANDARD,
         [
-            ReasonCode.SUSTAINED_LOW_CODE_DEMAND,
             ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,
             # 5時間枠・週次上限は観測できない。この理由だけで保留にはせず情報として付ける（§12.3）
             ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE,
@@ -738,38 +686,6 @@ def _status(
     ):
         return DecisionStatus.RECOMMENDED
     return status
-
-
-def _classification_axis(
-    target: MonthObservation, settings: _Settings, evidence: Sequence[ReasonCode]
-) -> tuple[DecisionStatus, SeatAction, list[ReasonCode]]:
-    """分類軸（§12.4 条件3）: 候補になった需要の中身が Code かで振り分ける。
-
-    Code 需要が確定しなければ観察、閾値未満ならアサインの見直し、閾値以上なら昇格推奨。
-    どの結論でも候補化の根拠（evidence）は残す。
-    """
-    if target.code_demand_usd is None:
-        # Code 主体であることを証明できないまま自動で昇格を推奨しない
-        return (
-            DecisionStatus.OBSERVE,
-            SeatAction.NONE,
-            [*evidence, ReasonCode.DATA_CONFIDENCE_LOW],
-        )
-
-    if target.code_demand_usd < settings.min_code_demand_usd:
-        # 費用は見合うが中身が Code ではない。シートの前にアサインを人が見直す
-        reasons = [ReasonCode.REVIEW_NON_CODE_USAGE, *evidence]
-        if target.supplementary_high:
-            reasons.append(ReasonCode.HIGH_SUPPLEMENTARY_USAGE)
-        return DecisionStatus.RECOMMENDED, SeatAction.REVIEW_ASSIGNMENT, reasons
-
-    # 判定が直近1完全月の需要に基づくことを、基本理由として常に明示する
-    reasons = [ReasonCode.ONE_MONTH_STRONG_CODE_DEMAND, *evidence]
-    # 5時間枠・週次上限は観測できない。この理由だけで保留にはせず情報として付ける（§12.3）
-    reasons.append(ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE)
-    if target.supplementary_high:
-        reasons.append(ReasonCode.HIGH_SUPPLEMENTARY_USAGE)
-    return DecisionStatus.RECOMMENDED, SeatAction.UPGRADE_TO_PREMIUM, reasons
 
 
 def _ordered(reasons: Iterable[ReasonCode]) -> tuple[ReasonCode, ...]:

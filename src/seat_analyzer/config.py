@@ -479,19 +479,6 @@ def _validate_decision_v2(cfg: dict, errors: list[str]) -> None:
             errors.append(
                 f"decision_v2.{direction}.min_complete_months は 1 以上の整数が必要です"
             )
-    # Code 需要の閾値は昇格・降格で向きが逆（以上で昇格・未満で降格）だが、値の
-    # 契約は同じなので同じ粒度で検査する（片方だけ緩いと、その向きの判定が壊れた
-    # 設定のまま動く）
-    for direction, key in (
-        ("upgrade", "min_code_demand_usd"),
-        ("downgrade", "max_code_demand_usd"),
-    ):
-        section = decision.get(direction)
-        threshold = section.get(key) if isinstance(section, dict) else None
-        if not _is_finite(threshold) or threshold < 0:
-            errors.append(
-                f"decision_v2.{direction}.{key} は 0 以上の有限な数値が必要です"
-            )
     days = decision.get("recent_seat_change_days")
     if not _is_integer(days) or days < 1:
         errors.append("decision_v2.recent_seat_change_days は 1 以上の整数が必要です")
