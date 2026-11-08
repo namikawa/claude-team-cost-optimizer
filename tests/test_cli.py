@@ -290,7 +290,7 @@ _V1_ARTIFACTS = (REPORT, DETAILS, DASHBOARD, RECOMMENDATIONS, USAGE_SUMMARY)
 def _v2_config(tmp_path: Path) -> str:
     """V2 判定を既定で併記する上書き設定（他のキーは既定のまま）。"""
     path = tmp_path / "config.yaml"
-    path.write_text("decision_v2:\n  enabled: true\n", encoding="utf-8", newline="\n")
+    path.write_text("decision:\n  version: v2\n", encoding="utf-8", newline="\n")
     return str(path)
 
 
@@ -343,7 +343,7 @@ def test_v2_does_not_change_the_v1_artifacts(make_input, tmp_path):
 def test_config_can_enable_the_evidence_and_the_flag_can_turn_it_off(
     make_input, tmp_path
 ):
-    """設定の decision_v2.enabled で併記でき、--decision-version v1 で戻せる。"""
+    """設定の decision.version で併記でき、--decision-version v1 で戻せる。"""
     input_dir = _make_two_orgs(make_input)
     config = _v2_config(tmp_path)
     enabled_out, back_out = tmp_path / "on", tmp_path / "off"
@@ -353,6 +353,8 @@ def test_config_can_enable_the_evidence_and_the_flag_can_turn_it_off(
     assert _run_with(input_dir, back_out, config, "--org", "org-a",
                      "--decision-version", "v1") == 0
     assert not out_file(back_out, DECISION_EVIDENCE).exists()
+    for artifact in _V1_ARTIFACTS:
+        assert out_file(enabled_out, artifact).read_bytes() == out_file(back_out, artifact).read_bytes()
 
 
 def test_v1_run_warns_about_a_leftover_evidence_file(make_input, tmp_path, capsys):

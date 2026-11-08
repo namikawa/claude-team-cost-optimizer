@@ -246,10 +246,12 @@ V2 判定の結論と、その結論を出すのに使った材料。V1 の判�
 recommendations）とは別系統の出力で、V1 の内容には影響しない。
 
 出力するのは正式分析で判定の版が v2 のときだけ。版は「CLI の `--decision-version` の明示指定 >
-`config.yaml > decision_v2.enabled` > v1」で決まる。`enabled: true` は「V1 の成果物に V2 判定の
+`config.yaml > decision.version` > v1」で決まる。`decision.version: v2` は「V1 の成果物に V2 判定の
 根拠を併記する」ワークスペースの opt-in で、主判定が V2 に変わるわけではない（`--decision-version v1`
 を渡せばその実行では併記しない）。速報モード（`--preview`）は V2 判定を行わないため出力されず、
 `--decision-version` との併用もできない。
+`decision_v2.enabled` は廃止した（書いてあると読み込み時にエラーになる。`true` は
+`decision.version: v2`、`false` は `decision.version: v1` に書き換える）。
 
 行は members ∪ 対象月のスペンドのユーザ（メールアドレス昇順）で、recommendations と同じ対象。
 
@@ -870,7 +872,7 @@ cost_if_premium  = $125 + max(0, api_cost − P_allowance)
 - Premium は Standard の 5 倍程度（セッション倍率 1.25x vs 6.25x）を目安に設定
 
 この較正が効くのは V1 の判定（変更先シートの月額の試算と、それを基準にする上限フラグ・
-追加クレジット付与候補）だけ。V2 の判定（`--decision-version v2` / `decision_v2.enabled`）は
+追加クレジット付与候補）だけ。V2 の判定（`--decision-version v2` / `decision.version: v2`）は
 allowance を使わず、方針線 `decision_v2.premium_justification_usd` を使う
 （[decision-evidence の列（V2 判定）](#decision-evidence-の列v2-判定)）。
 

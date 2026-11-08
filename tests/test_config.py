@@ -1792,3 +1792,21 @@ def test_claude_export_chrome_path_must_be_absolute(tmp_path, value):
 def test_claude_export_chrome_path_accepts_a_home_relative_path(tmp_path):
     path = _override(tmp_path, "claude_export:\n  chrome_path: ~/bin/chrome\n")
     assert load_config(path)["claude_export"]["chrome_path"] == "~/bin/chrome"
+
+
+@pytest.mark.parametrize("enabled", ["true", "false"])
+def test_removed_decision_v2_enabled_guides_migration(tmp_path, enabled):
+    path = tmp_path / "config.yaml"
+    _write(path, f"decision_v2:\n  enabled: {enabled}\n")
+    with pytest.raises(ValueError, match="decision.version") as exc:
+        load_config(path)
+    assert "enabled: true は version: v2" in str(exc.value)
+    assert "enabled: false は version: v1" in str(exc.value)
+
+
+@pytest.mark.parametrize("value", ["v3", "3", "true", "false"])
+def test_invalid_decision_version_is_rejected_on_load(tmp_path, value):
+    path = tmp_path / "config.yaml"
+    _write(path, f"decision:\n  version: {value}\n")
+    with pytest.raises(ValueError, match="decision.version"):
+        load_config(path)

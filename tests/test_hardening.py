@@ -213,7 +213,7 @@ def test_config_validation_catches_edit_mistakes(cfg):
 
 
 def test_decision_v2_defaults_exist(tmp_path):
-    """パッケージ既定だけで decision_v2 が揃い、既定では無効であること（設計書 §21）。
+    """パッケージ既定だけで decision_v2 が揃い、判定の版が v1 であること（設計書 §21）。
 
     V1 の decision 節とは独立で、この節の追加が既定のヒステリシスを変えないことも
     あわせて固定する。
@@ -222,7 +222,6 @@ def test_decision_v2_defaults_exist(tmp_path):
     path.write_text("", encoding="utf-8", newline="\n")
     loaded = load_config(path)
     assert loaded["decision_v2"] == {
-        "enabled": False,
         "premium_justification_usd": 450.0,
         "upgrade": {"min_complete_months": 1},
         "downgrade": {"min_complete_months": 2},
@@ -230,16 +229,17 @@ def test_decision_v2_defaults_exist(tmp_path):
         "observed_billing_margin_usd": 20.0,
     }
     assert loaded["decision"]["hysteresis_months"] == 2
+    assert loaded["decision"]["version"] == "v1"
 
 
 def test_decision_v2_validation_catches_edit_mistakes(cfg):
-    """decision_v2 の編集ミスは enabled が偽のままでも実行前に検出される。
+    """decision_v2 の編集ミスは版が v1 のままでも実行前に検出される。
 
-    enabled は既定の False のままにする（有効なときだけ値を検査する実装への退行を、
+    判定の版は既定の v1 のままにする（有効なときだけ値を検査する実装への退行を、
     このテスト自身が見逃さないようにするため）。
     """
     broken = copy.deepcopy(cfg)
-    assert broken["decision_v2"]["enabled"] is False
+    assert broken["decision"]["version"] == "v1"
     broken["decision_v2"]["upgrade"]["min_complete_months"] = 0
     broken["decision_v2"]["downgrade"]["min_complete_months"] = 1.5
     broken["decision_v2"]["recent_seat_change_days"] = True
@@ -258,12 +258,12 @@ def test_decision_v2_validation_catches_edit_mistakes(cfg):
         assert fragment in msg
 
 
-@pytest.mark.parametrize("value", ["yes", 1, 0, None, "false"])
-def test_decision_v2_enabled_must_be_boolean(cfg, value):
-    """enabled は真偽値に限る（yes や 1 を有効として黙って受理しない）。"""
+@pytest.mark.parametrize("value", ["v3", 1, 0, True, False, None])
+def test_decision_version_must_be_v1_or_v2(cfg, value):
+    """判定の版は v1 / v2 に限る。"""
     broken = copy.deepcopy(cfg)
-    broken["decision_v2"]["enabled"] = value
-    with pytest.raises(ValueError, match="decision_v2.enabled"):
+    broken["decision"]["version"] = value
+    with pytest.raises(ValueError, match="decision.version"):
         _validate(broken)
 
 

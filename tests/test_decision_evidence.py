@@ -7,11 +7,13 @@
 入力は conftest のヘルパで組み立てた合成データだけを使う。
 """
 
+import copy
 import csv
 import math
 from dataclasses import replace
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from seat_analyzer import decision_evidence, seat_changes
@@ -1134,3 +1136,286 @@ def test_product_classification_does_not_change_decision_or_policy_stability(
         assert row.policy_stability == stability
         rows.append(row)
     assert all(row == rows[0] for row in rows)
+
+
+# ------------------------------------------------------------------ 主成果物への反映
+
+
+@pytest.mark.parametrize(
+    "seat,status,action,credit,reasons,stability,billed,label,recommended,saving",
+    [
+        ("unassigned", DecisionStatus.EXCLUDED, SeatAction.NONE, CreditAction.NONE,
+         (), None, 0, "対象外（シート未割当）", "unassigned", None),
+        ("premium", DecisionStatus.EXCLUDED, SeatAction.NONE, CreditAction.NONE,
+         (), None, 0, "対象外（固定シート）", "premium", None),
+        ("unknown", DecisionStatus.NO_DECISION, SeatAction.NONE, CreditAction.NONE,
+         (ReasonCode.CURRENT_SEAT_UNKNOWN,), None, 0, "シート不明", "unknown", None),
+        ("standard", DecisionStatus.NO_DECISION, SeatAction.NONE, CreditAction.NONE,
+         (ReasonCode.IDENTITY_CONFLICT,), 1, 0, "要観察", "standard", None),
+        ("premium", DecisionStatus.NO_DECISION, SeatAction.NONE, CreditAction.NONE,
+         (ReasonCode.PARTIAL_MONTH,), None, 0, "要観察（データ蓄積待ち）", "premium", None),
+        ("premium", DecisionStatus.NO_DECISION, SeatAction.NONE, CreditAction.NONE,
+         (ReasonCode.INSUFFICIENT_HISTORY,), None, 0, "要観察（データ蓄積待ち）", "premium", None),
+        ("standard", DecisionStatus.OBSERVE, SeatAction.KEEP, CreditAction.NONE,
+         (ReasonCode.RECENT_MEMBER,), 2, 0, "要観察", "standard", None),
+        ("standard", DecisionStatus.RECOMMENDED, SeatAction.UPGRADE_TO_PREMIUM, CreditAction.NONE,
+         (ReasonCode.CREDIT_LIMIT_REACHED,), 3, 125.123, "変更推奨", "premium", 25.12),
+        ("standard", DecisionStatus.RECOMMENDED, SeatAction.UPGRADE_TO_PREMIUM, CreditAction.REVIEW,
+         (ReasonCode.CREDIT_SETTING_UNKNOWN,), 2, 150, "変更推奨", "premium", 50),
+        ("standard", DecisionStatus.RECOMMENDED, SeatAction.UPGRADE_TO_PREMIUM, CreditAction.NONE,
+         (), 1, 0, "変更推奨", "premium", -100),
+        ("premium", DecisionStatus.RECOMMENDED, SeatAction.DOWNGRADE_TO_STANDARD, CreditAction.NONE,
+         (ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND,), 3, 0, "変更推奨", "standard", 100),
+        ("standard", DecisionStatus.KEEP, SeatAction.KEEP, CreditAction.KEEP,
+         (), 3, 0, "現状維持", "standard", 0),
+        ("standard", DecisionStatus.RECOMMENDED, SeatAction.KEEP, CreditAction.ENABLE_WITH_CAP,
+         (ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE,), 3, 0, "現状維持", "standard", 0),
+        ("standard", DecisionStatus.RECOMMENDED, SeatAction.KEEP, CreditAction.REVIEW,
+         (ReasonCode.CREDIT_SETTING_UNKNOWN,), None, 0, "現状維持", "standard", 0),
+    ],
+)
+def test_apply_maps_seat_conclusions(
+    make_input, cfg, seat, status, action, credit, reasons, stability, billed,
+    label, recommended, saving,
+):
+    root = make_input({"2026-06": [spend_row("user@example.com", 600, net=0)]},
+                      members=[f"user@example.com,{seat}"] if seat != "unknown" else [])
+    _write_info(root, ["user@example.com,,,,0,"])
+    org = analyze_org(root, "2026-06", cfg, "org-x", decision_context=True,
+                      decision_version="v2")
+    row, = decision_evidence.evaluate_org(org, _NO_CHANGES, cfg)
+    row = replace(row, decision=DecisionV2(status, action, credit, reasons),
+                  policy_stability=stability, billed_extra_usd=billed,
+                  suggested_credit_cap_usd=175)
+    result = decision_evidence.apply(org, [row], cfg).workspaces[org.primary]
+    user = result.users.iloc[0]
+    assert user.status == label
+    assert user.recommended_seat == recommended
+    assert pd.isna(user.monthly_saving_usd) if saving is None else user.monthly_saving_usd == saving
+    assert user.confidence == {3: "高", 2: "中", 1: "低", None: "—"}[stability]
+    assert user.reason == "; ".join(decision_evidence.REASON_LABELS[code] for code in reasons)
+    assert result.summary["n_change_recommended"] == (label == "変更推奨")
+    assert result.summary["n_watching"] == label.startswith("要観察")
+    assert result.summary["est_monthly_saving_usd"] == (saving if label == "変更推奨" else 0)
+    assert "n_cap_suspected" not in result.summary
+    assert result.grant_candidates == ([{
+        "email": row.email, "demand_usd": row.total_demand_usd, "suggested_cap_usd": 175,
+    }] if credit == CreditAction.ENABLE_WITH_CAP else [])
+    assert result.credit_reviews == ([{
+        "email": row.email, "demand_usd": row.total_demand_usd, "billed_usd": billed,
+    }] if credit == CreditAction.REVIEW else [])
+
+
+def test_apply_real_decisions_and_input_are_stable(make_input, cfg):
+    emails = [f"{name}@example.com" for name in ("upgrade", "idle", "grant", "review", "negative")]
+    seats = ["Standard", "Premium", "Standard", "Standard", "Standard"]
+    root = make_input({
+        "2026-05": [_with_uuid(email, 10, f"id-{index}", net=0)
+                    for index, email in enumerate(emails)],
+        "2026-06": [_with_uuid(email, cost, f"id-{index}", net=net)
+                    for index, (email, cost, net) in enumerate(zip(
+                        emails, (700, 0, 700, 700, 700), (150, 0, 0, 0, 0), strict=True))],
+    }, members=[f"{email},{seat}" for email, seat in zip(emails, seats, strict=True)])
+    _write_info(root, [f"{email},,,,{cap}," for email, cap in zip(
+        emails, (0, 0, 0, "", 0), strict=True)])
+    org = analyze_org(root, "2026-06", cfg, "org-x", decision_context=True,
+                      decision_version="v2")
+    rows = list(decision_evidence.evaluate_org(org, _NO_CHANGES, cfg))
+    # 実エンジンの κ=0・課金ありは設定不明へ補正され、REVIEW と昇格が重なる。
+    upgrade = next(row for row in rows if row.email == emails[0])
+    assert upgrade.decision.credit_action == CreditAction.REVIEW
+    assert upgrade.decision.seat_action == SeatAction.UPGRADE_TO_PREMIUM
+    negative = next(row for row in rows if row.email == emails[-1])
+    rows[rows.index(negative)] = replace(negative, decision=DecisionV2(
+        DecisionStatus.RECOMMENDED, SeatAction.UPGRADE_TO_PREMIUM, CreditAction.NONE, (),
+    ))
+    before = copy.deepcopy(org)
+    persons = org.persons
+    first = decision_evidence.apply(org, rows, cfg)
+    second = decision_evidence.apply(org, rows, cfg)
+    source, result = org.workspaces[org.primary], first.workspaces[org.primary]
+    pd.testing.assert_frame_equal(source.users, before.workspaces[org.primary].users)
+    assert source.summary == before.workspaces[org.primary].summary
+    assert source.grant_candidates == before.workspaces[org.primary].grant_candidates
+    assert source.credit_reviews == []
+    # 人の層には NaN（追加クレジット上限が未記入）が入る。Python 3.13 以降の dataclass の等値比較は
+    # 項目ごとで NaN が自身と等しくならないため、置き換えられていないことを同一性で、中身を表で確かめる
+    # （Person・Account は frozen で、その場では書き換わらない）
+    assert org.persons is persons
+    pd.testing.assert_frame_equal(org.persons.frame, before.persons.frame)
+    pd.testing.assert_frame_equal(result.users, second.workspaces[org.primary].users)
+    assert result.summary == second.workspaces[org.primary].summary
+    assert result.grant_candidates == second.workspaces[org.primary].grant_candidates
+    assert result.credit_reviews == second.workspaces[org.primary].credit_reviews
+    pd.testing.assert_frame_equal(first.persons.frame, second.persons.frame)
+    assert result.warnings is source.warnings
+    for attribute in ("trend", "snapshot", "e_distribution", "monthly", "complete", "sources"):
+        assert getattr(result, attribute) is getattr(source, attribute)
+    users = result.users.set_index("email")
+    assert users.loc[emails[0], "monthly_saving_usd"] == 50
+    assert users.loc[emails[1], "monthly_saving_usd"] == 100
+    assert users.loc[emails[2], "status"] == "現状維持"
+    assert users.loc[emails[-1], "monthly_saving_usd"] == -100
+    assert result.summary["n_change_recommended"] == 3
+    assert result.summary["n_watching"] == 0
+    assert result.summary["est_monthly_saving_usd"] == 50
+    assert result.grant_candidates == [{
+        "email": emails[2], "demand_usd": next(r.total_demand_usd for r in rows if r.email == emails[2]),
+        "suggested_cap_usd": next(r.suggested_credit_cap_usd for r in rows if r.email == emails[2]),
+    }]
+    assert [review["email"] for review in result.credit_reviews] == sorted([emails[0], emails[3]])
+    assert not {"cost_if_standard_usd", "cost_if_premium_usd", "rec_low", "rec_high",
+                "cap_suspected"} & set(result.users.columns)
+    columns = list(result.users.columns)
+    assert columns[columns.index("confidence") + 1] == "reason"
+    assert {"cost_current_usd", "credit_limit_usd", "credits_mode"} <= set(columns)
+    pd.testing.assert_frame_equal(result.users, result.users.sort_values(
+        ["status", "monthly_saving_usd"], ascending=[True, False]).reset_index(drop=True))
+
+
+def test_apply_secondary_accounts_and_person_status(make_input, tmp_path):
+    email = "alice@example.com"
+    root = make_input({"2026-06": [spend_row(email, 700, net=150)]},
+                      members=[f"{email},Standard"], org="org-x", workspace="main")
+    for workspace in ("fixed", "second"):
+        make_input({"2026-06": [_with_uuid(email, 5, "id-alice", net=0),
+                              _with_uuid("unknown@example.com", 5, "id-unknown", net=0)]},
+                   members=[f"{email},Premium", "standard@example.com,Standard",
+                            "admin@example.com,Unassigned"], org="org-x", workspace=workspace)
+    cfg = _workspace_cfg(tmp_path, {
+        "main": {"primary": True}, "fixed": {"fixed_seat": "premium"}, "second": {},
+    })
+    org = analyze_org(root / "org-x", "2026-06", cfg, "org-x",
+                      decision_context=True, decision_version="v2")
+    rows = decision_evidence.evaluate_org(org, _NO_CHANGES, cfg)
+    assert [row.email for row in rows] == [email]
+    before = copy.deepcopy(org)
+    applied = decision_evidence.apply(org, rows, cfg)
+    assert applied.persons.frame.set_index("email").loc[email, "status"] == "変更推奨"
+    # NaN を含む Person どうしの == は Python 3.13 以降で常に偽になるので、組み直したことは表で比べる
+    assert not applied.persons.frame.equals(org.persons.frame)
+    for workspace, label in (("fixed", "対象外（固定シート）"), ("second", "対象外（副スペース）")):
+        result = applied.workspaces[workspace]
+        users = result.users.set_index("email")
+        assert users.loc[email, "status"] == label
+        assert users.loc["standard@example.com", "status"] == label
+        assert users.loc["unknown@example.com", "status"] == "シート不明"
+        assert users.loc["admin@example.com", "status"] == "対象外（シート未割当）"
+        assert users.monthly_saving_usd.isna().all()
+        assert users.confidence.eq("—").all()
+        assert users.reason.eq("").all()
+        assert users.current_seat.equals(users.recommended_seat)
+        assert result.grant_candidates == result.credit_reviews == []
+        pd.testing.assert_frame_equal(org.workspaces[workspace].users,
+                                      before.workspaces[workspace].users)
+        assert org.workspaces[workspace].summary == before.workspaces[workspace].summary
+    pd.testing.assert_frame_equal(org.persons.frame, before.persons.frame)
+
+
+def test_apply_rejects_v1_email_mismatch_and_unmapped_no_decision(make_input, cfg):
+    root = make_input({"2026-06": [spend_row("user@example.com", 10)]},
+                      members=["user@example.com,Standard"])
+    v1 = analyze_org(root, "2026-06", cfg, "org-x", decision_context=True)
+    rows = decision_evidence.evaluate_org(v1, _NO_CHANGES, cfg)
+    with pytest.raises(ValueError, match="decision_version"):
+        decision_evidence.apply(v1, rows, cfg)
+    v2 = analyze_org(root, "2026-06", cfg, "org-x", decision_context=True, decision_version="v2")
+    for wrong in ((), [replace(rows[0], email="other@example.com")]):
+        with pytest.raises(ValueError, match="email"):
+            decision_evidence.apply(v2, wrong, cfg)
+    for reasons in ((), (ReasonCode.RECENT_MEMBER,),
+                    (ReasonCode.PARTIAL_MONTH, ReasonCode.IDENTITY_CONFLICT)):
+        row = replace(rows[0], decision=DecisionV2(
+            DecisionStatus.NO_DECISION, SeatAction.NONE, CreditAction.NONE, reasons,
+        ))
+        with pytest.raises(ValueError, match="NO_DECISION"):
+            decision_evidence.apply(v2, [row], cfg)
+
+
+def test_reason_labels_cover_vocabulary_and_preserve_order(make_input, cfg):
+    assert set(decision_evidence.REASON_LABELS) == set(ReasonCode)
+    assert {code.name: label for code, label in decision_evidence.REASON_LABELS.items()} == {
+        "CURRENT_SEAT_UNKNOWN": "シートが不明（メンバー一覧に無い）",
+        "IDENTITY_CONFLICT": "アカウントの照合が食い違う",
+        "PARTIAL_MONTH": "対象月が部分月",
+        "INSUFFICIENT_HISTORY": "完全月が足りない",
+        "RECENT_MEMBER": "直近に加入",
+        "RECENT_SEAT_CHANGE": "直近にシート変更",
+        "SUSTAINED_LOW_TOTAL_DEMAND": "需要が続けて方針線未満",
+        "TOTAL_DEMAND_ABOVE_PREMIUM_LINE": "需要が方針線以上",
+        "CREDIT_SETTING_UNKNOWN": "追加クレジットの設定が不明",
+        "CREDIT_LIMIT_REACHED": "追加クレジットの上限に到達",
+        "SUSTAINED_OVERAGE": "シート差額を超える実課金が継続",
+        "SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE": "方針線以上の需要が継続",
+        "STANDARD_BILLING_ABOVE_SEAT_GAP": "実課金がシート差額を超過",
+        "CREDIT_CONSUMPTION_RISING": "月内の追加クレジット消費が上昇",
+        "CAPACITY_SIGNAL_UNAVAILABLE": "5時間・週の上限は観測できない",
+        "DATA_CONFIDENCE_LOW": "分類できないメンバー変動がある",
+    }
+    root = make_input({"2026-06": [spend_row("user@example.com", 10)]},
+                      members=["user@example.com,Standard"])
+    org = analyze_org(root, "2026-06", cfg, "org-x", decision_context=True, decision_version="v2")
+    row, = decision_evidence.evaluate_org(org, _NO_CHANGES, cfg)
+    reasons = tuple(reversed(tuple(ReasonCode)))
+    row = replace(row, decision=DecisionV2(
+        DecisionStatus.KEEP, SeatAction.KEEP, CreditAction.KEEP, reasons,
+    ))
+    applied = decision_evidence.apply(org, [row], cfg)
+    assert applied.workspaces[org.primary].users.iloc[0].reason.split("; ") == [
+        decision_evidence.REASON_LABELS[code] for code in reasons
+    ]
+
+
+@pytest.mark.parametrize("fixed_seat", ["standard", "premium"])
+def test_apply_primary_fixed_seat_uses_real_excluded_decision(make_input, tmp_path, fixed_seat):
+    root = make_input({"2026-06": [spend_row("user@example.com", 700, net=150)]},
+                      members=[f"user@example.com,{fixed_seat}"], org="org-x", workspace="main")
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True, "fixed_seat": fixed_seat}})
+    org = analyze_org(root / "org-x", "2026-06", cfg, "org-x", decision_context=True,
+                      decision_version="v2")
+    rows = decision_evidence.evaluate_org(org, _NO_CHANGES, cfg)
+    result = decision_evidence.apply(org, rows, cfg).workspaces["main"]
+    assert result.users.iloc[0].status == "対象外（固定シート）"
+    assert result.users.iloc[0].recommended_seat == fixed_seat
+    assert pd.isna(result.users.iloc[0].monthly_saving_usd)
+    assert result.grant_candidates == result.credit_reviews == []
+
+
+def test_apply_skipped_primary_accepts_only_empty_rows(make_input, tmp_path):
+    root = make_input({"2026-07": [spend_row("user@example.com", 700)]},
+                      members=["user@example.com,Standard"], org="org-x", workspace="main")
+    make_input({"2026-06": [spend_row("user@example.com", 10)]},
+               members=["user@example.com,Premium"], org="org-x", workspace="second")
+    cfg = _workspace_cfg(tmp_path, {"main": {"primary": True}, "second": {}})
+    org = analyze_org(root / "org-x", "2026-06", cfg, "org-x", decision_context=True,
+                      decision_version="v2")
+    assert org.primary not in org.workspaces
+    rows = decision_evidence.evaluate_org(org, _NO_CHANGES, cfg)
+    assert rows == ()
+    result = decision_evidence.apply(org, rows, cfg)
+    assert result.workspaces["second"].users.iloc[0].status == "対象外（副スペース）"
+    assert result.skipped == org.skipped
+    secondary_row, = decision_evidence.evaluate(org.workspaces["second"], _NO_CHANGES, cfg)
+    with pytest.raises(ValueError, match="email"):
+        decision_evidence.apply(org, [secondary_row], cfg)
+    org.workspaces["second"].summary["decision_version"] = "v1"
+    with pytest.raises(ValueError, match="decision_version"):
+        decision_evidence.apply(org, [], cfg)
+
+
+def test_apply_sorts_credit_lists_by_demand_then_email(make_input, cfg):
+    emails = [f"{name}@example.com" for name in ("z", "b", "a", "y", "d", "c")]
+    root = make_input({"2026-06": [
+        _with_uuid(email, 700, f"id-{index}", net=0) for index, email in enumerate(emails)
+    ]}, members=[f"{email},Standard" for email in emails])
+    org = analyze_org(root, "2026-06", cfg, "org-x", decision_context=True, decision_version="v2")
+    by_email = {row.email: row for row in decision_evidence.evaluate_org(org, _NO_CHANGES, cfg)}
+    rows = [replace(by_email[email], total_demand_usd=demand, suggested_credit_cap_usd=123,
+                    decision=DecisionV2(DecisionStatus.RECOMMENDED, SeatAction.KEEP, credit, ()))
+            for email, demand, credit in zip(
+                emails, (800, 700, 700, 900, 700, 700),
+                [CreditAction.ENABLE_WITH_CAP] * 3 + [CreditAction.REVIEW] * 3, strict=True)]
+    result = decision_evidence.apply(org, rows, cfg).workspaces[org.primary]
+    assert [row["email"] for row in result.grant_candidates] == [emails[0], emails[2], emails[1]]
+    assert [row["email"] for row in result.credit_reviews] == [emails[3], emails[5], emails[4]]
+    assert all(row["suggested_cap_usd"] == 123 for row in result.grant_candidates)

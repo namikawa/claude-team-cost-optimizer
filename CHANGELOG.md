@@ -8,6 +8,8 @@
 - V2 の `review_assignment` と理由コード `ONE_MONTH_STRONG_CODE_DEMAND`・`SUSTAINED_LOW_CODE_DEMAND`・`HIGH_SUPPLEMENTARY_USAGE`・`REVIEW_NON_CODE_USAGE` を廃止した
 - decision-evidence.csv の `code_demand_usd`・`supplementary_high` の 2 列を削除した
 - 設定 `decision_v2.upgrade.min_code_demand_usd`・`decision_v2.downgrade.max_code_demand_usd` を廃止し、書いてある場合は読み込み時にエラーとするようにした
+- 判定の版を設定 `decision.version`（`v1` / `v2`。既定は `v1`）で選ぶようにし、`decision_v2.enabled` を廃止した（書いてある設定は読み込み時にエラーになり、書き換え先を表示する）
+- `decision.version` が `v2` のとき、`doctor` の部分月・欠月の説明を V2 の判定の扱いに合わせた
 
 ## [1.4.6] - 2026-11-08
 

@@ -681,12 +681,12 @@ def test_credit_action_is_not_proposed_when_the_limit_is_enabled(cfg, subject):
     assert decide_upgrade(subject, cfg).credit_action is CreditAction.NONE
 
 
-def test_enabled_flag_is_not_consulted(cfg):
-    """有効・無効の分岐は結線側の責務で、この関数は呼ばれたら判定する。"""
-    enabled = copy.deepcopy(cfg)
-    enabled["decision_v2"]["enabled"] = True
+def test_decision_version_is_not_consulted(cfg):
+    """判定の版の選択は結線側の責務で、この関数は呼ばれたら判定する。"""
+    version_v2 = copy.deepcopy(cfg)
+    version_v2["decision"]["version"] = "v2"
     subject = _subject(_observed_path_month())
-    assert decide_upgrade(subject, enabled) == decide_upgrade(subject, cfg)
+    assert decide_upgrade(subject, version_v2) == decide_upgrade(subject, cfg)
 
 
 def test_member_added_event_type_matches_seat_changes(cfg):
@@ -992,12 +992,12 @@ def test_downgrade_never_proposes_a_credit_action(cfg, subject):
     assert decide_downgrade(subject, cfg).credit_action is CreditAction.NONE
 
 
-def test_downgrade_does_not_consult_the_enabled_flag(cfg):
-    """有効・無効の分岐は結線側の責務で、この関数は呼ばれたら判定する。"""
-    enabled = copy.deepcopy(cfg)
-    enabled["decision_v2"]["enabled"] = True
+def test_downgrade_does_not_consult_decision_version(cfg):
+    """判定の版の選択は結線側の責務で、この関数は呼ばれたら判定する。"""
+    version_v2 = copy.deepcopy(cfg)
+    version_v2["decision"]["version"] = "v2"
     subject = _premium_subject(*_downgrade_months())
-    assert decide_downgrade(subject, enabled) == decide_downgrade(subject, cfg)
+    assert decide_downgrade(subject, version_v2) == decide_downgrade(subject, cfg)
 
 
 def test_premium_member_added_event_type_matches_seat_changes(cfg):

@@ -137,7 +137,9 @@ def test_partial_month_warning_follows_judgment_window(cfg, make_input, hysteres
         }
 
 
-def test_single_date_partial_month_warning_is_unchanged(cfg, make_input):
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_single_date_partial_month_warning_is_unchanged(cfg, make_input, version):
+    cfg["decision"]["version"] = version
     root = make_input(
         {"2026-06": [spend_row("user@example.com", 10.0)]},
         members=["user@example.com,Premium"], org="org-x",
@@ -1315,3 +1317,33 @@ def test_workspace_config_issues_are_ordered_by_name(cfg):
 
     assert [i.scope["config_org"] for i in issues] == ["org-m", "org-z"]
     assert "存在する組織: なし" in issues[0].message
+
+
+@pytest.mark.parametrize("hysteresis", [2, 3])
+def test_v2_partial_month_notes_and_scope(cfg, make_input, hysteresis):
+    root = make_input({"2026-06": [spend_row("user@example.com", 10)]},
+                      members=["user@example.com,Premium"], org="org-x")
+    cfg["decision"]["hysteresis_months"] = hysteresis
+    directory = root / "org-x" / "spend"
+    (directory / "spend_2026-06.csv").unlink()
+    for month in ("04", "06"):
+        (directory / f"spend-2026-{month}-01-to-2026-{month}-15.csv").write_text(
+            SPEND_HEADER + "\n" + spend_row("user@example.com", 10) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+    v1 = inspect_input(root / "org-x", "2026-06", cfg, "org-x")
+    cfg["decision"]["version"] = "v2"
+    v2 = inspect_input(root / "org-x", "2026-06", cfg, "org-x")
+    assert [(i.code, i.scope, i.severity) for i in v1] == [(i.code, i.scope, i.severity) for i in v2]
+    partial = {i.scope["month"]: i.message for i in v2 if i.code == IssueCode.PARTIAL_MONTH}
+    assert partial["2026-06"].endswith(
+        "対象月が部分月なので、正式分析は判定を保留します"
+        "（月中の一次判断は analyze --preview を使ってください）")
+    assert partial["2026-04"].endswith(
+        "部分月は完全月に数えません（判定に要る完全月が足りない人は判定を保留します）")
+    gap, = [i for i in v2 if i.code == IssueCode.MISSING_HISTORY_MONTH]
+    assert gap.message == (
+        f"直近 {hysteresis} ヶ月のうち 2026-05 のスペンドレポートがありません。"
+        "欠月より前の月は判定の履歴に入らないため、判定に要る完全月が足りない人は"
+        "「要観察（データ蓄積待ち）」になります")
+    assert any("ヒステリシス判定" in i.message for i in v1)

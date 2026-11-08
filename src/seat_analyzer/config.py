@@ -328,6 +328,16 @@ def _dynamic_entry(path: tuple[str, ...]) -> dict | None:
     return None
 
 
+# 廃止したキー（設定の階層のタプル）と書き換え先の案内。書いてあると、汎用の
+# 「既定に存在しないキー」の代わりにこの案内つきでロードを止める
+_REMOVED_KEYS = {
+    ("decision_v2", "enabled"): (
+        "廃止したキーです。判定の版は decision.version で選びます。"
+        "従来の enabled: true は version: v2、enabled: false は version: v1 と同じです"
+    ),
+}
+
+
 def _merge_override(base: dict, override: dict, *, label: str, path: tuple[str, ...] = ()) -> dict:
     """既定設定 base に上書き override を重ねた辞書を返す（base は変更しない）。
 
@@ -343,6 +353,9 @@ def _merge_override(base: dict, override: dict, *, label: str, path: tuple[str, 
     for key, value in override.items():
         where = ".".join((*path, str(key)))
         if key not in base:
+            removed = _REMOVED_KEYS.get((*path, str(key)))
+            if removed is not None:
+                raise ValueError(f"{label} の '{where}' は{removed}")
             template = _dynamic_entry(path)
             if template is None:
                 raise ValueError(
@@ -443,6 +456,8 @@ def _validate_seats(cfg: dict, errors: list[str]) -> None:
 
 def _validate_decision(cfg: dict, errors: list[str]) -> None:
     decision = cfg["decision"]
+    if decision.get("version") not in ("v1", "v2"):
+        errors.append("decision.version は v1 / v2 で指定してください")
     # 真偽値は int の一種なので _is_integer で除く（yes と書くと 1 として通ってしまう）
     if (
         not _is_integer(decision.get("hysteresis_months"))
@@ -462,14 +477,12 @@ def _validate_decision(cfg: dict, errors: list[str]) -> None:
 
 
 def _validate_decision_v2(cfg: dict, errors: list[str]) -> None:
-    # V2判定の設定。enabled が偽のあいだも値を検査する（有効化した時点で壊れている
+    # V2判定の設定。版が v1 のあいだも値を検査する（有効化した時点で壊れている
     # 設定に気づくのでは遅い。編集ミスは編集した実行で検出する）
     decision = cfg["decision_v2"]
     if not isinstance(decision, dict):
         errors.append("decision_v2 セクションが辞書ではありません")
         return
-    if not isinstance(decision.get("enabled"), bool):
-        errors.append("decision_v2.enabled は真偽値が必要です")
     for direction in ("upgrade", "downgrade"):
         section = decision.get(direction)
         months = (

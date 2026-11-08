@@ -95,7 +95,7 @@ seat-analyzer --version
 - `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（概要 / 推奨アクション / メンバー別 / 組織 / 前提と注意 の5タブ。複数スペースの組織では「複数スペース」タブが加わる。ソート・検索・テーマ切替つきの自己完結 HTML）
 - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
 - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
-- `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（V2 判定を有効にしたとき（`--decision-version v2` か、`config.yaml` の `decision_v2.enabled: true`）だけ出力。V1 の判定・成果物は変わりません）
+- `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（V2 判定を有効にしたとき（`--decision-version v2` か、`config.yaml` の `decision.version: v2`）だけ出力。V1 の判定・成果物は変わりません）
 - `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数と lead time の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）
 - `reports/summary/YYYY-MM.md` — 複数組織を一括分析した場合の組織横断サマリ（この名前は変わりません）
 

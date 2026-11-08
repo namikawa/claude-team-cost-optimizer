@@ -223,7 +223,8 @@ def _partial_month_issues(
 ) -> list[QualityIssue]:
     """対象月までの各月で、全月データと確認できないスペンドを警告する。
 
-    kind=range は期間の日数で判定し、判定窓の内外で変更推奨への影響を伝える。
+    kind=range は期間の日数で判定し、v1 は判定窓の内外で変更推奨への影響を伝える。
+    v2 は対象月の保留と、過去の部分月が完全月に数えられないことを伝える。
     kind=date（単日日付の命名）は実際の集計期間がファイル名から分からないため、
     日数を断定せず「確認できない」として警告する。
     kind=month（spend_YYYY-MM.csv）は全月の指定として扱い警告しない。
@@ -269,6 +270,13 @@ def _partial_month_issues(
             if m in window else
             "判定窓の外の月なので、変更推奨の判定には使いません"
         )
+        if cfg["decision"]["version"] == "v2":
+            note = (
+                "対象月が部分月なので、正式分析は判定を保留します"
+                "（月中の一次判断は analyze --preview を使ってください）"
+                if m == month else
+                "部分月は完全月に数えません（判定に要る完全月が足りない人は判定を保留します）"
+            )
         issues.append(_issue(
             Severity.WARNING, IssueCode.PARTIAL_MONTH,
             f"{m} は部分月データです（{period.start:%m-%d}〜{period.end:%m-%d} の "
@@ -288,12 +296,22 @@ def _history_gap_issues(
     missing = [m for m in window if oldest <= m and m not in spend_months]
     if not missing:
         return []
+    if cfg["decision"]["version"] == "v2":
+        message = (
+            f"直近 {n_hyst} ヶ月のうち {'/'.join(missing)} のスペンドレポートがありません。"
+            "欠月より前の月は判定の履歴に入らないため、判定に要る完全月が足りない人は"
+            "「要観察（データ蓄積待ち）」になります"
+        )
+    else:
+        message = (
+            f"ヒステリシス判定に必要な直近 {n_hyst} ヶ月のうち "
+            f"{'/'.join(missing)} のスペンドレポートがありません。"
+            "欠月があるあいだは変更推奨を出さず、推奨が現シートと違うユーザは"
+            "「要観察（データ蓄積待ち）」になります"
+        )
     return [_issue(
         Severity.WARNING, IssueCode.MISSING_HISTORY_MONTH,
-        f"ヒステリシス判定に必要な直近 {n_hyst} ヶ月のうち "
-        f"{'/'.join(missing)} のスペンドレポートがありません。"
-        "欠月があるあいだは変更推奨を出さず、推奨が現シートと違うユーザは"
-        "「要観察（データ蓄積待ち）」になります",
+        message,
         org, month, missing_months=missing, hysteresis_months=n_hyst,
     )]
 

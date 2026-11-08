@@ -2,9 +2,9 @@
 
 分析（analyze）が持つ月次の観測・Identity 証拠・追加クレジット上限と、判定エンジン
 （decision_v2）が要求する SubjectHistory の間を埋める層。判定の規則そのものは持たず、
-規則が要る形へ材料を組み替えて呼ぶだけにする。
+規則が要る形へ材料を組み替えて呼び、その結論を成果物へ写す。
 
-ここが担う組み替えは5つある。
+ここが担う組み替えは6つある。
 
 - 履歴の切り出し: 対象月から古い方へ遡り、暦で連続する月だけを履歴にする。判定エンジンは
   渡された並びの隣接を「連続」と数えるので、暦の隣接は組み立て側が保証する
@@ -32,6 +32,7 @@
   解き、副でその email が衝突していれば衝突として扱う（workspace 間で ID が違うこと自体は
   衝突にしない）。主が飛ばされた月は行を作らず、主 workspace に fixed_seat があれば
   Standard / Premium のアカウントを判定対象外（excluded）にする
+- 判定行の反映: V2 の結論を成果物のアカウント行へ写し、集計と人の層を組み直す
 
 Identity は対象月の証拠だけで解く。全期間を一括で解くと、退職者の email が再割当された
 場合に時間を隔てた別人どうしが1人へ結合する（seat_changes が隣接ペアで解決するのと同じ
@@ -52,10 +53,20 @@ import pandas as pd
 
 from . import identity
 from .analyze import (
+    STATUS_CHANGE,
+    STATUS_EXCLUDED,
+    STATUS_FIXED_SEAT,
+    STATUS_KEEP,
+    STATUS_SECONDARY,
+    STATUS_UNKNOWN,
+    STATUS_WATCH,
+    STATUS_WATCH_WAIT,
     AnalysisResult,
     DecisionContext,
     OrgAnalysisResult,
     add_demand,
+    build_person_layer,
+    decision_counts,
     holds_seat,
 )
 from .decision_v2 import (
@@ -112,6 +123,127 @@ class EvidenceRow:
     decision: DecisionV2
     policy_stability: int | None
     workspace: str | None = None
+
+
+# 成果物の reason 列の表示名。理由の語彙と順は decision の reason_codes が決める。
+REASON_LABELS: dict[ReasonCode, str] = {
+    ReasonCode.CURRENT_SEAT_UNKNOWN: "シートが不明（メンバー一覧に無い）",
+    ReasonCode.IDENTITY_CONFLICT: "アカウントの照合が食い違う",
+    ReasonCode.PARTIAL_MONTH: "対象月が部分月",
+    ReasonCode.INSUFFICIENT_HISTORY: "完全月が足りない",
+    ReasonCode.RECENT_MEMBER: "直近に加入",
+    ReasonCode.RECENT_SEAT_CHANGE: "直近にシート変更",
+    ReasonCode.SUSTAINED_LOW_TOTAL_DEMAND: "需要が続けて方針線未満",
+    ReasonCode.TOTAL_DEMAND_ABOVE_PREMIUM_LINE: "需要が方針線以上",
+    ReasonCode.CREDIT_SETTING_UNKNOWN: "追加クレジットの設定が不明",
+    ReasonCode.CREDIT_LIMIT_REACHED: "追加クレジットの上限に到達",
+    ReasonCode.SUSTAINED_OVERAGE: "シート差額を超える実課金が継続",
+    ReasonCode.SUSTAINED_TOTAL_DEMAND_ABOVE_PREMIUM_LINE: "方針線以上の需要が継続",
+    ReasonCode.STANDARD_BILLING_ABOVE_SEAT_GAP: "実課金がシート差額を超過",
+    ReasonCode.CREDIT_CONSUMPTION_RISING: "月内の追加クレジット消費が上昇",
+    ReasonCode.CAPACITY_SIGNAL_UNAVAILABLE: "5時間・週の上限は観測できない",
+    ReasonCode.DATA_CONFIDENCE_LOW: "分類できないメンバー変動がある",
+}
+
+
+def _seat_conclusion(row: EvidenceRow, seat: str, gap: float) -> tuple[str, str, float | None]:
+    """V2 のシート側の結論を、表示ラベル・推奨シート・削減額へ写す。"""
+    decision = row.decision
+    if decision.status is DecisionStatus.EXCLUDED:
+        return (STATUS_EXCLUDED if seat == _UNASSIGNED else STATUS_FIXED_SEAT), seat, None
+    if decision.status is DecisionStatus.NO_DECISION:
+        labels = {
+            ReasonCode.CURRENT_SEAT_UNKNOWN: STATUS_UNKNOWN,
+            ReasonCode.IDENTITY_CONFLICT: STATUS_WATCH,
+            ReasonCode.PARTIAL_MONTH: STATUS_WATCH_WAIT,
+            ReasonCode.INSUFFICIENT_HISTORY: STATUS_WATCH_WAIT,
+        }
+        if len(decision.reason_codes) != 1 or decision.reason_codes[0] not in labels:
+            raise ValueError(f"NO_DECISION の理由が対応表にありません: {decision.reason_codes}")
+        return labels[decision.reason_codes[0]], seat, None
+    if decision.status is DecisionStatus.OBSERVE:
+        return STATUS_WATCH, seat, None
+    if decision.seat_action is SeatAction.UPGRADE_TO_PREMIUM:
+        return STATUS_CHANGE, _PREMIUM, round(row.billed_extra_usd - gap, 2)
+    if decision.seat_action is SeatAction.DOWNGRADE_TO_STANDARD:
+        return STATUS_CHANGE, _STANDARD, round(gap, 2)
+    return STATUS_KEEP, seat, 0.0
+
+
+def apply(
+    org: OrgAnalysisResult, rows: Sequence[EvidenceRow], cfg: Mapping
+) -> OrgAnalysisResult:
+    """V2 の判定行を写し、集計・付与候補・設定確認・人の層を組み直す。
+
+    analyze_org(..., decision_version="v2") で分析した結果だけを受け付ける。
+    主の昇格・降格は変更推奨、OBSERVE と照合の衝突は要観察、部分月・履歴不足は
+    データ蓄積待ち、現シート不明はシート不明、未割当・固定シートは対象外に写す。
+    シート側が KEEP で credit 側だけに作業がある人は現状維持にする。削減額は昇格が
+    実課金−シート差額、降格がシート差額、現状維持が0、判定しない行が欠損となる。
+    副は種別を判定せず、固定シート・副スペース・不明・未割当の対象外等へ写す。
+
+    users と summary はコピーし、容れ物は replace で作り直す。入力の org と各分析結果を
+    変更せず、ファイルも読まない・書かない。warnings など他の属性はそのまま引き継ぐ。
+    """
+    if any(result.summary.get("decision_version") != "v2"
+           for result in org.workspaces.values()):
+        raise ValueError('apply は decision_version="v2" で分析した結果だけを受け付けます')
+    by_email = {row.email: row for row in rows}
+    primary = org.workspaces.get(org.primary)
+    expected = set(primary.users["email"]) if primary is not None else set()
+    if set(by_email) != expected or (primary is None and rows):
+        raise ValueError("V2 判定行の email が主 workspace の users と一致しません")
+    gap = float(cfg["seats"][_PREMIUM]["price_usd"]) - float(
+        cfg["seats"][_STANDARD]["price_usd"]
+    )
+    workspaces = {}
+    for name, result in org.workspaces.items():
+        users = result.users.drop(columns=[
+            "cost_if_standard_usd", "cost_if_premium_usd", "rec_low", "rec_high", "cap_suspected",
+        ]).copy()
+        # reason は confidence の直後に置く。
+        if "reason" in users:
+            users = users.drop(columns="reason")
+        users.insert(users.columns.get_loc("confidence") + 1, "reason", "")
+        for index, user in users.iterrows():
+            seat = user["current_seat"]
+            confidence, reason = "—", ""
+            if name == org.primary:
+                row = by_email[user["email"]]
+                status, recommended, saving = _seat_conclusion(row, seat, gap)
+                confidence = {3: "高", 2: "中", 1: "低", None: "—"}[row.policy_stability]
+                reason = "; ".join(REASON_LABELS[code] for code in row.decision.reason_codes)
+            else:
+                status = {
+                    _UNKNOWN: STATUS_UNKNOWN, _UNASSIGNED: STATUS_EXCLUDED,
+                }.get(seat, STATUS_FIXED_SEAT if org.contexts[name].fixed_seat else STATUS_SECONDARY)
+                recommended, saving = seat, None
+            users.loc[index, ["status", "recommended_seat", "monthly_saving_usd",
+                              "confidence", "reason"]] = [
+                status, recommended, saving, confidence, reason,
+            ]
+        users = users.sort_values(
+            ["status", "monthly_saving_usd"], ascending=[True, False]
+        ).reset_index(drop=True)
+        summary = {**result.summary, **decision_counts(users)}
+        summary.pop("n_cap_suspected", None)
+        grants, reviews = [], []
+        if name == org.primary:
+            for row in sorted(rows, key=lambda row: (-row.total_demand_usd, row.email)):
+                candidate = {"email": row.email, "demand_usd": row.total_demand_usd}
+                if row.decision.credit_action is CreditAction.ENABLE_WITH_CAP:
+                    grants.append({**candidate, "suggested_cap_usd": row.suggested_credit_cap_usd})
+                elif row.decision.credit_action is CreditAction.REVIEW:
+                    reviews.append({**candidate, "billed_usd": row.billed_extra_usd})
+        workspaces[name] = replace(
+            result, users=users, summary=summary, grant_candidates=grants, credit_reviews=reviews,
+        )
+    applied = replace(org, workspaces=workspaces)
+    if org.nested:
+        persons = build_person_layer(applied, cfg, org.first_seen)
+    else:
+        persons = build_person_layer(applied, cfg)
+    return replace(applied, persons=persons)
 
 
 def evaluate(
