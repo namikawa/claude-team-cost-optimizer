@@ -6,10 +6,12 @@
 
 - `collect --source github` が PR ごとのコミット（SHA・作者の login とメール・追加と削除行・日時・マージコミットか）と、PR のマージで作られたコミットの SHA もキャッシュに保存するようにした（キャッシュの形式は 2 に上がり、古い形式のキャッシュは次の収集でその月の全期間を取り直す）
 - `collect --source github` が取得中の期間と進み具合を 1 行ずつ表示するようにした
+- `analyze` が、Claude Code analytics の CSV に LoC の列が見つからないとき、ファイルの見出しを添えて警告するようにした
 
 ### 修正
 
 - `collect --source github` で時間切れになったページを同じ位置から小さくして読み直し、本文が JSON でない応答も再試行するようにした
+- Claude Code analytics の CSV の LoC の列の見出しが「Lines accepted」になると、`collect --source claude` で配置できず、`analyze` も LoC を出力しなかった（従来の「Lines this Month」とあわせて認識するようにした）
 
 ## [1.4.5] - 2026-11-02
 

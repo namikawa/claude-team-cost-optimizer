@@ -412,3 +412,38 @@ def test_partial_cache_columns_stop_analyze_preview_and_doctor(cfg, tmp_path: Pa
     assert "キャッシュ内訳" in spend_errors[0].message
     # doctor の message に絶対パスを載せない
     assert str(tmp_path) not in spend_errors[0].message
+
+
+# ------------------------------------------------------------------ code-analytics の LoC の列
+
+_CODE_FILE = "claude_code_team_2026_10_01_to_2026_10_31.csv"
+
+
+def _write_code(input_dir: Path, header: str, rows: list[str]) -> Path:
+    path = input_dir / "code-analytics" / _CODE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(header + "\n" + "\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+@pytest.mark.parametrize("header", ["User,Lines this Month", "User,Lines accepted"])
+def test_code_analytics_reads_both_loc_labels(cfg, tmp_path: Path, header):
+    # claude.ai のエクスポートの LoC の見出しは新旧どちらも loc_with_cc に写る（過去の月の
+    # ファイルは旧い見出しのまま読む）。1,000 以上の値は桁区切りのカンマ入り
+    _write_code(tmp_path, header, ['alice.morgan@x.jp,"51,282"', "bernard.holloway@y.jp,7"])
+    result = ingest.load_code_analytics(tmp_path, "2026-10", cfg)
+    assert result.df.set_index("email")["loc_with_cc"].to_dict() == {
+        "alice.morgan@x.jp": 51282, "bernard.holloway@y.jp": 7}
+    assert not any("LoC の列が見つからない" in w for w in result.warnings)
+
+
+def test_code_analytics_warns_when_the_loc_column_is_unknown(cfg, tmp_path: Path):
+    # 見出しがエイリアスに無くても読み込みは止めず、LoC を出力しないことを見出しつきで警告する
+    _write_code(tmp_path, "User,Lines merged", ['alice.morgan@x.jp,"1,200"'])
+    result = ingest.load_code_analytics(tmp_path, "2026-10", cfg)
+    assert "loc_with_cc" not in result.df.columns
+    assert (
+        f"{_CODE_FILE}: LoC の列が見つからないため、Claude Code の LoC を出力しません"
+        "（ヘッダ: ['User', 'Lines merged']。config.yaml > columns.code_analytics.loc_with_cc に"
+        "エイリアスを追記してください）"
+    ) in result.warnings

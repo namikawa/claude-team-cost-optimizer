@@ -256,7 +256,9 @@ columns:
     email:       ["email", "user", "user email", "member"]
     prs_with_cc: ["prs with cc", "prs with claude code", "cc prs"]
     prs_total:   ["all prs", "total prs", "prs"]
-    loc_with_cc: ["lines with cc", "lines of code with cc", "lines with claude code", "cc lines", "lines this month"]
+    # claude.ai のエクスポートは人の列と LoC の列の 2 列。LoC の見出しは「Lines this Month」と
+    # 「Lines accepted」のどちらも読む（過去の月のファイルは前者）
+    loc_with_cc: ["lines with cc", "lines of code with cc", "lines with claude code", "cc lines", "lines this month", "lines accepted"]
     loc_total:   ["all lines", "total lines", "lines"]
   # 任意ファイル members-info.csv（部署・チーム・職種・備考のマッピング。手動メンテ）
   # 組織階層は 部署 > チーム。department と team は別軸でどちらか一方だけでもよい
