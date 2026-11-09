@@ -23,6 +23,7 @@ from .csv_out import write_csv
 from .details import write_details
 from .document import WriteResult, discussion_body, document_body, write_discussion
 from .evidence_csv import EVIDENCE_COLUMNS, write_decision_evidence
+from .format import _decision_version
 from .github_csv import GITHUB_SUMMARY_COLUMNS, write_github_summary
 from .html import write_html, write_preview_html
 from .markdown import write_markdown, write_org_summary, write_preview_markdown
@@ -83,6 +84,7 @@ def write_all(result: AnalysisResult | OrgAnalysisResult,
     （判断は各 writer が OrgAnalysisResult.has_multiple_workspaces で行う）。
     従来の AnalysisResult も受け付ける。
     """
+    _decision_version(result)
     month, org = result.month, result.org
     (Path(output_dir) / month).mkdir(parents=True, exist_ok=True)
     paths = {

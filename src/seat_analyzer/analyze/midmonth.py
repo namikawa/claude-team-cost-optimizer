@@ -235,7 +235,8 @@ def _unique_emails(changes: list[dict]) -> list[str]:
 
 
 def _compute_member_changes(
-    input_dir: Path, month: str, cfg: dict, credit_limit_dir: Path | None
+    input_dir: Path, month: str, cfg: dict, credit_limit_dir: Path | None,
+    *, decision_version: str = "v1",
 ) -> tuple[dict | None, list[str]]:
     """対象月の単日スナップショット members（2つ以上）の隣接差分から月中の変動を検出する。
 
@@ -247,7 +248,8 @@ def _compute_member_changes(
     のどちらのスナップショットも1つ以下なら (None, []) を返す（既存出力と同一）。
 
     判定ロジック・ヒステリシスには一切影響しない表示専用の情報。シート変更が1件以上
-    あれば、当月判定は最新スナップショット時点のシートで行う旨の参考警告を返す。
+    あれば検出した事実を警告する。V1 では、当月判定は最新スナップショット時点のシートで
+    行う旨の参考説明も添える。
     """
     entries = ingest.member_snapshots(input_dir, month)
     credit_changes, credit_snaps = _compute_credit_changes(credit_limit_dir, month, cfg)
@@ -286,7 +288,8 @@ def _compute_member_changes(
         warnings.append(
             f"月中にシート変更を検出した ユーザ {len(emails)} 名"
             f"（変更 {len(seat_changes)} 件）: {emails[:5]}"
-            "（当月の損益分岐判定は最新スナップショット時点のシートで行うため参考値）"
+            + ("（当月の損益分岐判定は最新スナップショット時点のシートで行うため参考値）"
+               if decision_version == "v1" else "")
         )
     if credit_changes:
         emails = _unique_emails(credit_changes)
@@ -404,7 +407,7 @@ def _diff_active(input_dir: Path, month: str) -> _DiffActive:
 
 def _midmonth_diffs(
     input_dir: Path, month: str, cfg: dict, seat_by_email: dict,
-    *, credit_limit_dir: Path | None,
+    *, credit_limit_dir: Path | None, decision_version: str = "v1",
 ) -> tuple[dict | None, dict | None, dict | None, list[str]]:
     """月中差分（利用推移・Claude Code 活動・メンバー変動）をまとめて計算する。
 
@@ -421,7 +424,7 @@ def _midmonth_diffs(
     snapshot, snap_warns = _compute_snapshot_diff(input_dir, month, cfg, seat_by_email)
     code_diff, code_warns = _compute_code_diff(input_dir, month, cfg)
     member_changes, member_warns = _compute_member_changes(
-        input_dir, month, cfg, credit_limit_dir
+        input_dir, month, cfg, credit_limit_dir, decision_version=decision_version
     )
     _attach_loc_corroboration(snapshot, code_diff)
     return snapshot, code_diff, member_changes, [*snap_warns, *code_warns, *member_warns]

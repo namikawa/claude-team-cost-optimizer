@@ -1105,7 +1105,8 @@ def analyze(
     trend = _compute_trend(monthly, months_used, set(members["email"]), cfg)
     # 月中差分（利用推移・Claude Code 活動・メンバー変動。1つ以下なら None）
     snapshot, code_diff, member_changes, diff_warns = _midmonth_diffs(
-        input_dir, month, cfg, seat_by_email, credit_limit_dir=credit_limit_dir
+        input_dir, month, cfg, seat_by_email, credit_limit_dir=credit_limit_dir,
+        decision_version=decision_version,
     )
     warnings.extend(diff_warns)
 
@@ -1176,6 +1177,7 @@ def analyze(
     summary = _summarize(users, monthly[month], cfg, months_used, n_hyst)
     summary["decision_version"] = decision_version
     if decision_version == "v2":
+        summary["premium_justification_usd"] = float(cfg["decision_v2"]["premium_justification_usd"])
         for direction in ("upgrade", "downgrade"):
             summary[f"{direction}_min_complete_months"] = (
                 cfg["decision_v2"][direction]["min_complete_months"]

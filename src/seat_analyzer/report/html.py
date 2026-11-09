@@ -27,6 +27,7 @@ from ..analyze import (
     STATUS_EXCLUDED,
     STATUS_FIXED_SEAT,
     STATUS_KEEP,
+    STATUS_SECONDARY,
     STATUS_UNKNOWN,
     STATUS_WATCH,
     STATUS_WATCH_WAIT,
@@ -43,6 +44,7 @@ from ..product_usage import ProductUsage
 from . import spaces
 from .format import (
     _account_rows,
+    _decision_version,
     _detail_rows,
     _fmt_compact,
     _fmt_count,
@@ -65,9 +67,13 @@ from .text import (
     PREVIEW_ORDER,
     STATUS_ORDER,
     _cap_legend_supplement,
+    _confidence_legend_v2,
+    _decision_legend_v2,
     _disabled_cost_note,
     _embed_shared_text,
+    _judgment_months_v2,
     _preview_decision_note,
+    _seat_price_note_v2,
 )
 
 # CSV 由来の値（email 等）が HTML/JS として解釈されないよう autoescape を有効化
@@ -82,6 +88,7 @@ _STATUS_BADGE_CLASS = {
     STATUS_UNKNOWN: "b-unknown",
     STATUS_KEEP: "b-keep",
     STATUS_FIXED_SEAT: "b-keep",
+    STATUS_SECONDARY: "b-keep",
     STATUS_EXCLUDED: "b-keep",
 }
 
@@ -252,6 +259,15 @@ def _grant_candidates_view(candidates: list) -> list[dict]:
     """dashboard.html / preview-dashboard.html 用の付与候補（モードを表示ラベルに）。"""
     return [{"email": c["email"], "mode_label": _CREDIT_MODE_LABEL.get(c["mode"], c["mode"]),
              "added_fmt": _fmt_compact(c["added"])}
+            for c in candidates]
+
+
+def _credit_candidates_v2_view(candidates: list) -> list[dict]:
+    """V2 の付与候補・設定確認の金額表示。生の需要と課金は短縮書式にする。"""
+    return [{**c, "demand_fmt": _fmt_compact(c["demand_usd"]),
+             "cap_fmt": (_fmt_setting_usd(c["suggested_cap_usd"])
+                         if "suggested_cap_usd" in c else ""),
+             "billed_fmt": _fmt_compact(c.get("billed_usd"))}
             for c in candidates]
 
 
@@ -690,7 +706,7 @@ def write_preview_html(result: PreviewResult | OrgPreviewResult, path: Path) -> 
         credit_reach=_credit_reach_view(result.credit_reach),
         grant_candidates=_grant_candidates_view(result.grant_candidates),
         grant_cap_fmt=_fmt_setting_usd(cap_usd),
-        # 付与候補の空状態は「該当者なし」と「判定できていない」を分けるので、
+        # V1 の付与候補の空状態は「該当者なし」と「判定できていない」を分けるので、
         # 候補の一覧だけでなく上限が記入されているか（credit_shown）も渡す
         credit_shown=bool(result.summary.get("credit_shown", False)),
         disabled_note=_disabled_cost_note(result.users),
@@ -845,15 +861,16 @@ def _render_preview_multi(org: OrgPreviewResult) -> str:
     )
 
 
-def _recommendation_rows(users) -> list[dict]:
+def _recommendation_rows(users, *, v2: bool = False) -> list[dict]:
     """推奨一覧の行（判定の表示順・需要の降順。需要は判定に使った値）。"""
     users_sorted = _sort_for_display(users, "status", STATUS_ORDER, "api_cost_usd").to_dict("records")
     _apply_billed_bg(users_sorted, "billed_extra_usd")
     for u in users_sorted:
         u["api_cost_fmt"] = _fmt_compact(u["api_cost_usd"])
         u["billed_fmt"] = _fmt_compact(u.get("billed_extra_usd", 0.0))
-        u["std_fmt"] = _fmt_compact(u["cost_if_standard_usd"])
-        u["prem_fmt"] = _fmt_compact(u["cost_if_premium_usd"])
+        if not v2:
+            u["std_fmt"] = _fmt_compact(u["cost_if_standard_usd"])
+            u["prem_fmt"] = _fmt_compact(u["cost_if_premium_usd"])
         u["saving_fmt"] = _fmt_compact(u.get("monthly_saving_usd"))
         u["badge_class"] = _STATUS_BADGE_CLASS.get(u["status"], "b-keep")
         saving = u.get("monthly_saving_usd")
@@ -862,13 +879,15 @@ def _recommendation_rows(users) -> list[dict]:
 
 
 def _workspace_view(result: AnalysisResult, users, *, label: str | None = None,
-                    fixed_seat: str | None = None) -> dict:
+                    fixed_seat: str | None = None, primary: bool = True) -> dict:
     """1 workspace 分の section の材料（テンプレートが workspaces を回して描く）。
 
     users はユーザ別の棒・順位・ガイド線・分布に使う表で、単一 workspace では
     result.users、複数 workspace ではそのアカウント自身の需要に差し替えた表を渡す。
     label は見出しに添える表示名（単一 workspace では None で、見出しは従来のまま）。
+    primary は V2 の付与・設定確認カードを主だけに出すために使う。
     """
+    v2 = _decision_version(result) == "v2"
     bar_users = _sort_for_display(users, "status", STATUS_ORDER, "api_cost_usd").to_dict("records")
     # 観測された最大需要と、棒の幅の除算に使うスケールを分ける。スケールは 0 除算を
     # 避けるため 1.0 に倒すが、ガイド線の可否は倒す前の値で決める（_cost_guide 参照）
@@ -883,15 +902,18 @@ def _workspace_view(result: AnalysisResult, users, *, label: str | None = None,
     return {
         "label": label,
         "fixed_seat": fixed_seat,
+        "show_grant": not fixed_seat and (not v2 or primary),
         "s": summary,
         "credit_bars": _credit_bars(summary),
         "trend": _trend_view(result.trend),
         "snapshot": _snapshot_view(result.snapshot),
         "code_diff": _code_diff_view(result.code_diff),
         "member_changes": _member_changes_view(result.member_changes),
-        "grant_candidates": _grant_candidates_view(result.grant_candidates),
+        "grant_candidates": (_credit_candidates_v2_view(result.grant_candidates) if v2 else
+                             _grant_candidates_view(result.grant_candidates)),
+        "credit_reviews": _credit_candidates_v2_view(result.credit_reviews) if v2 else [],
         "grant_cap_fmt": _fmt_setting_usd(summary["grant_suggested_cap_usd"]),
-        # 付与候補の空状態は「該当者なし」と「判定できていない」を分けるので、
+        # V1 の付与候補の空状態は「該当者なし」と「判定できていない」を分けるので、
         # 候補の一覧だけでなく上限が記入されているか（credit_shown）も渡す
         "credit_shown": bool(summary.get("credit_shown", False)),
         "product": _product_view(result.product_usage, summary["supplementary_high_usd"]),
@@ -965,15 +987,24 @@ def write_html(result: AnalysisResult | OrgAnalysisResult, path: Path) -> None:
     「複数スペース」タブを持つ形で書き、そうでなければ唯一の workspace の結果で
     従来どおりに書く。
     """
+    v2 = _decision_version(result) == "v2"
+    fixed_seat = None
     if isinstance(result, OrgAnalysisResult):
         if result.has_multiple_workspaces:
             path.write_text(_render_multi(result), encoding="utf-8", newline="\n")
             return
+        if v2:
+            fixed_seat = result.contexts[result.primary].fixed_seat
         result = _sole_result(result)
-    users_sorted = _recommendation_rows(result.users)
+    users_sorted = _recommendation_rows(result.users, v2=v2)
     group_summaries = _group_summaries(result.users, result.summary)
     detail_rows, detail_has_loc = _detail_view(result.users)
     html = _HTML_TEMPLATE.render(
+        v2=v2,
+        decision_legend=_decision_legend_v2(result.summary) if v2 else "",
+        confidence_legend=_confidence_legend_v2() if v2 else "",
+        seat_price_note=_seat_price_note_v2(result.summary) if v2 else "",
+        months_text=_judgment_months_v2(result.summary, result.month) if v2 else "",
         dashboard_css=_DASHBOARD_CSS,
         dashboard_js=_DASHBOARD_JS,
         scope=_scope_label(result),
@@ -984,7 +1015,7 @@ def write_html(result: AnalysisResult | OrgAnalysisResult, path: Path) -> None:
         # ヘッダーの削減見込みは SAVING の KPI カードと同じ値・同じ書式で出す
         saving_fmt=f"${result.summary['est_monthly_saving_usd']:.0f}",
         judge_counts=_judge_counts(users_sorted),
-        workspaces=[_workspace_view(result, result.users)],
+        workspaces=[_workspace_view(result, result.users, fixed_seat=fixed_seat)],
         multi=False,
         cap_supplement=_cap_legend_supplement(result.summary.get("credit_shown", False)),
         disabled_note=_disabled_cost_note(result.users),
@@ -1020,16 +1051,18 @@ def _render_multi(org: OrgAnalysisResult) -> str:
     詳細利用状況・分布・Code と他プロダクトの需要は各アカウント自身の需要で出す。
     部署別・チーム別は人の層から数える。
     """
+    v2 = _decision_version(org) == "v2"
     summary = summarize_org(org)
     total = summary["total"]
     results = org.workspaces
     labels = {name: org.contexts[name].label for name in results}
     judged = _account_rows(org, {name: r.users for name, r in results.items()})
-    users_sorted = _recommendation_rows(judged)
+    users_sorted = _recommendation_rows(judged, v2=v2)
     own = {name: own_demand_users(r) for name, r in results.items()}
     workspaces = [
         _workspace_view(r, own[name], label=labels[name],
-                        fixed_seat=org.contexts[name].fixed_seat)
+                        fixed_seat=org.contexts[name].fixed_seat,
+                        primary=name == org.primary)
         for name, r in results.items()
     ]
     first = next(iter(results.values())).summary
@@ -1053,6 +1086,10 @@ def _render_multi(org: OrgAnalysisResult) -> str:
     }
     months_text = spaces.judgment_months_text(org)
     return _HTML_TEMPLATE.render(
+        v2=v2,
+        decision_legend=_decision_legend_v2(first) if v2 else "",
+        confidence_legend=_confidence_legend_v2() if v2 else "",
+        seat_price_note=_seat_price_note_v2(first) if v2 else "",
         dashboard_css=_DASHBOARD_CSS,
         dashboard_js=_DASHBOARD_JS,
         scope=_scope_label(org),

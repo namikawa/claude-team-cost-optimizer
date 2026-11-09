@@ -49,27 +49,27 @@
 {% for j in judge_counts %}        <div class="jrow"><span class="label">{{ j.label }}</span><div class="track"><div class="fill {{ j.fill_class }}" style="width: {{ '%.1f' % j.pct }}%"></div></div><span class="n">{{ j.n }}</span></div>
 {% endfor %}      </div>
     </section>
-{% endif %}{% for ws in workspaces %}{% if not ws.fixed_seat %}{% with grant_candidates=ws.grant_candidates, credit_shown=ws.credit_shown, grant_cap_fmt=ws.grant_cap_fmt, ws_label=ws.label %}<!--CREDIT_SECTION-->{% endwith %}{% endif %}{% endfor %}</div>
+{% endif %}{% for ws in workspaces %}{% if ws.show_grant %}{% with credit_reviews=ws.credit_reviews, grant_candidates=ws.grant_candidates, credit_shown=ws.credit_shown, grant_cap_fmt=ws.grant_cap_fmt, ws_label=ws.label %}<!--CREDIT_SECTION-->{% endwith %}{% endif %}{% endfor %}</div>
   <section class="card">
     <div class="card-hd"><div class="hd-main"><h2>推奨一覧</h2></div>{% if judge_counts %}<div class="toolbar"><select class="filter" data-filter="judge" aria-label="判定で絞り込む"><option value="">判定: すべて</option>{% for j in judge_counts %}<option value="{{ j.label }}">{{ j.label }}</option>{% endfor %}</select></div>{% endif %}</div>
     <div class="tablebox tall">
       <table>
-        <thead><tr><th>ユーザ</th>{% if multi %}<th>スペース</th>{% endif %}<th>シート（現 → 推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">Std時</th><th class="num">Prem時</th><th class="num">削減/月</th><th>判定</th></tr></thead>
+        <thead><tr><th>ユーザ</th>{% if multi %}<th>スペース</th>{% endif %}<th>シート（現 → 推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th>{% if not v2 %}<th class="num">Std時</th><th class="num">Prem時</th>{% endif %}<th class="num">削減/月</th><th>判定</th>{% if v2 %}<th>理由</th>{% endif %}</tr></thead>
         <tbody>
 {% for u in users_sorted %}        <tr>
           <td class="user" title="{{ u.email }}">{{ u.email.split('@')[0] }}</td>{% if multi %}<td class="sub">{{ u.workspace_label }}</td>{% endif %}
           <td class="seat"><span class="seat-{{ u.current_seat }}">{{ seat_short.get(u.current_seat, '?') }}</span>{%- if u.recommended_seat != u.current_seat %}<span class="arrow">→</span><span class="seat-{{ u.recommended_seat }} to">{{ seat_short.get(u.recommended_seat, '?') }}</span>{% endif %}</td>
-          <td class="num">{{ u.api_cost_fmt }}{% if u.cap_suspected %} <span class="cap">⚠</span>{% endif %}</td>
+          <td class="num">{{ u.api_cost_fmt }}{% if not v2 and u.cap_suspected %} <span class="cap">⚠</span>{% endif %}</td>
           <td class="num"{% if u.billed_bg %} style="background:{{ u.billed_bg }}"{% endif %}>{{ u.billed_fmt }}</td>
-          <td class="num sub">{{ u.std_fmt }}</td>
+{% if not v2 %}          <td class="num sub">{{ u.std_fmt }}</td>
           <td class="num sub">{{ u.prem_fmt }}</td>
-          <td class="num save{% if u.saving_positive %} pos{% endif %}">{{ u.saving_fmt }}</td>
-          <td class="judge"><span class="badge {{ u.badge_class }}">{{ u.status }}</span>{% if u.confidence != '—' %}<span class="conf">確度{{ u.confidence }}</span>{% endif %}</td>
+{% endif %}          <td class="num save{% if u.saving_positive %} pos{% endif %}">{{ u.saving_fmt }}</td>
+          <td class="judge"><span class="badge {{ u.badge_class }}">{{ u.status }}</span>{% if u.confidence != '—' %}<span class="conf">確度{{ u.confidence }}</span>{% endif %}</td>{% if v2 %}<td class="wrap">{{ u.reason }}</td>{% endif %}
         </tr>
 {% endfor %}        </tbody>
       </table>
     </div>
-    <div class="card-ft"><!--text:note_cost_columns-->。<br><!--text:note_confidence-->。<br><!--text:note_cap_flag-->。{% if multi %}<br>{{ merged_note }}。{% endif %}</div>
+    <div class="card-ft">{% if v2 %}削減/月 = <!--text:legend_saving_v2-->。<br>確度 = {{ confidence_legend }}。<br>理由 = <!--text:legend_reason_v2-->。{% else %}<!--text:note_cost_columns-->。<br><!--text:note_confidence-->。<br><!--text:note_cap_flag-->。{% endif %}{% if multi %}<br>{{ merged_note }}。{% endif %}</div>
   </section>
 </div>
 </section>
@@ -92,11 +92,11 @@
           <div class="rank">{{ u.rank_fmt }}</div>
           <div class="name" title="{{ u.email }}">{{ u.email.split('@')[0] }}</div>
           <div class="track"><div class="fill" style="width: {{ '%.1f' % (u.api_cost_usd / max_cost * 100) }}%; background: {{ 'var(--prem)' if u.current_seat == 'premium' else ('var(--dim)' if u.current_seat in ('unassigned', 'unknown') else 'var(--std)') }};"></div></div>
-          <div class="val">${{ '%.2f' % u.api_cost_usd }}{% if u.cap_suspected %}<span class="cap"> ⚠</span>{% endif %}</div>
+          <div class="val">${{ '%.2f' % u.api_cost_usd }}{% if not v2 and u.cap_suspected %}<span class="cap"> ⚠</span>{% endif %}</div>
         </div>
 {% endfor %}      </div>
     </div>
-    <div class="card-ft">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い　#n = API換算需要の順位（同額は同順位。シート未割当は — で母集団に入れない）{% if cost_guide %}<br>縦線: <span class="guide-key g-median"></span> 中央値 {{ cost_guide.median_fmt }} / <span class="guide-key g-mean"></span> 平均 {{ cost_guide.mean_fmt }}（順位と同じ母集団）{% endif %}</div>
+    <div class="card-ft">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　{% if not v2 %}⚠ = 上限到達疑い　{% endif %}#n = API換算需要の順位（同額は同順位。シート未割当は — で母集団に入れない）{% if cost_guide %}<br>縦線: <span class="guide-key g-median"></span> 中央値 {{ cost_guide.median_fmt }} / <span class="guide-key g-mean"></span> 平均 {{ cost_guide.mean_fmt }}（順位と同じ母集団）{% endif %}</div>
   </section>
 {% endwith %}{% endfor %}
   <section class="card">
@@ -140,14 +140,21 @@
     <div class="card-hd"><div class="hd-main"><h2>前提と注意</h2></div></div>
     <div class="card-bd">
       <ul class="notes assumptions">
-        <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
+{% if v2 %}        <li>{{ seat_price_note }}。</li>
+        <li>判定 = {{ decision_legend }}。</li>
+        <li>削減/月 = <!--text:legend_saving_v2-->。</li>
+        <li>確度 = {{ confidence_legend }}。</li>
+{% if has_team_summary %}        <li><!--text:note_team_total-->。</li>
+{% endif %}        <li>判定に使用した月: {{ months_text }}。</li>
+        <li><!--text:note_history_v2-->。</li>
+{% else %}        <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
         <li><!--text:note_cost_columns-->。</li>
         <li><!--text:note_confidence-->。込み利用量そのものは非公開のため、この3シナリオはいずれも推定値です。</li>
         <li><!--text:note_cap_flag-->。{% if cap_supplement %}{{ cap_supplement }}。{% endif %}</li>
 {% if disabled_note %}        <li>{{ disabled_note }}。</li>
 {% endif %}{% if has_team_summary %}        <li><!--text:note_team_total-->。</li>
 {% endif %}        <li>判定に使用した月: {% if multi %}{{ months_text }}{% else %}{{ s.judgment_months | join(', ') }}{% endif %}（{{ s.hysteresis_months }}ヶ月ヒステリシス）。</li>
-{% if multi %}{% for line in multi_notes %}        <li>{{ line }}。</li>
+{% endif %}{% if multi %}{% for line in multi_notes %}        <li>{{ line }}。</li>
 {% endfor %}{% endif %}      </ul>
     </div>
   </section>

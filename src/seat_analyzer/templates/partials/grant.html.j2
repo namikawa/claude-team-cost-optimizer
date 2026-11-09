@@ -1,4 +1,18 @@
-
+{% if v2 %}
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2><!--text:h_grant_v2-->{% if ws_label %}（{{ ws_label }}）{% endif %}</h2></div></div>
+  <div class="card-bd">
+    <p class="lead"><!--text:h_grant_capped_v2-->: <!--text:note_grant_v2-->。</p>
+{% if grant_candidates %}{% for c in grant_candidates %}    <div class="callout"><span class="uname" title="{{ c.email }}">{{ c.email.split('@')[0] }}</span>（需要 {{ c.demand_fmt }}・推奨初期上限 {{ c.cap_fmt }}）</div>
+{% endfor %}    <p class="lead"><!--text:action_grant_v2-->。</p>
+{% else %}    <div class="empty">該当者なし。</div>
+{% endif %}    <p class="lead"><!--text:h_credit_review_v2-->: <!--text:note_credit_review_v2-->。</p>
+{% if credit_reviews %}{% for c in credit_reviews %}    <div class="callout"><span class="uname" title="{{ c.email }}">{{ c.email.split('@')[0] }}</span>（需要 {{ c.demand_fmt }}・実課金 {{ c.billed_fmt }}）</div>
+{% endfor %}    <p class="lead"><!--text:action_credit_review_v2-->。</p>
+{% else %}    <div class="empty">該当者なし。</div>
+{% endif %}  </div>
+</section>
+{% else %}
 <section class="card">
   <div class="card-hd"><div class="hd-main"><h2><!--text:h_grant-->{% if ws_label %}（{{ ws_label }}）{% endif %}</h2></div></div>
   <div class="card-bd">
@@ -7,4 +21,4 @@
 {% elif credit_shown %}    <div class="empty">該当者なし。<!--text:note_grant_empty-->。</div>
 {% else %}    <div class="empty">判定不能。<!--text:note_grant_no_data-->。</div>
 {% endif %}  </div>
-</section>
+</section>{% endif %}

@@ -31,6 +31,7 @@ tests/test_golden.py は生成物を丸ごと固定するが、examples/input �
 import re
 
 import pandas as pd
+import pytest
 
 from seat_analyzer.product_usage import ProductUsage
 from seat_analyzer.report.html import (
@@ -45,6 +46,7 @@ from seat_analyzer.report.html import (
     _STATS_HTML,
     _TREND_HTML,
     _code_diff_view,
+    _credit_candidates_v2_view,
     _grant_candidates_view,
     _member_changes_view,
     _product_view,
@@ -663,3 +665,62 @@ def test_product_flag_marks_only_confirmed_supplementary_high():
     mark = ' <span class="cap">⚑</span>'
     assert _without(flagged, mark) == plain     # 足すのはこの印だけ
     assert unknown == plain
+
+
+# --- V2 の正式表示（速報は v2 を渡さない） ---
+
+def test_snapshot_v2_removes_only_the_allowance_candidate_phrase():
+    """停止の観測と LoC 注記を保ったまま、V1 の実測候補の説明だけ外す。"""
+    snapshot = _snapshot_view(_snapshot(stalled_capped=[
+        {"email": "stall@example.com", "cum_at_stall": 210,
+         "loc_note": "同期間の LoC は増加しており活動は継続"}],
+        billed_emerged=[{"email": "bill@example.com", "interval_label": "〜07-15→〜07-31",
+                         "prev_cum": 180, "curr_cum": 260, "billed": 12}]))
+    v1 = _render(_SNAPSHOT_HTML, snapshot=snapshot)
+    v2 = _render(_SNAPSHOT_HTML, snapshot=snapshot, v2=True)
+    assert _without(v1, " は実効込み量の実測候補") == v2
+    assert "停止時点の累積 $210。同期間の LoC は増加しており活動は継続。" in v2
+    assert "実効込み量は累積需要 $180〜$260 の間" in v2
+    assert _render(_SNAPSHOT_HTML, snapshot=snapshot, v2=False) == v1
+
+
+@pytest.mark.parametrize("has_grant", [False, True])
+@pytest.mark.parametrize("has_review", [False, True])
+def test_grant_v2_two_stages_full_rendering(has_grant, has_review):
+    """付与・確認の各段を一覧と空状態の両側から全文で固定する。"""
+    grants = [{"email": "grant@example.com", "demand_usd": 512, "suggested_cap_usd": 150}]
+    reviews = [{"email": "review@example.com", "demand_usd": 480, "billed_usd": 0}]
+    context = {
+        "grant_candidates": _credit_candidates_v2_view(grants if has_grant else []),
+        "credit_reviews": _credit_candidates_v2_view(reviews if has_review else []),
+    }
+    actual = _render(_GRANT_HTML, v2=True, **context)
+    head = (
+        '\n<section class="card">\n'
+        '  <div class="card-hd"><div class="hd-main"><h2>追加クレジットの付与候補と設定確認</h2></div></div>\n'
+        '  <div class="card-bd">\n'
+        '    <p class="lead">上限つき付与: 追加クレジットが無効の Standard ユーザのうち、対象月の需要が'
+        '方針線以上で、それがまだ続いていない人。</p>\n'
+    )
+    grant = (
+        f'    <div class="callout">{_uname("grant@example.com")}（需要 $512・推奨初期上限 $150）</div>\n'
+        '    <p class="lead">席を変える前に上限つきの追加クレジットを付与し、1 か月の課金を実測してから'
+        '昇格を判断することを推奨します。</p>\n'
+    )
+    middle = (
+        '    <p class="lead">設定確認: 追加クレジットの設定が分からない Standard ユーザ（上限が未記入、'
+        'または「無効」の記入と実課金が食い違う）のうち、実課金か需要が昇格を検討する水準の人。</p>\n'
+    )
+    review = (
+        f'    <div class="callout">{_uname("review@example.com")}（需要 $480・実課金 $0.00）</div>\n'
+        '    <p class="lead">管理画面で設定を確かめ、members-info.csv の「追加クレジット上限」に記入してください。</p>\n'
+    )
+    empty = '    <div class="empty">該当者なし。</div>\n'
+    tail = '  </div>\n</section>\n'
+    assert actual == head + (grant if has_grant else empty) + middle + (review if has_review else empty) + tail
+    # 上限の記入状態で V2 の空表示を変えない。V1 の排他的な3状態は既存の全文検査が固定する。
+    assert _render(_GRANT_HTML, v2=True, credit_shown=False, **context) == actual
+    legacy = [{"email": "grant@example.com", "mode": "disabled", "added": 270}] if has_grant else []
+    legacy_context = {"grant_candidates": _grant_candidates_view(legacy),
+                      "credit_shown": True, "grant_cap_fmt": "$150"}
+    assert _render(_GRANT_HTML, v2=False, **legacy_context) == _render(_GRANT_HTML, **legacy_context)

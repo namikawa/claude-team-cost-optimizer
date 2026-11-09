@@ -16,7 +16,13 @@ from pathlib import Path
 from ..analyze import AnalysisResult, OrgAnalysisResult, own_demand_users
 from . import spaces
 from .document import _atomic_write
-from .format import _account_rows, _scope_label, _sole_result, _sort_for_display
+from .format import (
+    _account_rows,
+    _decision_version,
+    _scope_label,
+    _sole_result,
+    _sort_for_display,
+)
 from .markdown import (
     _code_diff_md,
     _detail_table_md,
@@ -44,11 +50,12 @@ def _intro(result: AnalysisResult | OrgAnalysisResult) -> str:
 
 def _sections(result: AnalysisResult) -> list[str]:
     """details.md に載せる section の本文（データが無い section は空文字列）。"""
+    v2 = _decision_version(result) == "v2"
     s = result.summary
     users = _sort_for_display(result.users, "status", STATUS_ORDER, "monthly_saving_usd")
 
     blocks = [
-        f"## 全ユーザ\n\n{_user_table_md(users)}\n\n{_user_legend_md(s)}",
+        f"## 全ユーザ\n\n{_user_table_md(users, v2=v2)}\n\n{_user_legend_md(s, v2=v2)}",
         _notes_md(users),
         *_group_blocks(users, s),
     ]
@@ -56,11 +63,11 @@ def _sections(result: AnalysisResult) -> list[str]:
     blocks += [
         _detail_table_md(users),
         _stats_md(distributions(result.users, result.product_usage)),
-        _snapshot_md(result.snapshot),
+        _snapshot_md(result.snapshot, v2=v2),
         _code_diff_md(result.code_diff),
         _member_changes_md(result.member_changes),
         _e_distribution_md(result.e_distribution),
-        _sensitivity_md(users),
+        "" if v2 else _sensitivity_md(users),
     ]
     return blocks
 
@@ -85,6 +92,7 @@ def _sections_multi(org: OrgAnalysisResult) -> list[str]:
     サマリと備考は人の層から作る（アカウント数を人数として数えない）。workspace
     固有の section は見出しに表示名を添えて主→副の順に並べる。
     """
+    v2 = _decision_version(org) == "v2"
     results = org.workspaces
     labels = {name: org.contexts[name].label for name in results}
     judged = _account_rows(org, {name: r.users for name, r in results.items()})
@@ -97,8 +105,8 @@ def _sections_multi(org: OrgAnalysisResult) -> list[str]:
     own = {name: own_demand_users(r) for name, r in results.items()}
 
     blocks = [
-        (f"## 全ユーザ\n\n{_user_table_md(users, space=True)}\n\n"
-         f"{_user_legend_md({'credit_shown': credit_shown}, spaces.account_legend_lines(org))}"),
+        (f"## 全ユーザ\n\n{_user_table_md(users, space=True, v2=v2)}\n\n"
+         f"{_user_legend_md(summary if v2 else {'credit_shown': credit_shown}, spaces.account_legend_lines(org), v2=v2)}"),
         _notes_md(persons_sorted),
         *_group_blocks(persons, summary),
         spaces.persons_md(org),
@@ -108,7 +116,7 @@ def _sections_multi(org: OrgAnalysisResult) -> list[str]:
         _stats_md(distributions(own[name], r.product_usage), labels[name])
         for name, r in results.items()
     ]
-    blocks += [_snapshot_md(r.snapshot, labels[name]) for name, r in results.items()]
+    blocks += [_snapshot_md(r.snapshot, labels[name], v2=v2) for name, r in results.items()]
     blocks += spaces.switch_observation_md(org)
     blocks += [_code_diff_md(r.code_diff, labels[name]) for name, r in results.items()]
     blocks += [_member_changes_md(r.member_changes, labels[name])
@@ -121,7 +129,7 @@ def _sections_multi(org: OrgAnalysisResult) -> list[str]:
         _sensitivity_md(
             _sort_for_display(r.users, "status", STATUS_ORDER, "monthly_saving_usd"),
             labels[name])
-        for name, r in results.items() if not org.contexts[name].fixed_seat
+        for name, r in results.items() if not v2 and not org.contexts[name].fixed_seat
     ]
     return blocks
 
@@ -132,6 +140,7 @@ def write_details(result: AnalysisResult | OrgAnalysisResult, path: Path) -> Non
     OrgAnalysisResult は、複数 workspace の組織なら workspace ごとの section と人の層の
     表を持つ形で書き、そうでなければ唯一の workspace の結果で従来どおりに書く。
     """
+    _decision_version(result)
     if isinstance(result, OrgAnalysisResult) and result.has_multiple_workspaces:
         blocks = _sections_multi(result)
     else:

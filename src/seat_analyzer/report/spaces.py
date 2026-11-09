@@ -27,6 +27,7 @@ from ..analyze import (
     PersonLayer,
 )
 from .format import (
+    _decision_version,
     _fmt_compact,
     _fmt_delta,
     _fmt_tokens,
@@ -38,7 +39,7 @@ from .format import (
     _text_value,
 )
 from .naming import DETAILS
-from .text import STATUS_ORDER
+from .text import STATUS_ORDER, _judgment_months_v2
 
 # 払い出し判定の表の並び（対応が明確なものから）。「不要」は表に出さず人数だけを書く
 PAYOUT_ORDER = (PAYOUT_CANDIDATE, PAYOUT_WATCH, PAYOUT_NO_EVIDENCE)
@@ -90,7 +91,12 @@ def space_list(org: OrgAnalysisResult) -> str:
 
 
 def judgment_months_text(org: OrgAnalysisResult) -> str:
-    """分析済みのスペースごとの判定に使用した月（表示名・workspace の順）。"""
+    """判定に使用した月。V1 は各スペース、V2 は主の共通履歴と完全月数の下限。"""
+    if _decision_version(org) == "v2":
+        primary = org.workspaces.get(org.primary)
+        summary = (primary or next(iter(org.workspaces.values()))).summary
+        return (f"{org.contexts[org.primary].label}: "
+                + _judgment_months_v2(summary, org.month, missing=primary is None))
     return " / ".join(
         f"{org.contexts[name].label}: {', '.join(result.summary['judgment_months'])}"
         for name, result in org.workspaces.items()
@@ -112,15 +118,30 @@ MERGED_DEMAND_NOTE = (
 )
 
 
+def _secondary_labels(org: OrgAnalysisResult) -> list[str]:
+    """固定シートでない、分析済みの副 workspace の表示名。"""
+    return [org.contexts[name].label for name in org.workspaces
+            if name != org.primary and not org.contexts[name].fixed_seat]
+
+
 def account_legend_lines(org: OrgAnalysisResult) -> tuple[str, ...]:
     """アカウントを連結した判定表（全ユーザ・シート変更推奨）の凡例に足す行。"""
+    v2 = _decision_version(org) == "v2"
     lines = []
     fixed = fixed_seat_labels(org)
     if fixed:
         lines.append(
             f"- **対象外（固定シート）**: 運用方針でシート種別を固定したスペース"
-            f"（{'・'.join(fixed)}）のアカウント。Standard / Premium の損益分岐判定は"
-            "行わない（続けるか戻すかは「複数スペースの利用」の継続判定）"
+            f"（{'・'.join(fixed)}）のアカウント。Standard / Premium の"
+            + ("シート判定は" if v2 else "損益分岐判定は")
+            + "行わない（続けるか戻すかは「複数スペースの利用」の継続判定）"
+        )
+    secondary = _secondary_labels(org)
+    if v2 and secondary:
+        lines.append(
+            "- **対象外（副スペース）**: 固定シートを設定していない副スペース"
+            f"（{'・'.join(secondary)}）のアカウント。シート判定は主スペースのアカウントで行い、"
+            "副のアカウントは判定しない（続けるか戻すかは「複数スペースの利用」の継続判定）"
         )
     lines.append(f"- **API換算需要（複数スペース）**: {MERGED_DEMAND_NOTE}")
     return tuple(lines)
@@ -128,8 +149,24 @@ def account_legend_lines(org: OrgAnalysisResult) -> tuple[str, ...]:
 
 def notes_lines(org: OrgAnalysisResult) -> list[str]:
     """注意事項に足す行（末尾の句点は使う側で付ける）。"""
+    v2 = _decision_version(org) == "v2"
     lines = []
     fixed = fixed_seat_labels(org)
+    if v2:
+        for label, labels, description in (
+            ("固定シート", fixed, "運用方針でシート種別を固定した"),
+            ("副スペース", _secondary_labels(org), "固定シートを設定していない副"),
+        ):
+            if labels:
+                lines.append(
+                    f"対象外（{label}）は{description}スペース（{'・'.join(labels)}）のアカウントで、"
+                    "シート判定と追加クレジットの付与候補・設定確認の対象にしていません"
+                )
+        lines.append(
+            "人数以外の件数（変更推奨・要観察・一覧の件数）はアカウント単位です"
+            "（同じ人が複数のスペースで数えられることがあります）"
+        )
+        return lines
     if fixed:
         lines.append(
             f"対象外（固定シート）は運用方針でシート種別を固定したスペース（{'・'.join(fixed)}）の"
@@ -396,6 +433,18 @@ PERSON_LEGEND = (
 )
 
 
+def _person_legend(org: OrgAnalysisResult) -> tuple[str, ...]:
+    """人の層の凡例を判定の版に合わせる。"""
+    if _decision_version(org) != "v2":
+        return PERSON_LEGEND
+    return (
+        *PERSON_LEGEND[:-1],
+        ("シート判定はアカウントの V2 判定（どれかのアカウントが変更推奨ならその判定、無ければ主の"
+         "アカウントの判定）。シート変更の削減/月は V2 の変更推奨によるシート差額ベースの比較額"
+         "（負は費用増）で、「複数スペースの利用」の継続判定（戻す候補・削減見込み/月）とは別の値"),
+    )
+
+
 def persons_md(org: OrgAnalysisResult) -> str:
     """details.md の「## 人別の利用」（全員1人1行）。"""
     rows, columns = person_rows(org)
@@ -425,7 +474,7 @@ def persons_md(org: OrgAnalysisResult) -> str:
             cells.append("—" if _is_missing(r["loc"]) else f"{int(r['loc']):,}")
         lines.append("| " + " | ".join(_md_cell(c) for c in cells) + " |")
     lines.append("")
-    lines += [f"- {line}" for line in PERSON_LEGEND]
+    lines += [f"- {line}" for line in _person_legend(org)]
     return "\n".join(lines)
 
 
@@ -676,7 +725,7 @@ def spaces_view(org: OrgAnalysisResult) -> dict:
         "overview": overview_lines(org, _fmt_compact),
         "persons": persons,
         "person_columns": columns,
-        "person_legend": PERSON_LEGEND,
+        "person_legend": _person_legend(org),
         "payout": payout,
         "unneeded": unneeded,
         "continuation": continuation_rows(org, _fmt_compact),
