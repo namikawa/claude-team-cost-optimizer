@@ -14,10 +14,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from seat_analyzer import analyze, claude_export, github_collect, ingest, seat_changes
+from seat_analyzer import (
+    analyze,
+    claude_export,
+    decision_evidence,
+    github_collect,
+    ingest,
+    seat_changes,
+)
 from seat_analyzer.analyze import pipeline
 from seat_analyzer.claude_export import list_chrome_pids
 from seat_analyzer.cli import main
+from seat_analyzer.config import load_config
+from seat_analyzer.domain import ReasonCode
 from seat_analyzer.github_collect import (
     PR_CACHE_DIRNAME,
     PR_CACHE_SCHEMA,
@@ -36,8 +45,10 @@ from seat_analyzer.report import (
     REPORT,
     USAGE_SUMMARY,
 )
+from seat_analyzer.report.format import _fmt_usd
 
 from .conftest import CONFIG, REPO_ROOT, SPEND_HEADER, out_file, spend_row
+from .test_decision_evidence import _with_uuid, _write_info
 
 
 def _run(input_dir: Path, tmp_path: Path, *extra: str) -> tuple[int, Path]:
@@ -278,17 +289,17 @@ def test_flat_layout_errors_in_discuss(make_input, tmp_path, capsys):
     _assert_migration_guidance(capsys.readouterr().err)
 
 
-# --- --decision-version（V2 判定の根拠の併記） ---
+# --- --decision-version（V2 判定の主成果物と根拠） ---
 #
 # 判定そのものは tests/test_decision_evidence.py が固定する。ここで確かめるのは
-# 「どの実行で decision-evidence を書くか」と「V1 の成果物が変わらないこと」。
+# 「V2 の結論を主成果物へ写すこと」と「V1 の成果物が変わらないこと」。
 
-# V1 の成果物5種（decision-evidence を書いても1バイトも変わらないこと）
+# 主成果物5種（明示した v1 は既定の実行とバイト一致すること）
 _V1_ARTIFACTS = (REPORT, DETAILS, DASHBOARD, RECOMMENDATIONS, USAGE_SUMMARY)
 
 
 def _v2_config(tmp_path: Path) -> str:
-    """V2 判定を既定で併記する上書き設定（他のキーは既定のまま）。"""
+    """V2 判定を既定にする上書き設定（他のキーは既定のまま）。"""
     path = tmp_path / "config.yaml"
     path.write_text("decision:\n  version: v2\n", encoding="utf-8", newline="\n")
     return str(path)
@@ -308,7 +319,9 @@ def test_decision_evidence_is_not_written_by_default(make_input, tmp_path, capsy
     rc, out = _run(input_dir, tmp_path, "--month", "2026-06", "--org", "org-a")
     assert rc == 0
     assert not out_file(out, DECISION_EVIDENCE).exists()
-    assert "evidence:" not in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "evidence:" not in printed
+    assert f"{out_file(out, DECISION_EVIDENCE).name} は今回の実行では更新されません" not in printed
 
 
 def test_decision_version_v2_writes_the_evidence(make_input, tmp_path, capsys):
@@ -322,56 +335,92 @@ def test_decision_version_v2_writes_the_evidence(make_input, tmp_path, capsys):
     printed = capsys.readouterr().out
     assert f"evidence: {path}" in printed
     assert "V2判定:" in printed
+    assert f"{path.name} は今回の実行では更新されません" not in printed
 
 
-def test_v2_does_not_change_the_v1_artifacts(make_input, tmp_path):
-    """V2 の併記は V1 の成果物を1バイトも変えない。"""
-    input_dir = _make_two_orgs(make_input)
-    v1_out, v2_out = tmp_path / "v1", tmp_path / "v2"
-    assert _run_with(input_dir, v1_out, CONFIG, "--org", "org-a") == 0
-    assert _run_with(input_dir, v2_out, CONFIG, "--org", "org-a",
-                     "--decision-version", "v2") == 0
+def _assert_v2_artifacts(out, org="org-a"):
+    """V2 の列構成とサマリを確認する。"""
+    rows = _csv_rows(out_file(out, RECOMMENDATIONS, org=org))
+    columns = list(rows[0])
+    assert "reason" in columns
+    assert columns[columns.index("confidence") + 1] == "reason"
+    assert not {"cost_if_standard_usd", "cost_if_premium_usd", "rec_low", "rec_high",
+                "cap_suspected"}.intersection(columns)
+    assert "上限到達疑い（Standard）" not in out_file(out, REPORT, org=org).read_text(encoding="utf-8")
+
+
+def _csv_rows(path):
+    with path.open(encoding="utf-8-sig", newline="") as source:
+        return list(csv.DictReader(source))
+
+
+def _assert_same_artifacts(actual, expected):
     for artifact in _V1_ARTIFACTS:
-        assert out_file(v2_out, artifact).read_bytes() == \
-            out_file(v1_out, artifact).read_bytes()
-    # 増えるのは根拠 CSV の1ファイルだけ
-    assert {p.name for p in (v2_out / "org-a" / "2026-06").iterdir()} - \
-        {p.name for p in (v1_out / "org-a" / "2026-06").iterdir()} == \
-        {DECISION_EVIDENCE.name("2026-06", "org-a")}
+        assert out_file(actual, artifact).read_bytes() == out_file(expected, artifact).read_bytes()
 
 
-def test_config_can_enable_the_evidence_and_the_flag_can_turn_it_off(
-    make_input, tmp_path
-):
-    """設定の decision.version で併記でき、--decision-version v1 で戻せる。"""
+def test_v2_changes_main_artifacts_and_explicit_v1_matches_default(make_input, tmp_path):
+    """V2 は主成果物を変え、明示した V1 は既定の成果物を保つ。"""
+    input_dir = _make_two_orgs(make_input)
+    default, v1, v2 = (tmp_path / name for name in ("default", "v1", "v2"))
+    for out, args in ((default, ()), (v1, ("--decision-version", "v1")),
+                      (v2, ("--decision-version", "v2"))):
+        assert _run_with(input_dir, out, CONFIG, "--org", "org-a", *args) == 0
+    _assert_same_artifacts(v1, default)
+    _assert_v2_artifacts(v2)
+    names = {a.name("2026-06", "org-a") for a in _V1_ARTIFACTS}
+    for out in (default, v1):
+        assert {p.name for p in (out / "org-a" / "2026-06").iterdir()} == names
+    assert {p.name for p in (v2 / "org-a" / "2026-06").iterdir()} == names | {
+        DECISION_EVIDENCE.name("2026-06", "org-a")}
+
+
+def test_config_enables_v2_artifacts_and_the_flag_restores_v1(make_input, tmp_path):
+    """設定の V2 も主成果物へ写し、CLI の V1 指定で既定の成果物へ戻せる。"""
     input_dir = _make_two_orgs(make_input)
     config = _v2_config(tmp_path)
-    enabled_out, back_out = tmp_path / "on", tmp_path / "off"
-    assert _run_with(input_dir, enabled_out, config, "--org", "org-a") == 0
-    assert out_file(enabled_out, DECISION_EVIDENCE).is_file()
-
-    assert _run_with(input_dir, back_out, config, "--org", "org-a",
-                     "--decision-version", "v1") == 0
-    assert not out_file(back_out, DECISION_EVIDENCE).exists()
-    for artifact in _V1_ARTIFACTS:
-        assert out_file(enabled_out, artifact).read_bytes() == out_file(back_out, artifact).read_bytes()
+    enabled, back, default = (tmp_path / name for name in ("on", "off", "default"))
+    assert _run_with(input_dir, enabled, config, "--org", "org-a") == 0
+    _assert_v2_artifacts(enabled)
+    assert out_file(enabled, DECISION_EVIDENCE).is_file()
+    assert _run_with(input_dir, back, config, "--org", "org-a", "--decision-version", "v1") == 0
+    assert not out_file(back, DECISION_EVIDENCE).exists()
+    assert _run_with(input_dir, default, CONFIG, "--org", "org-a") == 0
+    _assert_same_artifacts(back, default)
 
 
 def test_v1_run_warns_about_a_leftover_evidence_file(make_input, tmp_path, capsys):
-    """V1 で実行したときに前回の根拠 CSV が残っていれば知らせる（消さない）。"""
+    """V1 への再生成は残存根拠を保ち、主成果物だけを V1 に戻す。"""
     input_dir = _make_two_orgs(make_input)
-    out = tmp_path / "reports"
-    assert _run_with(input_dir, out, CONFIG, "--org", "org-a",
-                     "--decision-version", "v2") == 0
+    out, reference = tmp_path / "reports", tmp_path / "reference"
+    assert _run_with(input_dir, out, CONFIG, "--org", "org-a", "--decision-version", "v2") == 0
     path = out_file(out, DECISION_EVIDENCE)
     before = path.read_bytes()
     capsys.readouterr()
-
     assert _run_with(input_dir, out, CONFIG, "--org", "org-a") == 0
     printed = capsys.readouterr().out
-    assert f"{path.name} は今回の実行では更新されません" in printed
-    assert "--decision-version v2" in printed
-    assert path.read_bytes() == before      # 旧い成果物はツールが動かさない
+    notice = (f"{path.name} は今回の実行では更新されません"
+              "（今回の主成果物は V1 判定で、このファイルは前回の V2 判定の根拠です。"
+              "--decision-version v2 で再実行すると主成果物も V2 判定になります。"
+              "V1 と V2 を並べて比べるときは、別の --output-dir へ出力してください）")
+    assert notice in printed
+    assert path.read_bytes() == before
+    assert _run_with(input_dir, reference, CONFIG, "--org", "org-a", "--decision-version", "v1") == 0
+    _assert_same_artifacts(out, reference)
+    for artifact in _V1_ARTIFACTS:
+        assert notice not in out_file(out, artifact).read_text(encoding="utf-8-sig")
+
+
+def test_v2_after_v1_does_not_warn_about_stale_evidence(make_input, tmp_path, capsys):
+    input_dir = _make_two_orgs(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, CONFIG, "--org", "org-a", "--decision-version", "v1") == 0
+    capsys.readouterr()
+    assert _run_with(input_dir, out, CONFIG, "--org", "org-a", "--decision-version", "v2") == 0
+    path = out_file(out, DECISION_EVIDENCE)
+    printed = capsys.readouterr().out
+    assert f"evidence: {path}" in printed
+    assert f"{path.name} は今回の実行では更新されません" not in printed
 
 
 @pytest.mark.parametrize("version", ["v1", "v2"])
@@ -427,10 +476,14 @@ def test_v1_run_adds_no_extra_computation(make_input, tmp_path, monkeypatch):
     input_dir = _make_two_orgs(make_input)      # org-a は 2026-05・2026-06 の2ヶ月
     features = _counting(monkeypatch, pipeline, "compute_product_usage")
     detect = _counting(monkeypatch, seat_changes, "detect_from_input")
+    evaluate = _counting(monkeypatch, decision_evidence, "evaluate_org")
+    apply = _counting(monkeypatch, decision_evidence, "apply")
 
     assert _run_with(input_dir, tmp_path / "reports", CONFIG, "--org", "org-a") == 0
     assert len(features) == 1     # 対象月のみ（過去月の特徴量は計算しない）
     assert detect == []
+    assert evaluate == []
+    assert apply == []
 
 
 def test_v2_run_computes_only_target_month_features_and_detects_changes(
@@ -440,11 +493,144 @@ def test_v2_run_computes_only_target_month_features_and_detects_changes(
     input_dir = _make_two_orgs(make_input)
     features = _counting(monkeypatch, pipeline, "compute_product_usage")
     detect = _counting(monkeypatch, seat_changes, "detect_from_input")
+    evaluate = _counting(monkeypatch, decision_evidence, "evaluate_org")
+    apply = _counting(monkeypatch, decision_evidence, "apply")
 
     assert _run_with(input_dir, tmp_path / "reports", CONFIG,
                      "--decision-version", "v2") == 0
     assert len(features) == 2     # org-a・org-b の対象月だけ（過去月は計算しない）
     assert len(detect) == 2       # 組織ごとに1度
+    assert len(evaluate) == 2
+    assert len(apply) == 2
+
+
+def _v2_cli_input(make_input, write_member_snapshots, org="org-a"):
+    """昇格・降格・要観察・履歴不足・維持・対象外を持つ単一 workspace。"""
+    names = ("upgrade", "idle", "grant", "review", "keep", "excluded", "observe", "conflict")
+    emails = [f"{name}@example.com" for name in names]
+    seats = ("Standard", "Premium", "Standard", "Standard", "Standard", "Unassigned",
+             "Premium", "Standard")
+    months = {
+        month: [_with_uuid(email, 10, f"id-{i}", net=0) for i, email in enumerate(emails)]
+        for month in ("2026-04", "2026-05")}
+    months["2026-06"] = [
+        _with_uuid(email, cost, f"id-{i}", net=net)
+        for i, (email, cost, net) in enumerate(zip(
+            emails, (720, 0, 720, 680, 10, 0, 430, 100), (160, 0, 0, 0, 0, 0, 0, 0), strict=True))]
+    months["2026-06"].append(_with_uuid("conflict@example.com", 100, "other-id", net=0))
+    root = make_input(months, org=org)
+    members = [f"{email},{seat}" for email, seat in zip(emails, seats, strict=True)]
+    write_member_snapshots(root, {
+        "2026-05-10": members,
+        "2026-05-20": [*members, "joined@example.com,Premium"],
+        "2026-06-30": [*members, "joined@example.com,Premium"],
+    }, org=org)
+    _write_info(root / org, [f"{email},,,,{cap}," for email, cap in zip(
+        [*emails, "joined@example.com"], (200, 0, 0, "", 0, 0, 0, 0, 0), strict=True)])
+    return root
+
+
+def test_v2_recommendations_match_evidence(make_input, write_member_snapshots, tmp_path):
+    """主 workspace の結論・金額・確度・理由が根拠 CSV と対応する。"""
+    root = _v2_cli_input(make_input, write_member_snapshots)
+    out = tmp_path / "reports"
+    assert _run_with(root, out, CONFIG, "--decision-version", "v2") == 0
+    rows = _csv_rows(out_file(out, RECOMMENDATIONS))
+    evidence = {r["email"]: r for r in _csv_rows(out_file(out, DECISION_EVIDENCE))}
+    # 行が無くて対応の検査が素通りしないよう、結論の種類を先に固定する。
+    assert {analyze.STATUS_CHANGE, analyze.STATUS_WATCH, analyze.STATUS_WATCH_WAIT,
+            analyze.STATUS_KEEP, analyze.STATUS_EXCLUDED} <= {r["status"] for r in rows}
+    assert {"upgrade_to_premium", "downgrade_to_standard"} <= {
+        r["seat_action"] for r in evidence.values()}
+    assert evidence["conflict@example.com"]["status"] == "no_decision"
+    assert evidence["conflict@example.com"]["reason_codes"] == "IDENTITY_CONFLICT"
+    assert evidence["joined@example.com"]["status"] == "no_decision"
+    assert evidence["joined@example.com"]["reason_codes"] == "INSUFFICIENT_HISTORY"
+    cfg = load_config(CONFIG)
+    gap = cfg["seats"]["premium"]["price_usd"] - cfg["seats"]["standard"]["price_usd"]
+    no_decision = {
+        "CURRENT_SEAT_UNKNOWN": analyze.STATUS_UNKNOWN,
+        "IDENTITY_CONFLICT": analyze.STATUS_WATCH,
+        "PARTIAL_MONTH": analyze.STATUS_WATCH_WAIT,
+        "INSUFFICIENT_HISTORY": analyze.STATUS_WATCH_WAIT,
+    }
+    confidence = {"3": "高", "2": "中", "1": "低", "": "—"}
+    for row in rows:
+        ev = evidence[row["email"]]
+        seat = row["current_seat"]
+        # 表は実装の変換関数を呼ばず、公開 CSV の対応規則を表す。
+        actions = {
+            "upgrade_to_premium": (analyze.STATUS_CHANGE, "premium",
+                                   round(float(ev["billed_extra_usd"]) - gap, 2)),
+            "downgrade_to_standard": (analyze.STATUS_CHANGE, "standard", gap),
+        }
+        statuses = {
+            "excluded": (analyze.STATUS_EXCLUDED if seat == "unassigned"
+                         else analyze.STATUS_FIXED_SEAT, seat, None),
+            "no_decision": (no_decision.get(ev["reason_codes"]), seat, None),
+            "observe": (analyze.STATUS_WATCH, seat, None),
+        }
+        status, recommended, saving = statuses.get(ev["status"], actions.get(
+            ev["seat_action"], (analyze.STATUS_KEEP, seat, 0)))
+        assert (row["status"], row["recommended_seat"]) == (status, recommended)
+        if saving is None:
+            assert row["monthly_saving_usd"] == ""
+        else:
+            assert float(row["monthly_saving_usd"]) == saving
+        assert row["confidence"] == confidence[ev["policy_stability"]]
+        assert row["reason"] == "; ".join(
+            decision_evidence.REASON_LABELS[ReasonCode(code)]
+            for code in ev["reason_codes"].split(";") if code)
+
+
+def _recommendation_totals(rows):
+    changes = [r for r in rows if r["status"] == analyze.STATUS_CHANGE]
+    return (len(changes), round(sum(float(r["monthly_saving_usd"]) for r in changes), 2),
+            sum(r["status"].startswith("要観察") for r in rows))
+
+
+def _assert_report_totals(out, org, totals):
+    changes, saving, watching = totals
+    source = out_file(out, REPORT, org=org).read_text(encoding="utf-8")
+    assert f"| **変更推奨** | **{changes} 名（削減見込み {_fmt_usd(saving)} /月）** |" in source
+    assert f"| 要観察 | {watching} 名 |" in source
+
+
+def test_v2_summaries_match_recommendations(make_input, write_member_snapshots, tmp_path):
+    root = _v2_cli_input(make_input, write_member_snapshots, "org-a")
+    _v2_cli_input(make_input, write_member_snapshots, "org-b")
+    out = tmp_path / "reports"
+    assert _run_with(root, out, CONFIG, "--decision-version", "v2") == 0
+    summary = (out / "summary" / "2026-06.md").read_text(encoding="utf-8")
+    for org in ("org-a", "org-b"):
+        totals = _recommendation_totals(_csv_rows(out_file(out, RECOMMENDATIONS, org=org)))
+        assert totals[2] > 0
+        _assert_report_totals(out, org, totals)
+        line = next(line for line in summary.splitlines() if line.startswith(f"| [{org}]"))
+        assert line.endswith(f"| {totals[0]} 名 | {_fmt_usd(totals[1])} |")
+
+
+def test_nested_v2_report_matches_all_workspace_recommendations(make_input, tmp_path):
+    root, config = _nested_ready(make_input, tmp_path)
+    out = tmp_path / "reports"
+    assert _run_with(root, out, config, "--decision-version", "v2") == 0
+    rows = _csv_rows(out_file(out, RECOMMENDATIONS, org="org-x"))
+    assert {r["workspace"] for r in rows} == {"main", "second"}
+    _assert_report_totals(out, "org-x", _recommendation_totals(rows))
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_cli_prints_cap_suspicion_only_for_v1(make_input, tmp_path, capsys, nested, version):
+    if nested:
+        root, config = _nested_ready(make_input, tmp_path)
+    else:
+        root, config = _make_two_orgs(make_input), CONFIG
+    assert _run_with(root, tmp_path / "reports", config, "--decision-version", version) == 0
+    printed = capsys.readouterr().out
+    assert "要観察:" in printed
+    assert ("上限到達疑い" in printed) is (version == "v1")
+    assert ("V2判定:" in printed) is (version == "v2")
 
 
 # --- github-summary（GitHub 由来の参考値） ---

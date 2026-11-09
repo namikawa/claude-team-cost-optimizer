@@ -1,0 +1,7 @@
+﻿email,total_demand_usd,code_demand_usd,code_demand_share,total_requests,code_requests,product_breadth,supplementary_high,prohibited_observed
+abe@example.co.jp,46.00,0.00,0.0000,184,0,1,False,False
+endo@example.co.jp,8.00,0.00,0.0000,32,0,1,False,False
+kudo@example.co.jp,320.00,192.00,0.6000,1280,768,2,True,False
+mori@example.co.jp,520.00,364.00,0.7000,2080,1456,3,True,False
+shimizu@example.co.jp,48.00,48.00,1.0000,192,192,1,False,False
+tanabe@example.co.jp,180.00,144.00,0.8000,720,576,2,False,False

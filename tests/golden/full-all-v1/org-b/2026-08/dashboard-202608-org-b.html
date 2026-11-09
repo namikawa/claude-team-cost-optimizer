@@ -1,0 +1,1502 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Team シート最適化 — org-b — 2026-08</title>
+<style>
+  :root {
+    color-scheme: light;
+    --sans: "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+            "Hiragino Sans", "Noto Sans JP", monospace;
+    --bg: #f4f5f3;
+    --surface: #ffffff;
+    --surface-2: #f1f3f0;
+    --line: #e3e6e2;
+    --line-2: #eef0ed;
+    --ink: #14181a;
+    --ink-2: #495256;
+    --muted: #676f74;
+    --hover: #f8f9f7;
+    --accent: #0d796f;
+    --accent-soft: #e2f2ef;
+    --std: #2f6f9b;
+    --std-soft: #e6eef5;
+    --prem: #a8601c;
+    --prem-soft: #f9eede;
+    --warn: #bd4038;
+    --warn-soft: #fbeae8;
+    --amber: #8d6717;
+    --amber-soft: #faf1dd;
+    --track: #e8ebe7;
+    --dim: #697478;
+    --shadow: 0 1px 2px rgba(20,24,26,.05), 0 14px 32px -22px rgba(20,24,26,.22);
+    --bar-head: 276px;
+    --bar-tail: 124px;
+  }
+  @media (prefers-color-scheme: dark) {
+    html:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0c0f11;
+      --surface: #15191b;
+      --surface-2: #1b2022;
+      --line: #262c2f;
+      --line-2: #202628;
+      --ink: #e9edea;
+      --ink-2: #b0b9ba;
+      --muted: #848e90;
+      --hover: #1b2123;
+      --accent: #2fbfae;
+      --accent-soft: #12302d;
+      --std: #63aada;
+      --std-soft: #16262f;
+      --prem: #e09a4e;
+      --prem-soft: #2e2314;
+      --warn: #e8776a;
+      --warn-soft: #331d1b;
+      --amber: #d9a94a;
+      --amber-soft: #2f2713;
+      --track: #242a2c;
+      --dim: #80898b;
+      --shadow: 0 1px 2px rgba(0,0,0,.5), 0 16px 34px -24px rgba(0,0,0,.8);
+    }
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0c0f11;
+    --surface: #15191b;
+    --surface-2: #1b2022;
+    --line: #262c2f;
+    --line-2: #202628;
+    --ink: #e9edea;
+    --ink-2: #b0b9ba;
+    --muted: #848e90;
+    --hover: #1b2123;
+    --accent: #2fbfae;
+    --accent-soft: #12302d;
+    --std: #63aada;
+    --std-soft: #16262f;
+    --prem: #e09a4e;
+    --prem-soft: #2e2314;
+    --warn: #e8776a;
+    --warn-soft: #331d1b;
+    --amber: #d9a94a;
+    --amber-soft: #2f2713;
+    --track: #242a2c;
+    --dim: #80898b;
+    --shadow: 0 1px 2px rgba(0,0,0,.5), 0 16px 34px -24px rgba(0,0,0,.8);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; }
+  h1, h2 { margin: 0; }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    background: var(--surface); border-bottom: 1px solid var(--line);
+  }
+  .topbar-inner { max-width: 1600px; margin: 0 auto; padding: 20px 36px 0; }
+  .topbar-row {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 32px; flex-wrap: wrap;
+  }
+  .topbar-left { display: flex; flex-direction: column; gap: 8px; }
+  .crumbs {
+    display: flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .crumbs .org {
+    padding: 3px 9px; border: 1px solid var(--line); border-radius: 999px;
+    color: var(--ink-2);
+  }
+  .crumbs .sep { color: var(--dim); }
+  .page-title { font-size: 24px; font-weight: 600; letter-spacing: -.01em; }
+  .topbar-right { display: flex; align-items: center; gap: 20px; padding-top: 4px; }
+  .hero { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+  .hero-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .08em; color: var(--muted);
+  }
+  .hero-value {
+    font-family: var(--mono); font-size: 19px; font-weight: 600; color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .theme-switch {
+    display: none; gap: 2px; padding: 3px;
+    background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px;
+  }
+  html.js .theme-switch { display: flex; }
+  .theme-btn {
+    border: 1px solid transparent; background: transparent; color: var(--muted);
+    cursor: pointer;
+    padding: 5px 12px; border-radius: 999px; font-size: 12px; font-weight: 500;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .theme-btn.is-active {
+    background: var(--surface); border-color: var(--dim); color: var(--ink);
+    box-shadow: var(--shadow);
+  }
+
+  .tabbar { display: none; gap: 4px; margin-top: 22px; flex-wrap: wrap; }
+  html.js .tabbar { display: flex; }
+  .tab {
+    display: flex; align-items: center; gap: 8px;
+    border: none; background: none; cursor: pointer;
+    padding: 10px 16px 14px; font-size: 13.5px; font-weight: 500; color: var(--muted);
+    transition: color .15s;
+  }
+  .tab.is-active { color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 0 var(--accent); }
+  .tab:hover { color: var(--ink); }
+  .tab-count {
+    font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 999px;
+    background: var(--surface-2); color: var(--muted);
+  }
+  .tab.is-active .tab-count { background: var(--accent-soft); color: var(--accent); }
+  .tabspacer { height: 22px; }
+
+  .main { max-width: 1600px; margin: 0 auto; padding: 32px 36px 96px; }
+  .tabpanel { display: block; }
+  .tabpanel + .tabpanel { margin-top: 28px; }
+  html.js .tabpanel { display: none; }
+  html.js .tabpanel.is-active { display: block; }
+  .panel-title {
+    font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 18px;
+  }
+  html.js .panel-title { display: none; }
+  .stack { display: flex; flex-direction: column; gap: 28px; }
+  .grid-2 {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(min(400px, 100%), 1fr));
+    gap: 20px; align-items: start;
+  }
+  .stack > .grid-2:not(:has(> *)) { display: none; }
+
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+  .kpis.five { grid-template-columns: repeat(5, 1fr); }
+  .kpi {
+    display: flex; flex-direction: column; gap: 10px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    padding: 20px 22px; box-shadow: var(--shadow);
+  }
+  .kpi .tag {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .kpi .v {
+    font-family: var(--mono); font-size: 32px; line-height: 1.05; font-weight: 600;
+    letter-spacing: -.02em; font-variant-numeric: tabular-nums; word-break: break-all;
+  }
+  .kpi.hl .v { color: var(--accent); }
+  .kpi .l { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .card-hd {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
+    padding: 16px 20px; border-bottom: 1px solid var(--line);
+  }
+  .card-hd h2 { font-size: 14.5px; font-weight: 600; }
+  .hd-main { display: flex; flex-direction: column; gap: 3px; }
+  .hd-sub { font-size: 12px; color: var(--muted); }
+  .hd-note { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .card-bd { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+  .card-bd.bars-bd { padding: 20px 22px; gap: 9px; }
+  .card-ft {
+    padding: 14px 20px; border-top: 1px solid var(--line);
+    font-size: 11.5px; color: var(--muted); line-height: 1.7;
+  }
+  .lead { margin: 0; font-size: 12.5px; color: var(--ink-2); line-height: 1.8; }
+
+  .legend {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    font-size: 11.5px; color: var(--muted);
+  }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+  .legend i.line { width: 3px; height: 13px; }
+  .k-std { background: var(--std); }
+  .k-prem { background: var(--prem); }
+  .k-accent { background: var(--accent); }
+  .k-dim { background: var(--dim); }
+  .k-median { background: var(--ink); }
+  .k-mean { background: repeating-linear-gradient(to bottom, var(--dim) 0 3px, transparent 3px 6px); }
+  .k-hatch {
+    background: repeating-linear-gradient(45deg, var(--dim) 0 3px, var(--track) 3px 6px);
+  }
+
+  .tablebox { overflow: auto; max-height: 540px; }
+  .tablebox.tall { max-height: 620px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th {
+    position: sticky; top: 0; z-index: 2;
+    text-align: left; padding: 11px 18px; white-space: nowrap;
+    background: var(--surface-2); border-bottom: 1px solid var(--line);
+    font-family: var(--mono); font-size: 11.5px; font-weight: 500; letter-spacing: .05em;
+    color: var(--muted);
+  }
+  td { padding: 13px 18px; border-bottom: 1px solid var(--line-2); }
+  tr:hover td { background: var(--hover); }
+  th.num, td.num {
+    text-align: right; white-space: nowrap;
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+  }
+  td.user {
+    max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-weight: 500;
+  }
+  td.sub { color: var(--ink-2); }
+  td.delta { color: var(--prem); font-weight: 500; }
+  td.code { color: var(--accent); }
+  td.dim { color: var(--dim); }
+  td.up { color: var(--prem); }
+  td.gain { font-weight: 500; }
+  td.gain.zero { color: var(--dim); }
+  .ink-code { color: var(--accent); }
+  .ink-dim { color: var(--dim); }
+  td.seat, td.judge { white-space: nowrap; font-size: 12.5px; }
+  td.wrap { font-size: 12px; color: var(--ink-2); line-height: 1.6; min-width: 200px; }
+  td.arrow { color: var(--dim); padding: 0 6px; }
+  td.save { color: var(--ink-2); }
+  td.save.pos { color: var(--accent); font-weight: 600; }
+  td.flag { color: var(--warn); font-weight: 600; font-size: 12px; }
+  td.latest { color: var(--ink); }
+  .to { font-weight: 600; }
+  .arrow { color: var(--dim); padding: 0 6px; }
+
+  .badge {
+    display: inline-block; border-radius: 999px; padding: 3px 9px;
+    font-size: 11.5px; font-weight: 600;
+  }
+  .b-change { background: var(--accent-soft); color: var(--accent); }
+  .b-watch { background: var(--amber-soft); color: var(--amber); }
+  .b-keep { background: var(--surface-2); color: var(--muted); }
+  .b-unknown { background: var(--warn-soft); color: var(--warn); }
+  .conf { color: var(--dim); font-size: 11px; margin-left: 6px; }
+  .cap { color: var(--warn); font-weight: 700; }
+  .seat-standard { color: var(--std); }
+  .seat-premium { color: var(--prem); }
+  .seat-unassigned, .seat-unknown { color: var(--dim); }
+
+  .bars { position: relative; display: flex; flex-direction: column; gap: 9px; }
+  .bar { display: flex; align-items: center; gap: 14px; }
+  .bar .rank {
+    width: 38px; text-align: right;
+    font-family: var(--mono); font-size: 11px; color: var(--dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .bar .name {
+    width: 210px; font-size: 12.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .bar .track {
+    flex: 1; height: 16px; border-radius: 4px; background: var(--track); position: relative;
+  }
+  .bar .fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 4px; }
+  .bar .val {
+    width: 110px; text-align: right; font-size: 12.5px;
+    font-family: var(--mono); font-variant-numeric: tabular-nums;
+  }
+  .bar .val.wide { width: 190px; font-size: 12px; color: var(--ink-2); }
+  .guides {
+    position: absolute; top: -2px; bottom: -2px;
+    left: var(--bar-head); right: var(--bar-tail);
+    pointer-events: none; z-index: 1;
+  }
+  .guide { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1px; border-radius: 2px; }
+  .g-median { background: var(--ink); }
+  .g-mean { background: repeating-linear-gradient(to bottom, var(--dim) 0 5px, transparent 5px 10px); }
+  .guide-key { display: inline-block; width: 3px; height: .95em; vertical-align: -1px; }
+  .fill-code { background: var(--accent); }
+  .fill-hatch {
+    background: repeating-linear-gradient(45deg, var(--dim) 0 4px, var(--track) 4px 8px);
+  }
+
+  .months { display: flex; flex-direction: column; gap: 14px; }
+  .m-row { display: flex; align-items: center; gap: 14px; }
+  .m-month { width: 64px; font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+  .m-tracks { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+  .m-track { height: 11px; border-radius: 3px; background: var(--track); position: relative; overflow: hidden; }
+  .m-fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; height: 100%; }
+  .m-api { background: var(--std); }
+  .m-billed { background: var(--accent); }
+  .m-billed.pos { min-width: 2px; }
+  .m-vals {
+    width: 110px; display: flex; flex-direction: column; gap: 5px; text-align: right;
+    font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums;
+  }
+  .m-vals .api { color: var(--std); }
+  .m-vals .billed { color: var(--accent); }
+  .m-active {
+    width: 56px; text-align: right;
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+  }
+
+  .prev-group { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+  .prev-hd { display: flex; align-items: center; gap: 10px; }
+  .kind {
+    font-family: var(--mono); font-size: 11px; padding: 2px 8px; border-radius: 999px;
+    white-space: nowrap;
+  }
+  .kind.started { background: var(--accent-soft); color: var(--accent); }
+  .kind.stopped { background: var(--warn-soft); color: var(--warn); }
+  .kind.billed { background: var(--amber-soft); color: var(--amber); }
+  .prev-n { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .people { display: flex; flex-direction: column; }
+  .person {
+    display: flex; align-items: center; gap: 12px;
+    padding: 7px 0; border-bottom: 1px solid var(--line-2);
+  }
+  .person .who {
+    font-size: 12.5px; color: var(--ink);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .person .amount {
+    margin-left: auto; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .empty { padding: 4px 0 8px; font-size: 12.5px; color: var(--muted); }
+
+  .creditbar { display: flex; gap: 6px; height: 8px; }
+  .creditbar span { border-radius: 99px; min-width: 4px; }
+  .creditbar .c-enabled { background: var(--accent); }
+  .creditbar .c-disabled { background: var(--track); }
+  .creditbar .c-unknown { background: var(--warn); }
+
+  .jrow { display: flex; align-items: center; gap: 12px; }
+  .jrow .label { width: 140px; font-size: 12.5px; color: var(--ink-2); }
+  .jrow .track { flex: 1; height: 10px; border-radius: 3px; background: var(--track); overflow: hidden; }
+  .jrow .fill { height: 100%; border-radius: 3px; }
+  .jrow .n {
+    width: 34px; text-align: right;
+    font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums;
+  }
+  .f-change { background: var(--accent); }
+  .f-watch { background: var(--amber); }
+  .f-keep { background: var(--muted); }
+  .f-unknown { background: var(--warn); }
+
+  .items { display: flex; flex-direction: column; }
+  .items li {
+    display: flex; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line-2);
+    font-size: 12.5px; color: var(--ink-2); line-height: 1.7;
+  }
+  .items li:last-child { border-bottom: none; }
+  .items li::before { content: "—"; color: var(--dim); }
+  .notes { display: flex; flex-direction: column; gap: 9px; }
+  .notes li {
+    display: flex; gap: 10px; font-size: 12px; color: var(--ink-2); line-height: 1.8;
+  }
+  .notes li::before { content: "—"; color: var(--dim); }
+  .notes.assumptions li { font-size: 12.5px; line-height: 1.85; }
+  ul.items, ul.notes { margin: 0; padding: 0; list-style: none; }
+  .uname { font-weight: 500; color: var(--ink); }
+  .callout {
+    padding: 12px 14px; background: var(--accent-soft); border-radius: 10px;
+    font-size: 12.5px; line-height: 1.7;
+  }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  .toolbar { display: none; }
+  html.js .toolbar {
+    display: flex; align-items: center; align-self: center; gap: 10px; flex-wrap: wrap;
+  }
+  .search, .filter {
+    padding: 7px 11px; background: var(--surface-2);
+    border: 1px solid var(--dim); border-radius: 8px;
+    color: var(--ink); font-family: var(--sans); font-size: 12.5px;
+    -webkit-appearance: none; appearance: none;
+    transition: background .15s, border-color .15s;
+  }
+  .search { width: 200px; }
+  .search::placeholder { color: var(--muted); }
+  .filter { cursor: pointer; }
+  .search:focus, .filter:focus { outline: none; border-color: var(--accent); }
+  .list-count {
+    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+
+  th.sortable { cursor: pointer; transition: color .15s; }
+  th.sortable:hover { color: var(--ink); }
+  .sort-ind { display: inline-block; min-width: 10px; margin-left: 6px; color: var(--accent); }
+
+  .grab { display: none; }
+  html.js .grab.is-on {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; height: 18px;
+    background: var(--surface-2); border-top: 1px solid var(--line);
+    cursor: ns-resize; touch-action: none; transition: background .15s;
+  }
+  html.js .grab.is-on:hover { background: var(--accent-soft); }
+  .grab span { width: 28px; height: 3px; border-radius: 2px; background: var(--dim); }
+  body.resizing { user-select: none; -webkit-user-select: none; }
+
+  .is-out { display: none; }
+</style>
+<script>
+(function () {
+  "use strict";
+
+  var root = document.documentElement;
+  var THEME_KEY = "seatdash-theme";
+  var theme = "auto";
+
+  var MIN_BOX_H = 180;
+
+  var lists = [];
+
+  function each(collection, fn) {
+    for (var i = 0; i < collection.length; i += 1) {
+      fn(collection[i], i);
+    }
+  }
+
+  function toArray(collection) {
+    var out = [];
+    each(collection, function (item) { out.push(item); });
+    return out;
+  }
+
+
+  function applyTheme(mode) {
+    if (mode === "light" || mode === "dark") {
+      root.setAttribute("data-theme", mode);
+    } else {
+      root.removeAttribute("data-theme");
+    }
+  }
+
+  function readTheme() {
+    try {
+      return window.localStorage.getItem(THEME_KEY);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveTheme(mode) {
+    try {
+      window.localStorage.setItem(THEME_KEY, mode);
+    } catch (e) {
+    }
+  }
+
+  root.className = root.className ? root.className + " js" : "js";
+  var saved = readTheme();
+  theme = (saved === "light" || saved === "dark") ? saved : "auto";
+  applyTheme(theme);
+
+  function markTheme() {
+    each(document.querySelectorAll("[data-theme-set]"), function (button) {
+      var on = button.getAttribute("data-theme-set") === theme;
+      if (on) {
+        button.classList.add("is-active");
+      } else {
+        button.classList.remove("is-active");
+      }
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+
+  function setTheme(mode) {
+    theme = mode;
+    applyTheme(mode);
+    markTheme();
+    saveTheme(mode);
+  }
+
+
+  function showTab(name) {
+    each(document.querySelectorAll(".tabpanel"), function (panel) {
+      var on = panel.getAttribute("data-tab") === name;
+      if (on) {
+        panel.classList.add("is-active");
+      } else {
+        panel.classList.remove("is-active");
+      }
+    });
+    each(document.querySelectorAll(".tab"), function (tab) {
+      var on = tab.getAttribute("data-tab") === name;
+      if (on) {
+        tab.classList.add("is-active");
+      } else {
+        tab.classList.remove("is-active");
+      }
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    refreshGrabs();
+  }
+
+
+  var UNITS = { B: 1e9, M: 1e6, K: 1e3 };
+  var NUMBER_RE = /-?\d+(?:\.\d+)?[BMK]?/;
+
+  function toNumber(text) {
+    var found = NUMBER_RE.exec(text.replace(/[\s,$+%]/g, ""));
+    if (!found) {
+      return -Infinity;
+    }
+    var token = found[0];
+    var unit = UNITS[token.charAt(token.length - 1)];
+    return unit ? parseFloat(token.slice(0, -1)) * unit : parseFloat(token);
+  }
+
+  function textOf(node) {
+    return node ? (node.textContent || "") : "";
+  }
+
+  function sortKey(row, index, numeric) {
+    var text = textOf(row.cells ? row.cells[index] : null);
+    return numeric ? toNumber(text) : text.replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  function compare(a, b) {
+    if (a === b) {
+      return 0;
+    }
+    return a < b ? -1 : 1;
+  }
+
+
+  function searchText(row) {
+    var cell = row.querySelector(".user, .name");
+    if (!cell) {
+      return "";
+    }
+    return (textOf(cell) + " " + (cell.getAttribute("title") || "")).toLowerCase();
+  }
+
+  function statusText(row) {
+    return textOf(row.querySelector(".judge .badge")).trim();
+  }
+
+  function show(element, on) {
+    if (on) {
+      element.classList.remove("is-out");
+    } else {
+      element.classList.add("is-out");
+    }
+  }
+
+  function apply(list) {
+    var matched = 0;
+    each(list.rows, function (row) {
+      var ok = true;
+      if (list.query && row._search.indexOf(list.query) < 0) {
+        ok = false;
+      }
+      if (ok && list.status && row._status !== list.status) {
+        ok = false;
+      }
+      if (ok) {
+        matched += 1;
+      }
+      show(row, ok);
+    });
+    if (list.count) {
+      var filtering = Boolean(list.query || list.status);
+      list.count.textContent = filtering
+        ? matched + " / " + list.rows.length + " " + list.unit + "（絞り込み中）"
+        : list.rows.length + " " + list.unit;
+    }
+    updateGrab(list);
+  }
+
+
+  function markSort(list) {
+    each(list.marks, function (mark, index) {
+      var on = index === list.sortCol;
+      mark.indicator.textContent = on ? (list.sortDir > 0 ? "↑" : "↓") : "";
+      mark.th.setAttribute(
+        "aria-sort", on ? (list.sortDir > 0 ? "ascending" : "descending") : "none");
+    });
+  }
+
+  function sortRows(list, index, dir) {
+    var numeric = list.numeric[index];
+    var keyed = [];
+    each(list.rows, function (row, at) {
+      keyed.push({ row: row, at: at, key: sortKey(row, index, numeric) });
+    });
+    keyed.sort(function (a, b) {
+      var order = compare(a.key, b.key);
+      return order === 0 ? a.at - b.at : dir * order;
+    });
+    var rows = [];
+    each(keyed, function (item) {
+      list.body.appendChild(item.row);
+      rows.push(item.row);
+    });
+    list.rows = rows;
+  }
+
+  function addSort(list) {
+    var head = list.table.tHead;
+    if (!head || head.rows.length === 0) {
+      return;
+    }
+    each(head.rows[head.rows.length - 1].cells, function (th, index) {
+      list.numeric.push(th.classList.contains("num"));
+      var indicator = document.createElement("span");
+      indicator.className = "sort-ind";
+      th.appendChild(indicator);
+      th.classList.add("sortable");
+      th.setAttribute("aria-sort", "none");
+      list.marks.push({ th: th, indicator: indicator });
+      th.addEventListener("click", function () {
+        list.sortDir = (list.sortCol === index) ? -list.sortDir
+          : (list.numeric[index] ? -1 : 1);
+        list.sortCol = index;
+        sortRows(list, index, list.sortDir);
+        markSort(list);
+      });
+    });
+  }
+
+
+  function updateGrab(list) {
+    if (!list.grab) {
+      return;
+    }
+    if (list.box.scrollHeight > MIN_BOX_H) {
+      list.grab.classList.add("is-on");
+    } else {
+      list.grab.classList.remove("is-on");
+    }
+  }
+
+  function refreshGrabs() {
+    each(lists, updateGrab);
+  }
+
+  var REFRESH_MS = 120;
+  var refreshTimer = 0;
+
+  function scheduleRefresh() {
+    if (refreshTimer) {
+      return;
+    }
+    refreshTimer = window.setTimeout(function () {
+      refreshTimer = 0;
+      refreshGrabs();
+    }, REFRESH_MS);
+  }
+
+  function watchSize() {
+    window.addEventListener("resize", scheduleRefresh);
+    if (window.ResizeObserver) {
+      var observer = new ResizeObserver(scheduleRefresh);
+      each(lists, function (list) {
+        if (list.box) {
+          observer.observe(list.box);
+        }
+      });
+    }
+  }
+
+  function addGrab(list) {
+    if (!window.PointerEvent) {
+      return null;
+    }
+    var box = list.box;
+    var grab = document.createElement("div");
+    grab.className = "grab";
+    grab.setAttribute("aria-hidden", "true");
+    grab.appendChild(document.createElement("span"));
+    grab.appendChild(document.createElement("span"));
+    box.parentNode.insertBefore(grab, box.nextSibling);
+    list.grab = grab;
+
+    var dragging = false;
+    var startY = 0;
+    var startH = 0;
+    var contentH = 0;
+
+    grab.addEventListener("pointerdown", function (ev) {
+      dragging = true;
+      startY = ev.clientY;
+      startH = box.clientHeight;
+      contentH = box.scrollHeight;
+      document.body.classList.add("resizing");
+      if (grab.setPointerCapture) {
+        grab.setPointerCapture(ev.pointerId);
+      }
+      ev.preventDefault();
+    });
+
+    grab.addEventListener("pointermove", function (ev) {
+      if (!dragging) {
+        return;
+      }
+      var wanted = startH + (ev.clientY - startY);
+      var upper = Math.max(MIN_BOX_H, contentH);
+      box.style.maxHeight = Math.max(MIN_BOX_H, Math.min(wanted, upper)) + "px";
+    });
+
+    function end(ev) {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      document.body.classList.remove("resizing");
+      if (grab.releasePointerCapture && grab.hasPointerCapture
+          && grab.hasPointerCapture(ev.pointerId)) {
+        grab.releasePointerCapture(ev.pointerId);
+      }
+    }
+
+    grab.addEventListener("pointerup", end);
+    grab.addEventListener("pointercancel", end);
+    return grab;
+  }
+
+
+  function closestCard(element) {
+    var node = element;
+    while (node && node.classList) {
+      if (node.classList.contains("card")) {
+        return node;
+      }
+      node = node.parentNode;
+    }
+    return null;
+  }
+
+  function toolbarOf(card) {
+    if (!card) {
+      return null;
+    }
+    var head = card.querySelector(".card-hd");
+    if (!head) {
+      return null;
+    }
+    var bar = head.querySelector(".toolbar");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "toolbar";
+      head.appendChild(bar);
+    }
+    return bar;
+  }
+
+  function addSearch(list, bar) {
+    var input = document.createElement("input");
+    input.type = "search";
+    input.className = "search";
+    input.placeholder = "ユーザを検索";
+    input.setAttribute("aria-label", "ユーザ名・メールアドレスで絞り込む");
+    bar.insertBefore(input, bar.firstChild);
+    input.addEventListener("input", function () {
+      list.query = input.value.trim().toLowerCase();
+      apply(list);
+    });
+  }
+
+  function addCount(list, bar) {
+    var count = document.createElement("span");
+    count.className = "list-count";
+    bar.appendChild(count);
+    list.count = count;
+  }
+
+  function addFilter(list, bar) {
+    var select = bar.querySelector("select[data-filter]");
+    if (!select) {
+      return;
+    }
+    select.addEventListener("change", function () {
+      list.status = select.value;
+      apply(list);
+    });
+  }
+
+
+  function newList(rows) {
+    var list = {
+      rows: rows, query: "", status: "",
+      numeric: [], marks: [], sortCol: -1, sortDir: 1,
+      count: null, grab: null, unit: "件",
+    };
+    lists.push(list);
+    return list;
+  }
+
+  function setUp(list, anchor) {
+    var person = false;
+    each(list.rows, function (row) {
+      row._search = searchText(row);
+      row._status = statusText(row);
+      person = person || row._search !== "";
+    });
+    list.unit = person ? "名" : "件";
+    if (person) {
+      var bar = toolbarOf(closestCard(anchor));
+      if (bar) {
+        addSearch(list, bar);
+        addFilter(list, bar);
+        addCount(list, bar);
+      }
+    }
+    apply(list);
+  }
+
+  function setUpTables() {
+    each(document.querySelectorAll(".tablebox"), function (box) {
+      var table = box.querySelector("table");
+      var body = table ? table.tBodies[0] : null;
+      if (!body) {
+        return;
+      }
+      var list = newList(toArray(body.rows));
+      list.box = box;
+      list.table = table;
+      list.body = body;
+      addSort(list);
+      addGrab(list);
+      setUp(list, box);
+    });
+  }
+
+  function setUpBars() {
+    each(document.querySelectorAll(".bars"), function (bars) {
+      var rows = [];
+      each(bars.children, function (child) {
+        if (child.classList && child.classList.contains("bar")) {
+          rows.push(child);
+        }
+      });
+      if (rows.length === 0) {
+        return;
+      }
+      setUp(newList(rows), bars);
+    });
+  }
+
+  function init() {
+    markTheme();
+    each(document.querySelectorAll("[data-theme-set]"), function (button) {
+      button.addEventListener("click", function (ev) {
+        setTheme(ev.currentTarget.getAttribute("data-theme-set"));
+      });
+    });
+    each(document.querySelectorAll(".tab"), function (tab) {
+      tab.addEventListener("click", function (ev) {
+        showTab(ev.currentTarget.getAttribute("data-tab"));
+      });
+    });
+    setUpTables();
+    setUpBars();
+    watchSize();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="topbar-row">
+      <div class="topbar-left">
+        <div class="crumbs"><span class="org">org-b</span><span>2026-08</span><span class="sep">/</span><span>Claude Team</span></div>
+        <h1 class="page-title">シート最適化ダッシュボード</h1>
+      </div>
+      <div class="topbar-right">
+        <div class="hero"><div class="hero-label">MONTHLY SAVING</div><div class="hero-value">$100</div></div>
+        <div class="theme-switch"><button type="button" class="theme-btn" data-theme-set="light" title="ライト">Light</button><button type="button" class="theme-btn" data-theme-set="dark" title="ダーク">Dark</button><button type="button" class="theme-btn is-active" data-theme-set="auto" title="OS設定に追従">Auto</button></div>
+      </div>
+    </div>
+    <nav class="tabbar" role="tablist" aria-label="セクション"><button type="button" class="tab is-active" role="tab" aria-selected="true" data-tab="overview">概要<span class="tab-count">10</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="actions">推奨アクション<span class="tab-count">10</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="members">メンバー別<span class="tab-count">10</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="org">組織<span class="tab-count">4</span></button><button type="button" class="tab" role="tab" aria-selected="false" data-tab="notes">前提と注意</button></nav>
+  </div>
+</header>
+<main class="main">
+
+<section class="tabpanel is-active" data-tab="overview" role="tabpanel">
+<h2 class="panel-title">概要</h2>
+<div class="stack">
+  <div class="kpis">
+    <div class="kpi"><div class="tag">MEMBERS</div><div class="v">10</div><div class="l">メンバー（Std 4 / Prem 4 / 未割当 1）</div></div>
+    <div class="kpi"><div class="tag">SEAT COST</div><div class="v">$600</div><div class="l">現在のシート費用 /月</div></div>
+    <div class="kpi"><div class="tag">API DEMAND</div><div class="v">$1122</div><div class="l">API換算利用額 /月</div></div>
+    <div class="kpi hl"><div class="tag">SAVING</div><div class="v">$100</div><div class="l">削減見込み /月（変更推奨 1 名）</div></div>
+  </div>
+  <div class="grid-2">
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>月次推移</h2></div></div>
+  <div class="card-bd">
+    <div class="months">
+      <div class="m-row">
+        <div class="m-month">2026-05</div>
+        <div class="m-tracks">
+          <div class="m-track"><div class="m-fill m-api" style="width: 60.2%"></div></div>
+          <div class="m-track"><div class="m-fill m-billed pos" style="width: 60.2%"></div></div>
+        </div>
+        <div class="m-vals"><div class="api">$676</div><div class="billed">$676</div></div>
+        <div class="m-active">3名</div>
+      </div>
+      <div class="m-row">
+        <div class="m-month">2026-06</div>
+        <div class="m-tracks">
+          <div class="m-track"><div class="m-fill m-api" style="width: 67.7%"></div></div>
+          <div class="m-track"><div class="m-fill m-billed pos" style="width: 67.7%"></div></div>
+        </div>
+        <div class="m-vals"><div class="api">$760</div><div class="billed">$760</div></div>
+        <div class="m-active">4名</div>
+      </div>
+      <div class="m-row">
+        <div class="m-month">2026-07</div>
+        <div class="m-tracks">
+          <div class="m-track"><div class="m-fill m-api" style="width: 93.1%"></div></div>
+          <div class="m-track"><div class="m-fill m-billed pos" style="width: 39.2%"></div></div>
+        </div>
+        <div class="m-vals"><div class="api">$1,044</div><div class="billed">$440</div></div>
+        <div class="m-active">5名</div>
+      </div>
+      <div class="m-row">
+        <div class="m-month">2026-08</div>
+        <div class="m-tracks">
+          <div class="m-track"><div class="m-fill m-api" style="width: 100.0%"></div></div>
+          <div class="m-track"><div class="m-fill m-billed pos" style="width: 25.8%"></div></div>
+        </div>
+        <div class="m-vals"><div class="api">$1,122</div><div class="billed">$290</div></div>
+        <div class="m-active">6名</div>
+      </div>
+    </div>
+    <div class="legend"><span><i class="k-std"></i>API換算需要</span><span><i class="k-accent"></i>実課金</span><span>右端 = アクティブ人数</span></div>
+  </div>
+</section>
+
+
+
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main"><h2>前月からの変化</h2></div>
+    <div class="hd-note">比較対象: 2026-07</div>
+  </div>
+  <div class="card-bd">
+    <div class="prev-group">
+      <div class="prev-hd"><span class="kind started">利用開始</span><span class="prev-n">1 名</span></div>
+      <div class="people"><div class="person"><span class="who" title="tanabe@example.co.jp">tanabe</span><span class="amount">$180</span></div></div>
+    </div>
+    <div class="prev-group">
+      <div class="prev-hd"><span class="kind stopped">利用停止</span><span class="prev-n">1 名</span></div>
+      <div class="people"><div class="person"><span class="who" title="ikeda@example.co.jp">ikeda</span><span class="amount">$260</span></div></div>
+    </div>
+    <div class="prev-group">
+      <div class="prev-hd"><span class="kind billed">実課金の新規発生</span><span class="prev-n">1 名</span></div>
+      <div class="people"><div class="person"><span class="who" title="tanabe@example.co.jp">tanabe</span><span class="amount">$30.00</span></div></div>
+    </div>
+  </div>
+</section>
+
+</div>
+  <div class="grid-2">
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>追加クレジットの状態</h2></div></div>
+  <div class="card-bd">
+    <div class="creditbar"><span class="c-enabled" style="flex: 5" title="有効 5 名"></span><span class="c-disabled" style="flex: 2" title="無効 2 名"></span><span class="c-unknown" style="flex: 3" title="不明 3 名"></span></div>
+    <p class="lead">追加クレジット: 有効 5 名（上限計 $600/月・無制限 1 名） / 無効 2 名 / 不明 3 名</p>
+  </div>
+</section>
+
+
+
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main"><h2>月中のメンバー変動（スナップショット差分）</h2></div>
+    <div class="hd-note">スナップショット時点: 08-05 / 08-16</div>
+  </div>
+  <div class="card-bd">
+    <ul class="items">
+      <li><span class="uname" title="tanabe@example.co.jp">tanabe</span>: 08-05→08-16 で Standard → Premium</li>
+      <li><span class="uname" title="sasaki@example.co.jp">sasaki</span>: 08-05→08-16 で追加（Standard）</li>
+      <li><span class="uname" title="endo@example.co.jp">endo</span>: 08-05→08-16 で削除（Standard）</li>
+      <li><span class="uname" title="ikeda@example.co.jp">ikeda</span>: 08-05→08-16 で 追加クレジット上限 $50.00 → $250（members-info 由来）</li>
+    </ul>
+    <p class="lead">追加クレジット上限を変更した月の課金は部分月のため、上限に基づく判定は翌月から行ってください。</p>
+  </div>
+</section>
+
+</div>
+
+
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main"><h2>主な増減</h2></div>
+    <div class="hd-note">前月比 / API換算需要</div>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>ユーザ</th><th class="num">前月</th><th class="num">当月</th><th class="num">増減</th></tr></thead>
+      <tbody>
+      <tr><td class="user" title="kudo@example.co.jp">kudo</td><td class="num sub">$260</td><td class="num">$320</td><td class="num delta">+$60.00</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+</div>
+</section>
+
+<section class="tabpanel" data-tab="actions" role="tabpanel">
+<h2 class="panel-title">推奨アクション</h2>
+<div class="stack">
+  <div class="grid-2">
+    <section class="card">
+      <div class="card-hd"><div class="hd-main"><h2>判定サマリ</h2></div></div>
+      <div class="card-bd">
+        <div class="jrow"><span class="label">変更推奨</span><div class="track"><div class="fill f-change" style="width: 10.0%"></div></div><span class="n">1</span></div>
+        <div class="jrow"><span class="label">要観察（データ蓄積待ち）</span><div class="track"><div class="fill f-watch" style="width: 20.0%"></div></div><span class="n">2</span></div>
+        <div class="jrow"><span class="label">シート不明</span><div class="track"><div class="fill f-unknown" style="width: 10.0%"></div></div><span class="n">1</span></div>
+        <div class="jrow"><span class="label">現状維持</span><div class="track"><div class="fill f-keep" style="width: 50.0%"></div></div><span class="n">5</span></div>
+        <div class="jrow"><span class="label">対象外（シート未割当）</span><div class="track"><div class="fill f-keep" style="width: 10.0%"></div></div><span class="n">1</span></div>
+      </div>
+    </section>
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>追加クレジット付与候補</h2></div></div>
+  <div class="card-bd">
+    <div class="callout"><span class="uname" title="kudo@example.co.jp">kudo</span>（クレジット無効・モデル超過見込み $270/月）</div>
+    <p class="lead">昇格の前に、まず上限つき追加クレジット（推奨初期上限 $150）を付与し、1ヶ月の課金実測で判断することを推奨します。</p>
+  </div>
+</section>
+</div>
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>推奨一覧</h2></div><div class="toolbar"><select class="filter" data-filter="judge" aria-label="判定で絞り込む"><option value="">判定: すべて</option><option value="変更推奨">変更推奨</option><option value="要観察（データ蓄積待ち）">要観察（データ蓄積待ち）</option><option value="シート不明">シート不明</option><option value="現状維持">現状維持</option><option value="対象外（シート未割当）">対象外（シート未割当）</option></select></div></div>
+    <div class="tablebox tall">
+      <table>
+        <thead><tr><th>ユーザ</th><th>シート（現 → 推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">Std時</th><th class="num">Prem時</th><th class="num">削減/月</th><th>判定</th></tr></thead>
+        <tbody>
+        <tr>
+          <td class="user" title="hayashi@example.co.jp">hayashi</td>
+          <td class="seat"><span class="seat-premium">Premium</span><span class="arrow">→</span><span class="seat-standard to">Standard</span></td>
+          <td class="num">$0.00</td>
+          <td class="num">$0.00</td>
+          <td class="num sub">$25.00</td>
+          <td class="num sub">$125</td>
+          <td class="num save pos">$100</td>
+          <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="tanabe@example.co.jp">tanabe</td>
+          <td class="seat"><span class="seat-premium">Premium</span><span class="arrow">→</span><span class="seat-standard to">Standard</span></td>
+          <td class="num">$180</td>
+          <td class="num" style="background:rgba(192,57,43,0.18)">$30.00</td>
+          <td class="num sub">$155</td>
+          <td class="num sub">$155</td>
+          <td class="num save">$0.00</td>
+          <td class="judge"><span class="badge b-watch">要観察（データ蓄積待ち）</span><span class="conf">確度中</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="ikeda@example.co.jp">ikeda</td>
+          <td class="seat"><span class="seat-premium">Premium</span><span class="arrow">→</span><span class="seat-standard to">Standard</span></td>
+          <td class="num">$0.00</td>
+          <td class="num">$0.00</td>
+          <td class="num sub">$25.00</td>
+          <td class="num sub">$125</td>
+          <td class="num save pos">$100</td>
+          <td class="judge"><span class="badge b-watch">要観察（データ蓄積待ち）</span><span class="conf">確度高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="endo@example.co.jp">endo</td>
+          <td class="seat"><span class="seat-unknown">不明</span><span class="arrow">→</span><span class="seat-standard to">Standard</span></td>
+          <td class="num">$8.00</td>
+          <td class="num">$0.00</td>
+          <td class="num sub">$25.00</td>
+          <td class="num sub">$125</td>
+          <td class="num save">—</td>
+          <td class="judge"><span class="badge b-unknown">シート不明</span><span class="conf">確度高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="mori@example.co.jp">mori</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="num">$520</td>
+          <td class="num" style="background:rgba(192,57,43,0.60)">$260</td>
+          <td class="num sub">$495</td>
+          <td class="num sub">$385</td>
+          <td class="num save">$0.00</td>
+          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="kudo@example.co.jp">kudo</td>
+          <td class="seat"><span class="seat-standard">Standard</span></td>
+          <td class="num">$320 <span class="cap">⚠</span></td>
+          <td class="num">$0.00</td>
+          <td class="num sub">$25.00</td>
+          <td class="num sub">$125</td>
+          <td class="num save">$0.00</td>
+          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="shimizu@example.co.jp">shimizu</td>
+          <td class="seat"><span class="seat-standard">Standard</span></td>
+          <td class="num">$48.00</td>
+          <td class="num">$0.00</td>
+          <td class="num sub">$25.00</td>
+          <td class="num sub">$125</td>
+          <td class="num save">$0.00</td>
+          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="abe@example.co.jp">abe</td>
+          <td class="seat"><span class="seat-standard">Standard</span></td>
+          <td class="num">$46.00</td>
+          <td class="num">$0.00</td>
+          <td class="num sub">$25.00</td>
+          <td class="num sub">$125</td>
+          <td class="num save">$0.00</td>
+          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="sasaki@example.co.jp">sasaki</td>
+          <td class="seat"><span class="seat-standard">Standard</span></td>
+          <td class="num">$0.00</td>
+          <td class="num">$0.00</td>
+          <td class="num sub">$25.00</td>
+          <td class="num sub">$125</td>
+          <td class="num save">$0.00</td>
+          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+        </tr>
+        <tr>
+          <td class="user" title="okada@example.co.jp">okada</td>
+          <td class="seat"><span class="seat-unassigned">未割当</span></td>
+          <td class="num">$0.00</td>
+          <td class="num">$0.00</td>
+          <td class="num sub">—</td>
+          <td class="num sub">—</td>
+          <td class="num save">—</td>
+          <td class="judge"><span class="badge b-keep">対象外（シート未割当）</span></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-ft">「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。<br>確度 = 込み利用量の low/mid/high 3シナリオ推定での判定一致度。<br>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。</div>
+  </section>
+</div>
+</section>
+
+<section class="tabpanel" data-tab="members" role="tabpanel">
+<h2 class="panel-title">メンバー別</h2>
+<div class="stack">
+  <section class="card">
+    <div class="card-hd">
+      <div class="hd-main">
+        <h2>ユーザ別 API 換算コスト</h2>
+        <div class="hd-sub">中央値 $46.00 / 平均 $125</div>
+      </div>
+      <div class="legend"><span><i class="k-std"></i>Standard</span><span><i class="k-prem"></i>Premium</span><span><i class="line k-median"></i>中央値</span><span><i class="line k-mean"></i>平均</span></div>
+    </div>
+    <div class="card-bd bars-bd">
+      <div class="bars">
+        <div class="guides"><div class="guide g-median" style="left: 8.8%" title="中央値 $46.00"></div><div class="guide g-mean" style="left: 24.0%" title="平均 $125"></div></div>
+        <div class="bar">
+          <div class="rank">#7</div>
+          <div class="name" title="hayashi@example.co.jp">hayashi</div>
+          <div class="track"><div class="fill" style="width: 0.0%; background: var(--prem);"></div></div>
+          <div class="val">$0.00</div>
+        </div>
+        <div class="bar">
+          <div class="rank">#3</div>
+          <div class="name" title="tanabe@example.co.jp">tanabe</div>
+          <div class="track"><div class="fill" style="width: 34.6%; background: var(--prem);"></div></div>
+          <div class="val">$180.00</div>
+        </div>
+        <div class="bar">
+          <div class="rank">#7</div>
+          <div class="name" title="ikeda@example.co.jp">ikeda</div>
+          <div class="track"><div class="fill" style="width: 0.0%; background: var(--prem);"></div></div>
+          <div class="val">$0.00</div>
+        </div>
+        <div class="bar">
+          <div class="rank">#6</div>
+          <div class="name" title="endo@example.co.jp">endo</div>
+          <div class="track"><div class="fill" style="width: 1.5%; background: var(--dim);"></div></div>
+          <div class="val">$8.00</div>
+        </div>
+        <div class="bar">
+          <div class="rank">#1</div>
+          <div class="name" title="mori@example.co.jp">mori</div>
+          <div class="track"><div class="fill" style="width: 100.0%; background: var(--prem);"></div></div>
+          <div class="val">$520.00</div>
+        </div>
+        <div class="bar">
+          <div class="rank">#2</div>
+          <div class="name" title="kudo@example.co.jp">kudo</div>
+          <div class="track"><div class="fill" style="width: 61.5%; background: var(--std);"></div></div>
+          <div class="val">$320.00<span class="cap"> ⚠</span></div>
+        </div>
+        <div class="bar">
+          <div class="rank">#4</div>
+          <div class="name" title="shimizu@example.co.jp">shimizu</div>
+          <div class="track"><div class="fill" style="width: 9.2%; background: var(--std);"></div></div>
+          <div class="val">$48.00</div>
+        </div>
+        <div class="bar">
+          <div class="rank">#5</div>
+          <div class="name" title="abe@example.co.jp">abe</div>
+          <div class="track"><div class="fill" style="width: 8.8%; background: var(--std);"></div></div>
+          <div class="val">$46.00</div>
+        </div>
+        <div class="bar">
+          <div class="rank">#7</div>
+          <div class="name" title="sasaki@example.co.jp">sasaki</div>
+          <div class="track"><div class="fill" style="width: 0.0%; background: var(--std);"></div></div>
+          <div class="val">$0.00</div>
+        </div>
+        <div class="bar">
+          <div class="rank">—</div>
+          <div class="name" title="okada@example.co.jp">okada</div>
+          <div class="track"><div class="fill" style="width: 0.0%; background: var(--dim);"></div></div>
+          <div class="val">$0.00</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-ft">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い　#n = API換算需要の順位（同額は同順位。シート未割当は — で母集団に入れない）<br>縦線: <span class="guide-key g-median"></span> 中央値 $46.00 / <span class="guide-key g-mean"></span> 平均 $125（順位と同じ母集団）</div>
+  </section>
+
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>詳細利用状況</h2></div></div>
+    <div class="tablebox tall">
+      <table>
+        <thead><tr><th>ユーザ</th><th class="num">input</th><th class="num">output</th><th class="num">LoC</th><th class="num">API換算需要</th><th>モデル割合（トークン基準）</th><th>product構成（利用回数）</th></tr></thead>
+        <tbody>
+        <tr><td class="user" title="mori@example.co.jp">mori</td><td class="num sub">69.3M</td><td class="num sub">6.9M</td><td class="num sub">5,900</td><td class="num">$520</td><td class="wrap">Opus 4.8 100%</td><td class="wrap">Claude Code 70% / Cowork 20% / Chat 10%</td></tr>
+        <tr><td class="user" title="kudo@example.co.jp">kudo</td><td class="num sub">42.7M</td><td class="num sub">4.3M</td><td class="num sub">2,600</td><td class="num">$320</td><td class="wrap">Opus 4.8 100%</td><td class="wrap">Claude Code 60% / Chat 40%</td></tr>
+        <tr><td class="user" title="tanabe@example.co.jp">tanabe</td><td class="num sub">40.0M</td><td class="num sub">4.0M</td><td class="num sub">1,500</td><td class="num">$180</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Claude Code 80% / Design 20%</td></tr>
+        <tr><td class="user" title="abe@example.co.jp">abe</td><td class="num sub">30.7M</td><td class="num sub">3.1M</td><td class="num sub">180</td><td class="num">$46.00</td><td class="wrap">Haiku 4.5 100%</td><td class="wrap">Chat 100%</td></tr>
+        <tr><td class="user" title="shimizu@example.co.jp">shimizu</td><td class="num sub">10.7M</td><td class="num sub">1.1M</td><td class="num sub">310</td><td class="num">$48.00</td><td class="wrap">Sonnet 4.6 100%</td><td class="wrap">Claude Code 100%</td></tr>
+        <tr><td class="user" title="endo@example.co.jp">endo</td><td class="num sub">5.3M</td><td class="num sub">533K</td><td class="num sub">0</td><td class="num">$8.00</td><td class="wrap">Haiku 4.5 100%</td><td class="wrap">Chat 100%</td></tr>
+        <tr><td class="user" title="hayashi@example.co.jp">hayashi</td><td class="num sub">0</td><td class="num sub">0</td><td class="num sub">0</td><td class="num">$0.00</td><td class="wrap"></td><td class="wrap"></td></tr>
+        <tr><td class="user" title="ikeda@example.co.jp">ikeda</td><td class="num sub">0</td><td class="num sub">0</td><td class="num sub">0</td><td class="num">$0.00</td><td class="wrap"></td><td class="wrap"></td></tr>
+        <tr><td class="user" title="okada@example.co.jp">okada</td><td class="num sub">0</td><td class="num sub">0</td><td class="num sub">0</td><td class="num">$0.00</td><td class="wrap"></td><td class="wrap"></td></tr>
+        <tr><td class="user" title="sasaki@example.co.jp">sasaki</td><td class="num sub">0</td><td class="num sub">0</td><td class="num sub">0</td><td class="num">$0.00</td><td class="wrap"></td><td class="wrap"></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-ft">input はキャッシュ読取分を含むため、実入力量より大きく見えることがあります。product構成 は利用回数（リクエスト数）基準。</div>
+  </section>
+
+
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main">
+      <h2>月中の利用推移（スナップショット差分）</h2>
+      <div class="hd-sub">スナップショット: 〜08-05（5日） / 〜08-15（15日） / 〜08-31（31日）</div>
+    </div>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>ユーザ</th><th class="num">〜08-05</th><th class="num">〜08-15</th><th class="num">〜08-31</th><th class="num">最新区間の増分</th><th>判定</th></tr></thead>
+      <tbody>
+      <tr><td class="user" title="mori@example.co.jp">mori</td><td class="num sub">$120</td><td class="num sub">$300</td><td class="num latest">$520</td><td class="num up">+$220</td><td class="flag"></td></tr>
+      <tr><td class="user" title="kudo@example.co.jp">kudo</td><td class="num sub">$90.00</td><td class="num sub">$200</td><td class="num latest">$320</td><td class="num up">+$120</td><td class="flag"></td></tr>
+      <tr><td class="user" title="tanabe@example.co.jp">tanabe</td><td class="num sub">$60.00</td><td class="num sub">$120</td><td class="num latest">$180</td><td class="num up">+$60.00</td><td class="flag"></td></tr>
+      <tr><td class="user" title="shimizu@example.co.jp">shimizu</td><td class="num sub">$40.00</td><td class="num sub">$47.60</td><td class="num latest">$48.00</td><td class="num dim">+$0.40</td><td class="flag">⚠️停止疑い</td></tr>
+      <tr><td class="user" title="abe@example.co.jp">abe</td><td class="num sub">$12.00</td><td class="num sub">$30.00</td><td class="num latest">$46.00</td><td class="num up">+$16.00</td><td class="flag"></td></tr>
+      <tr><td class="user" title="endo@example.co.jp">endo</td><td class="num sub">$8.00</td><td class="num sub">$8.00</td><td class="num latest">$8.00</td><td class="num dim">+$0.00</td><td class="flag"></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card-bd">
+    <ul class="notes">
+      <li><span class="uname" title="shimizu@example.co.jp">shimizu</span>: 上限停止の可能性。停止時点の累積 $48.00 は実効込み量の実測候補。LoC 増分も 0（停止の傍証）。</li>
+      <li><span class="uname" title="mori@example.co.jp">mori</span>: 〜08-05→〜08-15 で従量課金 $40.00 が発生（実効込み量は累積需要 $120〜$300 の間）。</li>
+      <li><span class="uname" title="tanabe@example.co.jp">tanabe</span>: 〜08-05→〜08-15 で従量課金 $10.00 が発生（実効込み量は累積需要 $60.00〜$120 の間）。</li>
+    </ul>
+  </div>
+  <div class="card-ft">停止は休暇・案件の谷でも起こるため、上限到達の断定には本人確認が必要です。</div>
+</section>
+
+
+
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main"><h2>月中の Claude Code 活動（code-analytics 差分）</h2></div>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>ユーザ</th><th class="num">〜08-05</th><th class="num">〜08-16</th><th class="num">LoC 増分</th><th class="num">PR 増分</th></tr></thead>
+      <tbody>
+      <tr><td class="user" title="mori@example.co.jp">mori</td><td class="num sub">2,400</td><td class="num latest">5,900</td><td class="num gain">+3,500</td><td class="num gain">+13</td></tr>
+      <tr><td class="user" title="kudo@example.co.jp">kudo</td><td class="num sub">900</td><td class="num latest">2,600</td><td class="num gain">+1,700</td><td class="num gain">+7</td></tr>
+      <tr><td class="user" title="tanabe@example.co.jp">tanabe</td><td class="num sub">400</td><td class="num latest">1,500</td><td class="num gain">+1,100</td><td class="num gain">+5</td></tr>
+      <tr><td class="user" title="shimizu@example.co.jp">shimizu</td><td class="num sub">310</td><td class="num latest">310</td><td class="num gain zero">+0</td><td class="num gain zero">+0</td></tr>
+      <tr><td class="user" title="abe@example.co.jp">abe</td><td class="num sub">100</td><td class="num latest">180</td><td class="num gain">+80</td><td class="num gain">+1</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+
+
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main">
+      <h2>Codeと他プロダクトの需要（API換算）</h2>
+      <div class="hd-sub">Code需要 $748 / 全需要 $1,122（67%）・対象 6名</div>
+    </div>
+    <div class="legend"><span><i class="k-accent"></i>Code</span><span><i class="k-dim"></i>他プロダクト</span><span><i class="k-hatch"></i>内訳不明</span></div>
+  </div>
+  <div class="card-bd bars-bd">
+    <div class="bars">
+      <div class="bar">
+        <div class="name" title="mori@example.co.jp">mori</div>
+        <div class="track"><div class="fill" style="width: 100.0%; background: linear-gradient(to right, var(--accent) 70.0%, var(--dim) 70.0%);"></div></div>
+        <div class="val wide">$520 (Code 70%)</div>
+      </div>
+      <div class="bar">
+        <div class="name" title="kudo@example.co.jp">kudo</div>
+        <div class="track"><div class="fill" style="width: 61.5%; background: linear-gradient(to right, var(--accent) 60.0%, var(--dim) 60.0%);"></div></div>
+        <div class="val wide">$320 (Code 60%)</div>
+      </div>
+      <div class="bar">
+        <div class="name" title="tanabe@example.co.jp">tanabe</div>
+        <div class="track"><div class="fill" style="width: 34.6%; background: linear-gradient(to right, var(--accent) 80.0%, var(--dim) 80.0%);"></div></div>
+        <div class="val wide">$180 (Code 80%)</div>
+      </div>
+      <div class="bar">
+        <div class="name" title="shimizu@example.co.jp">shimizu</div>
+        <div class="track"><div class="fill" style="width: 9.2%; background: linear-gradient(to right, var(--accent) 100.0%, var(--dim) 100.0%);"></div></div>
+        <div class="val wide">$48.00 (Code 100%)</div>
+      </div>
+      <div class="bar">
+        <div class="name" title="abe@example.co.jp">abe</div>
+        <div class="track"><div class="fill" style="width: 8.8%; background: linear-gradient(to right, var(--accent) 0.0%, var(--dim) 0.0%);"></div></div>
+        <div class="val wide">$46.00 (Code 0%)</div>
+      </div>
+      <div class="bar">
+        <div class="name" title="endo@example.co.jp">endo</div>
+        <div class="track"><div class="fill" style="width: 1.5%; background: linear-gradient(to right, var(--accent) 0.0%, var(--dim) 0.0%);"></div></div>
+        <div class="val wide">$8.00 (Code 0%)</div>
+      </div>
+    </div>
+  </div>
+  <div class="card-ft">棒の色: <span class="ink-code">■ Code</span> / <span class="ink-dim">■ 他プロダクト</span>　斜線 = 内訳不明（Code の需要を確定できないユーザ）</div>
+</section>
+
+<section class="card">
+  <div class="card-hd"><div class="hd-main"><h2>Code / 他product 需要の内訳</h2></div></div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>ユーザ</th><th class="num">需要（計）</th><th class="num">Code需要</th><th class="num">Code比率</th><th class="num">他product需要</th><th class="num">product数</th></tr></thead>
+      <tbody>
+      <tr><td class="user" title="mori@example.co.jp">mori</td><td class="num">$520</td><td class="num code">$364</td><td class="num sub">70%</td><td class="num sub">$156 <span class="cap">⚑</span></td><td class="num sub">3</td></tr>
+      <tr><td class="user" title="kudo@example.co.jp">kudo</td><td class="num">$320</td><td class="num code">$192</td><td class="num sub">60%</td><td class="num sub">$128 <span class="cap">⚑</span></td><td class="num sub">2</td></tr>
+      <tr><td class="user" title="tanabe@example.co.jp">tanabe</td><td class="num">$180</td><td class="num code">$144</td><td class="num sub">80%</td><td class="num sub">$36.00</td><td class="num sub">2</td></tr>
+      <tr><td class="user" title="shimizu@example.co.jp">shimizu</td><td class="num">$48.00</td><td class="num code">$48.00</td><td class="num sub">100%</td><td class="num sub">$0.00</td><td class="num sub">1</td></tr>
+      <tr><td class="user" title="abe@example.co.jp">abe</td><td class="num">$46.00</td><td class="num code">$0.00</td><td class="num sub">0%</td><td class="num sub">$46.00</td><td class="num sub">1</td></tr>
+      <tr><td class="user" title="endo@example.co.jp">endo</td><td class="num">$8.00</td><td class="num code">$0.00</td><td class="num sub">0%</td><td class="num sub">$8.00</td><td class="num sub">1</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card-ft">対象は対象月のスペンドに明細のあるユーザです（利用ゼロのメンバーと組織サービス利用は含みません）。他product需要 = 需要（計） − Code需要。「—」は確定できなかった値で、0 ではありません。<br>⚑ = 補助プロダクト（設定で Code 以外に分類した product）の需要が $100 以上。Code が低く他が高いユーザは、自動での変更ではなくレビューの対象です（判定・推奨には未反映）。</div>
+</section>
+
+</div>
+</section>
+
+<section class="tabpanel" data-tab="org" role="tabpanel">
+<h2 class="panel-title">組織</h2>
+<div class="stack">
+  <div class="grid-2">
+    <section class="card">
+      <div class="card-hd"><div class="hd-main"><h2>部署別サマリ</h2></div></div>
+      <div class="tablebox">
+        <table>
+          <thead><tr><th>部署</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th><th class="num">LoC</th><th class="num">変更推奨</th></tr></thead>
+          <tbody>
+          <tr><td>プラットフォーム開発部</td><td class="num sub">3</td><td class="num">$375</td><td class="num">$700</td><td class="num sub">7,400</td><td class="num save">0</td></tr>
+          <tr><td>プロダクト開発部</td><td class="num sub">3</td><td class="num">$175</td><td class="num">$368</td><td class="num sub">2,910</td><td class="num save pos">1</td></tr>
+          <tr><td>コーポレート</td><td class="num sub">3</td><td class="num">$25.00</td><td class="num">$54.00</td><td class="num sub">180</td><td class="num save">0</td></tr>
+          <tr><td>（未設定）</td><td class="num sub">1</td><td class="num">$25.00</td><td class="num">$0.00</td><td class="num sub">0</td><td class="num save">0</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="card">
+      <div class="card-hd"><div class="hd-main"><h2>チーム別サマリ</h2></div><div class="hd-note">チーム未設定を除外</div></div>
+      <div class="tablebox">
+        <table>
+          <thead><tr><th>チーム</th><th class="num">人数</th><th class="num">シート費用</th><th class="num">API換算需要</th><th class="num">LoC</th><th class="num">変更推奨</th></tr></thead>
+          <tbody>
+          <tr><td>基盤チーム</td><td class="num sub">2</td><td class="num">$250</td><td class="num">$520</td><td class="num sub">5,900</td><td class="num save">0</td></tr>
+          <tr><td>Webチーム</td><td class="num sub">2</td><td class="num">$150</td><td class="num">$320</td><td class="num sub">2,600</td><td class="num save pos">1</td></tr>
+          <tr><td>SREチーム</td><td class="num sub">1</td><td class="num">$125</td><td class="num">$180</td><td class="num sub">1,500</td><td class="num save">0</td></tr>
+          <tr><td>情シスチーム</td><td class="num sub">2</td><td class="num">$25.00</td><td class="num">$54.00</td><td class="num sub">180</td><td class="num save">0</td></tr>
+          <tr><td>モバイルチーム</td><td class="num sub">1</td><td class="num">$25.00</td><td class="num">$48.00</td><td class="num sub">310</td><td class="num save">0</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+
+<section class="card">
+  <div class="card-hd">
+    <div class="hd-main"><h2>組織内の分布（参考値）</h2></div>
+    <div class="hd-note">母集団は組織内に閉じています</div>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>指標</th><th class="num">n</th><th class="num">平均</th><th class="num">中央値</th><th class="num">標準偏差</th><th class="num">p25</th><th class="num">p75</th><th class="num">p90</th><th class="num">最大</th></tr></thead>
+      <tbody>
+      <tr><td>API換算需要</td><td class="num sub">9</td><td class="num">$125</td><td class="num">$46.00</td><td class="num sub">$173</td><td class="num sub">$0.00</td><td class="num sub">$180</td><td class="num sub">$360</td><td class="num">$520</td></tr>
+      <tr><td>input</td><td class="num sub">9</td><td class="num">22.07M</td><td class="num">10.67M</td><td class="num sub">23.39M</td><td class="num sub">0</td><td class="num sub">40.00M</td><td class="num sub">48.00M</td><td class="num">69.33M</td></tr>
+      <tr><td>output</td><td class="num sub">9</td><td class="num">2.21M</td><td class="num">1.07M</td><td class="num sub">2.34M</td><td class="num sub">0</td><td class="num sub">4.00M</td><td class="num sub">4.80M</td><td class="num">6.93M</td></tr>
+      <tr><td>LoC</td><td class="num sub">5</td><td class="num">2,098</td><td class="num">1,500</td><td class="num sub">2,095</td><td class="num sub">310</td><td class="num sub">2,600</td><td class="num sub">4,580</td><td class="num">5,900</td></tr>
+      <tr><td>実課金</td><td class="num sub">9</td><td class="num">$32.22</td><td class="num">$0.00</td><td class="num sub">$81.07</td><td class="num sub">$0.00</td><td class="num sub">$0.00</td><td class="num sub">$76.00</td><td class="num">$260</td></tr>
+      <tr><td>リクエスト数</td><td class="num sub">9</td><td class="num">499</td><td class="num">184</td><td class="num sub">693</td><td class="num sub">0</td><td class="num sub">720</td><td class="num sub">1,440</td><td class="num">2,080</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card-bd">
+    <ul class="notes">
+      <li>母集団はシート未割当を除く分析対象ユーザで、利用ゼロのユーザも含みます。欠損の扱いが指標ごとに違うため n も指標ごとに示します。</li>
+      <li>平均は少数の大口利用に引かれやすいため、平均以下であることは低活用を意味しません。個々の位置は中央値・分位点で読んでください。</li>
+      <li>追加クレジット上限に到達したユーザは需要そのものが上限で止まっているため、分布の右裾は実態より低く出ます。</li>
+      <li>LoC と spend は網羅範囲が一致せず、LoC の行が無いことはコードを書いていないことを意味しません。</li>
+      <li>比較の母集団は当該組織内に閉じています。他組織や一般的な水準との比較には使えません。</li>
+    </ul>
+  </div>
+</section>
+
+</div>
+</section>
+
+<section class="tabpanel" data-tab="notes" role="tabpanel">
+<h2 class="panel-title">前提と注意</h2>
+<div class="stack">
+  <section class="card">
+    <div class="card-hd"><div class="hd-main"><h2>前提と注意</h2></div></div>
+    <div class="card-bd">
+      <ul class="notes assumptions">
+        <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
+        <li>「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。</li>
+        <li>確度 = 込み利用量の low/mid/high 3シナリオ推定での判定一致度。込み利用量そのものは非公開のため、この3シナリオはいずれも推定値です。</li>
+        <li>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。追加クレジットが有効なユーザは実課金がセンサーになるため、実課金ゼロなら枠内と判断でき ⚠️上限? を付けません。</li>
+        <li>クレジット無効のユーザについては、「Standard時/Premium時」の枠超過分は実際には請求されず、絞り負担のドル換算（需要が上限で抑えられる分の目安）です。</li>
+        <li>チーム別サマリはチーム未設定のユーザを除外しているため、縦合計は組織全体と一致しません。</li>
+        <li>判定に使用した月: 2026-07, 2026-08（2ヶ月ヒステリシス）。</li>
+      </ul>
+    </div>
+  </section>
+</div>
+</section>
+
+</main>
+</body>
+</html>

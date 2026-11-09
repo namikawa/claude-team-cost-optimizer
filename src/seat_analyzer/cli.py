@@ -154,8 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--decision-version", choices=("v1", "v2"), default=None,
-        help="判定の版。v2 は V1 の成果物に加えて V2 判定の decision-evidence を書く"
-             f"（V1 の判定・成果物は変わらない）。省略時は {WORKSPACE_CONFIG_NAME} の"
+        help="判定の版。v2 は V2 判定の結論で report・details・dashboard・recommendations を書き、"
+             f"根拠の decision-evidence も書く。省略時は {WORKSPACE_CONFIG_NAME} の"
              " decision.version に従う（既定は v1）。速報モードでは指定できない",
     )
     p.add_argument(
@@ -906,7 +906,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
     output_dir = _resolve_dir(args.output_dir, cfg, "output")
 
     # 判定の版: CLI の明示指定 > 設定の decision.version。
-    # v2 は「V1 の成果物に V2 判定の根拠を併記する」opt-in で、主判定は V1 のまま
+    # v2 は V2 判定の結論を主成果物へ写し（decision_evidence.apply）、根拠も書く
     decision_version = args.decision_version or cfg["decision"]["version"]
 
     # GitHub の参考値は config で有効にした組織だけ。書かれていない組織は GitHub 関連の
@@ -981,7 +981,8 @@ def _run_analyze(args: argparse.Namespace) -> int:
             continue
         v2 = decision_version == "v2"
         result = analyze.analyze_org(
-            org_input, month, cfg, org, decision_context=v2, allow_missing=org_allowed
+            org_input, month, cfg, org, decision_context=v2,
+            decision_version=decision_version, allow_missing=org_allowed,
         )
         if not result.workspaces:
             # どの workspace も対象月以前のデータを持たない（対象月のデータが無い組織と同じ）
@@ -989,13 +990,14 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 raise FileNotFoundError(_missing_month_message(org_input, month, nested=True))
             skipped.append(org)
             continue
-        paths = report.write_all(result, org_output)
         evidence: tuple[decision_evidence.EvidenceRow, ...] | None = None
-        notices: list[str] = []
         if v2:
-            evidence = _write_decision_evidence(
-                result, org_input, org_output, cfg, paths
-            )
+            evidence = _evaluate_v2(result, org_input, cfg)
+            result = decision_evidence.apply(result, evidence, cfg)
+        paths = report.write_all(result, org_output)
+        notices: list[str] = []
+        if evidence is not None:
+            _write_decision_evidence(result, evidence, org_output, paths)
         else:
             notices = _stale_evidence_notices(result, org_output)
         metrics: github_metrics.GithubMetrics | None = None
@@ -2398,27 +2400,35 @@ def _prohibited_warnings(result: analyze.OrgAnalysisResult) -> list[str]:
     return found
 
 
-def _write_decision_evidence(
+def _evaluate_v2(
     result: analyze.OrgAnalysisResult,
     org_input: Path,
-    org_output: Path,
     cfg: dict,
-    paths: dict[str, Path],
 ) -> tuple[decision_evidence.EvidenceRow, ...]:
-    """V2 判定の根拠を書き、出力一覧へ加える（V1 の成果物には触れない）。
+    """主 workspace のシート変更を検出し、V2 の判定行を返す。
 
     判定は evaluate_org に一本化する（従来レイアウトでも evaluate と同じ結果）。シート
-    変更 event は主 workspace の members から作り、複数 workspace の組織だけ email の次に
-    workspace 列を足す。
+    変更 event は主 workspace の members から作る（入れ子なら主のディレクトリを使う）。
     """
     members_dir = org_input / result.primary if result.nested else org_input
     changes = seat_changes.detect_from_input(members_dir, cfg)
-    rows = decision_evidence.evaluate_org(result, changes, cfg)
+    return decision_evidence.evaluate_org(result, changes, cfg)
+
+
+def _write_decision_evidence(
+    result: analyze.OrgAnalysisResult,
+    rows: tuple[decision_evidence.EvidenceRow, ...],
+    org_output: Path,
+    paths: dict[str, Path],
+) -> None:
+    """V2 判定の根拠を書き、出力一覧へ加える。
+
+    複数 workspace の組織だけ email の次に workspace 列を足す。
+    """
     path = report.DECISION_EVIDENCE.path(org_output, result.month, result.org)
     report.write_decision_evidence(
         rows, path, workspace_column=result.has_multiple_workspaces)
     paths["evidence"] = path
-    return rows
 
 
 def _stale_evidence_notices(
@@ -2439,7 +2449,9 @@ def _stale_evidence_notices(
         return []
     return [
         (f"{path.name} は今回の実行では更新されません"
-         "（V1 判定で実行したため。再生成するには --decision-version v2 を指定してください）")
+         "（今回の主成果物は V1 判定で、このファイルは前回の V2 判定の根拠です。"
+         "--decision-version v2 で再実行すると主成果物も V2 判定になります。"
+         "V1 と V2 を並べて比べるときは、別の --output-dir へ出力してください）")
     ]
 
 
@@ -2469,7 +2481,7 @@ def _write_github_summary(
     paths: dict[str, Path],
     subjects: frozenset[str],
 ) -> tuple[github_metrics.GithubMetrics | None, list[str]]:
-    """GitHub の参考値を書き、出力一覧へ加える（V1 の成果物には触れない）。
+    """GitHub の参考値を書き、出力一覧へ加える（report などの成果物には触れない）。
 
     材料は collect が保存したキャッシュだけで、gh もネットワークも呼ばない（同じ
     キャッシュからは常に同じ内容になり、オフラインでも分析が完走する）。書けない場合は
@@ -2605,8 +2617,11 @@ def _print_workspaces(result: analyze.OrgAnalysisResult) -> list[str]:
         print(f"組織サービス利用（非帰属）: ${total['org_service_cost_usd']:,.2f}/月")
     print(f"変更推奨: {total['n_change_recommended']} 名"
           f" (削減見込み ${total['est_monthly_saving_usd']:,.2f}/月・アカウント単位)")
-    print(f"要観察: {total['n_watching']} 名, 上限到達疑い: {total['n_cap_suspected']} 名"
-          "（アカウント単位）")
+    if summary["decision_version"] == "v2":
+        print(f"要観察: {total['n_watching']} 名（アカウント単位）")
+    else:
+        print(f"要観察: {total['n_watching']} 名, 上限到達疑い: {total['n_cap_suspected']} 名"
+              "（アカウント単位）")
     layer = result.persons
     if layer is not None:
         payout = sum(1 for j in layer.payout if j.status == analyze.PAYOUT_CANDIDATE)
@@ -2635,7 +2650,10 @@ def _print_result(
         if s.get("org_service_cost_usd"):
             print(f"組織サービス利用（非帰属）: ${s['org_service_cost_usd']:,.2f}/月")
         print(f"変更推奨: {s['n_change_recommended']} 名 (削減見込み ${s['est_monthly_saving_usd']:,.2f}/月)")
-        print(f"要観察: {s['n_watching']} 名, 上限到達疑い: {s['n_cap_suspected']} 名")
+        if s.get("decision_version", "v1") == "v2":
+            print(f"要観察: {s['n_watching']} 名")
+        else:
+            print(f"要観察: {s['n_watching']} 名, 上限到達疑い: {s['n_cap_suspected']} 名")
         print(f"使用データ: {', '.join(s['months_used'])}")
     if evidence is not None:
         _print_decision_evidence(evidence)

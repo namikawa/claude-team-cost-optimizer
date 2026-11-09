@@ -164,10 +164,26 @@ product 名の照合は、正規化（前後空白の除去・大小文字・Uni
 
 ## recommendations の列
 
-V1 の判定（シート推奨）をユーザ単位で並べた表で、スプレッドシートでの二次加工に使う。行は
+判定（シート推奨）をユーザ単位で並べた表で、スプレッドシートでの二次加工に使う。行は
 members ∪ 対象月のスペンドのユーザで、利用ゼロのメンバーとシート未割当のメンバーも含み、
 組織サービス利用の行は含まない。並びは判定（`status`）ごとにまとめ、同じ判定の中は削減見込みの
 大きい順。
+
+判定の版が v2 のときは V2 判定の結論を並べる。V1 だけの5列（`cost_if_standard_usd`・
+`cost_if_premium_usd`・`rec_low`・`rec_high`・`cap_suspected`）は無く、`confidence` の次に
+`reason`（判定の理由。複数あるときは「; 」区切り）が入る。下の箇条書きの `recommended_seat`・
+`monthly_saving_usd`・`status`・`confidence` の説明は v1 のもので、v2 では次の意味になる。
+`recommended_seat` は昇格なら `premium`・降格なら `standard`、それ以外は現シート
+（シート未割当の行は `unassigned`）。`monthly_saving_usd` はシート差額ベースの比較額で、降格は
+シート差額、昇格は実課金 − シート差額、現状維持は 0、判定しない行は空欄になる。変更後の
+従量課金を含まず、負は費用増を表す。`status` は V2 の結論から決まり、`変更推奨` は V2 の
+昇格・降格。対象月が部分月か完全月の履歴が足りない行は `要観察（データ蓄積待ち）`、直近の
+加入・シート変更や照合の食い違いがある行は `要観察` になる。`対象外（副スペース）` も加わる。
+`confidence` は方針線を確度の幅だけずらしても、シートを変えるかどうかの判定が同じかを表す
+（高・中・低。判定しない行は —）。主 workspace の行のこれらの値は、decision-evidence の
+同じ email の行（複数 workspace の組織では email と workspace の列で対応づける）の結論から
+作る。副 workspace の行は decision-evidence に無く、副の規則（`対象外（固定シート）`・
+`対象外（副スペース）`・`シート不明`・`対象外（シート未割当）`）で決まる。
 
 - `email` — ユーザのメールアドレス
 - `workspace` — 複数スペースの組織でだけ `email` の次に出る列で、そのアカウントの workspace
@@ -242,18 +258,22 @@ CSV のための再計算はしない。
 
 ## decision-evidence の列（V2 判定）
 
-V2 判定の結論と、その結論を出すのに使った材料。V1 の判定（report / details / dashboard /
-recommendations）とは別系統の出力で、V1 の内容には影響しない。
+V2 判定の結論と、その結論を出すのに使った材料。判定の版が v2 の実行では、report / details /
+dashboard / recommendations の判定もこの結論から作る。recommendations の主 workspace の行の
+`status`・`recommended_seat`・`monthly_saving_usd`・`confidence`・`reason` が、この CSV の
+同じ email の行（複数 workspace の組織では email と workspace の列で対応づける）に対応する。
+副 workspace の行はこの CSV に無い。
 
 出力するのは正式分析で判定の版が v2 のときだけ。版は「CLI の `--decision-version` の明示指定 >
-`config.yaml > decision.version` > v1」で決まる。`decision.version: v2` は「V1 の成果物に V2 判定の
-根拠を併記する」ワークスペースの opt-in で、主判定が V2 に変わるわけではない（`--decision-version v1`
-を渡せばその実行では併記しない）。速報モード（`--preview`）は V2 判定を行わないため出力されず、
-`--decision-version` との併用もできない。
+`config.yaml > decision.version` > v1」で決まる。`--decision-version v1` を渡せばその実行は
+V1 判定になり、この CSV を書かない（前回の実行で書いたものが残っていれば、実行時の出力で
+知らせる）。速報モード（`--preview`）は V2 判定を行わないため出力されず、`--decision-version`
+との併用もできない。
 `decision_v2.enabled` は廃止した（書いてあると読み込み時にエラーになる。`true` は
 `decision.version: v2`、`false` は `decision.version: v1` に書き換える）。
 
-行は members ∪ 対象月のスペンドのユーザ（メールアドレス昇順）で、recommendations と同じ対象。
+行は主 workspace の members ∪ 対象月のスペンドのユーザ（メールアドレス昇順）で、
+recommendations の主 workspace と同じ対象。
 
 - `email` — ユーザのメールアドレス
 - `workspace` — 複数 workspace の組織（config の `workspaces` が2つ以上）でだけ `email` の
