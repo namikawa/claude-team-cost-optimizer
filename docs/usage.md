@@ -266,16 +266,21 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    seat-analyzer analyze --month YYYY-MM          # 月を指定
    seat-analyzer analyze --org <組織名>           # 特定組織のみ（複数指定可）
    seat-analyzer analyze --with-discussion        # 考察の執筆まで行う（tooling.md）
-   seat-analyzer analyze --decision-version v2    # V2 判定の根拠も併記する
+   seat-analyzer analyze --decision-version v2    # V2 判定で分析する（根拠も出力）
    ```
 
    リポジトリを clone している場合は、Claude Code から `/seat-analysis` を実行すると、
    分析に加えて警告の検証と考察の執筆までを対話的に行える。
 
-   `--decision-version v2` は下の5種の成果物に加えて `decision-evidence` を出力する。
-   V1 の判定・成果物・組織横断サマリは変わらない（V2 の判定を並べて比較するための
-   追加出力）。省略時は `config.yaml > decision.version` に従い、既定は v1。
+   `--decision-version v2` は、全 product の需要と方針線
+   `decision_v2.premium_justification_usd`、実課金・追加クレジット上限の観測で決める V2 判定で
+   分析する。report・details・dashboard・recommendations に V2 判定の結論と理由を出し、
+   組織横断サマリの変更推奨の件数と削減見込みもその結論から数える。根拠の `decision-evidence`
+   も出力する（usage-summary は版によらず同じ）。省略時は `config.yaml > decision.version` に
+   従い、既定は v1。`--decision-version v1` を渡すとその実行は V1 判定になる。
    速報モード（`--preview`）は V2 判定を行わないため、このオプションと併用できない。
+   考察を記入済みの月を別の版で再生成すると、考察は書き換わらずに引き継がれる。判定が変わった
+   月は `discuss --force` で書き直すか、手で直す。
    列の意味は reference.md の [decision-evidence の列](./reference.md#decision-evidence-の列v2-判定) を参照
 
 6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される。ファイル名は
@@ -349,7 +354,7 @@ seat-analyzer collect --org <組織名> --source github --month YYYY-MM
 - 対象月がまだ終わっていない場合、期間の終わりから1日が過ぎていない部分は次回の実行でも
   取り直す（検索の反映遅れで日付境界の PR を取りこぼさないため）。同じ PR は何度取っても
   1件にまとまる
-- 収集したキャッシュは `analyze` の判定と V1 の成果物には影響しない。参考値の成果物
+- 収集したキャッシュは `analyze` の判定と report などの成果物には影響しない。参考値の成果物
   `github-summary` の材料になる（列の意味は [reference.md](./reference.md)）
 
 ## claude.ai からの CSV 取得（有効にした組織のみ）

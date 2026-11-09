@@ -1,0 +1,13 @@
+﻿email,subject_id,identity_quality,current_seat,month,complete,complete_months,total_demand_usd,billed_extra_usd,credit_limit_usd,premium_justification_usd,status,seat_action,credit_action,reason_codes,policy_stability,suggested_credit_cap_usd
+guest@example.co.jp,account:uuid-42612470,stable,unknown,2026-06,True,2026-05;2026-06,15.00,15.00,,450.00,no_decision,none,none,CURRENT_SEAT_UNKNOWN,,
+ito@example.co.jp,email:ito@example.co.jp,email_fallback,premium,2026-06,True,2026-05;2026-06,0.00,0.00,,450.00,recommended,downgrade_to_standard,none,SUSTAINED_LOW_TOTAL_DEMAND;CAPACITY_SIGNAL_UNAVAILABLE,3,
+kato@example.co.jp,account:uuid-da6f0707,stable,standard,2026-06,True,2026-05;2026-06,18.00,18.00,,450.00,keep,keep,none,,3,
+kobayashi@example.co.jp,account:uuid-d5d8d86d,stable,standard,2026-06,True,2026-05;2026-06,48.50,48.50,,450.00,keep,keep,none,,3,
+nakamura@example.co.jp,account:uuid-b4731cf9,stable,standard,2026-06,True,2026-05;2026-06,335.00,335.00,,450.00,recommended,upgrade_to_premium,review,CREDIT_SETTING_UNKNOWN;SUSTAINED_OVERAGE;STANDARD_BILLING_ABOVE_SEAT_GAP;CAPACITY_SIGNAL_UNAVAILABLE,3,
+sato@example.co.jp,account:uuid-1f23da37,stable,premium,2026-06,True,2026-05;2026-06,24.00,24.00,,450.00,keep,keep,none,,3,
+suzuki@example.co.jp,account:uuid-cbe97caa,stable,premium,2026-06,True,2026-05;2026-06,415.00,415.00,,450.00,keep,keep,none,,3,
+tanaka@example.co.jp,account:uuid-ceff36c6,stable,premium,2026-06,True,2026-05;2026-06,610.00,610.00,,450.00,keep,keep,none,,3,
+watanabe@example.co.jp,account:uuid-0e1ade75,stable,premium,2026-06,True,2026-05;2026-06,12.00,12.00,,450.00,keep,keep,none,,3,
+yamada@example.co.jp,account:uuid-753a9766,stable,standard,2026-06,True,2026-05;2026-06,27.00,27.00,,450.00,keep,keep,none,,3,
+yamamoto@example.co.jp,account:uuid-676fcd7c,stable,premium,2026-06,True,2026-05;2026-06,30.00,30.00,,450.00,keep,keep,none,,3,
+yoshida@example.co.jp,account:uuid-9f0ffdde,stable,standard,2026-06,True,2026-05;2026-06,11.00,11.00,,450.00,keep,keep,none,,3,

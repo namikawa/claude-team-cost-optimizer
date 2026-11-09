@@ -11,6 +11,7 @@ examples/config.yaml）と、tests の合成データだけを使う。
 import csv
 import io
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -50,6 +51,7 @@ from seat_analyzer.report.format import _account_rows, _group_summary_rows
 from seat_analyzer.report.spaces import CONTINUATION_ORDER, PAYOUT_ORDER
 
 from .conftest import REPO_ROOT, spend_row
+from .test_report_v2 import _applied
 
 EXAMPLES_INPUT = REPO_ROOT / "examples" / "input"
 EXAMPLES_CONFIG = str(REPO_ROOT / "examples" / "config.yaml")
@@ -67,9 +69,9 @@ def org_c(examples_cfg):
     return analyze_org(EXAMPLES_INPUT / ORG, MONTH, examples_cfg, ORG, decision_context=True)
 
 
-@pytest.fixture(scope="module")
-def outputs(tmp_path_factory):
-    """org-c 2026-08 を CLI で書いた成果物（種別 → 本文）。"""
+@pytest.fixture(scope="module", params=("v1", "v2"))
+def outputs(tmp_path_factory, request):
+    """org-c 2026-08 の両版の成果物（V1 のとき根拠 CSV は前回の V2）。"""
     output_dir = tmp_path_factory.mktemp("spaces") / "reports"
     rc = main([
         "analyze", "--config", EXAMPLES_CONFIG, "--input-dir", str(EXAMPLES_INPUT),
@@ -77,8 +79,15 @@ def outputs(tmp_path_factory):
         "--decision-version", "v2",
     ])
     assert rc == 0
+    if request.param == "v1":
+        assert main([
+            "analyze", "--config", EXAMPLES_CONFIG, "--input-dir", str(EXAMPLES_INPUT),
+            "--output-dir", str(output_dir), "--org", ORG, "--month", MONTH,
+            "--decision-version", "v1",
+        ]) == 0
     org_out = output_dir / ORG
     return {
+        "version": request.param,
         "report": REPORT.path(org_out, MONTH, ORG).read_text(encoding="utf-8"),
         "details": DETAILS.path(org_out, MONTH, ORG).read_text(encoding="utf-8"),
         "dashboard": DASHBOARD.path(org_out, MONTH, ORG).read_text(encoding="utf-8"),
@@ -178,6 +187,9 @@ def test_person_rows_hold_both_accounts(org_c):
 
 def test_summarize_org_counts_people_and_accounts(org_c):
     summary = summarize_org(org_c)
+    assert summary["decision_version"] == "v1"
+    assert "n_cap_suspected" in summary["total"]
+    assert all("n_cap_suspected" in row for row in summary["workspaces"])
     assert (summary["n_persons"], summary["n_accounts"]) == (11, 16)
     assert [row["name"] for row in summary["workspaces"]] == ["main", "second"]
     main_row, second_row = summary["workspaces"]
@@ -200,6 +212,8 @@ def test_summarize_org_marks_a_skipped_workspace(make_input, tmp_path):
     org = analyze_org(input_dir / "org-x", "2026-06", cfg, "org-x")
     summary = summarize_org(org)
     second = summary["workspaces"][1]
+    assert summary["decision_version"] == "v1"
+    assert "n_cap_suspected" in second and second["n_cap_suspected"] is None
     assert second["skipped"] is True
     assert second["n_members"] is None and second["months_used"] is None
     assert summary["n_accounts"] == 1
@@ -211,6 +225,54 @@ def test_summarize_org_without_a_person_layer_counts_accounts(cfg, make_input):
     result = analyze(input_dir, "2026-06", cfg, org="org-a")
     summary = summarize_org(single_org_result(result))
     assert (summary["n_persons"], summary["n_accounts"]) == (2, 2)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_summarize_applied_v2_omits_cap_counts(make_input, cfg, tmp_path, nested):
+    if nested:
+        root = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                          members=["a@x.jp,Premium"], org="org-x", workspace="main")
+        make_input({"2026-07": [spend_row("a@x.jp", 10.0)]},
+                   members=["a@x.jp,Premium"], org="org-x", workspace="second")
+        root = root / "org-x"
+        cfg = _workspace_cfg(tmp_path)
+    else:
+        root = make_input({"2026-06": [spend_row("a@x.jp", 10.0)]},
+                          members=["a@x.jp,Premium"])
+    org, _ = _applied(root, cfg)
+    summary = summarize_org(org)
+    assert summary["decision_version"] == "v2"
+    assert "n_cap_suspected" not in summary["total"]
+    for row in summary["workspaces"]:
+        assert "n_cap_suspected" not in row
+    if nested:
+        assert summary["workspaces"][1]["skipped"] is True
+    for key, value in summary["total"].items():
+        if key == "org_service_by_product":
+            continue
+        expected = sum(r.summary.get(key, 0) or 0 for r in org.workspaces.values())
+        assert value == (round(expected, 2) if key.endswith("_usd") else expected)
+    for row in summary["workspaces"]:
+        for key in summary["total"]:
+            if key == "org_service_by_product":
+                continue
+            expected = (None if row["skipped"] else
+                        org.workspaces[row["name"]].summary.get(key, 0) or 0)
+            assert row[key] == expected
+
+
+def test_summarize_org_rejects_mixed_versions(org_c):
+    workspaces = dict(org_c.workspaces)
+    second = workspaces["second"]
+    workspaces["second"] = replace(second, summary={**second.summary, "decision_version": "v2"})
+    with pytest.raises(ValueError, match="workspace 間で decision_version"):
+        summarize_org(replace(org_c, workspaces=workspaces))
+
+
+def test_summarize_empty_org_defaults_to_v1(org_c):
+    summary = summarize_org(replace(org_c, workspaces={}, persons=None))
+    assert summary["decision_version"] == "v1"
+    assert summary["total"]["n_cap_suspected"] == 0
 
 
 def _workspace_cfg(tmp_path: Path, **second) -> dict:
@@ -319,20 +381,29 @@ def test_report_sections_per_workspace(outputs):
     assert "### スペース別" in outputs["report"]
     assert "| 対象メンバー数 | 11 名（アカウント 16） |" in outputs["report"]
     assert "| 追加クレジット（主スペース） |" in outputs["report"]
-    assert ("| 判定に使用した月 | 主スペース: 2026-07, 2026-08 / 副スペース: 2026-07, 2026-08"
-            in outputs["report"])
+    months = "主スペース: 2026-07, 2026-08"
+    months += ("（判定に要る完全月数の下限: 昇格 1・降格 2）" if outputs["version"] == "v2"
+               else " / 副スペース: 2026-07, 2026-08（ヒステリシス 2 ヶ月）")
+    assert f"| 判定に使用した月 | {months} |" in outputs["report"]
 
 
 def test_fixed_seat_space_has_no_sensitivity_or_grant(outputs):
     """固定シートの workspace は損益分岐判定をしていないので、その派生物を出さない。"""
     details_headings = _headings(outputs["details"])
-    assert "感度分析（主スペース）" in details_headings
+    assert ("感度分析（主スペース）" in details_headings) is (outputs["version"] == "v1")
     assert not any(h.startswith("感度分析（副スペース") for h in details_headings)
     assert "追加クレジット付与候補（副スペース）" not in outputs["dashboard"]
-    assert "追加クレジット付与候補（主スペース）" in outputs["dashboard"]
+    title = ("追加クレジットの付与候補と設定確認" if outputs["version"] == "v2"
+             else "追加クレジット付与候補")
+    assert f"{title}（主スペース）" in outputs["dashboard"]
+    assert f"{title}（副スペース）" not in outputs["dashboard"]
     # 感度分析は判定していない状態を「全員一致」と見せない
-    sensitivity = _section(outputs["details"], "感度分析（主スペース）")
-    assert "takagi@example.co.jp" in sensitivity
+    if outputs["version"] == "v1":
+        sensitivity = _section(outputs["details"], "感度分析（主スペース）")
+        assert "takagi@example.co.jp" in sensitivity
+    else:
+        assert not any(h.startswith("感度分析") for h in details_headings)
+        assert "モデル超過見込み" not in outputs["dashboard"]
 
 
 def test_legends_explain_fixed_seats_and_merged_demand(outputs):
@@ -396,7 +467,7 @@ def test_person_table_order_and_held_seats(outputs):
     lines = [line for line in section.split("\n")[3:] if line.startswith("| ")]
     emails = [line.split("|")[1].strip().split("@")[0] for line in lines]
     # 判定の表示順（変更推奨が先）→ 需要の降順 → email
-    assert emails[0] == "morita"
+    assert emails[0] == ("ueda" if outputs["version"] == "v2" else "morita")
     assert emails.index("fujii") < emails.index("kimura")  # 同額 $900 は email 順
     assert emails[-1] == "yagi"  # 固定シートだけを持つ人は判定の表示順で後ろ
     yagi = lines[-1]
@@ -470,7 +541,10 @@ def test_dashboard_spaces_tab_and_cards(outputs):
     # 判定の読み方は前提と注意に置く
     notes = html[html.index('data-tab="notes" role="tabpanel"'):]
     assert "払い出し判定は、副にシートを持たず（副で未割当の人を含む）" in notes
-    assert "判定に使用した月: 主スペース: 2026-07, 2026-08 / 副スペース: 2026-07, 2026-08" in notes
+    months = "主スペース: 2026-07, 2026-08"
+    months += ("（判定に要る完全月数の下限: 昇格 1・降格 2）" if outputs["version"] == "v2"
+               else " / 副スペース: 2026-07, 2026-08（2ヶ月ヒステリシス）")
+    assert f"判定に使用した月: {months}" in notes
 
 
 def test_dashboard_shows_only_local_parts_of_emails(outputs):

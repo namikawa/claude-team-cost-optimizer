@@ -448,17 +448,24 @@ def summarize_org(org: OrgAnalysisResult) -> dict:
     """組織単位の集計（report と CLI が同じ値を読むための純粋関数）。
 
     戻り値のキー:
+      - decision_version: 分析済み workspace に共通の判定の版（無ければ v1）
       - n_persons: 人数（人の層の人数。人の層が無ければアカウント数）
       - n_accounts: アカウント数（各 workspace のメンバー数の和）
       - workspaces: config の順（主が先）の行。分析を飛ばした workspace の数値は None
       - total: 数値キーの和と、product ごとに足した org_service_by_product
 
     需要の合計は各 workspace の total_api_cost_usd（そのアカウント自身の需要）の和なので、
-    複数アカウント保有者の需要を二重に数えない。変更推奨・要観察・上限到達疑いの件数は
-    アカウント単位で、人数ではない。
+    複数アカウント保有者の需要を二重に数えない。変更推奨・要観察の件数はアカウント単位で、
+    人数ではない。上限到達疑いの件数もアカウント単位で、v1 のときだけ持つ。
     """
+    versions = {r.summary.get("decision_version", "v1") for r in org.workspaces.values()}
+    if len(versions) > 1:
+        raise ValueError("workspace 間で decision_version が一致していません")
+    version = next(iter(versions), "v1")
+    keys = (tuple(key for key in _SUMMED_KEYS if key != "n_cap_suspected")
+            if version == "v2" else _SUMMED_KEYS)
     rows = []
-    total = dict.fromkeys(_SUMMED_KEYS, 0)
+    total = dict.fromkeys(keys, 0)
     by_product: dict[str, float] = {}
     for name, context in org.contexts.items():
         result = org.workspaces.get(name)
@@ -471,12 +478,12 @@ def summarize_org(org: OrgAnalysisResult) -> dict:
             "assume_no_usage": result is not None and _assumed_no_usage(result),
         }
         if result is None:
-            row.update(dict.fromkeys(_SUMMED_KEYS))
+            row.update(dict.fromkeys(keys))
             row["months_used"] = None
             rows.append(row)
             continue
         summary = result.summary
-        for key in _SUMMED_KEYS:
+        for key in keys:
             value = summary.get(key, 0) or 0
             row[key] = value
             total[key] += value
@@ -492,6 +499,7 @@ def summarize_org(org: OrgAnalysisResult) -> dict:
     n_accounts = int(total["n_members"])
     persons = org.persons
     return {
+        "decision_version": version,
         "n_persons": len(persons.persons) if persons is not None else n_accounts,
         "n_accounts": n_accounts,
         "workspaces": rows,

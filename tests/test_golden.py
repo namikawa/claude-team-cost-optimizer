@@ -21,10 +21,12 @@ Claude Code 活動・メンバー変動）が golden の経路に一度も乗ら
 他のケースに無く、レポートの見た目を作り直すときの入力にもなる。同じ月に、2つの
 Team スペース（workspace）を運用する org-c を並べ、複数 workspace の組織だけが持つ
 成果物の形（スペース列・workspace ごとの節・人の層・複数スペースのタブ）と、人数と
-アカウント数を併記する組織横断サマリを固定する。
+アカウント数を併記する組織横断サマリを固定する。full-all はこの入力の V2 の全部入り、
+full-all-v1 は同じ入力の V1 の主成果物で、複数 workspace の形で V1 の不変を検査する。
+full-v2 は 2026-06 の2組織を V2 で分析した主成果物・decision-evidence・組織横断サマリ。
 
 org-c は 2026-07 と 2026-08 のデータしか持たないので、2026-06 のケース（full /
-preview）では対象月のデータが無い組織として飛ばされ、出力は org-a / org-b のまま。
+full-v2 / preview）では対象月のデータが無い組織として飛ばされ、出力は org-a / org-b のまま。
 速報の複数スペースも org-c の 2026-08 を独立ケースで固定する。
 
 golden の更新手順:
@@ -67,8 +69,10 @@ class Case(NamedTuple):
 # 速報は --days をファイル名からの自動判別に任せず明示する
 # （ファイル名の期間が変わると観測日数が変わり、golden が揺れるため）。
 CASES = {
-    # 2組織そろった月。組織横断サマリ（summary/<月>.md）が出るのはこの構成だけ。
+    # 2組織そろった月。V1 の主成果物と組織横断サマリを固定する。
     "full": Case("2026-06"),
+    # 同じ入力を V2 で分析した主成果物・decision-evidence・組織横断サマリ。
+    "full-v2": Case("2026-06", ("--decision-version", "v2")),
     "preview": Case("2026-06", ("--preview", "--days", "10")),
     # 条件付きの断片を通すケース。同一月に複数スナップショットを持つのは
     # org-b の 2026-07 だけで、org-a にこの月のデータは無いので --org で絞る。
@@ -80,9 +84,11 @@ CASES = {
     "preview-snapshots": Case("2026-07", ("--org", "org-b", "--preview", "--days", "31")),
     "preview-multi": Case("2026-08", ("--org", "org-c", "--preview", "--days", "31")),
     # 条件つき section がすべて出る月（examples/generate_sample_data.py の全部入りサンプル）。
-    # V2 判定の decision-evidence もこのケースで固定する。他のケースは v1 のままなので、
-    # V1 の成果物が V2 の結線で変わらないことの検査になる。2つの Team スペースを運用する
-    # org-c を同じ実行に並べ、複数 workspace の組織の6種と組織横断サマリも固定する。
+    # 同じ入力の V1 は full-all-v1 で固定し、複数 workspace での V1 の不変を検査する。
+    # full-all は V2 の全部入り。2つの Team スペースを運用する org-c を同じ実行に並べ、
+    # 複数 workspace の組織の6種と組織横断サマリも固定する。
+    "full-all-v1": Case(
+        "2026-08", ("--org", "org-b", "--org", "org-c", "--decision-version", "v1")),
     "full-all": Case(
         "2026-08", ("--org", "org-b", "--org", "org-c", "--decision-version", "v2")),
 }

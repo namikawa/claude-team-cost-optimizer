@@ -10,6 +10,7 @@
 - 設定 `decision_v2.upgrade.min_code_demand_usd`・`decision_v2.downgrade.max_code_demand_usd` を廃止し、書いてある場合は読み込み時にエラーとするようにした
 - 判定の版を設定 `decision.version`（`v1` / `v2`。既定は `v1`）で選ぶようにし、`decision_v2.enabled` を廃止した（書いてある設定は読み込み時にエラーになり、書き換え先を表示する）
 - `decision.version` が `v2` のとき、`doctor` の部分月・欠月の説明を V2 の判定の扱いに合わせた
+- 判定の版が `v2` の実行（`--decision-version v2` か `decision.version: v2`）で、report・details・dashboard・recommendations と組織横断サマリを V2 判定の結論で出力するようにした（判定の理由の列を加え、込み利用量の推定に基づく列・上限到達疑い・感度分析は出さず、追加クレジットは上限つき付与と設定確認の 2 段で示す）
 
 ## [1.4.6] - 2026-11-08
 

@@ -31,8 +31,9 @@ seats:
       high: 375.0
 
 decision:
-  # 判定の版（v1 | v2）。v1 は従来の判定。v2 は V1 の成果物に加えて V2 判定の
-  # 根拠（decision-evidence）を書く。CLI の --decision-version が優先し、速報モードには効かない。
+  # 判定の版（v1 | v2）。v1 は従来の判定。v2 は V2 判定（方針線
+  # decision_v2.premium_justification_usd）の結論で成果物を書き、根拠（decision-evidence）も書く。
+  # CLI の --decision-version が優先し、速報モードには効かない。
   version: v1
   # 判定窓（対象月から暦で遡る N か月）の全月がそろい、全月で同じ推奨のときだけ「変更推奨」。
   # 窓に欠月・部分月があるあいだは、推奨が現シートと違う人を「要観察（データ蓄積待ち）」にする。

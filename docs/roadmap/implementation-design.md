@@ -4376,8 +4376,11 @@ Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論
 - `src/seat_analyzer/cli.py`（実行順・残存evidenceの通知・結果の表示）
 - `src/seat_analyzer/analyze/workspaces.py`（`summarize_org`が`decision_version`を運び、
   `n_cap_suspected`の合計は`v1`のときだけ持つ）
-- `tests/test_cli.py`・`tests/test_golden.py`（`full-all-v1`と`full-v2`の新設・`full-all`の再生成）
+- `tests/test_cli.py`・`tests/test_spaces.py`・`tests/test_golden.py`・`tests/golden/`
+  （`full-all-v1`と`full-v2`の新設・`full-all`の再生成）
 - `docs/reference.md`・`docs/usage.md`（`--decision-version v2`の意味の更新）
+- `src/seat_analyzer/default-config.yaml`（版の説明）・`README.md`・`CHANGELOG.md`
+- `docs/roadmap/implementation-design.md`・`docs/roadmap/implementation-status.md`
 
 実装:
 
@@ -4385,14 +4388,17 @@ Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論
   含まない）をgoldenに加える。この時点の`v1`の主成果物はTrack 11の前と同じなので、複数workspaceの
   V1の基準はここで固定する（Step 70で作ると、`full-all`の主成果物がすでにV2になっていて基準が
   残らない）
-- `v2`のとき、analyze → SeatChanges → `evaluate_org` → `apply` → 成果物（report・details・
-  dashboard・recommendations・usage-summary・decision-evidence）の順で実行する。`v1`は従来どおり
+- `analyze_org`に判定の版を渡す。`v2`のとき、analyze → SeatChanges → `evaluate_org` → `apply` →
+  主成果物（report・details・dashboard・recommendations・usage-summary）→ decision-evidence の
+  順で実行する。`v1`は従来どおり
   （applyを通らず、decision-evidenceを書かない）。既定は`v1`のまま
 - `_stale_evidence_notices`（`v1`の実行で前回のdecision-evidenceが残っているとき）の文言を、
   「主成果物とdecision-evidenceの版が違う。`--decision-version v2`で再実行すると主成果物もV2に
   なる。比較用は別の`--output-dir`へ」に変える
-- `_print_result`の「上限到達疑い」は`v2`では出さず、V2の内訳（既存の`_print_decision_evidence`）
-  を出す
+- `summarize_org`は`decision_version`を返し、`v2`ではworkspaceの行・合計ともに
+  `n_cap_suspected`を持たない（分析を飛ばしたworkspaceの行も同じ）
+- 実行時の「上限到達疑い」は`v2`では単一・複数workspaceともに出さず、V2の内訳
+  （既存の`_print_decision_evidence`）を出す
 
 受け入れ条件:
 
