@@ -1,17 +1,17 @@
 # 変更履歴
 
-## [未リリース]
+## [1.5.0] - 2026-11-10
 
 ### 変更
 
+- 判定の版の既定を `v2` にした（`decision.version: v1` か `--decision-version v1` で従来の判定に戻せる。移行の手順は [docs/reference.md の「判定の版と移行」](docs/reference.md#判定の版と移行)）
+- 判定の版が `v2` の実行（`--decision-version v2` か `decision.version: v2`）で、report・details・dashboard・recommendations と組織横断サマリを V2 判定の結論で出力するようにした（判定の理由の列を加え、込み利用量の推定に基づく列・上限到達疑い・感度分析は出さず、追加クレジットは上限つき付与と設定確認の 2 段で示す）
+- 判定の版を設定 `decision.version`（`v1` / `v2`）で選ぶようにし、`decision_v2.enabled` を廃止した（書いてある設定は読み込み時にエラーになり、書き換え先を表示する）
+- 設定 `decision_v2.upgrade.min_code_demand_usd`・`decision_v2.downgrade.max_code_demand_usd` を廃止し、書いてある場合は読み込み時にエラーとするようにした
+- decision-evidence.csv の `code_demand_usd`・`supplementary_high` の 2 列を削除した
 - V2 のシート判定が、需要の中身を条件にせず全 product の需要で昇格・降格を判定するようにした
 - V2 の `review_assignment` と理由コード `ONE_MONTH_STRONG_CODE_DEMAND`・`SUSTAINED_LOW_CODE_DEMAND`・`HIGH_SUPPLEMENTARY_USAGE`・`REVIEW_NON_CODE_USAGE` を廃止した
-- decision-evidence.csv の `code_demand_usd`・`supplementary_high` の 2 列を削除した
-- 設定 `decision_v2.upgrade.min_code_demand_usd`・`decision_v2.downgrade.max_code_demand_usd` を廃止し、書いてある場合は読み込み時にエラーとするようにした
-- 判定の版を設定 `decision.version`（`v1` / `v2`）で選ぶようにし、`decision_v2.enabled` を廃止した（書いてある設定は読み込み時にエラーになり、書き換え先を表示する）
 - `decision.version` が `v2` のとき、`doctor` の部分月・欠月の説明を V2 の判定の扱いに合わせた
-- 判定の版が `v2` の実行（`--decision-version v2` か `decision.version: v2`）で、report・details・dashboard・recommendations と組織横断サマリを V2 判定の結論で出力するようにした（判定の理由の列を加え、込み利用量の推定に基づく列・上限到達疑い・感度分析は出さず、追加クレジットは上限つき付与と設定確認の 2 段で示す）
-- 判定の版の既定を `v2` にした（`decision.version: v1` か `--decision-version v1` で従来の判定に戻せる。移行の手順は [docs/reference.md の「判定の版と移行」](docs/reference.md#判定の版と移行)）
 
 ## [1.4.6] - 2026-11-08
 
@@ -256,6 +256,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.5.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.5.0
 [1.4.6]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.6
 [1.4.5]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.5
 [1.4.4]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.4

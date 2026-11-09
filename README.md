@@ -113,7 +113,7 @@ seat-analyzer --version
 | --- | --- |
 | [docs/setup.md](docs/setup.md) | ゼロから動く状態にするまでのセットアップ手順（Claude Code に実行させる形式）、claude.ai からの CSV 取得の設定、定期実行の雛形（macOS） |
 | [docs/usage.md](docs/usage.md) | 入力データの構成、複数スペースの組織、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、claude.ai からの CSV 取得、速報モード |
-| [docs/reference.md](docs/reference.md) | レポート各セクションと複数スペースの組織の読み方、追加クレジットの上限、GitHub 分析の有効化、claude.ai からの CSV 取得の設定、判定ロジックの前提 |
+| [docs/reference.md](docs/reference.md) | レポート各セクションと複数スペースの組織の読み方、追加クレジットの上限、GitHub 分析の有効化、claude.ai からの CSV 取得の設定、判定ロジックの前提、判定の版と移行 |
 | [docs/tooling.md](docs/tooling.md) | 考察の自動執筆（`discuss`）と公開テキストの検査（`check-text`） |
 | [CHANGELOG.md](CHANGELOG.md) | バージョンごとの変更履歴 |
 
