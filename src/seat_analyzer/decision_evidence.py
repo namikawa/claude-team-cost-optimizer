@@ -325,7 +325,7 @@ def _person_overrides(
     アカウントの需要も合算に入るため）。
     """
     context = primary.decision_context
-    history = _contiguous_months(context.months, primary.month)
+    history = contiguous_months(context.months, primary.month)
     resolved = {
         name: _resolved_by_email(result.decision_context.identity_rows)
         for name, result in secondaries
@@ -423,7 +423,7 @@ def _shared(
             month: frame.set_index("email")
             for month, frame in context.aggregates.items()
         },
-        history_months=_contiguous_months(context.months, result.month),
+        history_months=contiguous_months(context.months, result.month),
         changes=changes,
         cfg=cfg,
         subjects=subjects,
@@ -710,7 +710,7 @@ def _email_key(value: object) -> str | None:
     )
 
 
-def _contiguous_months(months: Sequence[str], target: str) -> tuple[str, ...]:
+def contiguous_months(months: Sequence[str], target: str) -> tuple[str, ...]:
     """対象月から古い方へ遡って、暦で連続する月だけを返す（昇順）。
 
     2026-05 と 2026-07 があって 06 が無ければ 05 は履歴に入らない。判定エンジンは

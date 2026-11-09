@@ -10,6 +10,34 @@ from ..analyze import STATUS_CHANGE, AnalysisResult, OrgAnalysisResult
 from ..ingest import parse_affiliations
 
 
+def _decision_version(result: AnalysisResult | OrgAnalysisResult) -> str:
+    """版を読み、V2 の全 workspace が apply 済みの形であることを確かめる。
+
+    版は summary の decision_version（無ければ v1）。v2 で分析しただけの結果を書き出すと、
+    V1 の判定と V2 の表示が同じ成果物に並ぶので止める。apply 済みかは理由の値ではなく
+    形（reason 列があり、V1 だけの列と n_cap_suspected が無い）で見る。apply の後も
+    現状維持・対象外の行は理由が空になるため。write_all は recommendations.csv から順に
+    書くので、どのファイルにも触れる前にこれを呼ぶ（途中で止めると CSV だけが新しくなる）。
+    """
+    results = (list(result.workspaces.values())
+               if isinstance(result, OrgAnalysisResult) else [result])
+    versions = {r.summary.get("decision_version", "v1") for r in results}
+    if len(versions) > 1:
+        raise ValueError("workspace 間で decision_version が一致していません")
+    version = next(iter(versions), "v1")
+    if version == "v2":
+        v1_columns = {"cost_if_standard_usd", "cost_if_premium_usd", "rec_low",
+                      "rec_high", "cap_suspected"}
+        for r in results:
+            if ("reason" not in r.users.columns or v1_columns.intersection(r.users.columns)
+                    or "n_cap_suspected" in r.summary):
+                raise ValueError(
+                    "decision_version が v2 の結果は decision_evidence.apply を"
+                    "通してから書き出してください"
+                )
+    return version
+
+
 def _md_cell(v) -> str:
     """Markdown 表セル用のエスケープ（表崩れ防止）。パイプ・改行が主な対象。"""
     s = "" if v is None else str(v)

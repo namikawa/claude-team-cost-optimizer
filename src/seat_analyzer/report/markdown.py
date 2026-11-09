@@ -21,10 +21,12 @@ from . import spaces
 from .document import _atomic_write, _preserve_discussion
 from .format import (
     _account_rows,
+    _decision_version,
     _detail_rows,
     _fmt_count,
     _fmt_delta,
     _fmt_delta_int,
+    _fmt_setting_usd,
     _fmt_stat_count,
     _fmt_tokens,
     _fmt_usd,
@@ -47,12 +49,15 @@ from .text import (
     PREVIEW_ORDER,
     STATUS_ORDER,
     _cap_legend_supplement,
+    _confidence_legend_v2,
+    _decision_legend_v2,
     _disabled_cost_note,
+    _judgment_months_v2,
     _preview_decision_note,
 )
 
 
-def _user_table_md(users: pd.DataFrame, space: bool = False) -> str:
+def _user_table_md(users: pd.DataFrame, space: bool = False, *, v2: bool = False) -> str:
     """ユーザ（アカウント）単位の判定表。
 
     space=True かつ workspace_label 列がある（複数 workspace を連結した）表では、
@@ -69,14 +74,15 @@ def _user_table_md(users: pd.DataFrame, space: bool = False) -> str:
         + " 現シート |"
         + (" 部署 |" if has_dept else "")
         + (" チーム |" if has_team else "")
-        + " API換算需要 | 実課金(従量) | Standard時 | Premium時 | 推奨 | 削減/月 | 判定 | 確度 |"
+        + (" API換算需要 | 実課金(従量) | 推奨 | 削減/月 | 判定 | 確度 | 理由 |" if v2 else
+           " API換算需要 | 実課金(従量) | Standard時 | Premium時 | 推奨 | 削減/月 | 判定 | 確度 |")
         + (" PR(CC) |" if has_cc else "") + (" 行数(CC) |" if has_loc else "")
     )
-    sep = "|" + "---|" * (10 + int(has_space) + int(has_dept) + int(has_team)
+    sep = "|" + "---|" * (10 - int(v2) + int(has_space) + int(has_dept) + int(has_team)
                           + int(has_cc) + int(has_loc))
     lines = [header, sep]
     for _, r in users.iterrows():
-        cap = r["cap_suspected"]
+        cap = False if v2 else r["cap_suspected"]
         flag = " ⚠️上限?" if not _is_missing(cap) and bool(cap) else ""
         cells = [r["email"]]
         if has_space:
@@ -89,13 +95,15 @@ def _user_table_md(users: pd.DataFrame, space: bool = False) -> str:
         cells += [
             _fmt_usd(r["api_cost_usd"]) + flag,
             _fmt_usd(r.get("billed_extra_usd", 0.0)),
-            _fmt_usd(r["cost_if_standard_usd"]),
-            _fmt_usd(r["cost_if_premium_usd"]),
+            *([] if v2 else [_fmt_usd(r["cost_if_standard_usd"]),
+                             _fmt_usd(r["cost_if_premium_usd"])]),
             SEAT_LABELS.get(r["recommended_seat"], r["recommended_seat"]),
             _fmt_usd(r["monthly_saving_usd"]),
             r["status"],
             r["confidence"],
         ]
+        if v2:
+            cells.append(r["reason"])
         if has_cc:
             cells.append(_int_cell(r.get("prs_with_cc", 0)))
         if has_loc:
@@ -104,7 +112,7 @@ def _user_table_md(users: pd.DataFrame, space: bool = False) -> str:
     return "\n".join(lines)
 
 
-def _user_legend_md(summary: dict, extra: tuple[str, ...] = ()) -> str:
+def _user_legend_md(summary: dict, extra: tuple[str, ...] = (), *, v2: bool = False) -> str:
     """ユーザ表の列の読み方（凡例）。
 
     report.md のシート変更推奨（表が空でないとき）と details.md の全ユーザ表で共有する。
@@ -117,6 +125,15 @@ def _user_legend_md(summary: dict, extra: tuple[str, ...] = ()) -> str:
         "- **Standard時 / Premium時**: そのシートの場合の想定月額。**現シート側はシート料+実課金の観測実績**、変更先側は allowance（込み利用量）モデルによる試算",
         "- **⚠️上限?**: 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ。「実効込み量が推定より大きい」か「上限で停止した」かの要確認",
     ]
+    if v2:
+        lines = lines[:2] + [
+            f"- **判定**: {_decision_legend_v2(summary)}",
+            f"- **確度**: {_confidence_legend_v2()}",
+            f"- **理由**: {_TEXT['legend_reason_v2']}",
+            f"- **削減/月**: {_TEXT['legend_saving_v2']}",
+            f"- **対象外（シート未割当）**: {_TEXT['legend_excluded_v2']}",
+        ]
+        return "\n".join([*lines, *extra])
     cap_supplement = _cap_legend_supplement(summary.get("credit_shown", False))
     if cap_supplement:
         lines.append(f"- {cap_supplement}")
@@ -272,7 +289,7 @@ def _trend_md(trend: dict | None, label: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def _snapshot_md(snapshot: dict | None, label: str | None = None) -> str:
+def _snapshot_md(snapshot: dict | None, label: str | None = None, *, v2: bool = False) -> str:
     """「## 月中の利用推移（スナップショット差分）」セクション（None なら空文字列）。"""
     if not snapshot:
         return ""
@@ -297,9 +314,10 @@ def _snapshot_md(snapshot: dict | None, label: str | None = None) -> str:
     for x in snapshot["stalled_capped"]:
         note = x.get("loc_note")
         extra = f"。{note}" if note else ""
+        candidate = "" if v2 else " は実効込み量の実測候補"
         lines.append(
             f"- {_md_cell(x['email'])}: 上限停止の可能性。停止時点の累積 "
-            f"{_fmt_usd(x['cum_at_stall'])} は実効込み量の実測候補{extra}"
+            f"{_fmt_usd(x['cum_at_stall'])}{candidate}{extra}"
         )
     if snapshot["billed_emerged"]:
         lines += ["", "### この区間で込み量を消化（実課金が発生）", ""]
@@ -430,6 +448,40 @@ def _grant_candidates_md(candidates: list, cap_usd, label: str | None = None) ->
     return "\n".join(lines)
 
 
+def _grant_candidates_v2_md(candidates: list, reviews: list,
+                            label: str | None = None) -> str:
+    """V2 の上限つき付与・設定確認。両段とも空なら節を省略する。"""
+    if not candidates and not reviews:
+        return ""
+    lines = [f"## {_labeled(_TEXT['h_grant_v2'], label)}", ""]
+    for rows, heading, note, action, column, amount in (
+        (candidates, "h_grant_capped_v2", "note_grant_v2", "action_grant_v2",
+         "推奨初期上限", "suggested_cap_usd"),
+        (reviews, "h_credit_review_v2", "note_credit_review_v2", "action_credit_review_v2",
+         "実課金(従量)", "billed_usd"),
+    ):
+        lines += [f"### {_TEXT[heading]}", "", _TEXT[note], ""]
+        if not rows:
+            lines += ["該当なし。", ""]
+            continue
+        lines += [f"| ユーザ | API換算需要 | {column} |", "|---|---|---|"]
+        fmt = _fmt_setting_usd if amount == "suggested_cap_usd" else _fmt_usd
+        lines += [f"| {_md_cell(r['email'])} | {_fmt_usd(r['demand_usd'])} | {fmt(r[amount])} |"
+                  for r in rows]
+        lines += ["", f"- {_TEXT[action]}", ""]
+    return "\n".join(lines).rstrip("\n")
+
+
+def _v2_notes_md(extra: list[str] | tuple[str, ...] = ()) -> str:
+    """V2 の注意事項（判定の性質・削減見込み・履歴の順。extra は複数 workspace の注記）。
+
+    V1 の「Standard時/Premium時」の注記と同じ位置（センサリングとスペンドデータの
+    保持期間の間）に入る。注意事項の箇条は V1 と同じく句点で終える。
+    """
+    lines = [_TEXT[key] for key in ("note_decision_v2", "note_saving_v2", "note_history_v2")]
+    return "\n".join(f"- {line}。" for line in [*lines, *extra])
+
+
 def _credit_reach_md(cr: dict | None, label: str | None = None) -> str:
     """速報の「## 追加クレジット残額」セクション（None なら空文字列）。"""
     if not cr:
@@ -469,6 +521,7 @@ def write_markdown(result: AnalysisResult | OrgAnalysisResult, path: Path) -> No
     OrgAnalysisResult は、複数 workspace の組織なら workspace ごとの節と人の層の節を
     持つ形で書き、そうでなければ唯一の workspace の結果で従来どおりに書く。
     """
+    v2 = _decision_version(result) == "v2"
     if isinstance(result, OrgAnalysisResult):
         if result.has_multiple_workspaces:
             _write_markdown_multi(result, path)
@@ -487,20 +540,28 @@ def write_markdown(result: AnalysisResult | OrgAnalysisResult, path: Path) -> No
     cap_usd = s["grant_suggested_cap_usd"]
     extra_sections = ""
     for block in (_trend_md(result.trend),
-                  _grant_candidates_md(result.grant_candidates, cap_usd)):
+                  (_grant_candidates_v2_md(result.grant_candidates, result.credit_reviews) if v2 else
+                   _grant_candidates_md(result.grant_candidates, cap_usd))):
         if block:
             extra_sections += nl + block + nl
 
     # 列の読み方は表があるときだけ添える（「該当なし。」の下に凡例だけが残らないように）
-    changes_block = _user_table_md(changes) if not changes.empty else "該当なし。"
+    changes_block = _user_table_md(changes, v2=v2) if not changes.empty else "該当なし。"
     if not changes.empty:
-        changes_block += nl + nl + _user_legend_md(s)
+        changes_block += nl + nl + _user_legend_md(s, v2=v2)
 
     # 追加クレジット関連の凡例・注記（credit_shown / 無効ユーザの有無で条件付き）
     credit_row = _credit_summary_md_row(s)
     credit_row = (credit_row + nl) if credit_row else ""
     disabled_note = _disabled_cost_note(users)
     disabled_note_line = f"{nl}- {disabled_note}。" if disabled_note else ""
+
+    cap_row = "" if v2 else f"| 上限到達疑い（Standard） | {s['n_cap_suspected']} 名 |{nl}"
+    months = (_judgment_months_v2(s, result.month) if v2 else
+              f"{', '.join(s['judgment_months'])}（ヒステリシス {s['hysteresis_months']} ヶ月）")
+    cost_notes = (_v2_notes_md() if v2 else
+                  "- 「Standard時/Premium時」の従量課金額は allowance の推定値（mid シナリオ）に基づく試算です。"
+                  + disabled_note_line)
 
     md = f"""# Claude Team シート最適化レポート — {_scope_label(result)}
 
@@ -515,8 +576,7 @@ def write_markdown(result: AnalysisResult | OrgAnalysisResult, path: Path) -> No
 | 組織サービス利用（ユーザ非帰属・シート判定対象外） | {_fmt_usd(s.get('org_service_cost_usd', 0.0))} /月{_org_products(s)} |
 | **変更推奨** | **{s['n_change_recommended']} 名（削減見込み {_fmt_usd(s['est_monthly_saving_usd'])} /月）** |
 | 要観察 | {s['n_watching']} 名 |
-| 上限到達疑い（Standard） | {s['n_cap_suspected']} 名 |
-{credit_row}| 判定に使用した月 | {', '.join(s['judgment_months'])}（ヒステリシス {s['hysteresis_months']} ヶ月） |
+{cap_row}{credit_row}| 判定に使用した月 | {months} |
 {extra_sections}
 ## シート変更推奨
 
@@ -526,7 +586,7 @@ def write_markdown(result: AnalysisResult | OrgAnalysisResult, path: Path) -> No
 
 - 従量課金（usage credits）が無効の場合、Standardユーザの利用量は上限で頭打ちになるため、
   実際の需要はここに表示された値より大きい可能性があります（センサリング）。
-- 「Standard時/Premium時」の従量課金額は allowance の推定値（mid シナリオ）に基づく試算です。{disabled_note_line}
+{cost_notes}
 - スペンドデータは前日分まで・過去90日分のみ参照可能です。毎月のエクスポートを忘れずに。
 
 ## データ検証・警告
@@ -561,6 +621,7 @@ def _write_markdown_multi(org: OrgAnalysisResult, path: Path) -> None:
     ごとの節は「見出し（表示名）」の同じ階層で主→副の順に並べる。シート変更推奨は
     全アカウントを連結した判定の表（主の行の需要は合算値）にスペース列を足す。
     """
+    v2 = _decision_version(org) == "v2"
     nl = "\n"
     summary = summarize_org(org)
     total = summary["total"]
@@ -575,7 +636,8 @@ def _write_markdown_multi(org: OrgAnalysisResult, path: Path) -> None:
         row + nl for name, r in results.items()
         if (row := _credit_summary_md_row(r.summary, labels[name]))
     )
-    hysteresis = next(iter(results.values())).summary["hysteresis_months"]
+    first = next(iter(results.values())).summary
+    hysteresis = first["hysteresis_months"]
     months = spaces.judgment_months_text(org)
     org_service = {"org_service_by_product": total["org_service_by_product"]}
 
@@ -585,19 +647,23 @@ def _write_markdown_multi(org: OrgAnalysisResult, path: Path) -> None:
         if block:
             extra_sections += nl + block + nl
     for name, r in results.items():
-        if org.contexts[name].fixed_seat:
-            continue  # 固定シートの workspace は損益分岐判定をしないので付与候補も無い
-        block = _grant_candidates_md(
-            r.grant_candidates, r.summary["grant_suggested_cap_usd"], labels[name])
+        # 固定シートの workspace はシート判定をしないので付与候補も無い。V2 の付与候補・
+        # 設定確認は主 workspace の判定だけが持つ（副の一覧は常に空）
+        if org.contexts[name].fixed_seat or (v2 and name != org.primary):
+            continue
+        block = (_grant_candidates_v2_md(r.grant_candidates, r.credit_reviews, labels[name])
+                 if v2 else _grant_candidates_md(
+                     r.grant_candidates, r.summary["grant_suggested_cap_usd"], labels[name]))
         if block:
             extra_sections += nl + block + nl
 
     credit_shown = any(r.summary.get("credit_shown", False) for r in results.values())
-    changes_block = (_user_table_md(changes, space=True) if not changes.empty
+    changes_block = (_user_table_md(changes, space=True, v2=v2) if not changes.empty
                      else "該当なし。")
     if not changes.empty:
         changes_block += nl + nl + _user_legend_md(
-            {"credit_shown": credit_shown}, spaces.account_legend_lines(org))
+            (first if v2 else {"credit_shown": credit_shown}),
+            spaces.account_legend_lines(org), v2=v2)
 
     # 固定シートのアカウントは「Standard時/Premium時」を試算しないので、無効の注記の
     # 対象に数えない（数えると、試算の無い行のための注記が出る）
@@ -610,6 +676,13 @@ def _write_markdown_multi(org: OrgAnalysisResult, path: Path) -> None:
 
     warnings = _warning_lines(org)
     warnings_md = nl.join(f"- {w}" for w in warnings) if warnings else "- なし"
+
+    cap_row = "" if v2 else f"| 上限到達疑い（Standard） | {total['n_cap_suspected']} 名 |{nl}"
+    if not v2:
+        months += f"（ヒステリシス {hysteresis} ヶ月）"
+    cost_notes = (_v2_notes_md(spaces.notes_lines(org)) if v2 else
+                  "- 「Standard時/Premium時」の従量課金額は allowance の推定値（mid シナリオ）に基づく試算です。"
+                  + note_lines)
 
     md = f"""# Claude Team シート最適化レポート — {_scope_label(org)}
 
@@ -624,8 +697,7 @@ def _write_markdown_multi(org: OrgAnalysisResult, path: Path) -> None:
 | 組織サービス利用（ユーザ非帰属・シート判定対象外） | {_fmt_usd(total['org_service_cost_usd'])} /月{_org_products(org_service)} |
 | **変更推奨** | **{total['n_change_recommended']} 名（削減見込み {_fmt_usd(total['est_monthly_saving_usd'])} /月）** |
 | 要観察 | {total['n_watching']} 名 |
-| 上限到達疑い（Standard） | {total['n_cap_suspected']} 名 |
-{credit_rows}| 判定に使用した月 | {months}（ヒステリシス {hysteresis} ヶ月） |
+{cap_row}{credit_rows}| 判定に使用した月 | {months} |
 
 {spaces.workspaces_md(org, summary)}
 {extra_sections}
@@ -639,7 +711,7 @@ def _write_markdown_multi(org: OrgAnalysisResult, path: Path) -> None:
 
 - 従量課金（usage credits）が無効の場合、Standardユーザの利用量は上限で頭打ちになるため、
   実際の需要はここに表示された値より大きい可能性があります（センサリング）。
-- 「Standard時/Premium時」の従量課金額は allowance の推定値（mid シナリオ）に基づく試算です。{note_lines}
+{cost_notes}
 - スペンドデータは前日分まで・過去90日分のみ参照可能です。毎月のエクスポートを忘れずに。
 
 ## データ検証・警告
@@ -957,6 +1029,7 @@ def write_org_summary(results: list[AnalysisResult | OrgAnalysisResult],
     列はアカウント単位のまま。合計行は人数の和で、複数 workspace の組織が1つでも
     あればアカウント数の和を添える。
     """
+    versions = [_decision_version(r) for r in results]
     orgs = [r if isinstance(r, OrgAnalysisResult) else single_org_result(r) for r in results]
     month = orgs[0].month
     out = Path(output_dir) / "summary"
@@ -1001,6 +1074,7 @@ def write_org_summary(results: list[AnalysisResult | OrgAnalysisResult],
          f"| **{_fmt_usd(totals['total_billed_extra_usd'])}** | **{_fmt_usd(totals['org_service_cost_usd'])}** "
          f"| **{int(totals['n_change_recommended'])} 名** | **{_fmt_usd(totals['est_monthly_saving_usd'])}** |"),
         "",
+        *([_TEXT["note_saving_v2"] + "。", ""] if "v2" in versions else []),
         f"各組織の詳細は `reports/<組織>/{month}/{REPORT.name(month, '<組織>')}` を参照。",
         "",
     ]

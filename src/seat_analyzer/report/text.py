@@ -18,14 +18,18 @@ from ..analyze import (
     STATUS_EXCLUDED,
     STATUS_FIXED_SEAT,
     STATUS_KEEP,
+    STATUS_SECONDARY,
     STATUS_UNKNOWN,
     STATUS_WATCH,
     STATUS_WATCH_WAIT,
 )
+from ..decision_evidence import contiguous_months
+from ..decision_v2 import POLICY_STABILITY_OFFSET_USD
+from .format import _fmt_setting_usd
 
 # 判定ステータスの表示順（対応アクションが明確なものから。対象外は末尾）
 STATUS_ORDER = [STATUS_CHANGE, STATUS_WATCH, STATUS_WATCH_WAIT, STATUS_UNKNOWN,
-                STATUS_KEEP, STATUS_FIXED_SEAT, STATUS_EXCLUDED]
+                STATUS_KEEP, STATUS_FIXED_SEAT, STATUS_SECONDARY, STATUS_EXCLUDED]
 
 # 速報の一次判断ラベルの表示順（対応アクションが明確なものから）
 PREVIEW_ORDER = [LABEL_IDLE, LABEL_STD_CAND, LABEL_PREM_CONSIDER, LABEL_HOLD,
@@ -49,6 +53,28 @@ GROUP_AXES = (
 # <!--text:キー--> を _embed_shared_text() が置換する。
 # 文中に Jinja/HTML の特殊文字（{ } % < > &）を含めないこと（そのまま出力される）。
 _TEXT = {
+    # V2 判定の表示（summary の decision_version が v2 のとき）。方針線・単価・月数のように
+    # 設定で変わる文は下の関数が組み立てる
+    "h_grant_v2": "追加クレジットの付与候補と設定確認",
+    "h_grant_capped_v2": "上限つき付与",
+    "h_credit_review_v2": "設定確認",
+    "legend_reason_v2": "判定の理由。複数あるときは「; 」で区切る",
+    "legend_saving_v2": "シート差額ベースの比較額（降格はシート差額、昇格は実課金 − シート差額）で、"
+                        "変更後の従量課金を含まない。負は費用増",
+    "legend_excluded_v2": "意図的にシートを割り当てていないメンバー（別組織でアサイン済み・管理者等）。"
+                          "シート判定は行わない",
+    "note_decision_v2": "判定は V2 判定で、込み利用量（allowance）の推定は使っていません",
+    "note_saving_v2": "削減見込みはシート差額ベースの比較額で、変更後の従量課金を含みません（負は費用増）",
+    "note_history_v2": "判定に使用した月は組織に共通の履歴で、加入より前の月などは人ごとに除きます。"
+                       "追加クレジットが無効の人は、需要が方針線以上になっても、それが続くまでは"
+                       "昇格ではなく上限つき付与になります",
+    "note_grant_v2": "追加クレジットが無効の Standard ユーザのうち、対象月の需要が方針線以上で、"
+                     "それがまだ続いていない人",
+    "action_grant_v2": "席を変える前に上限つきの追加クレジットを付与し、1 か月の課金を実測してから"
+                       "昇格を判断することを推奨します",
+    "note_credit_review_v2": "追加クレジットの設定が分からない Standard ユーザ（上限が未記入、または"
+                             "「無効」の記入と実課金が食い違う）のうち、実課金か需要が昇格を検討する水準の人",
+    "action_credit_review_v2": "管理画面で設定を確かめ、members-info.csv の「追加クレジット上限」に記入してください",
     # セクション見出し（md は "## " を、HTML は <h2> を前後に付ける）
     "h_snapshot": "月中の利用推移（スナップショット差分）",
     "h_code_diff": "月中の Claude Code 活動（code-analytics 差分）",
@@ -105,6 +131,36 @@ _TEXT = {
     "legend_excluded": "対象外（未割当）: 意図的にシートを割り当てていないメンバー"
                        "（別組織でアサイン済み・管理者等）",
 }
+
+
+def _decision_legend_v2(summary: dict) -> str:
+    """方針線を設定値で示す判定の凡例。"""
+    policy = _fmt_setting_usd(summary["premium_justification_usd"])
+    return (f"V2 判定。全 product の API換算需要と方針線（{policy}/月）、実課金・追加クレジット上限の"
+            "観測から決める。込み利用量（allowance）の推定は使わない")
+
+
+def _confidence_legend_v2() -> str:
+    """確度の比較幅を判定コードの定数で示す。"""
+    offset = _fmt_setting_usd(POLICY_STABILITY_OFFSET_USD)
+    return (f"方針線を ±{offset} ずらしても、シートを変えるかどうかの判定が同じか"
+            "（高=どちらにずらしても同じ、中=片方で変わる、低=両方で変わる）。"
+            "追加クレジットの提案は比べない。判定を保留した行・判定しない行には確度を付けない")
+
+
+def _seat_price_note_v2(summary: dict) -> str:
+    """単価と差額を summary の設定値で示す。"""
+    standard = summary["seat_price_standard_usd"]
+    premium = summary["seat_price_premium_usd"]
+    return (f"シート単価: Standard {_fmt_setting_usd(standard)} / Premium {_fmt_setting_usd(premium)}"
+            f"（月払い）。シート差額 {_fmt_setting_usd(premium - standard)}/月")
+
+
+def _judgment_months_v2(summary: dict, month: str, *, missing: bool = False) -> str:
+    """組織共通の連続する履歴と、判定に要る完全月数の下限。"""
+    months = "—" if missing else ", ".join(contiguous_months(summary["months_used"], month))
+    return (f"{months}（判定に要る完全月数の下限: 昇格 {summary['upgrade_min_complete_months']}"
+            f"・降格 {summary['downgrade_min_complete_months']}）")
 
 
 def _embed_shared_text(src: str) -> str:

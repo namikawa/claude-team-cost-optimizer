@@ -4313,22 +4313,33 @@ Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論
 
 - `src/seat_analyzer/report/text.py`・`markdown.py`・`details.py`・`html.py`・`spaces.py`
 - `src/seat_analyzer/templates/dashboard.html.j2`・`partials/grant.html.j2`・`partials/snapshot.html.j2`
+- `src/seat_analyzer/report/format.py`（版の判定と apply 済みの検査）・
+  `src/seat_analyzer/report/__init__.py`（書き込み前の検査）
+- `src/seat_analyzer/analyze/pipeline.py`（V2 の summary の方針線・月中の警告への版の受け渡し）・
+  `src/seat_analyzer/analyze/midmonth.py`（月中のシート変更の警告の版分け）
+- `src/seat_analyzer/decision_v2.py`（確度の幅の定数の公開名）・
+  `src/seat_analyzer/decision_evidence.py`（連続月の関数の公開名）
+- `tests/test_report_v2.py`・`tests/test_partials.py`
 - `src/seat_analyzer/prompts/aspects-full.md`
 - 表示のテスト（applyの出力を`report.write_all`に通して確かめる。CLIの結線はまだ無い）
 
 実装:
 
 - summaryの`decision_version`で分岐する。`v2`のとき、ユーザ表（report・details・dashboardの
-  推奨一覧とユーザ別）にStandard時・Premium時・⚠上限フラグ・感度分析を出さず、判定の次に理由の
-  列を足す
+  推奨一覧とユーザ別）にStandard時・Premium時・⚠上限フラグ・感度分析を出さず、確度の次に理由の
+  列を足す（dashboard は判定のセルの次）
 - 凡例・注意事項・「前提と注意」を版ごとの文にする（確度＝方針線を±$100ずらしても結論が同じか、
   判定の条件）。固定文言は`text.py`の`_TEXT`に版ごとのキーで持つ
 - 削減見込み（`monthly_saving_usd`・サマリのKPI・人別の表・組織横断サマリ）は列名を変えず、`v2`の
   凡例と注記に「シート差額ベースの比較額で、変更後の従量課金を含まない。負は費用増」と書く
 - サマリの「上限到達疑い（Standard）」行は`v2`で出さない。「判定に使用した月」は履歴の月と
-  「昇格は直近N完全月・降格は直近M完全月」の注記にする（N・Mはsummaryに載せた設定値。既定は
-  1と2）
-- 付与候補の節を、上限つき付与の一覧（需要・推奨初期上限）と設定確認の一覧の2段にする
+  「判定に要る完全月数の下限: 昇格 N・降格 M」の注記にする（N・Mはsummaryに載せた設定値。
+  既定は1と2）。履歴は組織に共通のもので、加入より前の月などは人ごとに除く
+- 付与候補の節を、上限つき付与の一覧（需要・推奨初期上限）と設定確認の一覧の2段にする。
+  dashboard のカードは V2 では固定シートでない主 workspace にだけ出す
+- apply を通していない V2 の結果は、`write_all`・`write_org_summary` がディレクトリ作成と
+  ファイル書き込みの前に止める
+- 月中のシート変更の警告は V2 では検出した事実だけを伝える
 - 月中の利用推移（§8）の停止疑いは観測なので残し、`v2`では「実効込み量の実測候補」の語を出さない
   （上限で止まった可能性に本人確認が要る旨は従来どおり）
 - 複数workspaceの人別の表（`spaces.py`）の凡例を版ごとにする（「アカウントのV1判定」「上限到達

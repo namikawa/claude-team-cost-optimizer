@@ -58,7 +58,7 @@ _SUSTAINED_MONTHS = 2
 _RISING_MIN_POINTS = 3
 
 # 方針感度（§12.7）で方針線をずらす幅。シート差額（$100）と同じ大きさにしてある
-_POLICY_STABILITY_OFFSET_USD = 100.0
+POLICY_STABILITY_OFFSET_USD = 100.0
 
 # status を RECOMMENDED へ上げるアクション（人が取るべき作業があるもの）。語彙ごとに
 # 別の組にする。StrEnum は値が等しければ語彙をまたいで == になるため、1つの組へ混ぜると
@@ -562,7 +562,7 @@ def _downgrade(subject: SubjectHistory, settings: _Settings) -> DecisionV2:
 def policy_stability(subject: SubjectHistory, cfg: Mapping) -> int | None:
     """方針線の感度（§12.7）: 方針線をずらしても同じ結論になるか。
 
-    方針線を ±`_POLICY_STABILITY_OFFSET_USD` ずらした3通り（−・基準・+ の順）で判定し、
+    方針線を ±`POLICY_STABILITY_OFFSET_USD` ずらした3通り（−・基準・+ の順）で判定し、
     基準と同じ seat_action になった数を返す（基準自身を含むので 1〜3）。3 は「線の置き場所
     に結論が依存していない」、1 は「線をどこへ引くかで結論が変わる」を表す。
 
@@ -596,7 +596,7 @@ def policy_stability(subject: SubjectHistory, cfg: Mapping) -> int | None:
                 premium_justification_usd=settings.premium_justification_usd + offset
             ),
         ).seat_action
-        for offset in (-_POLICY_STABILITY_OFFSET_USD, 0.0, _POLICY_STABILITY_OFFSET_USD)
+        for offset in (-POLICY_STABILITY_OFFSET_USD, 0.0, POLICY_STABILITY_OFFSET_USD)
     ]
     baseline = actions[1]
     return sum(1 for action in actions if action is baseline)
