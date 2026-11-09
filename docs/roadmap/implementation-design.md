@@ -4425,23 +4425,30 @@ Step 66〜69は既定を`v1`のままmainへ入れ（Step 69まではV2の結論
 対象:
 
 - `src/seat_analyzer/default-config.yaml`（`decision.version: v2`）
-- `tests/golden/`（`full`・`full-snapshots`を`v2`で再生成し、`full-v2`は`full`へ統合する。
-  切り替え前の`full`・`full-snapshots`を`full-v1`・`full-snapshots-v1`として残す。`full-all-v1`は
-  Step 69で作ってある）
+- `src/seat_analyzer/cli.py`（ヘルプ）
+- `src/seat_analyzer/report/__init__.py`・`src/seat_analyzer/report/naming.py`（コメント）
+- `src/seat_analyzer/templates/workspace-config.yaml`・`src/seat_analyzer/prompts/aspects-full.md`
+- `.claude/commands/seat-analysis.md`・`docs/setup.md`
+- `tests/test_golden.py`・`tests/golden/`（既定のV2と従来のV1の成果物）
+- `tests/test_cli.py`・`tests/test_data_quality.py`・`tests/test_hardening.py`・
+  `tests/test_output_filenames.py`・`tests/test_report_split.py`
 - `README.md`・`docs/usage.md`・`docs/reference.md`・`CHANGELOG.md`
-- `docs/roadmap/implementation-design.md`（§22の状態）
+- `docs/roadmap/implementation-design.md`（§22の状態）・`docs/roadmap/implementation-status.md`
 
 実装:
 
 - 既定を`v2`にする。`--decision-version v1`と`decision.version: v1`で従来の判定に戻せる
 - V1の不変を固定するgoldenを3つ持つ（`--decision-version v1`を明示。単一workspace・月中差分・
   複数workspaceの3つの形）。`full-v1`・`full-snapshots-v1`は切り替え前の`full`・`full-snapshots`を
-  名前を変えて残したもので、再生成しない
+  名前を変えて残したもので、既定の切り替え前に再生成せず一致を確かめる
+- `full-v2`を`full`へ名前替えし、`full-all`から版の指定を外して、既定の実行と再生成せず一致する
+  ことを確かめる。新しく生成するのはV2の`full-snapshots`だけで、観測の数値がV1と同じことを
+  確かめる。速報3ケースと`full-all-v1`も再生成しない
 - docs: 判定ロジック概要をV2を主にして書き直し、V1は「`--decision-version v1`」の節に移す。
-  recommendations・decision-evidenceの列、成果物の一覧、usageの手順。CHANGELOGと
-  reference.mdに移行の節を書く（削除した設定キー3つ・`decision.version`の選び方・
+  recommendations・decision-evidenceの列、成果物の一覧、usageの手順。reference.mdに移行の節を
+  書き、CHANGELOGはその節を指す1行にする（削除した設定キー3つ・`decision.version`の選び方・
   decision-evidenceから外した2列・既存の月を再生成すると考察は引き継がれるので判定が変わった月は
-  `--force-discussion`か手で書き直すこと）
+  `analyze --with-discussion --force-discussion`か`discuss --force`か手で書き直すこと）
 - 版はMINOR（判定と成果物が変わる）
 
 受け入れ条件:
@@ -4704,7 +4711,7 @@ maturity:
 3. 複数月並行出力
 4. 差異をreview
 5. V2 ruleを調整（Step 66: 分類軸を外す）
-6. 明示承認後にdefaultをV2へ変更（Step 67〜70）
+6. 明示承認後にdefaultをV2へ変更（Step 67〜70。Step 70で既定を`v2`にした・2026-11-10）
 7. V1を最低3か月残す（`--decision-version v1`・`decision.version: v1`）
 
 V1のallowanceモデルに依存する出力（込み枠推定の3scenario、⚠️上限到達疑い、追加クレジットの
@@ -5244,8 +5251,8 @@ OTel の利用のうち、この組織の GitHub Organization の外で行われ
   ごとの人数の推移、コホート（利用開始月で束ねて経過月数ごとの中央値）。外部通信なし・JS 無効でも
   全内容が読める・メールはローカル部のみ（既存 dashboard と同じ 3 点）
 - 読者は CTO と開発責任者。組織の担当者へ共有する成果物（report・details・dashboard・
-  recommendations・usage-summary・preview・preview-dashboard と opt-in の decision-evidence・
-  github-summary）の集合には含めない。docs にその旨を書く
+  recommendations・usage-summary・preview・preview-dashboard と、判定の版が v2（既定）のときの
+  decision-evidence、opt-in の github-summary）の集合には含めない。docs にその旨を書く
 - `maturity.enabled: false`が既定。有効でも、GitHub・OTel の無い組織では該当の列が空欄になるだけで
   書ける
 - 組織横断の比較は`reports/summary/<month>.md`にだけ書く

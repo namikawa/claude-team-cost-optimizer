@@ -213,7 +213,7 @@ def test_config_validation_catches_edit_mistakes(cfg):
 
 
 def test_decision_v2_defaults_exist(tmp_path):
-    """パッケージ既定だけで decision_v2 が揃い、判定の版が v1 であること（設計書 §21）。
+    """パッケージ既定だけで decision_v2 が揃い、判定の版が v2 であること（設計書 §21）。
 
     V1 の decision 節とは独立で、この節の追加が既定のヒステリシスを変えないことも
     あわせて固定する。
@@ -229,17 +229,31 @@ def test_decision_v2_defaults_exist(tmp_path):
         "observed_billing_margin_usd": 20.0,
     }
     assert loaded["decision"]["hysteresis_months"] == 2
-    assert loaded["decision"]["version"] == "v1"
+    assert loaded["decision"]["version"] == "v2"
+
+
+def test_workspace_decision_examples_override_only_the_written_keys(cfg, tmp_path):
+    """雛形の版と方針線の例を読み込め、書いていない既定値を保つ。"""
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "decision:\n  version: v1\ndecision_v2:\n  premium_justification_usd: 450.0\n",
+        encoding="utf-8", newline="\n",
+    )
+    loaded = load_config(path)
+    expected = copy.deepcopy(cfg)
+    expected["decision"]["version"] = "v1"
+    expected["decision_v2"]["premium_justification_usd"] = 450.0
+    assert loaded == expected
 
 
 def test_decision_v2_validation_catches_edit_mistakes(cfg):
     """decision_v2 の編集ミスは版が v1 のままでも実行前に検出される。
 
-    判定の版は既定の v1 のままにする（有効なときだけ値を検査する実装への退行を、
+    判定の版は v1 を明示する（有効なときだけ値を検査する実装への退行を、
     このテスト自身が見逃さないようにするため）。
     """
     broken = copy.deepcopy(cfg)
-    assert broken["decision"]["version"] == "v1"
+    broken["decision"]["version"] = "v1"
     broken["decision_v2"]["upgrade"]["min_complete_months"] = 0
     broken["decision_v2"]["downgrade"]["min_complete_months"] = 1.5
     broken["decision_v2"]["recent_seat_change_days"] = True

@@ -24,13 +24,14 @@ from .conftest import CONFIG, run_analyze, spend_row
 
 BODY = "### 引き継がれた考察\n\n" + "旧名のファイルに人が書いた本文。" * 12
 
-# 種別ごとの期待ファイル名（org-a / 2026-06）。正式5・速報2。
+# 種別ごとの期待ファイル名（org-a / 2026-06）。既定の正式6・速報2。
 FULL_NAMES = {
     "report-202606-org-a.md",
     "details-202606-org-a.md",
     "dashboard-202606-org-a.html",
     "recommendations-202606-org-a.csv",
     "usage-summary-202606-org-a.csv",
+    "decision-evidence-202606-org-a.csv",
 }
 PREVIEW_NAMES = {
     "preview-202606-org-a.md",
@@ -42,8 +43,8 @@ def _month_dir(out: Path, org: str = "org-a", month: str = "2026-06") -> Path:
     return out / org / month
 
 
-def test_analyze_writes_the_five_named_artifacts(two_orgs, tmp_path):
-    """正式分析の5種すべてが `{種別}-{YYYYMM}-{組織名}` で出る（月ディレクトリ名は従来のまま）。"""
+def test_analyze_writes_the_six_named_artifacts(two_orgs, tmp_path):
+    """既定の正式分析の6種すべてが `{種別}-{YYYYMM}-{組織名}` で出る（月ディレクトリ名は従来のまま）。"""
     out = run_analyze(two_orgs, tmp_path)
     assert {p.name for p in _month_dir(out).iterdir()} == FULL_NAMES
 

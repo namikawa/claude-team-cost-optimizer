@@ -2,8 +2,8 @@
 
 ファイル名は `{種別}-{YYYYMM}-{組織名}.{拡張子}`（組み立ては naming.py が持つ）。
 
-V2 判定の根拠（decision-evidence）は上の5種とは別で、`--decision-version v2` の
-ときだけ書く。write_all の成果物には含めない。
+V2 判定の根拠（decision-evidence）は上の5種とは別で、正式分析で判定の版が
+v2（既定）のときに書く。write_all の成果物には含めない。
 
 GitHub の参考値（github-summary）も上の5種とは別で、GitHub 分析を有効にした組織で
 対象月のキャッシュがあるときだけ書く。同じく write_all の成果物には含めない。

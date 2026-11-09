@@ -155,8 +155,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--decision-version", choices=("v1", "v2"), default=None,
         help="判定の版。v2 は V2 判定の結論で report・details・dashboard・recommendations を書き、"
-             f"根拠の decision-evidence も書く。省略時は {WORKSPACE_CONFIG_NAME} の"
-             " decision.version に従う（既定は v1）。速報モードでは指定できない",
+             "根拠の decision-evidence も書く。v1 は従来の判定で、decision-evidence を書かない。"
+             f"省略時は {WORKSPACE_CONFIG_NAME} の"
+             " decision.version に従う（既定は v2）。速報モードでは指定できない",
     )
     p.add_argument(
         "--allow-missing-workspace", action="append", metavar="WORKSPACE名",

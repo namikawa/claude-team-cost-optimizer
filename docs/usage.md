@@ -158,8 +158,8 @@ organizations:
 
 `primary` は主の印で、ちょうど 1 つに付ける。`label` は成果物に出す表示名。
 `fixed_seat` は副スペースで払い出すシート種別が運用方針で固定されているときに書く。
-その workspace のアカウントは Standard / Premium の損益分岐判定・感度分析・追加クレジット
-付与候補の対象外になる。`credit_limit_default_usd` は副アカウントの追加クレジット上限の既定、
+その workspace のアカウントはシートの判定と追加クレジットの提案の対象外になる。
+`credit_limit_default_usd` は副アカウントの追加クレジット上限の既定、
 `evaluation_months` は払い出し判定と継続判定に必要な連続月数（省略時は
 `decision.hysteresis_months`）。連続月数は暦で連続し全月そろった月だけを数え、欠月・部分月で
 途切れる。組織直下の `secondary_breakeven_usd` は副の損益分岐の設定で、
@@ -231,14 +231,15 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
   構成と異なる可能性が高い旨の警告を出す）。どのファイルを採用したかにかかわらず、月中の
   メンバー変動の検出には対象月内のスナップショットを使う。採用は実行時点で置いてある
   ファイルから選ぶため、過去の月を再実行すると採用ファイルが変わり、判定が変わることがある。
-  判定窓のあいだの加入・シート変更を検出するため、判定窓の始まり以前の members の
-  スナップショットも残しておく必要がある。
+  加入・シート変更の検出に過去の members のスナップショットを使うので残しておく
+  （v1 では判定窓の始まり以前のものも必要）。
 - ファイル名の期間が暦日数に満たないスペンドレポートは部分月として扱い、通常分析に使うと警告が
-  出る（速報モードを案内）。部分月が判定窓（対象月から暦で遡る `decision.hysteresis_months`
-  か月）に入るあいだは変更推奨を出さない。期間の無い命名（日付のみ・月のみ）は全月として扱う。
-  欠月・副スペースの欠け・判定窓のあいだの加入やシート変更でも同じく変更推奨を出さず、推奨が
-  現シートと違う人は「要観察（データ蓄積待ち）」になる（条件の詳細は reference.md の
-  [判定ロジック概要](./reference.md#判定ロジック概要)を参照）。
+  出る（速報モードを案内）。既定の v2 では対象月が部分月なら判定を保留し、過去の部分月は
+  完全月に数えない。欠月より前の月は判定の履歴に入らない。v1 では部分月が判定窓（対象月から
+  暦で遡る `decision.hysteresis_months` か月）に入るあいだは変更推奨を出さず、欠月・副スペースの
+  欠け・判定窓のあいだの加入やシート変更でも、推奨が現シートと違う人は
+  「要観察（データ蓄積待ち）」になる。期間の無い命名（日付のみ・月のみ）は全月として扱う
+  （条件の詳細は reference.md の [判定ロジック概要](./reference.md#判定ロジック概要)を参照）。
 
 4. 入力データの検査（任意）
 
@@ -250,7 +251,7 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    seat-analyzer doctor --format json             # 機械可読な構造化 issue
    ```
 
-   検査するのはスペンドレポートとメンバー一覧で、対象月の欠損・部分月・ヒステリシス窓の
+   検査するのはスペンドレポートとメンバー一覧で、対象月の欠損・部分月・判定に使う過去月の
    欠月・単価表に無いモデル・数値として読めない値・メンバー一覧との突き合わせ不整合
    （spend にいるが members にいない、シート種別が判別できない、未割当なのに利用実績がある）
    を検出する。メンバー一覧が対象月のものでない場合も警告するが、対象月末の直後（7日以内）の
@@ -266,32 +267,32 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    seat-analyzer analyze --month YYYY-MM          # 月を指定
    seat-analyzer analyze --org <組織名>           # 特定組織のみ（複数指定可）
    seat-analyzer analyze --with-discussion        # 考察の執筆まで行う（tooling.md）
-   seat-analyzer analyze --decision-version v2    # V2 判定で分析する（根拠も出力）
+   seat-analyzer analyze --decision-version v1    # 従来の V1 判定で分析する
    ```
 
    リポジトリを clone している場合は、Claude Code から `/seat-analysis` を実行すると、
    分析に加えて警告の検証と考察の執筆までを対話的に行える。
 
-   `--decision-version v2` は、全 product の需要と方針線
-   `decision_v2.premium_justification_usd`、実課金・追加クレジット上限の観測で決める V2 判定で
-   分析する。report・details・dashboard・recommendations に V2 判定の結論と理由を出し、
+   既定は V2 判定で分析し、report・details・dashboard・recommendations に結論と理由を出し、
    組織横断サマリの変更推奨の件数と削減見込みもその結論から数える。根拠の `decision-evidence`
-   も出力する（usage-summary は版によらず同じ）。省略時は `config.yaml > decision.version` に
-   従い、既定は v1。`--decision-version v1` を渡すとその実行は V1 判定になる。
+   も出力する（usage-summary は版によらず同じ）。版は `--decision-version` の明示指定 >
+   `config.yaml > decision.version` > 既定の v2。`--decision-version v1` か `decision.version: v1` で
+   従来の V1 判定になり、decision-evidence を書かない。
    速報モード（`--preview`）は V2 判定を行わないため、このオプションと併用できない。
    考察を記入済みの月を別の版で再生成すると、考察は書き換わらずに引き継がれる。判定が変わった
    月は `discuss --force` で書き直すか、手で直す。
-   列の意味は reference.md の [decision-evidence の列](./reference.md#decision-evidence-の列v2-判定) を参照
+   列の意味は reference.md の [decision-evidence の列](./reference.md#decision-evidence-の列v2-判定)、
+   切り替え時の手順は [判定の版と移行](./reference.md#判定の版と移行) を参照
 
 6. 組織ごとに `reports/<組織名>/YYYY-MM/` に以下が生成される。ファイル名は
    `{種別}-{YYYYMM}-{組織名}.{拡張子}` で、共有でフォルダの外へ出しても
    どの組織のいつの分析かが分かる（例: `report-202607-<組織名>.md`）
-   - `report-YYYYMM-<組織名>.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + データ検証・警告 + 考察
-   - `details-YYYYMM-<組織名>.md` — 機械生成の詳細資料（全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + シートが吸収した量の実測 + 感度分析）
+   - `report-YYYYMM-<組織名>.md` — サマリ + 前月からの変化 + 追加クレジットの付与候補と設定確認 + シート変更推奨 + 注意事項 + データ検証・警告 + 考察
+   - `details-YYYYMM-<組織名>.md` — 機械生成の詳細資料（全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + シートが吸収した量の実測。感度分析は判定の版が v1 のときだけ）
    - `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（自己完結 HTML）
    - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用（列の意味は reference.md の [recommendations の列](./reference.md#recommendations-の列)）
    - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
-   - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（V2 判定を有効にしたとき（`--decision-version v2` か、`config.yaml` の `decision.version: v2`）だけ出力）
+   - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（判定の版が v2 のとき＝既定。v1 の実行では出力しない）
    - `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数と lead time の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）
 
    以下では種別名（report / details / dashboard …）で呼ぶ。
@@ -521,11 +522,12 @@ seat-analyzer analyze --preview [--org <組織名>] [--days 10]
 
 - 出力は `reports/<組織名>/<月>/` の `preview-YYYYMM-<組織名>.md` と
   `preview-dashboard-YYYYMM-<組織名>.html`（経営層共有向けの速報ダッシュボード）。
-  変更推奨・ヒステリシス判定・正式レポートには影響しない
+  正式分析の判定と成果物には影響しない
 - 需要を月末ペースに日割り換算し、遊休候補 / Standard候補 / Premium妥当 /
   判断保留 などの一次判断ラベルを付ける。境界付近は判断保留に倒す
-- 日割り換算は利用の偏りを補正しない参考値。シート変更の確定判断は
-  全月データ `decision.hysteresis_months` か月分（既定 2）の正式分析で行うこと
+- 日割り換算は利用の偏りを補正しない参考値。シート変更の確定判断は正式分析で行うこと。
+  速報の一次判断は込み利用量の推定に基づくモデル判定で、既定の正式分析（V2 判定）とは
+  基準が違い、結論が食い違うことがある。速報の実行時にも V2 判定を行わない旨を通知する
 - 月初に全月分のエクスポートで同じファイルを上書きすれば、そのまま正式分析に移行できる
 - 複数スペースの組織では workspace ごとの一次判断、「スペース別」、
   「人別の需要（スペース合算）」を出す。主の行は全スペースの合算需要で一次判断する。

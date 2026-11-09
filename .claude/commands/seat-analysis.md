@@ -13,8 +13,8 @@ Claude Team プランのシート最適化分析を実行してください。
 ## 執筆の原則（厳守・すべての手順に適用）
 
 組織別の成果物（`reports/<組織名>/<月>/` 以下の report・details・dashboard・
-recommendations・usage-summary・preview・preview-dashboard の7種と、opt-in で増える
-decision-evidence・github-summary。ファイル名はいずれも
+recommendations・usage-summary・preview・preview-dashboard の7種と、正式分析で判定の版が
+v2（既定）のときに出る decision-evidence、opt-in の github-summary。ファイル名はいずれも
 `{種別}-{YYYYMM}-{組織名}.{拡張子}`）は、**その組織の担当者に共有される前提**で書く。
 
 - **他組織の情報を書かない**: 対象組織以外の組織名・ディレクトリ名・ユーザ名・メールアドレス・
@@ -50,9 +50,10 @@ decision-evidence・github-summary。ファイル名はいずれも
     `uv run seat-analyzer collect --source claude --month YYYY-MM [--org <組織名>]` で取得して
     配置できる（docs/usage.md の「claude.ai からの CSV 取得」）。ブラウザが起動するので、
     実行する前にユーザに確認する
-- 判定窓（対象月から暦で遡る `decision.hysteresis_months` か月。既定は前月まで）の過去月の
-  スペンドレポートが全月分そろっているか確認する（複数スペースの組織は副スペースも）。
-  欠けや部分月があると変更推奨が出ない。前月分は 90 日以内なら取り直せる。
+- 既定の v2 が判定に使う履歴は、対象月から暦で連続する月（部分月も含む）。欠月があると、
+  それより前の月は履歴に入らない。降格はその中の直近
+  `decision_v2.downgrade.min_complete_months` 完全月を見て、部分月は飛ばす。
+  対象月が部分月だと判定を保留する。前月分は 90 日以内なら取り直せる。
   条件の詳細は docs/reference.md の[判定ロジック概要](../../docs/reference.md#判定ロジック概要)を参照する
 - ファイルのヘッダを確認し、`columns` のエイリアスで解決できないカラム名があれば
   エイリアスを追記する。追記先は既定設定 `src/seat_analyzer/default-config.yaml`
@@ -78,8 +79,9 @@ uv run seat-analyzer analyze [--month YYYY-MM] [--org <組織名>]
   - **シート不明ユーザ** → members ファイルの更新漏れの可能性を指摘する
     （「対象外（シート未割当）」は意図的な未割当のため指摘不要）
   - **スキップされた組織** → 対象月のエクスポート漏れ。手順を案内する
-  - **判定窓による保留** → 欠月・部分月・副スペースの欠け・加入やシート変更による保留の
-    警告を確認し、「要観察（データ蓄積待ち）」になった人は考察で保留の理由を書く。
+  - **判定の保留** → 「要観察（データ蓄積待ち）」「要観察」になった人は、理由の列の
+    「対象月が部分月」「完全月が足りない」「直近に加入」「直近にシート変更」
+    「アカウントの照合が食い違う」などを確かめ、考察で保留の理由を書く。
     条件の詳細は docs/reference.md の[判定ロジック概要](../../docs/reference.md#判定ロジック概要)を参照する
 - `reports/<組織名>/<月>/` の recommendations と details（全ユーザ表・月中の推移・
   組織内の分布）を読み、外れ値（極端な API換算コスト、前月からの急変）がないか確認する
@@ -89,7 +91,7 @@ uv run seat-analyzer analyze [--month YYYY-MM] [--org <組織名>]
 各組織の `reports/<組織名>/<月>/report-<YYYYMM>-<組織名>.md` の「## 考察」セクションを
 書き換える。report はサマリ・シート変更推奨・考察の短い文書なので、ユーザ単位の数値は同じ
 ディレクトリの details（全ユーザ表・部署別/チーム別サマリ・詳細利用状況・
-組織内の分布・月中の推移・感度分析）から引用する。
+組織内の分布・月中の推移）から引用する。
 
 出力形式・執筆の原則・書くべき観点は以下のファイルに定義されている。**これを読んで従うこと**
 （CLI の `seat-analyzer discuss` と同じ指示文を使い、二重管理による内容のずれを避けるため）:

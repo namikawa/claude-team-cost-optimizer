@@ -4,10 +4,13 @@ Claude Team プラン（Standard / Premium シート）のシート最適化分�
 
 メンバーごとの利用実績（スペンドレポート）から API 換算コストを集計し、
 
-- Premium なのに使っていない → Standard へダウングレード推奨
-- Standard + 従量課金が Premium を超えそう → Premium へアップグレード推奨
+- Premium で、全 product の需要が方針線に届かず実課金も無い月が続く → Standard へダウングレード推奨
+- Standard で、実課金がシート差額を一定の幅（`decision_v2.observed_billing_margin_usd`）以上上回る、
+  または追加クレジットが無効で需要が方針線以上の月が続く → Premium へアップグレード推奨。
+  追加クレジットが無効で需要が方針線以上になったのが1か月だけなら、上限つきの追加クレジット付与を提案
 
-を月次で判定・レポートします。ローカルマシン上で実行し、分析（`analyze`）は手元で完結します。
+を月次で判定・レポートします。詳しい条件は [判定ロジック概要](docs/reference.md#判定ロジック概要) を参照してください。
+ローカルマシン上で実行し、分析（`analyze`）は手元で完結します。
 考察の自動執筆（`discuss`）を使う場合のみ、レポートの内容が Claude（Anthropic）へ
 送信されます。
 
@@ -90,12 +93,12 @@ seat-analyzer --version
 `{種別}-{YYYYMM}-{組織名}.{拡張子}` で、共有でフォルダの外へ出しても
 どの組織のいつの分析かが分かるようになっています。
 
-- `report-YYYYMM-<組織名>.md` — サマリ + 前月からの変化 + 追加クレジット付与候補 + シート変更推奨 + 注意事項 + データ検証・警告 + 考察
-- `details-YYYYMM-<組織名>.md` — 機械生成の詳細資料（全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + シートが吸収した量の実測 + 感度分析）
+- `report-YYYYMM-<組織名>.md` — サマリ + 前月からの変化 + 追加クレジットの付与候補と設定確認 + シート変更推奨 + 注意事項 + データ検証・警告 + 考察
+- `details-YYYYMM-<組織名>.md` — 機械生成の詳細資料（全ユーザ + 部署別/チーム別サマリ + 詳細利用状況 + 組織内の分布 + 月中の推移 + シートが吸収した量の実測。感度分析は判定の版が v1 のときだけ）
 - `dashboard-YYYYMM-<組織名>.html` — 経営層共有用ダッシュボード（概要 / 推奨アクション / メンバー別 / 組織 / 前提と注意 の5タブ。複数スペースの組織では「複数スペース」タブが加わる。ソート・検索・テーマ切替つきの自己完結 HTML）
 - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用
 - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
-- `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（V2 判定を有効にしたとき（`--decision-version v2` か、`config.yaml` の `decision.version: v2`）だけ出力。このとき report などの成果物も V2 判定の結論になります）
+- `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（判定の版が v2 のとき（既定）に出力します。`--decision-version v1` の実行では出力しません）
 - `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数と lead time の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）
 - `reports/summary/YYYY-MM.md` — 複数組織を一括分析した場合の組織横断サマリ（この名前は変わりません）
 
