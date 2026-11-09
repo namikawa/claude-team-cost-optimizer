@@ -8,7 +8,7 @@
 # 固有で、他の利用者と共有しない設定に限る。
 #
 # 書き方の規則:
-#   - 辞書はキー単位で既定にマージされる（下の例では hysteresis_months だけが変わる）
+#   - 辞書はキー単位で既定にマージされる（下の例では version や premium_justification_usd だけが変わる）
 #   - リストと単一の値は丸ごと置き換わる（一覧を部分的に足すことはできない）
 #   - 既定に無いキーを書くとエラーになる（綴り違いで設定が黙って無効になるのを防ぐため）
 
@@ -29,10 +29,15 @@
 #   allow_terms: ["<誤検出になった語>"]
 #   command: /usr/local/bin/claude
 
-# 判定のヒステリシス。既定より慎重にしたい（連続 N ヶ月の一致を求める）場合に上げる
-#   上げると、判定窓の N か月すべてのスペンドレポートが全月そろっていないと変更推奨が出なくなる
+# 判定の版。既定の v2 から従来の v1 に戻す場合に書く
+#   --decision-version を付けた実行では、そのフラグが優先される
 # decision:
-#   hysteresis_months: 3
+#   version: v1
+
+# Premium に見合う全 product の需要の方針線（USD/月）。組織の方針で変える場合に書く
+#   下の値は既定と同じ。V2 の判定で使う（込み利用量の推定値ではない）
+# decision_v2:
+#   premium_justification_usd: 450.0
 
 # claude.ai からの CSV 取得（collect --source claude）。使う場合だけ書く
 #   profiles_dir / staging_dir: 専用プロファイルとダウンロードの一時置き場。既定から

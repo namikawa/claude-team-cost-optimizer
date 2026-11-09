@@ -8,7 +8,10 @@
 入力は `examples/input/` の合成データ（org-a / org-b / org-c）と、それに合わせた
 上書き設定 `examples/config.yaml`（org-c の workspace の設定だけを持ち、org-a /
 org-b には効かない）だけを使う。リポジトリ直下の `input/` は実データなので、golden が
-そこに依存すると手元の月次運用でテストが揺れる。CLI の引数は既定値に頼らず毎回明示する。
+そこに依存すると手元の月次運用でテストが揺れる。入出力と月の CLI 引数は既定値に頼らず
+毎回明示する。判定の版は、既定（v2）の経路を固定する full・full-snapshots・full-all では
+指定せず、V1 の不変を固定する full-v1・full-snapshots-v1・full-all-v1 では
+--decision-version v1 を明示する。
 
 ケースは3軸で持つ。2組織そろった 2026-06 が土台（組織横断サマリを含む通常の
 出力構成）で、org-b の 2026-07 が条件付きの断片を通すためのケース。後者が無いと、
@@ -23,10 +26,13 @@ Team スペース（workspace）を運用する org-c を並べ、複数 workspa
 成果物の形（スペース列・workspace ごとの節・人の層・複数スペースのタブ）と、人数と
 アカウント数を併記する組織横断サマリを固定する。full-all はこの入力の V2 の全部入り、
 full-all-v1 は同じ入力の V1 の主成果物で、複数 workspace の形で V1 の不変を検査する。
-full-v2 は 2026-06 の2組織を V2 で分析した主成果物・decision-evidence・組織横断サマリ。
+full は 2026-06 の2組織を既定の V2 で分析した主成果物・decision-evidence・組織横断サマリ。
+V1 の3ケースは、切り替え前の成果物（単一 workspace・月中差分・複数 workspace）を
+固定したもので再生成しない。full-v1・full-snapshots-v1 は切り替え前の full・
+full-snapshots を名前替えで残したもの。
 
 org-c は 2026-07 と 2026-08 のデータしか持たないので、2026-06 のケース（full /
-full-v2 / preview）では対象月のデータが無い組織として飛ばされ、出力は org-a / org-b のまま。
+full-v1 / preview）では対象月のデータが無い組織として飛ばされ、出力は org-a / org-b のまま。
 速報の複数スペースも org-c の 2026-08 を独立ケースで固定する。
 
 golden の更新手順:
@@ -69,14 +75,16 @@ class Case(NamedTuple):
 # 速報は --days をファイル名からの自動判別に任せず明示する
 # （ファイル名の期間が変わると観測日数が変わり、golden が揺れるため）。
 CASES = {
-    # 2組織そろった月。V1 の主成果物と組織横断サマリを固定する。
+    # 切り替え前の full を名前替えした V1 の基準。再生成しない。
+    "full-v1": Case("2026-06", ("--decision-version", "v1")),
+    # 同じ入力の既定（V2）の主成果物・decision-evidence・組織横断サマリ。
     "full": Case("2026-06"),
-    # 同じ入力を V2 で分析した主成果物・decision-evidence・組織横断サマリ。
-    "full-v2": Case("2026-06", ("--decision-version", "v2")),
     "preview": Case("2026-06", ("--preview", "--days", "10")),
     # 条件付きの断片を通すケース。同一月に複数スナップショットを持つのは
     # org-b の 2026-07 だけで、org-a にこの月のデータは無いので --org で絞る。
+    # 版を省略して既定（V2）を固定する。V1 は旧 full-snapshots の名前替えで、再生成しない。
     "full-snapshots": Case("2026-07", ("--org", "org-b")),
+    "full-snapshots-v1": Case("2026-07", ("--org", "org-b", "--decision-version", "v1")),
     # --days は 31（暦日数と同じ＝月末ペース換算 ×1.0）。この月の spend は期間の
     # 最も広い 07-01-to-07-31 が主データに採用されるので、観測日数もその期間に
     # 合わせる。短い値を書くと、月全体のデータを部分月と偽って割り増した数字が
@@ -84,13 +92,13 @@ CASES = {
     "preview-snapshots": Case("2026-07", ("--org", "org-b", "--preview", "--days", "31")),
     "preview-multi": Case("2026-08", ("--org", "org-c", "--preview", "--days", "31")),
     # 条件つき section がすべて出る月（examples/generate_sample_data.py の全部入りサンプル）。
-    # 同じ入力の V1 は full-all-v1 で固定し、複数 workspace での V1 の不変を検査する。
-    # full-all は V2 の全部入り。2つの Team スペースを運用する org-c を同じ実行に並べ、
+    # 同じ入力の V1 は full-all-v1 で固定し、再生成せず複数 workspace の不変を検査する。
+    # full-all は版を省略した既定（V2）の全部入り。2つの Team スペースを運用する org-c を同じ実行に並べ、
     # 複数 workspace の組織の6種と組織横断サマリも固定する。
     "full-all-v1": Case(
         "2026-08", ("--org", "org-b", "--org", "org-c", "--decision-version", "v1")),
     "full-all": Case(
-        "2026-08", ("--org", "org-b", "--org", "org-c", "--decision-version", "v2")),
+        "2026-08", ("--org", "org-b", "--org", "org-c")),
 }
 
 # 差分は該当箇所が分かれば十分なので、1ファイルあたりこの行数で打ち切る。

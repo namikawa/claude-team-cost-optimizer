@@ -1,0 +1,7 @@
+﻿email,current_seat,api_cost_usd,cost_if_standard_usd,cost_if_premium_usd,cost_current_usd,recommended_seat,monthly_saving_usd,status,confidence,rec_low,rec_high,cap_suspected,billed_extra_usd,prompt_tokens,completion_tokens,product_breakdown,model_breakdown,department,team,role,note,credit_limit_usd,credits_mode
+ikeda@example.co.jp,standard,260.0,285.0,135.0,285.0,premium,150.0,変更推奨,高,premium,premium,False,260.0,34666666,3466666,Claude Code 80% / Chat 20%,Opus 4.8 100%,,,,,100.0,enabled
+hayashi@example.co.jp,premium,0.0,25.0,125.0,125.0,standard,100.0,変更推奨,高,standard,standard,False,0.0,0,0,,,,,,,0.0,disabled
+mori@example.co.jp,premium,470.0,495.0,595.0,595.0,standard,100.0,変更推奨,高,standard,standard,False,470.0,62666666,6266666,Claude Code 80% / Chat 20%,Opus 4.8 100%,,,,,250.0,enabled
+okada@example.co.jp,unassigned,0.0,,,,unassigned,,対象外（シート未割当）,—,unassigned,unassigned,False,0.0,0,0,,,,,,,,unknown
+abe@example.co.jp,standard,9.0,34.0,125.0,34.0,standard,0.0,現状維持,高,standard,standard,False,9.0,6000000,600000,Claude Code 80% / Chat 20%,Haiku 4.5 100%,,,,,,enabled
+shimizu@example.co.jp,standard,21.0,46.0,125.0,46.0,standard,0.0,現状維持,高,standard,standard,False,21.0,4666666,466666,Claude Code 81% / Chat 19%,Sonnet 4.6 100%,,,,,inf,enabled

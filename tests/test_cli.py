@@ -294,12 +294,12 @@ def test_flat_layout_errors_in_discuss(make_input, tmp_path, capsys):
 # 判定そのものは tests/test_decision_evidence.py が固定する。ここで確かめるのは
 # 「V2 の結論を主成果物へ写すこと」と「V1 の成果物が変わらないこと」。
 
-# 主成果物5種（明示した v1 は既定の実行とバイト一致すること）
+# V1 の主成果物5種（decision-evidence は含まない）
 _V1_ARTIFACTS = (REPORT, DETAILS, DASHBOARD, RECOMMENDATIONS, USAGE_SUMMARY)
 
 
 def _v2_config(tmp_path: Path) -> str:
-    """V2 判定を既定にする上書き設定（他のキーは既定のまま）。"""
+    """判定の版 v2 を明示した上書き設定（他のキーは既定のまま）。"""
     path = tmp_path / "config.yaml"
     path.write_text("decision:\n  version: v2\n", encoding="utf-8", newline="\n")
     return str(path)
@@ -313,10 +313,16 @@ def _run_with(input_dir: Path, output_dir: Path, config: str, *extra: str) -> in
     ])
 
 
-def test_decision_evidence_is_not_written_by_default(make_input, tmp_path, capsys):
-    """既定は V1。V2 判定の根拠は書かず、出力一覧にも載せない。"""
+def test_default_writes_evidence_and_explicit_v1_does_not(make_input, tmp_path, capsys):
+    """既定の V2 は根拠を出力一覧に載せ、V1 は根拠も残存の通知も出さない。"""
     input_dir = _make_two_orgs(make_input)
     rc, out = _run(input_dir, tmp_path, "--month", "2026-06", "--org", "org-a")
+    assert rc == 0
+    path = out_file(out, DECISION_EVIDENCE)
+    assert path.is_file()
+    assert f"evidence: {path}" in capsys.readouterr().out
+    rc, out = _run(input_dir, tmp_path / "v1", "--month", "2026-06", "--org", "org-a",
+                   "--decision-version", "v1")
     assert rc == 0
     assert not out_file(out, DECISION_EVIDENCE).exists()
     printed = capsys.readouterr().out
@@ -359,34 +365,44 @@ def _assert_same_artifacts(actual, expected):
         assert out_file(actual, artifact).read_bytes() == out_file(expected, artifact).read_bytes()
 
 
-def test_v2_changes_main_artifacts_and_explicit_v1_matches_default(make_input, tmp_path):
-    """V2 は主成果物を変え、明示した V1 は既定の成果物を保つ。"""
+def test_default_matches_explicit_v2_and_v1_keeps_its_artifacts(make_input, tmp_path):
+    """既定は明示した V2 と全ファイルが一致し、明示した V1 は従来の列と節を保つ。"""
     input_dir = _make_two_orgs(make_input)
     default, v1, v2 = (tmp_path / name for name in ("default", "v1", "v2"))
     for out, args in ((default, ()), (v1, ("--decision-version", "v1")),
                       (v2, ("--decision-version", "v2"))):
         assert _run_with(input_dir, out, CONFIG, "--org", "org-a", *args) == 0
-    _assert_same_artifacts(v1, default)
-    _assert_v2_artifacts(v2)
+    default_dir, v2_dir = (out / "org-a" / "2026-06" for out in (default, v2))
+    assert {p.name: p.read_bytes() for p in default_dir.iterdir()} == {
+        p.name: p.read_bytes() for p in v2_dir.iterdir()}
+    _assert_v2_artifacts(default)
+    columns = set(_csv_rows(out_file(v1, RECOMMENDATIONS))[0])
+    assert {"cost_if_standard_usd", "cost_if_premium_usd", "rec_low", "rec_high",
+            "cap_suspected"} <= columns
+    assert "reason" not in columns
+    assert "上限到達疑い（Standard）" in out_file(v1, REPORT).read_text(encoding="utf-8")
     names = {a.name("2026-06", "org-a") for a in _V1_ARTIFACTS}
-    for out in (default, v1):
-        assert {p.name for p in (out / "org-a" / "2026-06").iterdir()} == names
-    assert {p.name for p in (v2 / "org-a" / "2026-06").iterdir()} == names | {
+    assert {p.name for p in (v1 / "org-a" / "2026-06").iterdir()} == names
+    assert {p.name for p in default_dir.iterdir()} == names | {
         DECISION_EVIDENCE.name("2026-06", "org-a")}
 
 
-def test_config_enables_v2_artifacts_and_the_flag_restores_v1(make_input, tmp_path):
-    """設定の V2 も主成果物へ写し、CLI の V1 指定で既定の成果物へ戻せる。"""
+def test_config_selects_v1_and_the_flag_overrides_v2(make_input, tmp_path):
+    """設定の V1 と、V2 設定への CLI の V1 指定は、明示した V1 と一致する。"""
     input_dir = _make_two_orgs(make_input)
     config = _v2_config(tmp_path)
-    enabled, back, default = (tmp_path / name for name in ("on", "off", "default"))
+    enabled, back, v1, configured = (tmp_path / name for name in ("on", "off", "v1", "configured"))
     assert _run_with(input_dir, enabled, config, "--org", "org-a") == 0
     _assert_v2_artifacts(enabled)
     assert out_file(enabled, DECISION_EVIDENCE).is_file()
     assert _run_with(input_dir, back, config, "--org", "org-a", "--decision-version", "v1") == 0
     assert not out_file(back, DECISION_EVIDENCE).exists()
-    assert _run_with(input_dir, default, CONFIG, "--org", "org-a") == 0
-    _assert_same_artifacts(back, default)
+    assert _run_with(input_dir, v1, CONFIG, "--org", "org-a", "--decision-version", "v1") == 0
+    _assert_same_artifacts(back, v1)
+    Path(config).write_text("decision:\n  version: v1\n", encoding="utf-8", newline="\n")
+    assert _run_with(input_dir, configured, config, "--org", "org-a") == 0
+    assert not out_file(configured, DECISION_EVIDENCE).exists()
+    _assert_same_artifacts(configured, v1)
 
 
 def test_v1_run_warns_about_a_leftover_evidence_file(make_input, tmp_path, capsys):
@@ -397,7 +413,7 @@ def test_v1_run_warns_about_a_leftover_evidence_file(make_input, tmp_path, capsy
     path = out_file(out, DECISION_EVIDENCE)
     before = path.read_bytes()
     capsys.readouterr()
-    assert _run_with(input_dir, out, CONFIG, "--org", "org-a") == 0
+    assert _run_with(input_dir, out, CONFIG, "--org", "org-a", "--decision-version", "v1") == 0
     printed = capsys.readouterr().out
     notice = (f"{path.name} は今回の実行では更新されません"
               "（今回の主成果物は V1 判定で、このファイルは前回の V2 判定の根拠です。"
@@ -479,7 +495,8 @@ def test_v1_run_adds_no_extra_computation(make_input, tmp_path, monkeypatch):
     evaluate = _counting(monkeypatch, decision_evidence, "evaluate_org")
     apply = _counting(monkeypatch, decision_evidence, "apply")
 
-    assert _run_with(input_dir, tmp_path / "reports", CONFIG, "--org", "org-a") == 0
+    assert _run_with(input_dir, tmp_path / "reports", CONFIG, "--org", "org-a",
+                     "--decision-version", "v1") == 0
     assert len(features) == 1     # 対象月のみ（過去月の特徴量は計算しない）
     assert detect == []
     assert evaluate == []
@@ -784,8 +801,9 @@ def test_github_summary_does_not_change_the_v1_artifacts(make_input, tmp_path):
     _write_pr_cache(input_dir)
     plain, gated = tmp_path / "plain", tmp_path / "gated"
 
-    assert _run_with(input_dir, plain, CONFIG, "--org", "org-a") == 0
-    assert _run_with(input_dir, gated, _gh_config(tmp_path, **{"org-a": GH_ORG}), "--org", "org-a") == 0
+    assert _run_with(input_dir, plain, CONFIG, "--org", "org-a", "--decision-version", "v1") == 0
+    assert _run_with(input_dir, gated, _gh_config(tmp_path, **{"org-a": GH_ORG}),
+                     "--org", "org-a", "--decision-version", "v1") == 0
     for artifact in _V1_ARTIFACTS:
         assert out_file(gated, artifact).read_bytes() == \
             out_file(plain, artifact).read_bytes()
@@ -1154,10 +1172,10 @@ def test_doctor_output_is_deterministic(make_input, capsys):
     assert str(input_dir) not in outputs[0]
 
 
-def test_doctor_history_gap_message_matches_analyze_behavior(make_input, cfg, capsys):
-    # analyze は判定窓（対象月から暦で遡る N か月）に欠月があると変更推奨を出さず、
-    # 推奨が現シートと違うユーザを「要観察（データ蓄積待ち）」にする。doctor の案内も
-    # この挙動と一致させる
+def test_doctor_history_gap_message_matches_analyze_behavior(make_input, cfg, tmp_path, capsys):
+    # V1 の analyze は判定窓（対象月から暦で遡る N か月）に欠月があると変更推奨を出さず、
+    # 推奨が現シートと違うユーザを「要観察（データ蓄積待ち）」にする。v1 の設定の doctor の
+    # 案内もこの挙動と一致させる
     input_dir = make_input(
         {"2026-04": [spend_row("a@x.jp", 10.0)], "2026-06": [spend_row("a@x.jp", 12.0)]},
         members=["a@x.jp,Premium"], org="org-a",
@@ -1168,7 +1186,9 @@ def test_doctor_history_gap_message_matches_analyze_behavior(make_input, cfg, ca
     assert result.users.iloc[0]["recommended_seat"] == "standard"
     assert result.users.iloc[0]["status"] == "要観察（データ蓄積待ち）"
 
-    assert _doctor(input_dir, "--month", "2026-06") == 0
+    config = tmp_path / "v1.yaml"
+    config.write_text("decision:\n  version: v1\n", encoding="utf-8", newline="\n")
+    assert _doctor(input_dir, "--config", str(config), "--month", "2026-06") == 0
     out = capsys.readouterr().out
     assert "[warning] MISSING_HISTORY_MONTH" in out
     assert "2026-05" in out

@@ -914,7 +914,7 @@
         <h1 class="page-title">シート最適化ダッシュボード</h1>
       </div>
       <div class="topbar-right">
-        <div class="hero"><div class="hero-label">MONTHLY SAVING</div><div class="hero-value">$100</div></div>
+        <div class="hero"><div class="hero-label">MONTHLY SAVING</div><div class="hero-value">$130</div></div>
         <div class="theme-switch"><button type="button" class="theme-btn" data-theme-set="light" title="ライト">Light</button><button type="button" class="theme-btn" data-theme-set="dark" title="ダーク">Dark</button><button type="button" class="theme-btn is-active" data-theme-set="auto" title="OS設定に追従">Auto</button></div>
       </div>
     </div>
@@ -930,7 +930,7 @@
     <div class="kpi"><div class="tag">MEMBERS</div><div class="v">9</div><div class="l">メンバー（Std 5 / Prem 3 / 未割当 1）</div></div>
     <div class="kpi"><div class="tag">SEAT COST</div><div class="v">$500</div><div class="l">現在のシート費用 /月</div></div>
     <div class="kpi"><div class="tag">API DEMAND</div><div class="v">$1044</div><div class="l">API換算利用額 /月</div></div>
-    <div class="kpi hl"><div class="tag">SAVING</div><div class="v">$100</div><div class="l">削減見込み /月（変更推奨 1 名）</div></div>
+    <div class="kpi hl"><div class="tag">SAVING</div><div class="v">$130</div><div class="l">削減見込み /月（変更推奨 2 名）</div></div>
   </div>
   <div class="grid-2">
 
@@ -1034,121 +1034,107 @@
     <section class="card">
       <div class="card-hd"><div class="hd-main"><h2>判定サマリ</h2></div></div>
       <div class="card-bd">
-        <div class="jrow"><span class="label">変更推奨</span><div class="track"><div class="fill f-change" style="width: 11.1%"></div></div><span class="n">1</span></div>
-        <div class="jrow"><span class="label">要観察（データ蓄積待ち）</span><div class="track"><div class="fill f-watch" style="width: 11.1%"></div></div><span class="n">1</span></div>
-        <div class="jrow"><span class="label">現状維持</span><div class="track"><div class="fill f-keep" style="width: 66.7%"></div></div><span class="n">6</span></div>
+        <div class="jrow"><span class="label">変更推奨</span><div class="track"><div class="fill f-change" style="width: 22.2%"></div></div><span class="n">2</span></div>
+        <div class="jrow"><span class="label">要観察</span><div class="track"><div class="fill f-watch" style="width: 33.3%"></div></div><span class="n">3</span></div>
+        <div class="jrow"><span class="label">現状維持</span><div class="track"><div class="fill f-keep" style="width: 33.3%"></div></div><span class="n">3</span></div>
         <div class="jrow"><span class="label">対象外（シート未割当）</span><div class="track"><div class="fill f-keep" style="width: 11.1%"></div></div><span class="n">1</span></div>
       </div>
     </section>
 
 <section class="card">
-  <div class="card-hd"><div class="hd-main"><h2>追加クレジット付与候補</h2></div></div>
+  <div class="card-hd"><div class="hd-main"><h2>追加クレジットの付与候補と設定確認</h2></div></div>
   <div class="card-bd">
-    <div class="callout"><span class="uname" title="kudo@example.co.jp">kudo</span>（クレジット無効・モデル超過見込み $210/月）</div>
-    <p class="lead">昇格の前に、まず上限つき追加クレジット（推奨初期上限 $150）を付与し、1ヶ月の課金実測で判断することを推奨します。</p>
+    <p class="lead">上限つき付与: 追加クレジットが無効の Standard ユーザのうち、対象月の需要が方針線以上で、それがまだ続いていない人。</p>
+    <div class="empty">該当者なし。</div>
+    <p class="lead">設定確認: 追加クレジットの設定が分からない Standard ユーザ（上限が未記入、または「無効」の記入と実課金が食い違う）のうち、実課金か需要が昇格を検討する水準の人。</p>
+    <div class="callout"><span class="uname" title="kudo@example.co.jp">kudo</span>（需要 $260・実課金 $130）</div>
+    <p class="lead">管理画面で設定を確かめ、members-info.csv の「追加クレジット上限」に記入してください。</p>
   </div>
 </section>
+
 </div>
   <section class="card">
-    <div class="card-hd"><div class="hd-main"><h2>推奨一覧</h2></div><div class="toolbar"><select class="filter" data-filter="judge" aria-label="判定で絞り込む"><option value="">判定: すべて</option><option value="変更推奨">変更推奨</option><option value="要観察（データ蓄積待ち）">要観察（データ蓄積待ち）</option><option value="現状維持">現状維持</option><option value="対象外（シート未割当）">対象外（シート未割当）</option></select></div></div>
+    <div class="card-hd"><div class="hd-main"><h2>推奨一覧</h2></div><div class="toolbar"><select class="filter" data-filter="judge" aria-label="判定で絞り込む"><option value="">判定: すべて</option><option value="変更推奨">変更推奨</option><option value="要観察">要観察</option><option value="現状維持">現状維持</option><option value="対象外（シート未割当）">対象外（シート未割当）</option></select></div></div>
     <div class="tablebox tall">
       <table>
-        <thead><tr><th>ユーザ</th><th>シート（現 → 推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">Std時</th><th class="num">Prem時</th><th class="num">削減/月</th><th>判定</th></tr></thead>
+        <thead><tr><th>ユーザ</th><th>シート（現 → 推奨）</th><th class="num">API換算需要</th><th class="num">実課金</th><th class="num">削減/月</th><th>判定</th><th>理由</th></tr></thead>
         <tbody>
-        <tr>
-          <td class="user" title="hayashi@example.co.jp">hayashi</td>
-          <td class="seat"><span class="seat-premium">Premium</span><span class="arrow">→</span><span class="seat-standard to">Standard</span></td>
-          <td class="num">$0.00</td>
-          <td class="num">$0.00</td>
-          <td class="num sub">$25.00</td>
-          <td class="num sub">$125</td>
-          <td class="num save pos">$100</td>
-          <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td>
-        </tr>
         <tr>
           <td class="user" title="kudo@example.co.jp">kudo</td>
           <td class="seat"><span class="seat-standard">Standard</span><span class="arrow">→</span><span class="seat-premium to">Premium</span></td>
           <td class="num">$260</td>
           <td class="num" style="background:rgba(192,57,43,0.40)">$130</td>
-          <td class="num sub">$155</td>
-          <td class="num sub">$135</td>
-          <td class="num save pos">$20.00</td>
-          <td class="judge"><span class="badge b-watch">要観察（データ蓄積待ち）</span><span class="conf">確度中</span></td>
+          <td class="num save pos">$30.00</td>
+          <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td><td class="wrap">追加クレジットの設定が不明; 実課金がシート差額を超過; 5時間・週の上限は観測できない</td>
         </tr>
         <tr>
-          <td class="user" title="mori@example.co.jp">mori</td>
-          <td class="seat"><span class="seat-premium">Premium</span></td>
-          <td class="num">$470</td>
-          <td class="num" style="background:rgba(192,57,43,0.60)">$220</td>
-          <td class="num sub">$445</td>
-          <td class="num sub">$345</td>
-          <td class="num save">$0.00</td>
-          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+          <td class="user" title="hayashi@example.co.jp">hayashi</td>
+          <td class="seat"><span class="seat-premium">Premium</span><span class="arrow">→</span><span class="seat-standard to">Standard</span></td>
+          <td class="num">$0.00</td>
+          <td class="num">$0.00</td>
+          <td class="num save pos">$100</td>
+          <td class="judge"><span class="badge b-change">変更推奨</span><span class="conf">確度高</span></td><td class="wrap">需要が続けて方針線未満; 5時間・週の上限は観測できない</td>
         </tr>
         <tr>
           <td class="user" title="ikeda@example.co.jp">ikeda</td>
           <td class="seat"><span class="seat-premium">Premium</span></td>
           <td class="num">$260</td>
           <td class="num" style="background:rgba(192,57,43,0.32)">$90.00</td>
-          <td class="num sub">$235</td>
-          <td class="num sub">$215</td>
-          <td class="num save">$0.00</td>
-          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度中</span></td>
-        </tr>
-        <tr>
-          <td class="user" title="shimizu@example.co.jp">shimizu</td>
-          <td class="seat"><span class="seat-standard">Standard</span></td>
-          <td class="num">$45.40</td>
-          <td class="num">$0.00</td>
-          <td class="num sub">$25.00</td>
-          <td class="num sub">$125</td>
-          <td class="num save">$0.00</td>
-          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
-        </tr>
-        <tr>
-          <td class="user" title="abe@example.co.jp">abe</td>
-          <td class="seat"><span class="seat-standard">Standard</span></td>
-          <td class="num">$9.00</td>
-          <td class="num">$0.00</td>
-          <td class="num sub">$25.00</td>
-          <td class="num sub">$125</td>
-          <td class="num save">$0.00</td>
-          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+          <td class="num save">—</td>
+          <td class="judge"><span class="badge b-watch">要観察</span></td><td class="wrap">直近にシート変更</td>
         </tr>
         <tr>
           <td class="user" title="endo@example.co.jp">endo</td>
           <td class="seat"><span class="seat-standard">Standard</span></td>
           <td class="num">$0.00</td>
           <td class="num">$0.00</td>
-          <td class="num sub">$25.00</td>
-          <td class="num sub">$125</td>
-          <td class="num save">$0.00</td>
-          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+          <td class="num save">—</td>
+          <td class="judge"><span class="badge b-watch">要観察</span></td><td class="wrap">直近に加入</td>
         </tr>
         <tr>
           <td class="user" title="tanabe@example.co.jp">tanabe</td>
           <td class="seat"><span class="seat-standard">Standard</span></td>
           <td class="num">$0.00</td>
           <td class="num">$0.00</td>
-          <td class="num sub">$25.00</td>
-          <td class="num sub">$125</td>
+          <td class="num save">—</td>
+          <td class="judge"><span class="badge b-watch">要観察</span></td><td class="wrap">直近に加入</td>
+        </tr>
+        <tr>
+          <td class="user" title="mori@example.co.jp">mori</td>
+          <td class="seat"><span class="seat-premium">Premium</span></td>
+          <td class="num">$470</td>
+          <td class="num" style="background:rgba(192,57,43,0.60)">$220</td>
           <td class="num save">$0.00</td>
-          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td>
+          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td><td class="wrap"></td>
+        </tr>
+        <tr>
+          <td class="user" title="shimizu@example.co.jp">shimizu</td>
+          <td class="seat"><span class="seat-standard">Standard</span></td>
+          <td class="num">$45.40</td>
+          <td class="num">$0.00</td>
+          <td class="num save">$0.00</td>
+          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td><td class="wrap"></td>
+        </tr>
+        <tr>
+          <td class="user" title="abe@example.co.jp">abe</td>
+          <td class="seat"><span class="seat-standard">Standard</span></td>
+          <td class="num">$9.00</td>
+          <td class="num">$0.00</td>
+          <td class="num save">$0.00</td>
+          <td class="judge"><span class="badge b-keep">現状維持</span><span class="conf">確度高</span></td><td class="wrap"></td>
         </tr>
         <tr>
           <td class="user" title="okada@example.co.jp">okada</td>
           <td class="seat"><span class="seat-unassigned">未割当</span></td>
           <td class="num">$0.00</td>
           <td class="num">$0.00</td>
-          <td class="num sub">—</td>
-          <td class="num sub">—</td>
           <td class="num save">—</td>
-          <td class="judge"><span class="badge b-keep">対象外（シート未割当）</span></td>
+          <td class="judge"><span class="badge b-keep">対象外（シート未割当）</span></td><td class="wrap"></td>
         </tr>
         </tbody>
       </table>
     </div>
-    <div class="card-ft">「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。<br>確度 = 込み利用量の low/mid/high 3シナリオ推定での判定一致度。<br>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。</div>
+    <div class="card-ft">削減/月 = シート差額ベースの比較額（降格はシート差額、昇格は実課金 − シート差額）で、変更後の従量課金を含まない。負は費用増。<br>確度 = 方針線を ±$100 ずらしても、シートを変えるかどうかの判定が同じか（高=どちらにずらしても同じ、中=片方で変わる、低=両方で変わる）。追加クレジットの提案は比べない。判定を保留した行・判定しない行には確度を付けない。<br>理由 = 判定の理由。複数あるときは「; 」で区切る。</div>
   </section>
 </div>
 </section>
@@ -1168,6 +1154,12 @@
       <div class="bars">
         <div class="guides"><div class="guide g-median" style="left: 5.8%" title="中央値 $27.20"></div><div class="guide g-mean" style="left: 27.8%" title="平均 $131"></div></div>
         <div class="bar">
+          <div class="rank">#2</div>
+          <div class="name" title="kudo@example.co.jp">kudo</div>
+          <div class="track"><div class="fill" style="width: 55.3%; background: var(--std);"></div></div>
+          <div class="val">$260.00</div>
+        </div>
+        <div class="bar">
           <div class="rank">#6</div>
           <div class="name" title="hayashi@example.co.jp">hayashi</div>
           <div class="track"><div class="fill" style="width: 0.0%; background: var(--prem);"></div></div>
@@ -1175,33 +1167,9 @@
         </div>
         <div class="bar">
           <div class="rank">#2</div>
-          <div class="name" title="kudo@example.co.jp">kudo</div>
-          <div class="track"><div class="fill" style="width: 55.3%; background: var(--std);"></div></div>
-          <div class="val">$260.00</div>
-        </div>
-        <div class="bar">
-          <div class="rank">#1</div>
-          <div class="name" title="mori@example.co.jp">mori</div>
-          <div class="track"><div class="fill" style="width: 100.0%; background: var(--prem);"></div></div>
-          <div class="val">$470.00</div>
-        </div>
-        <div class="bar">
-          <div class="rank">#2</div>
           <div class="name" title="ikeda@example.co.jp">ikeda</div>
           <div class="track"><div class="fill" style="width: 55.3%; background: var(--prem);"></div></div>
           <div class="val">$260.00</div>
-        </div>
-        <div class="bar">
-          <div class="rank">#4</div>
-          <div class="name" title="shimizu@example.co.jp">shimizu</div>
-          <div class="track"><div class="fill" style="width: 9.7%; background: var(--std);"></div></div>
-          <div class="val">$45.40</div>
-        </div>
-        <div class="bar">
-          <div class="rank">#5</div>
-          <div class="name" title="abe@example.co.jp">abe</div>
-          <div class="track"><div class="fill" style="width: 1.9%; background: var(--std);"></div></div>
-          <div class="val">$9.00</div>
         </div>
         <div class="bar">
           <div class="rank">#6</div>
@@ -1216,6 +1184,24 @@
           <div class="val">$0.00</div>
         </div>
         <div class="bar">
+          <div class="rank">#1</div>
+          <div class="name" title="mori@example.co.jp">mori</div>
+          <div class="track"><div class="fill" style="width: 100.0%; background: var(--prem);"></div></div>
+          <div class="val">$470.00</div>
+        </div>
+        <div class="bar">
+          <div class="rank">#4</div>
+          <div class="name" title="shimizu@example.co.jp">shimizu</div>
+          <div class="track"><div class="fill" style="width: 9.7%; background: var(--std);"></div></div>
+          <div class="val">$45.40</div>
+        </div>
+        <div class="bar">
+          <div class="rank">#5</div>
+          <div class="name" title="abe@example.co.jp">abe</div>
+          <div class="track"><div class="fill" style="width: 1.9%; background: var(--std);"></div></div>
+          <div class="val">$9.00</div>
+        </div>
+        <div class="bar">
           <div class="rank">—</div>
           <div class="name" title="okada@example.co.jp">okada</div>
           <div class="track"><div class="fill" style="width: 0.0%; background: var(--dim);"></div></div>
@@ -1223,7 +1209,7 @@
         </div>
       </div>
     </div>
-    <div class="card-ft">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　⚠ = 上限到達疑い　#n = API換算需要の順位（同額は同順位。シート未割当は — で母集団に入れない）<br>縦線: <span class="guide-key g-median"></span> 中央値 $27.20 / <span class="guide-key g-mean"></span> 平均 $131（順位と同じ母集団）</div>
+    <div class="card-ft">棒の色: <span class="seat-standard">■ Standard</span> / <span class="seat-premium">■ Premium</span>　#n = API換算需要の順位（同額は同順位。シート未割当は — で母集団に入れない）<br>縦線: <span class="guide-key g-median"></span> 中央値 $27.20 / <span class="guide-key g-mean"></span> 平均 $131（順位と同じ母集団）</div>
   </section>
 
   <section class="card">
@@ -1269,7 +1255,7 @@
   </div>
   <div class="card-bd">
     <ul class="notes">
-      <li><span class="uname" title="shimizu@example.co.jp">shimizu</span>: 上限停止の可能性。停止時点の累積 $45.40 は実効込み量の実測候補。LoC 増分も 0（停止の傍証）。</li>
+      <li><span class="uname" title="shimizu@example.co.jp">shimizu</span>: 上限停止の可能性。停止時点の累積 $45.40。LoC 増分も 0（停止の傍証）。</li>
       <li><span class="uname" title="ikeda@example.co.jp">ikeda</span>: 〜07-05→〜07-13 で従量課金 $20.00 が発生（実効込み量は累積需要 $60.00〜$150 の間）。</li>
       <li><span class="uname" title="kudo@example.co.jp">kudo</span>: 〜07-05→〜07-13 で従量課金 $30.00 が発生（実効込み量は累積需要 $50.00〜$150 の間）。</li>
       <li><span class="uname" title="mori@example.co.jp">mori</span>: 〜07-13→〜07-31 で従量課金 $220 が発生（実効込み量は累積需要 $210〜$470 の間）。</li>
@@ -1405,12 +1391,12 @@
     <div class="card-hd"><div class="hd-main"><h2>前提と注意</h2></div></div>
     <div class="card-bd">
       <ul class="notes assumptions">
-        <li>シート単価: Standard $25 / Premium $125（月払い）。損益分岐の基準差額 $100/月。「Std時 / Prem時」列の Std/Prem は Standard/Premium の略。</li>
-        <li>「Std時 / Prem時」= そのシートの場合の想定月額。現シート側はシート料+実課金の観測実績、変更先側は込み利用量（推定値）モデルの試算。</li>
-        <li>確度 = 込み利用量の low/mid/high 3シナリオ推定での判定一致度。込み利用量そのものは非公開のため、この3シナリオはいずれも推定値です。</li>
-        <li>⚠ = 実課金ゼロなのに需要が込み量推定に迫る Standard ユーザ（上限到達の可能性）。追加クレジットが有効なユーザは実課金がセンサーになるため、実課金ゼロなら枠内と判断でき ⚠️上限? を付けません。</li>
-        <li>クレジット無効のユーザについては、「Standard時/Premium時」の枠超過分は実際には請求されず、絞り負担のドル換算（需要が上限で抑えられる分の目安）です。</li>
-        <li>判定に使用した月: 2026-06, 2026-07（2ヶ月ヒステリシス）。</li>
+        <li>シート単価: Standard $25 / Premium $125（月払い）。シート差額 $100/月。</li>
+        <li>判定 = V2 判定。全 product の API換算需要と方針線（$450/月）、実課金・追加クレジット上限の観測から決める。込み利用量（allowance）の推定は使わない。</li>
+        <li>削減/月 = シート差額ベースの比較額（降格はシート差額、昇格は実課金 − シート差額）で、変更後の従量課金を含まない。負は費用増。</li>
+        <li>確度 = 方針線を ±$100 ずらしても、シートを変えるかどうかの判定が同じか（高=どちらにずらしても同じ、中=片方で変わる、低=両方で変わる）。追加クレジットの提案は比べない。判定を保留した行・判定しない行には確度を付けない。</li>
+        <li>判定に使用した月: 2026-05, 2026-06, 2026-07（判定に要る完全月数の下限: 昇格 1・降格 2）。</li>
+        <li>判定に使用した月は組織に共通の履歴で、加入より前の月などは人ごとに除きます。追加クレジットが無効の人は、需要が方針線以上になっても、それが続くまでは昇格ではなく上限つき付与になります。</li>
       </ul>
     </div>
   </section>

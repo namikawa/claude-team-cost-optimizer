@@ -3,8 +3,8 @@
 # 単価・閾値の既定はすべてここで管理する。ワークスペースの config.yaml に差分を書くと
 # ここの値を上書きできる（辞書はキー単位で再帰マージ、リストと値は丸ごと置換）。
 # モデル単価・カラムのエイリアス表はプログラムの更新で配られるので、ワークスペース側へ
-# 写す必要はない。実データが溜まったら allowance_usd をキャリブレーションすること
-# （docs/reference.md「allowance のキャリブレーション」参照）。
+# 写す必要はない。実データが溜まったら、V1 の判定と速報の一次判断で使う allowance_usd を
+# キャリブレーションすること（docs/reference.md「allowance のキャリブレーション」参照）。
 
 # 入出力ディレクトリの既定（CLI の --input-dir / --output-dir を省略したときに使う）。
 # ワークスペースの config.yaml にここを書くと、実行のたびにフラグを付けずに済む。
@@ -18,31 +18,38 @@ seats:
   standard:
     price_usd: 25.0        # 月払い
     # Standard シートに「含まれる」利用量の API 換算 USD/月。
-    # Anthropic 非公開のため推定値。low/mid/high の3シナリオで感度分析する。
+    # Anthropic 非公開のため推定値。V1 の判定・付与候補と速報の一次判断で使い、
+    # V2 の判定には使わない。V1 は low/mid/high の3シナリオで感度分析する。
     allowance_usd:
       low: 30.0
       mid: 50.0
       high: 75.0
   premium:
     price_usd: 125.0       # 月払い
+    # V1 の判定と速報の一次判断で使う推定値。V2 の判定には使わない。
     allowance_usd:
       low: 150.0
       mid: 250.0
       high: 375.0
 
 decision:
-  # 判定の版（v1 | v2）。v1 は従来の判定。v2 は V2 判定（方針線
-  # decision_v2.premium_justification_usd）の結論で成果物を書き、根拠（decision-evidence）も書く。
+  # 判定の版（v1 | v2）。既定の v2 は、全 product の需要と方針線
+  # decision_v2.premium_justification_usd、実課金・追加クレジット上限の観測で決める
+  # V2 判定の結論で成果物を書き、根拠（decision-evidence）も書く。
+  # v1 は込み利用量の推定 allowance に基づく従来の判定で、将来の版で削除する。
   # CLI の --decision-version が優先し、速報モードには効かない。
-  version: v1
-  # 判定窓（対象月から暦で遡る N か月）の全月がそろい、全月で同じ推奨のときだけ「変更推奨」。
+  version: v2
+  # V1 の判定窓（対象月から暦で遡る N か月）の全月がそろい、全月で同じ推奨のときだけ「変更推奨」。
   # 窓に欠月・部分月があるあいだは、推奨が現シートと違う人を「要観察（データ蓄積待ち）」にする。
-  # 詳細は docs/reference.md「判定ロジック概要」参照。
+  # V2 の判定には使わないが、副スペースの evaluation_months の既定・doctor が欠月を調べる
+  # 範囲・速報の注記の月数にも使う。詳細は docs/reference.md「判定ロジック概要」参照。
   hysteresis_months: 2
-  # 月あたり削減見込みが（Premium−Standard 差額 × この割合）以上のときのみ変更推奨。
+  # V1 の判定と速報の一次判断の削減見込みの下限（Premium−Standard 差額 × この割合）。
+  # V2 の判定には使わない。
   buffer_ratio: 0.20
-  # Standard ユーザで api_cost >= allowance(mid) * この値 のとき
+  # V1 の Standard ユーザで api_cost >= allowance(mid) * この値 のとき
   # 「上限到達の可能性（需要が観測上限で切られている恐れ）」フラグを付ける。
+  # V2 の判定と速報の一次判断には使わない。
   censoring_margin: 0.85
 
 # V2 判定の設定。判定の版が v2 のときに使う。

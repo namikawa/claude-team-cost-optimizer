@@ -72,11 +72,15 @@ def _headings(md: str) -> list[str]:
 
 @pytest.fixture
 def all_in(tmp_path, cfg):
-    """全部入りサンプル（org-b 2026-08）の分析結果と生成物。"""
+    """全部入りサンプル（org-b 2026-08）の V1 の分析結果と生成物。
+
+    感度分析・付与候補・凡例を含む V1 の report と details の分け方を固定する。
+    """
     output_dir = tmp_path / "reports"
     rc = main([
         "analyze", "--config", CONFIG, "--input-dir", str(EXAMPLES_INPUT),
         "--month", MONTH, "--org", ORG, "--output-dir", str(output_dir),
+        "--decision-version", "v1",
     ])
     assert rc == 0
     org_out = output_dir / ORG

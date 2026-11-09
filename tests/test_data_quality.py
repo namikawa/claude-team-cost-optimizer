@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from seat_analyzer.cli import main
 from seat_analyzer.data_quality import (
     _reason,
     github_config_issues,
@@ -22,7 +23,7 @@ from seat_analyzer.data_quality import (
 from seat_analyzer.domain import IssueCode, QualityIssue, Severity
 from seat_analyzer.github_collect import GhFailure, GhResult, probe_github
 
-from .conftest import SPEND_HEADER, requires_symlink, spend_row
+from .conftest import CONFIG, SPEND_HEADER, requires_symlink, spend_row
 
 EXPECTED_CODES = {
     # 入力
@@ -104,6 +105,7 @@ def test_history_gap_excludes_months_before_first_spend(cfg, make_input):
 
 @pytest.mark.parametrize(("hysteresis", "inside"), [(2, False), (3, True)])
 def test_partial_month_warning_follows_judgment_window(cfg, make_input, hysteresis, inside):
+    cfg["decision"]["version"] = "v1"
     cfg["decision"]["hysteresis_months"] = hysteresis
     root = make_input(
         {"2026-06": [spend_row("user@example.com", 10.0)]},
@@ -1331,6 +1333,7 @@ def test_v2_partial_month_notes_and_scope(cfg, make_input, hysteresis):
             SPEND_HEADER + "\n" + spend_row("user@example.com", 10) + "\n",
             encoding="utf-8", newline="\n",
         )
+    cfg["decision"]["version"] = "v1"
     v1 = inspect_input(root / "org-x", "2026-06", cfg, "org-x")
     cfg["decision"]["version"] = "v2"
     v2 = inspect_input(root / "org-x", "2026-06", cfg, "org-x")
@@ -1347,3 +1350,27 @@ def test_v2_partial_month_notes_and_scope(cfg, make_input, hysteresis):
         "欠月より前の月は判定の履歴に入らないため、判定に要る完全月が足りない人は"
         "「要観察（データ蓄積待ち）」になります")
     assert any("ヒステリシス判定" in i.message for i in v1)
+
+
+def test_doctor_defaults_to_v2_partial_month_and_gap_notes(make_input, capsys):
+    """版を指定しない doctor は、部分月と欠月を V2 の履歴の扱いで説明する。"""
+    root = make_input({"2026-06": [spend_row("user@example.com", 10)]},
+                      members=["user@example.com,Premium"], org="org-x")
+    directory = root / "org-x" / "spend"
+    (directory / "spend_2026-06.csv").unlink()
+    for month in ("04", "06"):
+        (directory / f"spend-2026-{month}-01-to-2026-{month}-15.csv").write_text(
+            SPEND_HEADER + "\n" + spend_row("user@example.com", 10) + "\n",
+            encoding="utf-8", newline="\n",
+        )
+    assert main([
+        "doctor", "--config", CONFIG, "--input-dir", str(root),
+        "--org", "org-x", "--month", "2026-06", "--format", "json",
+    ]) == 0
+    issues = json.loads(capsys.readouterr().out)
+    partial = {i["scope"]["month"]: i["message"] for i in issues if i["code"] == "PARTIAL_MONTH"}
+    assert "対象月が部分月なので、正式分析は判定を保留します" in partial["2026-06"]
+    assert "部分月は完全月に数えません" in partial["2026-04"]
+    gap, = [i for i in issues if i["code"] == "MISSING_HISTORY_MONTH"]
+    assert "欠月より前の月は判定の履歴に入らない" in gap["message"]
+    assert "要観察（データ蓄積待ち）" in gap["message"]
