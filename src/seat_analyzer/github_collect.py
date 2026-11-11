@@ -18,11 +18,11 @@ loader は持たない。
 
 値は「不明」を保つ。login の空欄と、GitHub の login として読めない字句は None（＝未対応）に
 して警告に残す（写し間違いを、分析を止めずに気付ける形にする）。`なし`・`none`・`-` は
-「対象の GitHub Organization で PR を作らない（アカウントが無い、または別の Organization で
-開発する）」と判断した記入で、同じく未対応だが警告しない（未記入と、書く値が無いことを
-区別する）。一方で取り違えそのものに直結するもの——必須カラムの欠落、
-email の欠落・重複、login の重複——は ValueError で中止する。login の重複は大文字小文字を
-区別せずに見る（GitHub の login は大小を区別しないため、`Foo` と `foo` は同じ1人を指す）。
+「対象の GitHub Organization で開発しない人（PR も作らず、コミットもしない）」の記入で、
+同じく未対応だが警告しない（未記入と、書く値が無いことを区別する）。一方で取り違え
+そのものに直結するもの——必須カラムの欠落、email の欠落・重複、login の重複——は
+ValueError で中止する。login の重複は大文字小文字を区別せずに見る（GitHub の login は
+大小を区別しないため、`Foo` と `foo` は同じ1人を指す）。
 
 2つ目は `gh` を呼ぶ probe（設計書 §15.2）。認証・付与された scope・利用上限の残量・
 Organization の参照可否だけを調べ、PR も repository も取得しない。token は Python 側へ
@@ -89,9 +89,8 @@ _MAPPING_COLUMNS = ("email", "github_login")
 # 使われていないことに気付けないので、検出したら中止して移し替えを案内する
 LEGACY_GITHUB_MEMBERS_FILENAME = "github-members.csv"
 
-# 対象の GitHub Organization で PR を作らない人（アカウントが無い、または別の
-# Organization で開発する）を表す記入（前後空白を除いて比較し、`none` は大文字小文字を
-# 区別しない）。未記入と区別して、警告の対象から外す
+# 対象の GitHub Organization で開発しない人（PR も作らず、コミットもしない）を表す記入。
+# 前後空白を除いて比較し、`none` は大文字小文字を区別しない。未記入と区別して、警告の対象から外す
 _NO_ACCOUNT_MARKERS = ("なし", "none", "-")
 
 # GitHub の login として受ける字句。英数字・ハイフン・アンダースコアの 1〜39 文字で、
@@ -154,10 +153,10 @@ def _parse_login(cell: object) -> tuple[str | None, bool, str | None]:
     警告を返す。先頭の `@` のような余分な文字は黙って取り除かない（写し間違いに気付ける
     形を優先する。取り除くと、別人の login を正しい値として通す余地が残る）。
 
-    `_NO_ACCOUNT_MARKERS` は「対象の GitHub Organization で PR を作らない」と判断して
-    書かれた行で、値は未対応のまま警告しない。月々の PR の有無で書き換える値ではなく、
-    開発する場所が変われば login を書く。未記入と同じ扱いにすると、書きようのない人の
-    分だけ毎月同じ警告が残り、本当に記入漏れの行が埋もれる。
+    `_NO_ACCOUNT_MARKERS` は対象の GitHub Organization で開発しない人（PR も作らず、
+    コミットもしない）と判断して書かれた行で、値は未対応のまま警告しない。月々の PR の
+    有無で書き換える値ではなく、開発する場所が変われば login を書く。未記入と同じ扱いに
+    すると、書きようのない人の分だけ毎月同じ警告が残り、本当に記入漏れの行が埋もれる。
     """
     text = _cell_text(cell)
     if text is None:
@@ -187,7 +186,8 @@ class GithubMemberLink:
     github_login は入力の原文（前後空白のみ除去）で、None は「未対応」を表す。
     値を持つ場合は必ず GitHub の login として読める字句（`_LOGIN_RE`）になっている。
 
-    no_account は「なし」（対象の GitHub Organization で PR を作らない）と記入された行。
+    no_account は「なし」と記入された行。対象の GitHub Organization で開発しない人
+    （PR も作らず、コミットもしない）を表す。
     未対応であることは同じだが、記入漏れではないので消費側が警告から外せるようにする。
     login を持つ行はその Organization で開発する人の行なので、両立する状態は作らない。
     """

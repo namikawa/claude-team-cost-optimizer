@@ -1810,3 +1810,40 @@ def test_invalid_decision_version_is_rejected_on_load(tmp_path, value):
     _write(path, f"decision:\n  version: {value}\n")
     with pytest.raises(ValueError, match="decision.version"):
         load_config(path)
+
+
+# ---------------------------------------------------------- GitHub コミット集計
+
+
+def test_github_defaults():
+    """コミット集計の閾値と過去キャッシュの参照月数の既定値を固定する。"""
+    assert load_config()["github"] == {"large_commit_lines": 5000, "commit_lookback_months": 3}
+
+
+@pytest.mark.parametrize("key,values", [
+    ("large_commit_lines", [0, -1, 1.5, True, "100"]),
+    ("commit_lookback_months", [-1, 1.5, True, "3", 13]),
+])
+def test_github_invalid_values_are_rejected(tmp_path, key, values):
+    """閾値と参照月数の範囲外・整数でない値・真偽値を拒む。"""
+    for value in values:
+        text = json.dumps(value)
+        with pytest.raises(ValueError, match=f"github.{key}"):
+            load_config(_override(tmp_path, f"github:\n  {key}: {text}\n"))
+
+
+@pytest.mark.parametrize("months", [0, 12])
+def test_github_lookback_accepts_bounds(tmp_path, months):
+    """過去キャッシュの参照月数は0と12の両端を許す。"""
+    cfg = load_config(_override(tmp_path, f"github:\n  commit_lookback_months: {months}\n"))
+    assert cfg["github"]["commit_lookback_months"] == months
+
+
+@pytest.mark.parametrize("text,fragment", [
+    ("github: x\n", "辞書"),
+    ("github:\n  initial_lookback_days: 90\n", "github.initial_lookback_days"),
+])
+def test_github_section_and_unknown_keys_are_rejected(tmp_path, text, fragment):
+    """github は辞書に限り、既定に無いキーを黙って受け付けない。"""
+    with pytest.raises(ValueError, match=fragment):
+        load_config(_override(tmp_path, text))

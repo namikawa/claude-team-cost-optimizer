@@ -16,10 +16,18 @@ from pathlib import Path
 
 import pandas as pd
 
-from ..github_metrics import GithubMetrics, LeadTimeSummary, UserPrMetrics
+from ..github_metrics import (
+    CommitMetrics,
+    CommitTotals,
+    GithubMetrics,
+    LeadTimeSummary,
+    UserPrMetrics,
+)
 from .csv_out import normalize_cell_newlines, sanitize_csv_cell
 
-# 列の順序（この並びで書く）。scope が行の単位を表し、内訳6列は組織全体行だけが持つ
+# 列の順序（この並びで書く）。scope が行の単位を表し、内訳6列は組織全体行だけが持つ。
+# コミットの5列は個人行・組織全体行の両方、unresolved_author_commits は組織全体行のみ。
+# コミットの材料が無ければ、コミットに関する6列は全行で空欄にする
 GITHUB_SUMMARY_COLUMNS = (
     "scope",
     "email",
@@ -36,6 +44,12 @@ GITHUB_SUMMARY_COLUMNS = (
     "excluded_repository_prs",
     "total_prs",
     "cache_complete",
+    "commit_count",
+    "lines_added",
+    "lines_removed",
+    "lines_added_capped",
+    "large_commits",
+    "unresolved_author_commits",
 )
 
 # scope の値（個人1人ぶんの行と、組織全体の1行）
@@ -56,6 +70,17 @@ _BREAKDOWN_COLUMNS = (
     "excluded_repository_prs",
     "total_prs",
 )
+
+
+# 対象者のコミット集計5列と、組織全体行だけが持つ未解決作者の件数
+_COMMIT_COLUMNS = (
+    "commit_count",
+    "lines_added",
+    "lines_removed",
+    "lines_added_capped",
+    "large_commits",
+)
+_UNRESOLVED_AUTHOR_COMMITS_COLUMN = "unresolved_author_commits"
 
 
 def _text(value: str) -> str:
@@ -124,13 +149,36 @@ def _organization_cells(metrics: GithubMetrics) -> dict[str, str]:
     }
 
 
-def write_github_summary(metrics: GithubMetrics, path: Path) -> None:
+def _commit_cells(totals: CommitTotals) -> dict[str, str]:
+    """対象者のコミット集計を整数の字句にする。"""
+    return {name: str(getattr(totals, name)) for name in _COMMIT_COLUMNS}
+
+
+def write_github_summary(
+    metrics: GithubMetrics, path: Path, commits: CommitMetrics | None = None,
+) -> None:
     """github-summary.csv を書く（個人行の後に組織全体の1行）。
 
     対応表を持たない組織では個人行が0件になるが、組織全体の行は必ず書く（PR を個人へ
     帰属できないことと、PR そのものが無いことは別のため）。
+
+    commits は同じ組織・月・対象者のコミット集計。None ならコミットに関する6列を全行で
+    空欄にする。PR の集計と Organization・月・対象者の email の並びが食い違う場合は、
+    ファイルを書く前に ValueError にする（別の集計の値を同じ行に混ぜないため）。
     """
+    if commits is not None and (
+        commits.github_org != metrics.github_org or commits.month != metrics.month
+        or tuple(user.email for user in commits.users) != tuple(user.email for user in metrics.users)
+    ):
+        raise ValueError("PR とコミットの集計の Organization・月・対象者が一致しません")
     rows = [_user_cells(user, metrics) for user in metrics.users]
     rows.append(_organization_cells(metrics))
+    for row in rows:
+        row.update(dict.fromkeys((*_COMMIT_COLUMNS, _UNRESOLVED_AUTHOR_COMMITS_COLUMN), ""))
+    if commits is not None:
+        for row, user in zip(rows[:-1], commits.users, strict=True):
+            row.update(_commit_cells(user.totals))
+        rows[-1].update(_commit_cells(commits.totals))
+        rows[-1][_UNRESOLVED_AUTHOR_COMMITS_COLUMN] = str(commits.unresolved_author_commits)
     table = pd.DataFrame(rows, columns=list(GITHUB_SUMMARY_COLUMNS))
     table.to_csv(path, index=False, encoding="utf-8-sig", lineterminator="\n")

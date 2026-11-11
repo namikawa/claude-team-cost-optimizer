@@ -1,5 +1,12 @@
 # 変更履歴
 
+## [未リリース]
+
+### 追加
+
+- github-summary にコミット単位の行数の列を追加した
+- 設定 `github.large_commit_lines`・`github.commit_lookback_months` を追加した
+
 ## [1.5.0] - 2026-11-10
 
 ### 変更

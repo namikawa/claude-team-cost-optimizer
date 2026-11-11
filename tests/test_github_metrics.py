@@ -25,10 +25,12 @@ gh もファイルも呼ばないモジュールなので、同じ入力から�
 
 import os
 import time
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
 from seat_analyzer.github_collect import (
+    CachedCommit,
     CachedPr,
     GhFailure,
     GithubMemberLink,
@@ -39,9 +41,14 @@ from seat_analyzer.github_collect import (
 )
 from seat_analyzer.github_metrics import (
     BOT_AUTHOR_TYPE,
+    CommitMetrics,
+    CommitTotals,
     GithubMetrics,
     LeadTimeSummary,
+    UserCommitMetrics,
     UserPrMetrics,
+    commit_metrics,
+    has_commits,
     lead_time_hours,
     pr_metrics,
     summarize_lead_times,
@@ -66,6 +73,8 @@ def _pr(**overrides) -> CachedPr:
         "is_draft": False,
     }
     values.update(overrides)
+    if values.get("commits") is not None and "commit_count" not in values:
+        values["commit_count"] = len(values["commits"])
     return CachedPr(**values)
 
 
@@ -1191,3 +1200,301 @@ def test_metrics_rejects_an_inconsistent_result(overrides, message):
 def test_metrics_rejects_wrong_types(overrides, message):
     with pytest.raises(TypeError, match=message):
         _metrics(**overrides)
+
+
+# -------------------------------------------------------- コミット単位の行数
+
+
+def _commit(oid: str = "a" * 40, **overrides) -> CachedCommit:
+    """合成のコミット（保存順は日時・oid の昇順）。"""
+    values = {
+        "oid": oid, "author_login": "octocat", "author_email": "author@example.com",
+        "additions": 10, "deletions": 2, "committed_at": "2026-08-02T00:00:00Z", "is_merge": False,
+    }
+    values.update(overrides)
+    return CachedCommit(**values)
+
+
+def _commit_metrics(cache: PrCache, *, members: GithubMembers | None = None,
+                    repos: RepoDiscovery | None = None, **kwargs) -> CommitMetrics | None:
+    """既存の対応表・キャッシュの補助関数で集計入力を組み立てる。"""
+    if members is None:
+        members = _members(_link("a@example.com", "octocat"), _link("b@example.com", "alice-dev"))
+    if repos is None:
+        repos = _repos("repo-a", "repo-b")
+    subjects = kwargs.pop("subjects", frozenset(entry.email for entry in members.entries))
+    kwargs.setdefault("large_commit_lines", 100)
+    return commit_metrics(cache, members, repos, subjects, **kwargs)
+
+
+@pytest.mark.parametrize("schema,prs,available", [
+    (1, (), False), (2, (), True), (2, (_pr(),), False),
+    (2, (_pr(commits=()), _pr(number=13)), False),
+])
+def test_commit_material_is_required_even_for_empty_caches(schema, prs, available):
+    """コミットの材料が無い場合と、空の schema 2 のゼロ集計を区別する。"""
+    result = _commit_metrics(replace(_cache(prs), schema=schema))
+    assert (result is not None) is available
+    if result is not None:
+        assert result.totals == CommitTotals(0, 0, 0, 0, 0)
+        assert len(result.users) == 2
+
+
+@pytest.mark.parametrize("author_type,author_login", [
+    ("User", "alice-dev"), ("Bot", "helper-bot"), (None, None),
+])
+def test_commits_belong_to_the_author_including_bot_and_deleted_author_prs(
+    author_type, author_login,
+):
+    """Bot・削除済み作成者・draft の PR もコミットの作者へ帰属させる。"""
+    result = _commit_metrics(_cache((_pr(
+        author_login=author_login, author_type=author_type, is_draft=True,
+        commits=(_commit(author_login="OctoCat"),),
+    ),)))
+    assert result.users[0].totals == CommitTotals(1, 10, 2, 10, 0)
+    assert result.users[1].totals.commit_count == 0
+
+
+@pytest.mark.parametrize("login,pr_login,pr_type,expected", [
+    (None, "octocat", "User", 1),
+    (None, "outsider", "User", 0),
+    (None, "helper-bot", "Bot", 0),
+    (None, None, None, 0),
+    ("outsider", "octocat", "User", 0),
+    ("ALICE-DEV", "octocat", "User", 1),
+])
+def test_commit_author_resolution_does_not_use_email(login, pr_login, pr_type, expected):
+    """作者の login を優先し、無い場合だけ PR の作成者へ戻してメールを使わない。"""
+    result = _commit_metrics(_cache((_pr(
+        author_login=pr_login, author_type=pr_type,
+        commits=(_commit(author_login=login, author_email="a@example.com"),),
+    ),)))
+    assert result.totals.commit_count == expected
+    assert result.unresolved_author_commits == 1 - expected
+    assert result.counted_commits == 1
+    if login == "ALICE-DEV":
+        assert result.users[1].totals.commit_count == 1
+
+
+@pytest.mark.parametrize("same_time,other_repo", [(False, False), (True, False), (True, True)])
+def test_duplicate_commit_uses_merge_time_then_repository_and_number(same_time, other_repo):
+    """同じ oid は merge 時刻・repository の小文字・番号の順で1回だけ帰属させる。"""
+    commit = _commit(author_login=None)
+    first = _pr(number=20, repository="Repo-A", author_login="octocat",
+                merged_at="2026-08-03T00:00:00Z", commits=(commit,))
+    second = _pr(number=10, repository="repo-b" if other_repo else "repo-a",
+                 author_login="alice-dev", commits=(commit,),
+                 merged_at=first.merged_at if same_time else "2026-08-04T00:00:00Z")
+    result = _commit_metrics(_cache((first, second)))
+    expected_first = not same_time or other_repo
+    assert result.users[0].totals.commit_count == int(expected_first)
+    assert result.users[1].totals.commit_count == int(not expected_first)
+    assert result.counted_commits == 1
+
+
+@pytest.mark.parametrize("own_oid,outside", [(False, False), (True, False), (False, True)])
+def test_merge_generated_commit_is_excluded_across_all_repositories(own_oid, outside):
+    """全 repository から識別したマージ生成コミットを除き、自身のコミットは残す。"""
+    commit = _commit()
+    source = _pr(number=1, repository="outside" if outside else "repo-a",
+                 merge_commit_oid=commit.oid, commits=(commit,) if own_oid else ())
+    target = _pr(number=2, commits=(commit,))
+    result = _commit_metrics(_cache((source, target)))
+    assert result.totals.commit_count == int(own_oid)
+
+
+def _earlier(prs: tuple[CachedPr, ...] = (), month: str = "2026-07") -> PrCache:
+    """PR の merge 月だけ過去月へ移した合成キャッシュ。"""
+    return _cache(tuple(replace(
+        pr, created_at=f"{month}-01T00:00:00Z", merged_at=f"{month}-03T00:00:00Z",
+    ) for pr in prs), month=month)
+
+
+@pytest.mark.parametrize("repository,generated,expected", [
+    ("repo-a", False, 0), ("outside", False, 1),
+    ("repo-a", True, 0), ("outside", True, 0),
+])
+def test_earlier_commits_and_merge_generated_oids_use_current_repositories(
+    repository, generated, expected,
+):
+    """過去月の oid は対象月の repository 一覧で絞り、マージ生成分は全 PR から除く。"""
+    commit = _commit()
+    earlier = replace(_earlier((_pr(
+        repository=repository, commits=() if generated else (commit,),
+        merge_commit_oid=commit.oid if generated else None,
+    ),)), repositories=_repos("outside"))
+    result = _commit_metrics(_cache((_pr(commits=(commit,)),)), earlier=(earlier,))
+    assert result.counted_commits == expected
+
+
+@pytest.mark.parametrize("earlier", [
+    (_cache(github_org="other-org"),),
+    (_cache(),), (_cache(month="2026-09"),),
+    (_earlier(), _earlier()), (_earlier((_pr(),)),),
+    (replace(_earlier(), schema=1),),
+])
+def test_invalid_earlier_caches_are_rejected(earlier):
+    """過去キャッシュの Organization・月・重複・コミットの材料の不正を拒む。"""
+    with pytest.raises(ValueError):
+        _commit_metrics(_cache(), earlier=earlier)
+
+
+@pytest.mark.parametrize("earlier", [[], [_earlier()], ("not-a-cache",), None])
+def test_earlier_type_errors_are_rejected(earlier):
+    """earlier の入れ物と要素の型の誤りは TypeError にする。"""
+    with pytest.raises(TypeError):
+        _commit_metrics(_cache(), earlier=earlier)
+
+
+@pytest.mark.parametrize("schema,prs,expected", [
+    (1, (), False), (2, (), True), (2, (_pr(),), False),
+    (2, (_pr(commits=()),), True),
+    (2, (_pr(commits=()), _pr(number=13)), False),
+])
+def test_has_commits_requires_schema_two_and_material_for_every_pr(schema, prs, expected):
+    """空でも schema 2 を要し、すべての PR がコミットの材料を持つかを判定する。"""
+    assert has_commits(replace(_cache(prs), schema=schema)) is expected
+
+
+def test_commits_of_members_without_seats_remain_unresolved():
+    """対応表にあってもシートを持たない作者は PR の作成者へ戻さず未解決にする。"""
+    members = _members(_link("a@example.com", "octocat"), _link("b@example.com", "alice-dev"))
+    result = _commit_metrics(
+        _cache((_pr(author_login="octocat", commits=(_commit(author_login="alice-dev"),)),)),
+        members=members, subjects=frozenset({"a@example.com"}),
+    )
+    assert [user.email for user in result.users] == ["a@example.com"]
+    assert result.totals == CommitTotals(0, 0, 0, 0, 0)
+    assert result.unresolved_author_commits == result.counted_commits == 1
+
+
+def test_merge_and_outside_commits_do_not_enter_any_count():
+    """マージコミットと対象外 repository のコミットは未解決の件数にも入れない。"""
+    result = _commit_metrics(_cache((
+        _pr(commits=(_commit(is_merge=True),)),
+        _pr(repository="outside", commits=(_commit("b" * 40, author_login="outsider"),)),
+    )))
+    assert result.counted_commits == result.unresolved_author_commits == 0
+
+
+def test_large_commit_threshold_and_deletion_only_commits():
+    """閾値を超えた追加行だけ上限つき合計から外し、削除行だけのコミットも許す。"""
+    result = _commit_metrics(_cache((_pr(commits=(
+        _commit(additions=101), _commit("b" * 40, additions=100),
+        _commit("c" * 40, additions=0, deletions=7),
+    )),)))
+    assert result.totals == CommitTotals(3, 201, 11, 100, 1)
+
+
+def test_commit_users_match_pr_users_and_normalize_subjects():
+    """対象者の表記を正規化し、PR 集計と同じ人・同じ順でゼロ件の行も返す。"""
+    members = _members(_link("b@example.com", "alice-dev"), _link("a@example.com", "octocat"),
+                       _link("outside@example.com", "outsider"), _link("empty@example.com"))
+    subjects = frozenset({" A@EXAMPLE.COM ", "b@example.com", "empty@example.com"})
+    cache = _cache((_pr(commits=()),))
+    result = _commit_metrics(cache, members=members, subjects=subjects)
+    prs = pr_metrics(cache, members, _repos("repo-a", "repo-b"), subjects)
+    assert [user.email for user in result.users] == [user.email for user in prs.users]
+    assert all(user.totals.commit_count == 0 for user in result.users)
+
+
+@pytest.mark.parametrize("field", [
+    "commit_count", "lines_added", "lines_removed", "lines_added_capped", "large_commits",
+])
+@pytest.mark.parametrize("value", [-1, 1.5, True, "1"])
+def test_commit_totals_reject_non_counts(field, value):
+    """件数・行数として負数・小数・真偽値・文字列を受け付けない。"""
+    values = {
+        "commit_count": 0, "lines_added": 0, "lines_removed": 0,
+        "lines_added_capped": 0, "large_commits": 0,
+    }
+    values[field] = value
+    with pytest.raises(ValueError):
+        CommitTotals(**values)
+
+
+@pytest.mark.parametrize("values", [
+    (0, 1, 0, 1, 0), (0, 0, 1, 0, 0), (1, 2, 0, 1, 0),
+    (1, 2, 0, 1, 1), (1, 0, 0, 0, 2), (1, 1, 0, 2, 0),
+])
+def test_commit_totals_reject_inconsistent_combinations(values):
+    """件数と追加行・削除行・上限つき合計の不整合を拒む。"""
+    with pytest.raises(ValueError):
+        CommitTotals(*values)
+
+
+def test_commit_metrics_validate_totals_users_and_immutability():
+    """件数の保存則、対象者の並び・重複・正規化と値の不変性を保証する。"""
+    zero = CommitTotals(0, 0, 0, 0, 0)
+    a = UserCommitMetrics(" A@EXAMPLE.COM ", zero)
+    b = UserCommitMetrics("b@example.com", CommitTotals(1, 0, 2, 0, 0))
+    valid = CommitMetrics(ORG, MONTH, (a, b), 2, 3)
+    assert a.email == "a@example.com"
+    assert valid.totals == b.totals
+    for users, unresolved, counted in [((b, a), 2, 3), ((a, a), 0, 0), ((a, b), 0, 3),
+                                        ((a, b), True, 2), ((a, b), 0, -1)]:
+        with pytest.raises(ValueError):
+            CommitMetrics(ORG, MONTH, users, unresolved, counted)
+    with pytest.raises(TypeError):
+        replace(valid, users=[a, b])
+    with pytest.raises(TypeError):
+        replace(valid, warnings=["warning"])
+    with pytest.raises(TypeError):
+        UserCommitMetrics("a@example.com", None)
+    with pytest.raises(FrozenInstanceError):
+        valid.counted_commits = 0
+
+
+def test_truncated_prs_use_the_same_rules_and_warnings_name_no_one():
+    """打ち切られた PR も同じ規則で数え、警告の順を固定して作者や repository 名を出さない。"""
+    commits = tuple(_commit(f"{n:040x}", author_login="outsider" if n == 0 else "octocat",
+                            is_merge=n == 1) for n in range(250))
+    prs = (
+        _pr(number=20, commits=commits, commit_count=251),
+        _pr(number=10, commits=commits, commit_count=300,
+            merged_at="2026-08-04T00:00:00Z"),
+        _pr(repository="outside", commits=commits, commit_count=260),
+    )
+    result = _commit_metrics(_cache(prs, complete=False))
+    assert result.counted_commits == 249
+    assert result.totals.commit_count == 248
+    assert result.unresolved_author_commits == 1
+    assert len(result.warnings) == 2
+    assert "2 本" in result.warnings[0] and "250 件" in result.warnings[0]
+    assert "コミット 1 件" in result.warnings[1]
+    assert not any(text in "".join(result.warnings) for text in (
+        "outsider", "octocat", "repo-a", "outside", "author@example.com", "収集が完了していません",
+    ))
+
+
+def test_commit_results_do_not_depend_on_mapping_or_earlier_order():
+    """同じ入力を繰り返しても、対応表や過去キャッシュの順を変えても結果を変えない。"""
+    members = _members(_link("b@example.com", "alice-dev"), _link("a@example.com", "octocat"))
+    earlier = (_earlier((_pr(commits=(_commit(),)),)), _earlier(month="2026-06"))
+    cache = _cache((_pr(commits=(_commit(), _commit("b" * 40))),))
+    first = _commit_metrics(cache, members=members, earlier=earlier)
+    assert first == _commit_metrics(cache, members=members, earlier=earlier)
+    assert first == _commit_metrics(cache, members=replace(members, entries=members.entries[::-1]),
+                                    earlier=earlier[::-1])
+
+
+@pytest.mark.parametrize("value", [0, -1, 1.5, True, "100", None])
+def test_commit_threshold_is_required_and_positive_integer(value):
+    """大きな変更の閾値は真偽値を除く1以上の整数に限る。"""
+    with pytest.raises(ValueError, match="large_commit_lines"):
+        _commit_metrics(_cache(), large_commit_lines=value)
+
+
+def test_commit_inputs_use_the_same_validation_as_pr_metrics():
+    """PR 集計と同じ型・Organization・repository 一覧の完全性の検査を行う。"""
+    cache, members, repos = _cache(), _members(), _repos("repo-a")
+    for name in ("cache", "members", "repos", "subjects"):
+        args = {"cache": cache, "members": members, "repos": repos, "subjects": frozenset()}
+        args[name] = None
+        with pytest.raises(TypeError):
+            commit_metrics(**args, large_commit_lines=100)
+    with pytest.raises(ValueError):
+        _commit_metrics(cache, repos=_repos("repo-a", github_org="other-org"))
+    with pytest.raises(ValueError):
+        _commit_metrics(cache, repos=RepoDiscovery(github_org=ORG, repos=(), status=403,
+                                                 failure=GhFailure.ERROR))
