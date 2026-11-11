@@ -137,6 +137,11 @@ decision_v2:
 #             org_id: 00000000-0000-4000-8000-000000000003
 organizations: {}
 
+# GitHub のコミット行数の集計（github-summary の参考値）
+github:
+  large_commit_lines: 5000     # 1 コミットの追加行がこれを超えると「大きな変更」として上限つき合計から外す
+  commit_lookback_months: 3    # 月をまたぐ重複を除くために読む、前の月のキャッシュの数（0 で読まない）
+
 # claude.ai からの CSV 取得（collect --source claude）。ブラウザは専用プロファイルの
 # Google Chrome で、既定は不活性（organizations.<組織名>.claude_export を書いた組織だけが
 # 対象）。パスの `~` はホームディレクトリに展開する。profiles_dir・staging_dir の相対パスの
@@ -274,8 +279,10 @@ columns:
                        "spending limit", "追加クレジット上限", "従量上限"]
     # GitHub の login（email → login の対応表。GitHub 分析を有効にした組織だけが使う）。
     # 空欄=未記入（未対応として扱い警告する）/ なし・none・- =対象の GitHub Organization で
-    # PR を作らない（未対応として扱い警告しない）/ それ以外=GitHub の login（英数字で始まり
-    # 英数字で終わる1〜39文字・連続しないハイフン・高々1個のアンダースコア）
+    # 開発しない人（PR も作らず、コミットもしない。未対応として扱い警告しない）/
+    # それ以外=GitHub の login（英数字で始まり英数字で終わる1〜39文字・連続しない
+    # ハイフン・高々1個のアンダースコア）。
+    # 自分で PR を作らず他の人の PR にコミットする人も login を書く
     github_login: ["github id", "github login", "github username", "github user",
                    "github account", "githubログイン", "githubユーザー名",
                    "githubアカウント", "github"]

@@ -790,8 +790,8 @@ claude.ai からの CSV 取得を使っていて、アップデートで同梱�
   CSV 取得を設定する」。取得の運用は [usage.md](./usage.md) の「claude.ai からの CSV 取得」
 - macOS で週次・月次の取得を自動化する場合（任意）: 上の
   [「定期実行を設定する（macOS・任意）」](#定期実行を設定するmacos任意)
-- GitHub の PR 数とリードタイムを参考値として使う場合（任意・組織ごと）: ワークスペースの
-  `config.yaml` に対象組織の GitHub Organization 名を書き、`members-info.csv` の
+- GitHub の PR 数・リードタイム・コミット単位の行数を参考値として使う場合（任意・組織ごと）:
+  ワークスペースの `config.yaml` に対象組織の GitHub Organization 名を書き、`members-info.csv` の
   `GitHub ID` 列を記入する（[reference.md](./reference.md) の「GitHub 分析の有効化」）。
   収集は `seat-analyzer collect --source github`（[usage.md](./usage.md)）
 - 料金前提の確認: 既定設定のシート料金とモデル単価は特定時点の値なので、使う前に最新の

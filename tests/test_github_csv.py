@@ -11,13 +11,17 @@ UTF-8・LF）。組織全体行の件数は個人行の合計（対象者の PR�
 
 import csv
 import io
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from seat_analyzer.github_metrics import (
+    CommitMetrics,
+    CommitTotals,
     GithubMetrics,
     LeadTimeSummary,
+    UserCommitMetrics,
     UserPrMetrics,
 )
 from seat_analyzer.report import GITHUB_SUMMARY_COLUMNS, write_github_summary
@@ -295,3 +299,62 @@ def test_a_newline_inside_an_email_becomes_lf(tmp_path):
 
     assert b"\r" not in path.read_bytes()
     assert _rows(path)[0]["email"] == "a\nb@example.com"
+
+
+COMMIT_COLUMNS = (
+    "commit_count", "lines_added", "lines_removed", "lines_added_capped",
+    "large_commits", "unresolved_author_commits",
+)
+
+
+def _commits() -> CommitMetrics:
+    """PR 集計と同じ人・同じ並びを持つ合成のコミット集計。"""
+    return CommitMetrics(ORG, MONTH, (
+        UserCommitMetrics("alice@example.com", CommitTotals(2, 120, 3, 20, 1)),
+        UserCommitMetrics("bob@example.com", CommitTotals(1, 10, 2, 10, 0)),
+    ), 4, 7)
+
+
+def test_commit_columns_follow_existing_columns_and_are_empty_without_material(tmp_path):
+    """既存列の後ろに6列を加え、コミットの材料が無ければ全行を空欄にする。"""
+    path = _write(tmp_path, _metrics())
+    assert GITHUB_SUMMARY_COLUMNS == (
+        "scope", "email", "github_login", "month", "merged_pr_count",
+        "lead_time_median_hours", "lead_time_p75_hours", "lead_time_p90_hours",
+        "unmapped_authors", "unmapped_prs", "bot_prs", "deleted_author_prs",
+        "excluded_repository_prs", "total_prs", "cache_complete", *COMMIT_COLUMNS,
+    )
+    assert all(row[name] == "" for row in _rows(path) for name in COMMIT_COLUMNS)
+
+
+def test_commit_csv_totals_and_existing_cells_are_deterministic(tmp_path):
+    """個人と組織の整数値を正しく書き、既存列と同じ入力のバイト列を保つ。"""
+    metrics, commits = _metrics(), _commits()
+    path = _write(tmp_path, metrics)
+    original = _rows(path)
+    write_github_summary(metrics, path, commits)
+    raw = path.read_bytes()
+    rows = _rows(path)
+    assert [[row[name] for name in COMMIT_COLUMNS] for row in rows] == [
+        ["2", "120", "3", "20", "1", ""],
+        ["1", "10", "2", "10", "0", ""],
+        ["3", "130", "5", "30", "1", "4"],
+    ]
+    for before, after in zip(original, rows, strict=True):
+        assert {key: value for key, value in after.items() if key not in COMMIT_COLUMNS} == {
+            key: value for key, value in before.items() if key not in COMMIT_COLUMNS
+        }
+    write_github_summary(metrics, path, commits)
+    assert path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("field,value", [
+    ("month", "2026-07"), ("github_org", "other-org"),
+    ("users", (UserCommitMetrics("other@example.com", CommitTotals(3, 0, 0, 0, 0)),)),
+])
+def test_mismatched_commit_results_are_rejected_before_writing(tmp_path, field, value):
+    """PR とコミット集計の月・Organization・対象者が違えば書き出す前に拒む。"""
+    path = tmp_path / "summary.csv"
+    with pytest.raises(ValueError, match="一致しません"):
+        write_github_summary(_metrics(), path, replace(_commits(), **{field: value}))
+    assert not path.exists()

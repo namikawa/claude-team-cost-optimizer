@@ -48,11 +48,11 @@ GitHub ID で、`email` 以外はすべて空欄でよい。組織階層は部�
 ファイル自体を置いていない組織では出ない。
 
 `GitHub ID` の列は GitHub 分析を有効にした組織だけが使う（`seat-analyzer doctor` が
-記入状況を検査する）。その組織の PR を誰の実績として数えるかがこの列で決まるため、
-GitHub の login をそのまま書く。空欄は未記入で、記入を促す警告が出る。対象の
-GitHub Organization で PR を作らない人（アカウントが無い、または別の
-Organization で開発する人）は `なし` と書いておくとその警告から外れる。有効にしていない
-組織では列そのものが不要で、空欄のままでも何も起きない。
+記入状況を検査する）。その組織の PR とコミットの行数を誰の実績として数えるかがこの列で
+決まるため、GitHub の login をそのまま書く。空欄は未記入で、記入を促す警告が出る。
+対象の GitHub Organization で開発しない人（PR も作らず、コミットもしない）は `なし` と
+書いておくとその警告から外れる。自分で PR を作らず、他の人の PR にコミットする人も
+login を書く。有効にしていない組織では列そのものが不要で、空欄のままでも何も起きない。
 
 `members-info.csv` は固定名のほか、日付つき（例: `members-info-2026-07-16.csv`）でも
 置ける。日付つきが1つでもあると固定名は無視し、対象月の月末以前で最新の日付のものを
@@ -293,7 +293,7 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    - `recommendations-YYYYMM-<組織名>.csv` — スプレッドシート二次加工用（列の意味は reference.md の [recommendations の列](./reference.md#recommendations-の列)）
    - `usage-summary-YYYYMM-<組織名>.csv` — ユーザ単位の product 利用特徴量（全 product と Claude Code の需要・リクエスト数など。確定できない値は空欄）
    - `decision-evidence-YYYYMM-<組織名>.csv` — V2 判定の根拠（判定の版が v2 のとき＝既定。v1 の実行では出力しない）
-   - `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数と lead time の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）
+   - `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数・lead time・コミット単位の行数の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）
 
    以下では種別名（report / details / dashboard …）で呼ぶ。
 
@@ -330,7 +330,9 @@ seat-analyzer collect --org <組織名> --source github --month YYYY-MM
 ```
 
 対象月に merge された PR のメタデータを `input/<組織名>/github-cache/prs-YYYY-MM.json`
-へ保存する。月ごとに実行するコマンドなので、初回は直近3ヶ月分を月を変えて順に実行する。
+へ保存する。行数の集計は前の月のキャッシュも読むので、分析する月と、その前の
+`github.commit_lookback_months` か月ぶんを月を変えて順に収集する。複数の月を分析するなら、
+最も古い分析月の前の月ぶんも必要になる。
 
 - 保存するのは repository 名・PR 番号・作成者・作成日時・merge 日時・追加行数・
   削除行数・draft かどうかと、PR に含まれるコミットの SHA・作者の login とメール・

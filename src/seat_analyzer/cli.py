@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import (
     analyze,
+    calendar_months,
     claude_export,
     data_quality,
     decision_evidence,
@@ -1002,8 +1003,9 @@ def _run_analyze(args: argparse.Namespace) -> int:
         else:
             notices = _stale_evidence_notices(result, org_output)
         metrics: github_metrics.GithubMetrics | None = None
+        commits: github_metrics.CommitMetrics | None = None
         if org in gated:
-            metrics, github_notices = _write_github_summary(
+            metrics, commits, github_notices = _write_github_summary(
                 org, org_input, org_output, month, cfg, gated[org], paths,
                 _github_subjects(result),
             )
@@ -1014,7 +1016,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 notices += _stale_github_notices(org_output, month, org)
         results.append(result)
         written.append((org, org_output))
-        _print_result(result, paths, evidence, notices, metrics)
+        _print_result(result, paths, evidence, notices, metrics, commits)
 
     if skipped:
         print(f"\n! {month} のスペンドレポートが無いためスキップした組織: {', '.join(skipped)}")
@@ -2481,7 +2483,9 @@ def _write_github_summary(
     github_org: str,
     paths: dict[str, Path],
     subjects: frozenset[str],
-) -> tuple[github_metrics.GithubMetrics | None, list[str]]:
+) -> tuple[
+    github_metrics.GithubMetrics | None, github_metrics.CommitMetrics | None, list[str],
+]:
     """GitHub の参考値を書き、出力一覧へ加える（report などの成果物には触れない）。
 
     材料は collect が保存したキャッシュだけで、gh もネットワークも呼ばない（同じ
@@ -2493,13 +2497,13 @@ def _write_github_summary(
     cache_dir = org_input / github_collect.PR_CACHE_DIRNAME
     command = f"collect --org {org} --source github --month {month}"
     if not github_collect.pr_cache_path(cache_dir, month).is_file():
-        return None, [
+        return None, None, [
             (f"github-summary は書きません（github-cache に {month} のキャッシュが"
              f"無いため。`{command}` を実行してください）")
         ]
     cache = github_collect.load_pr_cache(cache_dir, month, github_org)
     if cache.repositories is None:
-        return None, [
+        return None, None, [
             ("github-summary は書きません（キャッシュに repository の一覧が無いため。"
              f"`{command}` を再実行すると一覧が保存されます）")
         ]
@@ -2508,10 +2512,46 @@ def _write_github_summary(
     metrics = github_metrics.pr_metrics(
         cache, members, cache.repositories, subjects
     )
+    earlier: list[github_collect.PrCache] = []
+    reasons: list[tuple[str, str]] = []
+    notices: list[str] = []
+    if github_metrics.has_commits(cache):
+        previous_month = month
+        for _ in range(cfg["github"]["commit_lookback_months"]):
+            previous_month = calendar_months.previous_month(previous_month)
+            if not github_collect.pr_cache_path(cache_dir, previous_month).is_file():
+                reasons.append((previous_month, "無い"))
+                continue
+            previous = github_collect.load_pr_cache(cache_dir, previous_month, github_org)
+            if not github_metrics.has_commits(previous):
+                reasons.append((previous_month, "コミットを持たない"))
+                continue
+            earlier.append(previous)
+            if not previous.complete:
+                reasons.append((previous_month, "収集が完了していない"))
+        if reasons:
+            detail = "・".join(f"{m} は{reason}" for m, reason in sorted(reasons))
+            notices.append(
+                "前の月のキャッシュが揃っていないため、月をまたいで同じコミットを数えている"
+                f"可能性があります（{detail}）。"
+                f"`collect --org {org} --source github --month <月>` で取り直せます"
+            )
+    commits = github_metrics.commit_metrics(
+        cache, members, cache.repositories, subjects, earlier=tuple(earlier),
+        large_commit_lines=cfg["github"]["large_commit_lines"],
+    )
+    if commits is None:
+        notices.append(
+            "GH_COMMITS_MISSING: github-summary の行数の列は空欄です"
+            f"（{month} のキャッシュにコミットが無いため。`{command}` を再実行すると"
+            "コミットが保存されます）"
+        )
     path = report.GITHUB_SUMMARY.path(org_output, month, org)
-    report.write_github_summary(metrics, path)
+    report.write_github_summary(metrics, path, commits)
     paths["github"] = path
-    return metrics, list(metrics.warnings)
+    return metrics, commits, [
+        *metrics.warnings, *(commits.warnings if commits is not None else ()), *notices,
+    ]
 
 
 def _stale_github_notices(org_output: Path, month: str, org: str) -> list[str]:
@@ -2529,7 +2569,10 @@ def _stale_github_notices(org_output: Path, month: str, org: str) -> list[str]:
     ]
 
 
-def _print_github_metrics(metrics: github_metrics.GithubMetrics) -> None:
+def _print_github_metrics(
+    metrics: github_metrics.GithubMetrics,
+    commits: github_metrics.CommitMetrics | None = None,
+) -> None:
     """GitHub の参考値の要約（シートの判定には使わない値であることを見出しで示す）。"""
     active = sum(1 for user in metrics.users if user.merged_pr_count)
     print(
@@ -2543,6 +2586,13 @@ def _print_github_metrics(metrics: github_metrics.GithubMetrics) -> None:
             f"median {lead.median_hours:.1f}h / "
             f"P75 {lead.p75_hours:.1f}h / P90 {lead.p90_hours:.1f}h"
             f"（{lead.count} 件）"
+        )
+
+    if commits is not None:
+        totals = commits.totals
+        print(
+            f"  コミット（シートを持つ人）: {totals.commit_count} 件・"
+            f"追加 {totals.lines_added_capped} 行（大きな変更を除く）"
         )
 
 
@@ -2637,6 +2687,7 @@ def _print_result(
     evidence: tuple[decision_evidence.EvidenceRow, ...] | None = None,
     notices: Sequence[str] = (),
     metrics: github_metrics.GithubMetrics | None = None,
+    commits: github_metrics.CommitMetrics | None = None,
 ) -> None:
     print(f"\n=== {result.org} {result.month} 分析結果 ===")
     multi = result.has_multiple_workspaces
@@ -2659,7 +2710,7 @@ def _print_result(
     if evidence is not None:
         _print_decision_evidence(evidence)
     if metrics is not None:
-        _print_github_metrics(metrics)
+        _print_github_metrics(metrics, commits)
 
     # 警告は組織単位 → workspace ごと（複数 workspace の組織は表示名を前置）
     warnings = list(result.warnings)

@@ -338,12 +338,12 @@ recommendations の主 workspace と同じ対象。
 
 ## github-summary の列（GitHub の参考値）
 
-GitHub の merged PR 数とリードタイムの参考値。GitHub 分析を有効にした組織で、対象月の
-キャッシュ（`collect --source github`）があるときだけ正式分析が書く。
+GitHub の merged PR 数・リードタイム・コミット単位の行数の参考値。GitHub 分析を有効に
+した組織で、対象月のキャッシュ（`collect --source github`）があるときだけ正式分析が書く。
 
 シートの判定には一切使わない。report / details / dashboard / recommendations /
 usage-summary の内容はこのファイルの有無で変わらず、逆にこのファイルの値が判定へ入る
-こともない。PR 数もリードタイムもチームの働き方と repository の性質に強く依存するため、
+こともない。PR 数・リードタイム・行数はチームの働き方と repository の性質に強く依存するため、
 値の大小から因果（活用度が高い・低い）を断定する材料にはならない。個人行はメール
 アドレス昇順で、件数の多い順には並べない（個人のランキングを作らないため）。
 
@@ -387,6 +387,13 @@ Premium と確認できた人を指す。複数スペースの組織では、分
   `excluded_repository_prs` を足した数に一致する
 - `cache_complete` — 対象月の収集を読み切ったか（True / False）。False のときの件数は
   部分的な値
+- `commit_count` — 作者に帰属したコミットの件数（大きな変更を含む）
+- `lines_added` — そのコミットの追加行の合計（大きな変更を含む）
+- `lines_removed` — そのコミットの削除行の合計（大きな変更を含む）
+- `lines_added_capped` — 大きな変更を除いた追加行の合計
+- `large_commits` — 大きな変更の件数
+- `unresolved_author_commits` — 対象者に帰属できなかったコミットの件数（組織全体行のみ。
+  個人行は空欄）。ほかのコミット5列の組織全体行は個人行の合計
 
 repository 名・GitHub の Organization 名・対象者に当たらない作成者の login はこのファイルに
 書かない（対象外 repository と対象者に当たらない作成者は件数だけを載せる）。
@@ -398,9 +405,45 @@ repository 名・GitHub の Organization 名・対象者に当たらない作成
   もう一度実行すると一覧が付く）
 - 速報モード（`--preview`）
 
+対象月のキャッシュがコミットを持たない場合（schema 1 のキャッシュ）は、行数に関する
+末尾の6列だけを空欄にする。実行時に `GH_COMMITS_MISSING: ` を先頭に付けた通知で、`collect` の
+再実行を案内する。
+PR の件数・リードタイムなど既存の列は引き続き書く。
+
 前回の github-summary が残っている場合もツールは消さない。有効にした組織で書けなかった
 実行では、そのファイルが今回は更新されないことを伝える。`organizations` から外した組織に
 ついては、残っているファイルにも触れない。
+
+### コミット単位の行数
+
+対象月の repository の一覧にある PR のコミットを材料とする。Bot・draft・削除済みの
+作成者の PR も対象に入れる。マージコミット（親が2つ以上）と、PR のマージで新しく
+作られたコミットは数えない。後者は `merge_commit_oid` がその PR 自身の `commits` に
+無いものを指し、この識別だけは対象外 repository を含む、読んだキャッシュの全 PR を見る。
+
+同じ oid が複数の PR に出るときは、最も早く merge された PR に1回だけ帰属させる。
+同時刻なら repository 名の小文字・PR 番号の昇順で決める。月をまたぐ重複を除くため、
+対象月の前の `github.commit_lookback_months` か月のキャッシュも読み、そこの対象 PR に
+出た oid は数えない。前の月にも対象月の repository の一覧を使い、過去の一覧は使わない。
+前の月のキャッシュが無い・コミットを持たない・収集が完了していない場合は、月と理由を
+実行時に通知する。未完了でも保存済みのコミットは重複除外に使う。設定が0なら前の月を
+読まないため、この通知も出さない。
+
+作者の login が対象者の対応表に当たればその人の行数にする。login が無いときだけ、
+帰属する PR の作成者が対象者ならその人へ帰属させるため、別の人のコミットが混ざる
+可能性がある。login があって対象者に当たらない場合は PR の作成者へ戻さない。
+解決できない作者は `unresolved_author_commits` の件数だけ残し、行数には入れない。
+コミットの作者のメールアドレス（`author_email`）は使わない。
+
+追加行が `github.large_commit_lines` を超えるコミットは「大きな変更」として
+`lines_added_capped` から外す。閾値と同じ値は外さない。大きな変更も `commit_count`・
+`lines_added`・`lines_removed` には含め、`large_commits` に件数を残す。ファイル単位では
+除外しない。
+
+コミットが250件を超える PR は保存された分だけを同じ規則で数え、超えた分を数えられない
+ことを PR の本数とともに警告する。rebase マージ・cherry-pick などで SHA が変わった
+コミットは別のものとして数える。行数の合計は PR の正味の差分とは一致しない
+（同じ行を書き直したコミットもそれぞれ数える）。
 
 ## 複数スペース（workspace）の組織の成果物
 
@@ -526,14 +569,17 @@ organizations:
 
 ### GitHub ID の列（email → GitHub login の対応表）
 
-PR を誰の実績として数えるかは、`members-info.csv` の `GitHub ID` 列が決める。GitHub の
-API から email は取れないため人手で記入する列で、有効にした組織だけが使う。値は3種類:
+PR とコミットの行数を誰の実績として数えるかは、`members-info.csv` の `GitHub ID` 列が
+決める。GitHub の API から email は取れないため人手で記入する列で、有効にした組織だけが
+使う。値は3種類:
 
 | 値 | 意味 |
 |---|---|
 | 空欄 | 未記入。未対応として扱い、doctor が記入を促す |
-| `なし` / `none` / `-` | 対象の GitHub Organization で PR を作らない（アカウントが無い、または別の Organization で開発する）と判断した人。未対応として扱うが警告しない。月々の PR の有無で書き換える値ではなく、開発する場所が変わったら login を書く |
+| `なし` / `none` / `-` | 対象の GitHub Organization で開発しない人（PR も作らず、コミットもしない）。未対応として扱うが警告しない。月々の PR の有無で書き換える値ではなく、開発する場所が変わったら login を書く |
 | それ以外 | GitHub の login（英数字で始まり英数字で終わる 1〜39 文字。区切りに使えるのは連続しないハイフンと高々 1 個のアンダースコア） |
+
+自分で PR を作らず、他の人の PR にコミットする人も login を書く。
 
 login として読めない値は未対応として扱い、写し間違いに気付けるよう warning に出す。
 email の重複と login の重複（大文字小文字を区別しない）は error で、対応表としては
@@ -598,7 +644,8 @@ repository も取得しない。
 1回で取り切れない PR は PR ごとに続きを辿るが、GitHub は PR のコミットを250件までしか
 返さない。保存件数は `commit_count` と一致するか、総数が250を超えるときは250件と一致する。
 続きの取得やコミットの解釈・件数の整合に失敗したら、その PR を含む期間全体を未完了にする。
-Bot・draft の PR のコミットも保存する。行数の集計は既存の PR 単位のまま。
+Bot・draft の PR のコミットも保存する。コミットの行数は github-summary で集計する。
+`author_email` は集計に使わない。
 
 schema 1 のキャッシュも読めるが、コミットの材料は無い（`commits`・`commit_count`・
 `merge_commit_oid` は読み取った値では None）。次の収集では PR と完了済みの期間を引き継がず、

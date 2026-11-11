@@ -522,6 +522,20 @@ def _validate_usage_credits(cfg: dict, errors: list[str]) -> None:
             errors.append(f"usage_credits.{key} は 0 以上の有限な数値が必要です")
 
 
+def _validate_github(cfg: dict, errors: list[str]) -> None:
+    """コミット行数の閾値と、過去キャッシュを読む月数を検査する。"""
+    section = cfg["github"]
+    if not isinstance(section, dict):
+        errors.append("github セクションが辞書ではありません")
+        return
+    lines = section.get("large_commit_lines")
+    if not _is_integer(lines) or lines < 1:
+        errors.append("github.large_commit_lines は 1 以上の整数が必要です")
+    months = section.get("commit_lookback_months")
+    if not _is_integer(months) or not 0 <= months <= 12:
+        errors.append("github.commit_lookback_months は 0 以上 12 以下の整数が必要です")
+
+
 def _validate_claude_export(cfg: dict, errors: list[str]) -> None:
     # claude.ai からの CSV 取得の共通設定。既定設定が必ず持ち、上書きはキーを消せないため
     # 常に検査する（取得を使わない組織しかなくても、編集ミスは編集した実行で検出する）
@@ -1011,6 +1025,7 @@ def _validate(cfg: dict) -> None:
     _validate_decision_v2(cfg, errors)
     _validate_usage_credits(cfg, errors)
     _validate_organizations(cfg, errors)
+    _validate_github(cfg, errors)
     _validate_claude_export(cfg, errors)
     _validate_cost_basis(cfg, errors)
     _validate_product_policy(cfg, errors)

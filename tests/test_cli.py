@@ -682,21 +682,23 @@ def _mapping(input_dir: Path, org: str, rows: tuple[str, ...]) -> None:
 
 
 def _pr_entry(number: int = 12, repository: str = "repo-a", login: str = "alice-dev",
-              author_type: str = "User", merged: str = "2026-06-03T12:00:00Z") -> dict:
+              author_type: str = "User", merged: str = "2026-06-03T12:00:00Z",
+              commits: list[dict] | None = None) -> dict:
     """キャッシュに保存された merged PR 1件（schema 2）。"""
     return {
         "repository": repository, "number": number,
         "author_login": login, "author_type": author_type,
         "created_at": "2026-06-01T00:00:00Z", "merged_at": merged,
         "additions": 10, "deletions": 2, "is_draft": False,
-        "merge_commit_oid": None, "commit_count": 0, "commits": [],
+        "merge_commit_oid": None, "commit_count": len(commits or []), "commits": commits or [],
     }
 
 
 def _write_pr_cache(input_dir: Path, *, org: str = "org-a", month: str = "2026-06",
                     entries: list[dict] | None = None,
                     repositories: dict | None = CACHE_REPOSITORIES,
-                    github_org: str = GH_ORG, text: str | None = None) -> Path:
+                    github_org: str = GH_ORG, text: str | None = None,
+                    schema: int = PR_CACHE_SCHEMA, complete: bool = True) -> Path:
     """collect が書いたキャッシュ相当のファイルを直接置く。
 
     analyze は gh もネットワークも呼ばずこのファイルだけを読むので、収集の経路を
@@ -710,15 +712,19 @@ def _write_pr_cache(input_dir: Path, *, org: str = "org-a", month: str = "2026-0
         return path
     found = [_pr_entry()] if entries is None else entries
     payload = {
-        "schema": PR_CACHE_SCHEMA,
+        "schema": schema,
         "github_org": github_org,
         "month": month,
         "complete_windows": [
             [window.start.isoformat(), window.end.isoformat()]
             for window in month_windows(month)
-        ],
+        ] if complete else [],
         "prs": {f"{e['repository']}#{e['number']}": e for e in found},
     }
+    if schema == 1:
+        for entry in payload["prs"].values():
+            for key in ("commits", "commit_count", "merge_commit_oid"):
+                entry.pop(key)
     if repositories is not None:
         payload["repositories"] = repositories
     path.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
@@ -4609,3 +4615,135 @@ def test_collect_flushes_window_progress_before_the_summary(
     assert lines[:5] == progress
     assert progress[1] == "org-a 2026-08: 2026-08-08〜2026-08-14 を取得しています（2/5）"
     assert "merged PR" in lines[5]
+
+
+# -------------------------------------------------- コミット行数と過去キャッシュ
+
+
+_COMMIT_COLUMNS = (
+    "commit_count", "lines_added", "lines_removed", "lines_added_capped",
+    "large_commits", "unresolved_author_commits",
+)
+
+
+def _commit_entry(oid: str = "a" * 40, **overrides) -> dict:
+    """schema 2 の合成コミット。"""
+    result = {
+        "oid": oid, "author_login": "alice-dev", "author_email": "author@example.com",
+        "additions": 10, "deletions": 2,
+        "committed_at": "2026-06-02T00:00:00Z", "is_merge": False,
+    }
+    result.update(overrides)
+    return result
+
+
+def _github_lines_setup(make_input, tmp_path, *, lookback: int = 0):
+    """コミット集計を有効にした合成の組織入力と上書き設定を用意する。"""
+    input_dir = _make_two_orgs(make_input)
+    _mapping(input_dir, "org-a", ("a@x.jp,alice-dev",))
+    cfg = Path(_gh_config(tmp_path, **{"org-a": GH_ORG}))
+    with cfg.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(f"github:\n  large_commit_lines: 10\n  commit_lookback_months: {lookback}\n")
+    return input_dir, tmp_path / "reports", str(cfg)
+
+
+def test_github_commit_columns_and_console_summary(make_input, tmp_path, capsys):
+    """コミットの6列と、大きな変更を除いた追加行の標準出力を結線する。"""
+    input_dir, out, cfg = _github_lines_setup(make_input, tmp_path)
+    _write_pr_cache(input_dir, entries=[_pr_entry(commits=[
+        _commit_entry(), _commit_entry("b" * 40, additions=11),
+        _commit_entry("c" * 40, author_login="outsider"),
+    ])])
+    assert _run_with(input_dir, out, cfg, "--org", "org-a") == 0
+    rows = _summary_rows(out_file(out, GITHUB_SUMMARY))
+    assert [rows[0][name] for name in _COMMIT_COLUMNS] == ["2", "21", "4", "10", "1", ""]
+    assert [rows[-1][name] for name in _COMMIT_COLUMNS] == ["2", "21", "4", "10", "1", "1"]
+    assert "コミット（シートを持つ人）: 2 件・追加 10 行（大きな変更を除く）" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_legacy_github_cache_has_blank_commit_columns_and_no_lookback(
+    make_input, tmp_path, capsys, empty,
+):
+    """schema 1 は6列を空欄にして通知し、過去月を読まずコミットの要約も出さない。"""
+    input_dir, out, cfg = _github_lines_setup(make_input, tmp_path, lookback=3)
+    _write_pr_cache(input_dir, entries=[] if empty else None, schema=1)
+    # 過去月を読めばエラーになるキャッシュも、対象月に材料が無ければ開かない。
+    _write_pr_cache(input_dir, month="2026-05", text="{")
+    assert _run_with(input_dir, out, cfg, "--org", "org-a") == 0
+    rows = _summary_rows(out_file(out, GITHUB_SUMMARY))
+    assert all(row[name] == "" for row in rows for name in _COMMIT_COLUMNS)
+    printed = capsys.readouterr().out
+    assert printed.count("GH_COMMITS_MISSING") == 1
+    assert "GH_COMMITS_MISSING: github-summary の行数の列は空欄です（2026-06" in printed
+    assert "前の月のキャッシュ" not in printed
+    assert "コミット（シートを持つ人）" not in printed
+    assert "collect --org org-a --source github --month 2026-06" in printed
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_previous_commit_is_excluded_even_in_incomplete_cache(
+    make_input, tmp_path, capsys, complete,
+):
+    """未完了の過去キャッシュも重複除外に使い、未完了の場合だけ通知する。"""
+    input_dir, out, cfg = _github_lines_setup(make_input, tmp_path, lookback=1)
+    _write_pr_cache(input_dir, entries=[_pr_entry(commits=[_commit_entry()])])
+    _write_pr_cache(input_dir, month="2026-05", complete=complete, repositories=None, entries=[
+        {**_pr_entry(merged="2026-05-03T12:00:00Z", commits=[_commit_entry()]),
+         "created_at": "2026-05-01T00:00:00Z"},
+    ])
+    assert _run_with(input_dir, out, cfg, "--org", "org-a") == 0
+    assert _summary_rows(out_file(out, GITHUB_SUMMARY))[-1]["commit_count"] == "0"
+    printed = capsys.readouterr().out
+    assert printed.count("前の月のキャッシュが揃っていないため") == int(not complete)
+    if not complete:
+        assert "2026-05 は収集が完了していない" in printed
+
+
+@pytest.mark.parametrize("legacy_empty", [True, False])
+def test_lookback_notices_list_months_and_reasons_once_in_order(
+    make_input, tmp_path, capsys, legacy_empty,
+):
+    """過去キャッシュの不足・旧形式・未完了を月の昇順で1件の通知にまとめる。"""
+    input_dir, out, cfg = _github_lines_setup(make_input, tmp_path, lookback=3)
+    _write_pr_cache(input_dir)
+    _write_pr_cache(input_dir, month="2026-04", schema=1, entries=[] if legacy_empty else [
+        {**_pr_entry(merged="2026-04-03T12:00:00Z"), "created_at": "2026-04-01T00:00:00Z"},
+    ])
+    _write_pr_cache(input_dir, month="2026-05", complete=False, entries=[])
+    assert _run_with(input_dir, out, cfg, "--org", "org-a") == 0
+    printed = capsys.readouterr().out
+    assert printed.count("前の月のキャッシュが揃っていないため") == 1
+    assert "2026-03 は無い・2026-04 はコミットを持たない・2026-05 は収集が完了していない" in printed
+
+
+def test_zero_lookback_does_not_open_previous_cache(make_input, tmp_path, capsys):
+    """参照月数が0なら過去キャッシュを開かず通知もしない。"""
+    input_dir, out, cfg = _github_lines_setup(make_input, tmp_path, lookback=0)
+    _write_pr_cache(input_dir)
+    _write_pr_cache(input_dir, month="2026-05", text="{")
+    assert _run_with(input_dir, out, cfg, "--org", "org-a") == 0
+    assert "前の月のキャッシュ" not in capsys.readouterr().out
+
+
+def test_corrupt_previous_cache_stops_analysis(make_input, tmp_path, capsys):
+    """壊れた過去キャッシュはエラーとして伝え、github-summary を書かない。"""
+    input_dir, out, cfg = _github_lines_setup(make_input, tmp_path, lookback=1)
+    _write_pr_cache(input_dir)
+    _write_pr_cache(input_dir, month="2026-05", text="{")
+    assert _run_with(input_dir, out, cfg, "--org", "org-a") == 1
+    assert not out_file(out, GITHUB_SUMMARY).exists()
+    assert "2026-05" in capsys.readouterr().err
+
+
+def test_github_notices_follow_pr_commit_and_lookback_order(make_input, tmp_path, capsys):
+    """PR の警告・コミットの警告・過去月の不足通知の順を保つ。"""
+    input_dir, out, cfg = _github_lines_setup(make_input, tmp_path, lookback=1)
+    _write_pr_cache(input_dir, complete=False, entries=[_pr_entry(
+        login="outsider", commits=[_commit_entry(author_login="outsider")],
+    )])
+    assert _run_with(input_dir, out, cfg, "--org", "org-a") == 0
+    printed = capsys.readouterr().out
+    assert printed.index("2026-06 の収集が完了していません") < printed.index(
+        "帰属できなかったコミット 1 件",
+    ) < printed.index("前の月のキャッシュが揃っていないため")
