@@ -142,6 +142,12 @@ github:
   large_commit_lines: 5000     # 1 コミットの追加行がこれを超えると「大きな変更」として上限つき合計から外す
   commit_lookback_months: 3    # 月をまたぐ重複を除くために読む、前の月のキャッシュの数（0 で読まない）
 
+# 人 × 月の表（設計書 §27.8）。既定は無効。true にすると正式分析のたびに、分析した組織ごとに
+# reports/summary/adoption-people-<YYYYMM>-<組織名>.csv を書く（組織の担当者へ共有する
+# reports/<組織名>/ には置かない）。詳細は docs/reference.md「adoption-people の列」参照。
+adoption:
+  enabled: false
+
 # claude.ai からの CSV 取得（collect --source claude）。ブラウザは専用プロファイルの
 # Google Chrome で、既定は不活性（organizations.<組織名>.claude_export を書いた組織だけが
 # 対象）。パスの `~` はホームディレクトリに展開する。profiles_dir・staging_dir の相対パスの

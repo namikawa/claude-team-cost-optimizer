@@ -15,6 +15,9 @@ dashboard は同じ数値をタブに分けて見せる共有用の自己完結 
 ファイル名は `{種別}-{YYYYMM}-{組織名}.{拡張子}`（例: `report-202607-<組織名>.md`）で、
 共有でフォルダの外へ出してもどの組織のいつの分析かが分かる。以下では種別名だけで呼ぶ。
 
+このほか、組織の担当者へ共有しない資料として、人 × 月の表（adoption-people。既定は無効）を
+`reports/summary/` に書ける（[adoption-people の列](#adoption-people-の列人--月の表)）。
+
 以下のセクション名は、断りがなければ details と dashboard の両方に出るものを指す。
 片方にしか出ないものもあり、「シートが吸収した量の実測（E = API換算需要 − 実課金）」と
 「感度分析」（v1 のときだけ）と、複数スペースの組織の「主と副の切り替え」は details だけ、
@@ -444,6 +447,103 @@ PR の件数・リードタイムなど既存の列は引き続き書く。
 ことを PR の本数とともに警告する。rebase マージ・cherry-pick などで SHA が変わった
 コミットは別のものとして数える。行数の合計は PR の正味の差分とは一致しない
 （同じ行を書き直したコミットもそれぞれ数える）。
+
+## adoption-people の列（人 × 月の表）
+
+Claude Code の活用（需要・リクエスト数・Claude Code が加えた行）と GitHub の成果（PR と
+コミット単位の行数）を、1人の1か月を1行にして並べた CSV。月ごとの変化を読むための材料で、
+人ごとの値は参考値として扱う。
+
+既定では書かない。`config.yaml` に次を書くと、正式分析のたびに、分析した組織ごとに
+`reports/summary/adoption-people-<YYYYMM>-<組織名>.csv` を書く（1組織だけの実行でも書く）。
+速報モード（`--preview`）では書かず、そのことを実行時に1行知らせる。GitHub 分析を有効に
+していない組織でも書ける（GitHub の列が空欄になる）。
+
+```yaml
+adoption:
+  enabled: true
+```
+
+読者は CTO と開発責任者を想定している。組織の担当者へ共有する成果物（report・details・
+dashboard・recommendations・usage-summary・preview・preview-dashboard と、判定の版が v2 の
+ときの decision-evidence、GitHub 分析を有効にした組織の github-summary）には含めないので、
+`reports/<組織名>/` ではなく `reports/summary/` に置く。考察の執筆（`discuss`）の資料にも
+ならない。
+
+シートの判定には使わない参考値で、ほかの成果物の内容はこの設定の有無で変わらない。人ごとの
+値を個人の順位づけに使わないこと。行はメールアドレスの昇順・月の昇順に並べ、量の多い順には
+並べない。github-summary と同じく、値の大小から因果（活用度が高い・低い）を断定する材料にも
+ならない。
+
+行と月は次のとおり。
+
+- 行は、その月にこの組織でシートを持つ人 × 月。シートを持つ人の定義は github-summary の
+  対象者と同じ（その月の分析が採用したメンバー一覧で Standard か Premium と確認できた人。
+  複数スペースの組織では分析したスペースのどれかで持つ人）
+- 複数スペースの組織では人（メールアドレス）ごとに1行にまとめ、需要・リクエスト数・
+  Claude Code が加えた行はアカウントの値の和にする
+- 月は、入力に spend がある月のうち対象月以前のすべて（対象月を含む）
+- 各月の値は、その月を対象月として分析したときの値にする。対象月の行は、同じ実行の
+  usage-summary・github-summary の同じ人の値と一致する。過去の月も実行のたびに分析し直して
+  作り直し、前回のファイルに追記しない（入力を直せば過去の月の行も変わる）。所属とシートの
+  種別も、その月の分析が採用した members-info とメンバー一覧による
+- 過去の月が入力の欠け（始まっているスペースの spend が無い月など）で分析できないときは、
+  その月の行を書かず、実行時に月と理由を通知する。残りの月の行と対象月の成果物は書く
+
+各列の意味は次のとおり。
+
+- `email` — メールアドレス
+- `month` — 月（YYYY-MM）
+- `seat` — その月のシート種別（`standard` / `premium`）。複数スペースでシートを持つ人は、
+  主のスペースを先頭に `+` でつなぐ（例 `standard+premium`）
+- `department` / `team` / `role` — その月の分析が採用した members-info の部署・チーム・職種
+  （未記入は空欄）
+- `spend_complete` — その月の spend が全月データか（True / False）。複数スペースの組織では、
+  分析した全スペースが全月のときだけ True
+- `total_demand_usd` — 全 product の需要（API 換算・USD）
+- `code_demand_usd` / `code_requests` — Claude Code の需要とリクエスト数
+- `loc_with_cc` — Claude Code が加えた行（code-analytics）
+- `github_id` — GitHub ID の対応表（members-info の `GitHub ID` 列）でのその人の状態。
+  `login`（login を記入）・`none`（`なし` と記入＝対象の Organization で開発しない人）・
+  `unset`（未記入か、行が無い）。GitHub 分析を有効にしていない組織は空欄
+- `github_data` — その月の GitHub の材料の状態（下の表）。月ごとに全員同じ値
+- `github_cache_complete` — その月のキャッシュの収集が完了したか（True / False）。False の
+  月の値は部分的。キャッシュが無い月と GitHub 分析を有効にしていない組織は空欄
+- `merged_pr_count` / `lead_time_median_hours` — その人が作成し、その月に merge された PR の
+  件数と、lead time の中央値（小数1桁。PR が 0 件の人は空欄）
+- `commit_count` / `lines_added_capped` / `large_commits` — その人に帰属したコミットの件数・
+  大きな変更を除いた追加行・大きな変更の件数（[コミット単位の行数](#コミット単位の行数)）
+- `cost_per_merged_line_usd` — `code_demand_usd` ÷ `lines_added_capped`（小数4桁）。分母が 0
+  か、どちらかが空欄なら空欄
+
+需要とリクエスト数は usage-summary の同名の列と、GitHub の列は github-summary の同名の列と
+同じ値・同じ書式で書く。`loc_with_cc` は report・details の LoC と同じ値。その月の spend に
+行の無い人の需要とリクエスト数は 0、code-analytics に行の無い人の `loc_with_cc` は 0 にする。
+確定できない値（product の列が無い spend での Claude Code の需要など）と、LoC の列を持つ
+code-analytics がどのスペースにも無い月の `loc_with_cc` は空欄にする。
+
+GitHub の列（`merged_pr_count` から `large_commits` まで）は、`github_id` が `login` の人だけが
+値を持つ。`github_data` は上から順に最初に当てはまるものにする。
+
+| 値 | 意味 | GitHub の列 |
+|---|---|---|
+| `not_configured` | GitHub 分析を有効にしていない組織 | すべて空欄 |
+| `no_cache` | その月のキャッシュが無い | すべて空欄 |
+| `no_repository_list` | キャッシュに repository の一覧が無い | すべて空欄 |
+| `no_commits` | キャッシュがコミットを持たない（以前の版で作った形式 1 のキャッシュなど） | PR の列だけ書く |
+| `no_previous_month` | 直前の月のキャッシュが無いか、コミットを持たない | PR の列だけ書く |
+| `ok` | 上のどれでもない | 書く |
+
+直前の月（暦で1つ前）のキャッシュが無いかコミットを持たない月は、月をまたいで同じ
+コミットを除けず行数が多く出るため、コミットの列を空欄にする（時系列に並べたとき、その月
+だけ多く見えないようにする）。github-summary は1か月の値なので、同じ月でもコミットの列に
+値を書き、前の月が揃っていないことを通知する。`github.commit_lookback_months` が 0 のときは
+前の月を読まない設定なので、この扱いをしない。直前の月の収集が完了していないだけなら
+読めた扱いにし、直前の月が読めれば、それより前の月が欠けていてもコミットの列を書く。
+最初の月から行数を出したい場合は、その前の月のキャッシュも収集しておく。
+
+収集が完了していない月も、状態は上の表で決める。値が部分的であることは
+`github_cache_complete` で読む。
 
 ## 複数スペース（workspace）の組織の成果物
 

@@ -41,7 +41,7 @@ from .format import (
     _sort_for_display,
     _text_value,
 )
-from .naming import PREVIEW, REPORT
+from .naming import PREVIEW, REPORT, SUMMARY_DIRNAME
 from .stats import KIND_USD, Distribution
 from .text import (
     _CREDIT_MODE_LABEL,
@@ -1032,7 +1032,7 @@ def write_org_summary(results: list[AnalysisResult | OrgAnalysisResult],
     versions = [_decision_version(r) for r in results]
     orgs = [r if isinstance(r, OrgAnalysisResult) else single_org_result(r) for r in results]
     month = orgs[0].month
-    out = Path(output_dir) / "summary"
+    out = Path(output_dir) / SUMMARY_DIRNAME
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"{month}.md"
 

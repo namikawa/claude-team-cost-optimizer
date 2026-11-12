@@ -6,6 +6,8 @@
 
 - github-summary にコミット単位の行数の列を追加した
 - 設定 `github.large_commit_lines`・`github.commit_lookback_months` を追加した
+- 人 × 月の表 `reports/summary/adoption-people-YYYYMM-<組織名>.csv`（Claude Code の利用と GitHub の成果を1人の1か月を1行に並べた参考値）を追加した
+- 設定 `adoption.enabled`（人 × 月の表を書くか。既定は無効）を追加した
 
 ## [1.5.0] - 2026-11-10
 

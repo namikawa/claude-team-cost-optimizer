@@ -17,6 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+# 組織横断の資料を置くディレクトリ（出力ディレクトリ直下）。組織の担当者へ共有する
+# `<組織>/` の外に置き、横断サマリ（`<月>.md`）と人 × 月の表がここへ出る
+SUMMARY_DIRNAME = "summary"
+
 
 @dataclass(frozen=True)
 class Artifact:
@@ -37,6 +41,14 @@ class Artifact:
     def path(self, org_output: Path | str, month: str, org: str) -> Path:
         """書き込み先。常に新名を返す。"""
         return Path(org_output) / month / self.name(month, org)
+
+    def summary_path(self, output_dir: Path | str, month: str, org: str) -> Path:
+        """`reports/summary/` に置く資料の書き込み先（`<出力>/summary/<名前>`）。
+
+        組織の担当者へ共有しない資料なので、組織×月ディレクトリではなく横断サマリと同じ
+        ディレクトリに置く。名前の規則は組織×月ディレクトリの成果物と同じ。
+        """
+        return Path(output_dir) / SUMMARY_DIRNAME / self.name(month, org)
 
     def legacy_path(self, org_output: Path | str, month: str) -> Path:
         return Path(org_output) / month / self.legacy_name
@@ -72,6 +84,8 @@ USAGE_SUMMARY = Artifact("usage-summary", ".csv")
 DECISION_EVIDENCE = Artifact("decision-evidence", ".csv")
 # GitHub の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ書く）
 GITHUB_SUMMARY = Artifact("github-summary", ".csv")
+# 人 × 月の表（adoption.enabled の組織で、正式分析のときに reports/summary/ へ書く）
+ADOPTION_PEOPLE = Artifact("adoption-people", ".csv")
 # 速報モードの成果物
 PREVIEW = Artifact("preview", ".md")
 PREVIEW_DASHBOARD = Artifact("preview-dashboard", ".html")

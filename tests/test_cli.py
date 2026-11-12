@@ -35,6 +35,7 @@ from seat_analyzer.github_collect import (
 from seat_analyzer.ingest import discover_orgs
 from seat_analyzer.product_usage import FEATURE_COLUMNS
 from seat_analyzer.report import (
+    ADOPTION_PEOPLE,
     DASHBOARD,
     DECISION_EVIDENCE,
     DETAILS,
@@ -43,6 +44,7 @@ from seat_analyzer.report import (
     PREVIEW_DASHBOARD,
     RECOMMENDATIONS,
     REPORT,
+    SUMMARY_DIRNAME,
     USAGE_SUMMARY,
 )
 from seat_analyzer.report.format import _fmt_usd
@@ -4747,3 +4749,249 @@ def test_github_notices_follow_pr_commit_and_lookback_order(make_input, tmp_path
     assert printed.index("2026-06 の収集が完了していません") < printed.index(
         "帰属できなかったコミット 1 件",
     ) < printed.index("前の月のキャッシュが揃っていないため")
+
+
+# -------------------------------------------------- 人 × 月の表（adoption-people）
+
+
+def _adoption_config(tmp_path: Path, *, github: dict[str, str] | None = None,
+                     lookback: int | None = None, enabled: bool = True,
+                     text: str = "") -> str:
+    """人 × 月の表を有効にした上書き設定（github で GitHub 分析を有効にする組織を渡す）。"""
+    lines = [text] if text else []
+    if github:
+        lines.append("organizations:")
+        for org, github_org in github.items():
+            lines += [f"  {org}:", f"    github_org: {github_org}"]
+    if lookback is not None:
+        lines += ["github:", f"  commit_lookback_months: {lookback}"]
+    if enabled:
+        lines += ["adoption:", "  enabled: true"]
+    path = tmp_path / "adoption-config.yaml"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return str(path)
+
+
+def _adoption_path(out: Path, month: str = "2026-06", org: str = "org-a") -> Path:
+    """人 × 月の表の書き込み先（reports/summary/）。"""
+    return out / SUMMARY_DIRNAME / ADOPTION_PEOPLE.name(month, org)
+
+
+def _three_months(make_input) -> Path:
+    """3か月分の spend を持つ組織（ann と ben がシートを持ち、ben は 2026-05 に利用なし）。"""
+    input_dir = make_input(
+        {"2026-04": [spend_row("ann@x.jp", 11.0), spend_row("ben@x.jp", 3.0)],
+         "2026-05": [spend_row("ann@x.jp", 22.0),
+                     spend_row("ann@x.jp", 6.0, product="Chat")],
+         "2026-06": [spend_row("ann@x.jp", 33.0), spend_row("ben@x.jp", 4.0)]},
+        members=["ann@x.jp,Premium", "ben@x.jp,Standard", "uma@x.jp,Unassigned"],
+        org="org-a",
+    )
+    _mapping(input_dir, "org-a", ("ann@x.jp,ann-dev", "ben@x.jp,なし"))
+    return input_dir
+
+
+def _ann_pr(month: str, number: int, oid: str) -> dict:
+    """ann のその月の PR（コミット1件つき）。"""
+    return {
+        **_pr_entry(number, login="ann-dev", merged=f"{month}-03T12:00:00Z", commits=[
+            _commit_entry(oid, author_login="ann-dev", committed_at=f"{month}-02T00:00:00Z"),
+        ]),
+        "created_at": f"{month}-01T00:00:00Z",
+    }
+
+
+def test_adoption_is_not_written_by_default(make_input, tmp_path):
+    """既定（adoption.enabled を書かない）では summary/ に人 × 月の表を書かない。"""
+    input_dir = _make_two_orgs(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, CONFIG, "--org", "org-a") == 0
+    assert not (out / "summary").exists()
+    assert _run_with(input_dir, out, CONFIG) == 0
+    assert not any(p.name.startswith("adoption-") for p in (out / "summary").iterdir())
+
+
+def test_adoption_does_not_change_the_other_artifacts(make_input, tmp_path):
+    """有効にしても、ほかの成果物（github-summary・decision-evidence を含む）はバイト一致。"""
+    input_dir = _three_months(make_input)
+    _write_pr_cache(input_dir, entries=[_ann_pr("2026-06", 1, "a" * 40)])
+    github = {"org-a": GH_ORG}
+    plain, enabled = tmp_path / "plain", tmp_path / "enabled"
+    assert _run_with(input_dir, plain, _adoption_config(tmp_path, github=github,
+                                                        enabled=False), "--org", "org-a") == 0
+    assert _run_with(input_dir, enabled, _adoption_config(tmp_path, github=github),
+                     "--org", "org-a") == 0
+    plain_files = {p.name: p.read_bytes() for p in (plain / "org-a" / "2026-06").iterdir()}
+    assert {p.name: p.read_bytes()
+            for p in (enabled / "org-a" / "2026-06").iterdir()} == plain_files
+    assert {DECISION_EVIDENCE.name("2026-06", "org-a"),
+            GITHUB_SUMMARY.name("2026-06", "org-a")} <= set(plain_files)
+    assert not (plain / "summary").exists()
+    assert [p.name for p in (enabled / "summary").iterdir()] == [
+        ADOPTION_PEOPLE.name("2026-06", "org-a")]
+
+
+def test_adoption_is_written_for_a_single_org_run(make_input, tmp_path, capsys):
+    """有効にした1組織だけの実行で summary/adoption-people-<YYYYMM>-<組織>.csv を書く。"""
+    input_dir = _three_months(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a") == 0
+    path = _adoption_path(out)
+    assert path.is_file()
+    assert f"adoption: {path}（2 名 × 2026-04〜2026-06・6 行）" in capsys.readouterr().out
+
+
+def test_adoption_rows_of_past_months_match_their_own_runs(make_input, tmp_path):
+    """3か月分の行が出て、過去の月の行はその月を対象月にした実行の行と一致する。"""
+    input_dir = _three_months(make_input)
+    _write_pr_cache(input_dir, month="2026-05", entries=[_ann_pr("2026-05", 1, "b" * 40)])
+    _write_pr_cache(input_dir, entries=[_ann_pr("2026-06", 2, "c" * 40)])
+    config = _adoption_config(tmp_path, github={"org-a": GH_ORG})
+    latest = tmp_path / "latest"
+    assert _run_with(input_dir, latest, config, "--org", "org-a") == 0
+    rows = _summary_rows(_adoption_path(latest))
+    assert [(r["email"], r["month"]) for r in rows] == [
+        ("ann@x.jp", "2026-04"), ("ann@x.jp", "2026-05"), ("ann@x.jp", "2026-06"),
+        ("ben@x.jp", "2026-04"), ("ben@x.jp", "2026-05"), ("ben@x.jp", "2026-06"),
+    ]
+    for month in ("2026-04", "2026-05"):
+        own = tmp_path / month
+        assert main(["analyze", "--config", config, "--input-dir", str(input_dir),
+                     "--output-dir", str(own), "--org", "org-a", "--month", month]) == 0
+        own_rows = [r for r in _summary_rows(_adoption_path(own, month))
+                    if r["month"] == month]
+        assert own_rows == [r for r in rows if r["month"] == month]
+    ben_may = next(r for r in rows if (r["email"], r["month"]) == ("ben@x.jp", "2026-05"))
+    assert (ben_may["total_demand_usd"], ben_may["code_requests"]) == ("0.00", "0")
+
+
+def test_adoption_target_month_matches_usage_and_github_summaries(make_input, tmp_path):
+    """対象月の行は usage-summary（需要・回数）と github-summary（PR・コミット）と一致する。"""
+    input_dir = _three_months(make_input)
+    _write_pr_cache(input_dir, entries=[
+        _ann_pr("2026-06", 1, "a" * 40), _ann_pr("2026-06", 2, "b" * 40)])
+    out = tmp_path / "reports"
+    config = _adoption_config(tmp_path, github={"org-a": GH_ORG}, lookback=0)
+    assert _run_with(input_dir, out, config, "--org", "org-a") == 0
+    rows = {r["email"]: r for r in _summary_rows(_adoption_path(out)) if r["month"] == "2026-06"}
+    usage = {r["email"]: r for r in _summary_rows(out_file(out, USAGE_SUMMARY))}
+    for email, row in rows.items():
+        for name in ("total_demand_usd", "code_demand_usd", "code_requests"):
+            assert row[name] == usage[email][name]
+    github = {r["email"]: r for r in _summary_rows(out_file(out, GITHUB_SUMMARY))
+              if r["scope"] == "user"}
+    ann = rows["ann@x.jp"]
+    assert ann["github_data"] == "ok"
+    for name in ("merged_pr_count", "lead_time_median_hours", "commit_count",
+                 "lines_added_capped", "large_commits"):
+        assert ann[name] == github["ann@x.jp"][name]
+    assert (ann["merged_pr_count"], ann["commit_count"]) == ("2", "2")
+    # ben は「なし」の人なので GitHub の列を持たない
+    assert rows["ben@x.jp"]["github_id"] == "none"
+    assert rows["ben@x.jp"]["merged_pr_count"] == ""
+
+
+def _github_states(out: Path) -> dict[str, tuple[str, str, str]]:
+    """ann の月 → (github_data, github_cache_complete, commit_count)。"""
+    return {
+        r["month"]: (r["github_data"], r["github_cache_complete"], r["commit_count"])
+        for r in _summary_rows(_adoption_path(out)) if r["email"] == "ann@x.jp"
+    }
+
+
+def test_adoption_blanks_commits_without_the_previous_month(make_input, tmp_path, capsys):
+    """直前の月のキャッシュが無い月はコミットの列が空欄で、github-summary には値がある。
+
+    コミットを持たないキャッシュ（schema 1）の月は no_commits、キャッシュの無い月は
+    no_cache。参照月数が0なら直前の月を問わず ok。
+    """
+    input_dir = _three_months(make_input)
+    _write_pr_cache(input_dir, month="2026-04", schema=1, entries=[
+        {**_pr_entry(merged="2026-04-03T12:00:00Z"), "created_at": "2026-04-01T00:00:00Z"}])
+    _write_pr_cache(input_dir, entries=[_ann_pr("2026-06", 1, "a" * 40)])
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path, github={"org-a": GH_ORG}),
+                     "--org", "org-a") == 0
+    assert _github_states(out) == {
+        "2026-04": ("no_commits", "True", ""),
+        "2026-05": ("no_cache", "", ""),
+        "2026-06": ("no_previous_month", "True", ""),
+    }
+    summary = _summary_rows(out_file(out, GITHUB_SUMMARY))
+    assert summary[0]["commit_count"] == "1"
+    assert "前の月のキャッシュが揃っていないため" in capsys.readouterr().out
+
+    zero = tmp_path / "zero"
+    assert _run_with(input_dir, zero, _adoption_config(
+        tmp_path, github={"org-a": GH_ORG}, lookback=0), "--org", "org-a") == 0
+    assert _github_states(zero)["2026-06"] == ("ok", "True", "1")
+
+
+def test_adoption_reads_an_incomplete_previous_month(make_input, tmp_path):
+    """直前の月が未完了でも読めた扱いで ok、2か月前が無くても ok。
+
+    未完了で直前の月も無い月は no_previous_month で github_cache_complete が False。
+    """
+    input_dir = _three_months(make_input)
+    _write_pr_cache(input_dir, month="2026-05", complete=False,
+                    entries=[_ann_pr("2026-05", 1, "b" * 40)])
+    _write_pr_cache(input_dir, entries=[_ann_pr("2026-06", 2, "c" * 40)])
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path, github={"org-a": GH_ORG}),
+                     "--org", "org-a") == 0
+    assert _github_states(out) == {
+        "2026-04": ("no_cache", "", ""),
+        "2026-05": ("no_previous_month", "False", ""),
+        "2026-06": ("ok", "True", "1"),
+    }
+
+
+def test_adoption_without_github_is_not_configured(make_input, tmp_path):
+    """GitHub 分析の無い組織でも書け、github_data は not_configured で GitHub の列は空欄。"""
+    input_dir = _three_months(make_input)
+    _write_pr_cache(input_dir, entries=[_ann_pr("2026-06", 1, "a" * 40)])
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a") == 0
+    rows = _summary_rows(_adoption_path(out))
+    assert {r["github_data"] for r in rows} == {"not_configured"}
+    assert {r["github_id"] for r in rows} == {""}
+    assert {r["merged_pr_count"] for r in rows} == {""}
+
+
+def test_adoption_of_a_nested_org_has_one_row_per_person(make_input, tmp_path):
+    """入れ子の組織（2 workspace）では、両方にアカウントを持つ人も1行。"""
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    with open(config, "a", encoding="utf-8", newline="\n") as stream:
+        stream.write("adoption:\n  enabled: true\n")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+    rows = _summary_rows(_adoption_path(tmp_path / "reports", org="org-x"))
+    june = [(r["email"], r["seat"], r["total_demand_usd"]) for r in rows
+            if r["month"] == "2026-06"]
+    assert june == [("a@x.jp", "premium+premium", "30.00"), ("b@x.jp", "premium", "0.00")]
+
+
+def test_adoption_skips_a_past_month_that_cannot_be_analyzed(make_input, tmp_path, capsys):
+    """始まっている workspace の spend が欠けた過去の月は飛ばして通知し、残りは書く。"""
+    input_dir, config = _nested_ready(
+        make_input, tmp_path, second_months=("2026-04", "2026-06"))
+    make_input({"2026-04": [spend_row("a@x.jp", 5.0)]}, org="org-x", workspace="main")
+    with open(config, "a", encoding="utf-8", newline="\n") as stream:
+        stream.write("adoption:\n  enabled: true\n")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+    out = tmp_path / "reports"
+    assert out_file(out, REPORT, org="org-x").is_file()
+    rows = _summary_rows(_adoption_path(out, org="org-x"))
+    assert sorted({r["month"] for r in rows}) == ["2026-04", "2026-06"]
+    printed = capsys.readouterr().out
+    assert printed.count("adoption-people は 2026-05 の行を書きません") == 1
+    assert "2026-04〜2026-06" in printed
+
+
+def test_preview_does_not_write_adoption(make_input, tmp_path, capsys):
+    """速報では人 × 月の表を書かず、そのことを1行知らせる。"""
+    input_dir = _three_months(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a",
+                     "--preview", "--days", "10") == 0
+    assert not (out / "summary").exists()
+    assert capsys.readouterr().out.count("速報モードでは adoption-people を書きません") == 1
