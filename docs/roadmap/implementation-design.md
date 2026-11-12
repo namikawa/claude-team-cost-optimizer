@@ -293,17 +293,20 @@ reports/<org>/<month>/
   decision-audit.csv
   follow-up.csv
   github-summary.csv
-  maturity-panel.csv       # §27.8。読者は CTO と開発責任者
-  maturity-dashboard.html  # 同上
   review.md
   history/
     <snapshot-id>/
       decision-evidence.csv
       source-manifest.json
+reports/summary/
+  adoption-report-<YYYYMM>-<org>.html  # §27.8。読者は CTO と開発責任者
+  adoption-teams-<YYYYMM>-<org>.csv    # 同上
+  adoption-people-<YYYYMM>-<org>.csv   # 同上
 ```
 
-`maturity-panel`・`maturity-dashboard`は読者が違う（§27.8）。既存の成果物と同じ月ディレクトリに
-置くが、組織の担当者へ共有する成果物の集合には含めない。
+`adoption-report`・`adoption-teams`・`adoption-people`は読者が違う（§27.8）。組織の担当者へ
+共有する`reports/<org>/`には置かず、担当者へ共有しない`reports/summary/`に置く。名前は
+組織×月ディレクトリの成果物と同じ規則（`{種別}-{YYYYMM}-{組織名}.{拡張子}`）にする。
 
 ### 6.3 取得のstaging
 
@@ -1581,7 +1584,7 @@ decision-evidenceを常に併記する。`v1`は従来の判定（allowanceモ�
 - `OTEL_USER_MISSING`
 
 `OTEL_COVERAGE_LOW`と`OTEL_USER_MISSING`は §27.4 の網羅率の検査。テレメトリが届いていない人を
-「使っていない人」と読ませないための issue で、パネルではその人の OTel 由来の列を空欄にする。
+「使っていない人」と読ませないための issue で、人 × 月の表ではその人の OTel 由来の列を空欄にする。
 `OTEL_ATTRIBUTE_MISSING`は、集計に必須の属性（利用者のメールアドレス・`organization.id`）が
 表に無い場合。`otel`を設定していない組織では OTel の issue は一切出ない。
 
@@ -3913,21 +3916,25 @@ dashboardで読めるようにする。
 
 ### Track 10: Claude Code の習熟度の時系列
 
-仕様は§27。読者は CTO と開発責任者で、組織の担当者へ共有する成果物とは別に出す。Step 57 は
+仕様は§27。読者は CTO と開発責任者で、組織の担当者へ共有する成果物とは別に出す。見る単位は
+チーム・部署と組織全体の月ごとの変化が主で、人ごとの値は参考として添える。Step 57・73 は
 調査（コードを変えない）。実装の順は次のとおりで、節の並び（番号順）とは違う。
 
 1. Step 58〜59: GitHub のコミット単位の帰属
-2. Step 62: 人 × 月パネル（claude.ai のエクスポートと GitHub の列）
-3. Step 64: 管轄外の検知
-4. Step 60〜61: OpenTelemetry の取得と網羅率
-5. Step 71: パネルに OpenTelemetry の列を足す
-6. Step 63: 段階
-7. Step 65: dashboard
+2. Step 62: 人 × 月の表（claude.ai のエクスポートと GitHub の列）
+3. Step 72: チーム × 月の表
+4. Step 65: レポート（HTML）
+5. Step 73: コミットの共著の印の調査
+6. Step 64: 管轄外の検知
+7. Step 60〜61: OpenTelemetry の取得と網羅率
+8. Step 71: 表に OpenTelemetry の列を足す
 
-パネルと管轄外の検知は OpenTelemetry に依存せず、GitHub 分析を有効にした組織ならどこでも出せる。
-OpenTelemetry に依存するのは Step 60・61・71・63。どの Step で止めても手前までが動く。
-後続候補（番号は着手時に振る）: メトリクス由来の値、リポジトリ属性による管轄外の内訳、
-コミット SHA による PR とセッションの結合、週次の粒度（§27.10）。
+表・レポート・管轄外の検知は OpenTelemetry に依存せず、GitHub 分析を有効にした組織なら
+どこでも出せる（GitHub 分析の無い組織でも、GitHub の列が空欄の表とレポートを出せる）。
+OpenTelemetry に依存するのは Step 60・61・71。どの Step で止めても手前までが動く。
+Step 63（段階）は保留で、OpenTelemetry の列が入った後に要否を決める（§27.6）。
+後続候補（番号は着手時に振る）: 共著の印による指標（Step 73 の結果しだい）、メトリクス由来の値、
+リポジトリ属性による管轄外の内訳、コミット SHA による PR とセッションの結合、週次の粒度（§27.10）。
 
 #### Step 57: BigQuery の実態確認（調査）
 
@@ -4024,7 +4031,7 @@ OpenTelemetry に依存するのは Step 60・61・71・63。どの Step で止�
 
 今回は行わない:
 
-- パネル
+- 人 × 月の表
 
 #### Step 60: collect --source otel
 
@@ -4087,9 +4094,9 @@ OpenTelemetry に依存するのは Step 60・61・71・63。どの Step で止�
 
 今回は行わない:
 
-- パネル
+- 人 × 月の表
 
-#### Step 62: 人 × 月パネル
+#### Step 62: 人 × 月の表
 
 依存:
 
@@ -4097,33 +4104,49 @@ OpenTelemetry に依存するのは Step 60・61・71・63。どの Step で止�
 
 対象:
 
-- `src/seat_analyzer/maturity.py`（新規・層 25）
-- `src/seat_analyzer/report/maturity_csv.py`（新規）
+- `src/seat_analyzer/adoption.py`（新規・層 25）
+- `src/seat_analyzer/report/adoption_csv.py`（新規）
 - `src/seat_analyzer/report/naming.py`
-- `src/seat_analyzer/cli.py`
-- `src/seat_analyzer/default-config.yaml`（`maturity.enabled`）
-- `tests/test_maturity.py`・`tests/test_maturity_csv.py`
-- `docs/reference.md`
+- `src/seat_analyzer/cli.py`（過去の月の作り直しと、GitHub の1か月分の手順の共有）
+- `src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`（`adoption.enabled`）
+- `tests/test_adoption.py`・`tests/test_adoption_csv.py`・`tests/test_cli.py`・
+  `tests/test_config.py`・`tests/test_module_deps.py`
+- `docs/reference.md`・`docs/usage.md`
 
 実装:
 
-- §27.5 のうち、元データが spend・code-analytics・GitHub の行と、§27.8（OpenTelemetry 由来の
-  列・検知の列・段階の列はまだ出さない）
+- §27.8 の人 × 月の表（`adoption-people`）。§27.5 のうち、元データが spend・code-analytics・
+  GitHub の行（OpenTelemetry 由来の列・検知の列はまだ出さない）
 
 受け入れ条件:
 
-- `maturity.enabled: false`で既存の成果物がバイト一致
+- `adoption.enabled: false`（既定）で既存の成果物がバイト一致し、`reports/summary/`に新しい
+  ファイルを書かない
+- 有効にした正式分析で`reports/summary/adoption-people-<YYYYMM>-<org>.csv`を書く（1組織だけの
+  実行でも書く。速報では書かない）
+- 行はその月にシートを持つ人 × 入力にある全月（対象月まで）で、メール昇順・月昇順
+  （件数の多い順に並べない）
+- どの月の行も、その月を対象月にして分析したときの値と一致する（対象月の行は usage-summary・
+  github-summary の同じ人の値と一致する）
 - GitHub 分析を有効にしていない組織でも書ける（該当の列が空欄）
-- コミットを持たないキャッシュ（schema 1）の月は、行数の列が空欄
-- 比率は分子と分母を列に持つ
-- 行はメール昇順・月昇順で、件数の多い順に並べない
-- 他組織の禁止語の収集（leakcheck）の対象になる
+- `github_data`の状態ごとに、規定の列だけが空欄になる（§27.8）。直前の月のキャッシュが
+  読めない月はコミットの列が空欄で、`github.commit_lookback_months`が0ならこの扱いをしない。
+  収集が完了していない月は、状態によらず`github_cache_complete`が False になる
+- GitHub ID が login でない人は GitHub の列が空欄
+- 複数スペースの組織は人で1行にし、需要・リクエスト数・LoC はアカウントの値の和
+- 比率は分子と分母を列に持ち、分母が0・空欄なら空欄
+- 過去の月が入力の欠けで分析できないときは、その月を飛ばして通知し、残りの月と対象月の
+  成果物は書く
+- github-summary の出力は変わらない
 
 今回は行わない:
 
-- OpenTelemetry の列・検知・段階・dashboard
+- チーム × 月の表・レポート・OpenTelemetry の列・検知
 
 #### Step 63: 習熟の段階
+
+保留。段階は人を軸にした見方なので、OpenTelemetry の列が入った後に要否を決める（§27.6）。
+以下は着手するときの案。
 
 依存:
 
@@ -4131,10 +4154,10 @@ OpenTelemetry に依存するのは Step 60・61・71・63。どの Step で止�
 
 対象:
 
-- `src/seat_analyzer/maturity.py`
-- `src/seat_analyzer/default-config.yaml`（`maturity.stages`）
-- `src/seat_analyzer/report/maturity_csv.py`
-- `tests/test_maturity.py`
+- `src/seat_analyzer/adoption.py`
+- `src/seat_analyzer/default-config.yaml`（`adoption.stages`）
+- `src/seat_analyzer/report/adoption_csv.py`
+- `tests/test_adoption.py`
 - `docs/reference.md`
 
 実装:
@@ -4157,14 +4180,16 @@ OpenTelemetry に依存するのは Step 60・61・71・63。どの Step で止�
 依存:
 
 - Step 62
+- Step 65（レポートの印）
 
 対象:
 
-- `src/seat_analyzer/maturity.py`
-- `src/seat_analyzer/report/maturity_csv.py`
+- `src/seat_analyzer/adoption.py`
+- `src/seat_analyzer/report/adoption_csv.py`・`src/seat_analyzer/report/adoption_html.py`
 - `src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`
-  （`maturity.outside_org_min_lines`）
-- `tests/test_maturity.py`・`tests/test_maturity_csv.py`・`tests/test_config.py`
+  （`adoption.outside_org_min_lines`）
+- `tests/test_adoption.py`・`tests/test_adoption_csv.py`・`tests/test_adoption_html.py`・
+  `tests/test_config.py`
 - `docs/reference.md`
 
 実装:
@@ -4176,71 +4201,152 @@ OpenTelemetry に依存するのは Step 60・61・71・63。どの Step で止�
 
 - 母集団から外さない
 - OpenTelemetry に依存しない（`otel`の無い組織でも出る）
-- GitHub ID が未記入の人と、GitHub のキャッシュが無い・コミットを持たない月は空欄にする
+- GitHub ID が未記入の人と、人 × 月の表でコミットの列が空欄になる月は空欄にする
   （該当なしと区別する）
-- GitHub ID が`なし`の人も判定し、対応表の状態を並べて出す
+- GitHub ID が`なし`の人も、コミットも PR も0件として判定する（対応表の状態は人 × 月の表の
+  `github_id`の列で読む）
+- レポートの人ごとの一覧で、該当する月に印が付く
 
 今回は行わない:
 
 - リポジトリ属性による内訳・SHA 結合
 
-#### Step 65: 管理職向け dashboard
+#### Step 65: レポート（HTML）
 
 依存:
 
-- Step 63
-- Step 64
+- Step 72
 
 対象:
 
-- `src/seat_analyzer/report/maturity_html.py`（新規）
-- `src/seat_analyzer/templates/maturity-dashboard.html.j2`（CSS・JS を含む。新規）
+- `src/seat_analyzer/report/adoption_html.py`（新規）
+- `src/seat_analyzer/templates/adoption-report.html.j2`（CSS を含む。新規）
 - `src/seat_analyzer/report/naming.py`
-- `tests/test_maturity_html.py`
-- `docs/reference.md`
+- `src/seat_analyzer/cli.py`
+- `tests/test_adoption_html.py`・`tests/test_cli.py`
+- `docs/reference.md`・`docs/usage.md`
 
 実装:
 
-- §27.8 の 4 つの図
+- §27.8 のレポート（`adoption-report`）
 
 受け入れ条件:
 
+- 表示する値は、人 × 月の表とチーム × 月の表から計算できる値だけ（レポートのためだけの
+  集計を足さない）
+- 前月比は最新の月とその前の月、3か月比は直近3か月の平均とその前の3か月の平均で比べ、
+  材料がそろわないときは出さない
 - 既存 dashboard が不変
-- 外部通信なし・JS 無効でも全内容が読める・メールはローカル部のみ
+- 外部通信なし・JavaScript なしで全内容が読める・メールはローカル部のみ
+- 明るい配色と暗い配色の両方で読める
+- 人の並びは部署とメールの順で、量の多い順に並べない
 - 出力に HTML コメントを残さない
+- wheel にテンプレートが入る
 
 今回は行わない:
 
-- 週次の粒度・SHA 結合
+- 管轄外の印・OpenTelemetry の指標・段階・週次の粒度
 
-#### Step 71: パネルに OpenTelemetry の列を足す
+#### Step 71: 表に OpenTelemetry の列を足す
 
 依存:
 
 - Step 61
-- Step 62
+- Step 72
+- Step 65
 
 対象:
 
-- `src/seat_analyzer/maturity.py`
-- `src/seat_analyzer/report/maturity_csv.py`
-- `tests/test_maturity.py`・`tests/test_maturity_csv.py`
+- `src/seat_analyzer/adoption.py`
+- `src/seat_analyzer/report/adoption_csv.py`・`src/seat_analyzer/report/adoption_html.py`
+- `tests/test_adoption.py`・`tests/test_adoption_csv.py`・`tests/test_adoption_html.py`
 - `docs/reference.md`
 
 実装:
 
-- §27.5 のうち、元データが OpenTelemetry のイベントの行
+- §27.5 のうち、元データが OpenTelemetry のイベントの行。人 × 月の表に列を足し、チーム × 月の
+  表とレポートに同じ指標を集まりの単位で足す
 
 受け入れ条件:
 
 - `otel`の無い組織では OpenTelemetry 由来の列が空欄で、それ以外の列の値は変わらない
-- 網羅率の低い人 × 月は OpenTelemetry 由来の列が空欄
+- 網羅率の低い人 × 月は OpenTelemetry 由来の列が空欄で、集まりの値にも入れない
 - 比率は分子と分母を列に持つ
 - スキル・エージェント・MCP・コマンドの名前を列にも値にも出さない
 
 今回は行わない:
 
-- 段階・dashboard
+- 段階
+
+#### Step 72: チーム × 月の表
+
+依存:
+
+- Step 62
+
+対象:
+
+- `src/seat_analyzer/adoption.py`
+- `src/seat_analyzer/github_metrics.py`（対象者の PR ごとの値）
+- `src/seat_analyzer/report/adoption_csv.py`
+- `src/seat_analyzer/report/naming.py`
+- `src/seat_analyzer/cli.py`
+- `tests/test_adoption.py`・`tests/test_adoption_csv.py`・`tests/test_github_metrics.py`・
+  `tests/test_cli.py`
+- `docs/reference.md`
+
+実装:
+
+- §27.8 のチーム × 月の表（`adoption-teams`）と、§27.5 の集まりの指標
+
+受け入れ条件:
+
+- 行は組織全体・部署・チームの3種で、種別・名前・月の昇順
+- 人数と合計は、人 × 月の表の同じ月・同じ集まりの人の値と一致する
+- lead time と PR の大きさは、その集まりの人が作った PR の集合から出す（人ごとの中央値を
+  平均しない）
+- 兼務の人はそれぞれの集まりに1人として入り、部署・チームが未記入の人は組織全体にだけ入る
+- 材料になる人の値が1人でも空欄なら、その集まりのその指標は空欄になる
+- 分析できた月は、シートを持つ人が0人でも組織全体の行を持つ（飛ばした月と区別する）
+- 続けて使った人の数は、暦で連続する3か月が表にそろう月だけ値を持つ
+- 比率は分子と分母を列に持ち、分母が0・空欄なら空欄
+- GitHub 分析を有効にしていない組織でも書ける（該当の列が空欄）
+- `adoption.enabled: false`で既存の成果物がバイト一致し、人 × 月の表の出力は変わらない
+- repository 名・login を書かない
+
+今回は行わない:
+
+- レポート・前月比などの変化の計算（レポートで計算する）
+
+#### Step 73: コミットの共著の印の調査（調査）
+
+依存:
+
+- Step 58
+
+対象:
+
+- `docs/roadmap/implementation-status.md`（検証記録）
+
+実装:
+
+- GitHub の GraphQL で、コミットの共著者（作者と`Co-authored-by`の行から GitHub が組み立てる
+  一覧）を読み、Claude Code が既定で付ける共著の印を持つコミットの割合を、月とチームの粒度で
+  確かめる。コミットのメッセージ本文は読まない
+- 見るのは、共著者に既定の印のアドレスがあるかどうかだけ。共著者の名前・メールアドレスを
+  保存しない
+
+受け入れ条件:
+
+- 印の付いたコミットの割合と、月・チームによる偏りの見当が検証記録にある（一般化して書く）。
+  印の無いコミットは、Claude Code を使っていないのか、印を付けない設定なのかを区別できない
+  前提で読む
+- 指標にするか（キャッシュに共著の有無を保存し、チーム × 月の表に足すか）の判断材料がそろう
+- GitHub への書き込みをしない
+
+今回は行わない:
+
+- コードの変更
 
 ### Track 11: V2判定の既定化
 
@@ -4621,13 +4727,13 @@ Step 43〜49
 
 ### Milestone G: Maturity
 
-Step 57〜65・71
+Step 57〜65・71〜73
 
 - GitHub のコミット単位の帰属
-- 人 × 月パネル・管轄外の検知
-- OpenTelemetry（BigQuery）の取得と網羅率、パネルへの列の追加
-- 習熟の段階
-- 管理職向け dashboard
+- 人 × 月の表・チーム × 月の表・レポート
+- 管轄外の検知
+- OpenTelemetry（BigQuery）の取得と網羅率、表への列の追加
+- 習熟の段階（保留）
 
 ### Milestone H: V2 default
 
@@ -4782,10 +4888,10 @@ otel:
   coverage_warning_ratio: 0.7               # OTelのAPIリクエストの件数 ÷ spendのClaude Codeのリクエスト数がこれを下回る人×月を警告（§27.4）
   coverage_min_requests: 100                # spendのClaude Codeのリクエスト数がこれに満たない人×月は網羅率を判定しない
 
-maturity:
-  enabled: false                            # 人×月パネルと段階（§27.8）。既定は不活性
+adoption:
+  enabled: false                            # 人×月・チーム×月の表とレポート（§27.8）。既定は不活性
   outside_org_min_lines: 1000               # 管轄外の検知の行数の下限（§27.7）。仮の値で、既定はStep 64で分布を見てから決める
-  stages: {}                                # 段階のルール（§27.6）。既定はStep 63で分布を見てから決める
+  stages: {}                                # 段階のルール（§27.6）。Step 63（保留）で決める
 ```
 
 新しいセクションはすべて省略可能とする。`decision.version`の既定は`v2`（Track 11以降。
@@ -4870,11 +4976,11 @@ V1の撤去は既定化から最低3か月後の別Step（番号は着手時に�
 
 ### Maturity release
 
-- Step 57〜65・71完了
-- `otel`も`maturity.enabled`も無い組織の全goldenが不変
-- OpenTelemetry cacheとmaturityの成果物に禁止フィールド（§7.7・§27.9）が無い
-- 網羅率の低い人×月が段階`不明`になる
-- maturityの成果物にリポジトリ名・owner名・他組織の情報が無い
+- Step 57〜62・64・65・71〜73完了（Step 63 は保留）
+- `otel`も`adoption.enabled`も無い組織の全goldenが不変
+- OpenTelemetry cacheと§27の成果物に禁止フィールド（§7.7・§27.9）が無い
+- 網羅率の低い人×月はOpenTelemetry由来の列が空欄になる
+- §27の成果物にリポジトリ名・owner名・他組織の情報が無い
 - `bq`の実行がdry-runの見積もりと上限の確認を経ないと起きない
 
 ## 24. 実装依頼テンプレート
@@ -5208,17 +5314,20 @@ V2（decision-evidence）も§26.4の両軸に従う。複数アカウント保�
 
 ## 27. Claude Code の習熟度の時系列
 
-Claude Code の活用度と習熟度を人 × 月で追い、GitHub にマージされた成果と並べて見るための仕様。
-実装順は Track 10（§18）。読者は CTO と開発責任者で、シートの判定には使わない。
+Claude Code の活用とその変化を、チーム・部署と組織全体の月ごとの数値で追い、GitHub に
+マージされた成果と並べて見るための仕様。人ごとの値は参考として添える。実装順は Track 10
+（§18）。読者は CTO と開発責任者で、シートの判定には使わない。
 
 ### 27.1 背景と前提
 
 - claude.ai のエクスポート（spend・code-analytics）だけでは「どれだけ使ったか」までしか分からず、
   「どう使ったか」（受け入れ・却下、自律の度合い、手戻り）は見えない。Claude Code の
   OpenTelemetry（以下 OTel）にはそれがある
-- 人 × 月のパネル（§27.8）と管轄外の検知（§27.7）は、claude.ai のエクスポートと GitHub の
+- 見る単位はチーム・部署が主。人は時期によって役割が変わるので、人ごとの推移は参考にとどめ、
+  チームの中の月ごとの変化を数値で読めるようにする
+- 表とレポート（§27.8）と管轄外の検知（§27.7）は、claude.ai のエクスポートと GitHub の
   キャッシュだけで作れる。OTel は「どう使ったか」の列を足す任意の入力で、OTel の無い組織でも
-  パネルと検知は出せる
+  表・レポート・検知は出せる
 - OTel は組織ごとに導入の有無が違う。導入した組織だけが`otel`を設定し（§27.2）、未設定の組織は
   OTel 関連の処理と警告から一切除外される（GitHub の`github_org`と同じゲート）
 - OTel は利用側の収集基盤（collector → BigQuery）に蓄積されている前提で、このツールは BigQuery を
@@ -5249,7 +5358,7 @@ otel:
   maximum_bytes_billed: 2000000000
   coverage_warning_ratio: 0.7
   coverage_min_requests: 100
-maturity:
+adoption:
   enabled: false
   outside_org_min_lines: 1000
   stages: {}
@@ -5260,8 +5369,8 @@ maturity:
   `claude_export.org_id`（複数スペースの組織は各 workspace のもの）を使う。両方無ければロード時に
   エラー。一致しないイベントと`organization.id`が空のイベントは集計せず、除いた件数をキャッシュに
   記録して取得時に表示する
-- `maturity.enabled`は OTel の有無と独立で、`otel`の無い組織でも有効にできる
-- `maturity.outside_org_min_lines`は仮の値で、既定は Step 64 で分布を見てから決める（§27.7）
+- `adoption.enabled`は OTel・GitHub の有無と独立で、どちらも無い組織でも有効にできる
+- `adoption.outside_org_min_lines`は仮の値で、既定は Step 64 で分布を見てから決める（§27.7）
 - project・dataset の名前は workspace の`config.yaml`にだけ書く（公開リポジトリの docs・既定設定には
   書かない）
 
@@ -5300,7 +5409,8 @@ maturity:
 - 費用の比では見ない（イベントの費用は Claude Code 自身の見積もりで、このツールの単価計算と
   一致することを前提にできない。§27.3）
 - 組織の網羅率（件数の合計の比）を doctor と analyze の警告に出す
-- 網羅率の低い人 × 月は、パネルで OTel 由来の列を空欄にし、段階を`不明`にする
+- 網羅率の低い人 × 月は、人 × 月の表で OTel 由来の列を空欄にし、集まりの値にも入れない
+  （段階を出す場合は`不明`にする）
 
 ### 27.5 指標
 
@@ -5324,16 +5434,44 @@ maturity:
 | 検知 | この Organization に成果が見えない月 | code-analytics と GitHub（§27.7） |
 
 - 元データが spend・code-analytics・GitHub の行は Step 62（検知は Step 64）、OTel のイベントの
-  行は Step 71 でパネルに入る
-- 比率は分子・分母を列に持ち、比率そのものはパネルで計算して列にする（元の値を失わない）
+  行は Step 71 で表に入る
+- 比率は分子・分母を列に持ち、比率そのものは表で計算して列にする（元の値を失わない）
 - 中央値のように日次から月次へ畳めない統計は持たない（件数・合計・トークンに閉じる）
 - イベントの種類や Claude Code の版によって付かない属性（`permission_mode`など）は、付いている
   イベントだけを分母にし、その件数も列に持つ
 - スキル・エージェント・MCP・コマンドの名前は保存しない（有無と件数だけ）
 
+集まり（組織全体・部署・チーム）× 月では、人 × 月の値から次を出す。1人あたりの量を読めるよう、
+合計と人数の両方を持つ。
+
+| 見るもの | 指標 | 出し方 |
+|---|---|---|
+| 広がり | シートを持つ人の数・Claude Code を使った人の数 | その月に Claude Code のリクエストがあった人を数える |
+| 定着 | 3か月続けて使った人の数 | その月を含む、暦で連続する3か月とも使った人。3か月が表にそろわない月は空欄 |
+| 量 | Claude Code の需要の合計と中央値・Claude Code が加えた行の中央値 | 需要の中央値はシートを持つ人、加えた行の中央値は使った人で取る |
+| 成果 | GitHub の対象の人数・マージ行（上限つき）の合計・PR 数 | GitHub の対象は、GitHub ID が login の人 |
+| 進め方 | PR の大きさ（追加行の中央値）・lead time の中央値と P90 | その集まりの人が作った PR の集合から出す |
+| 効率 | マージ行あたりの費用 | マージ行を持つ人の需要の合計 ÷ その人たちのマージ行の合計 |
+
+- 集まりは、その月の分析が採用した members-info の部署・チームの列で決める（採用の規則は
+  既存のまま。日付つきの members-info を月ごとに残していれば当時の所属になり、対象月より前の
+  ファイルが無い月は、後のファイルの所属になる）。兼務の人はそれぞれの集まりに1人として
+  入れるので、集まりの合計は組織全体と一致しない。部署・チームが未記入の人は組織全体にだけ入る
+- 材料になる人の値が1人でも空欄（確定できない）なら、その集まりのその指標は空欄にする
+  （分からない値を0として数えない）。マージ行あたりの費用は、分子と分母を同じ人（マージ行を
+  持つ人）で取り、その中に需要が空欄の人がいれば空欄にする
+- 1人の大きな値に合計が引かれる量（Claude Code が加えた行）は、中央値で持つ
+- lead time の中央値は短い PR が多いと動きにくいので、遅い側（P90）を並べて持つ
+- 人ごとの中央値は足し合わせられないので、lead time と PR の大きさは PR の集合から出す
+- 前月比と、直近3か月の平均とその前の3か月の平均の比は、レポートで計算する（表には持たない）
+- 人数の少ない集まりは1人の動きで大きく振れる。閾値で隠さず、人数を並べて出す
+
 ### 27.6 段階
 
-1 人の 1 か月を次のどれかに分ける。ルールは`maturity.stages`に置き、既定は Step 63 で実データの
+保留。段階は人を軸にした見方で、チームの変化を主に読む方針（§27.1）から外れるため、OTel の
+列が入った後に要否を決める。以下は着手するときの案。
+
+1 人の 1 か月を次のどれかに分ける。ルールは`adoption.stages`に置き、既定は Step 63 で実データの
 分布を見てから決める。1 つの合成スコアにはしない（何が効いて動いたかが読めず、閾値の置き方に
 結論が引きずられる）。
 
@@ -5353,37 +5491,117 @@ maturity:
 Claude Code を使っているのに、この組織の GitHub Organization に成果が見えない人 × 月に印を
 付ける。母集団から外さない（§15.5 の`なし`は GitHub 側の数え方で、ここでは使わない）。
 
-- 条件: その月の Claude Code が加えた行（code-analytics）が`maturity.outside_org_min_lines`以上で、
+- 条件: その月の Claude Code が加えた行（code-analytics）が`adoption.outside_org_min_lines`以上で、
   その人に帰属したコミット（§15.7）もマージ PR（§15.5）も 0 件
-- パネルに、該当するか（True / False）と、その月まで連続して該当した月数を出す。GitHub ID の
-  対応表の状態（login あり・`なし`・未記入）を並べて出す（`なし`は、対象の Organization で
-  開発しないと申告済みの人）
-- 判定できないときは空欄にする（該当なしと区別する）: GitHub 分析を有効にしていない組織、
-  対象月の GitHub のキャッシュが無い・コミットを持たない月、GitHub ID が未記入の人（コミットを
-  その人に帰属できない）
+- 人 × 月の表に、該当するか（True / False）と、その月まで連続して該当した月数を出す。GitHub ID の
+  対応表の状態は、同じ表の`github_id`の列（§27.8）で読む（`none`は、対象の Organization で
+  開発しないと申告済みの人）。レポートの人ごとの一覧では、該当する月に印を付ける
+- 判定できないときは空欄にする（該当なしと区別する）: 人 × 月の表でコミットの列が空欄になる月
+  （`github_data`が`ok`でない月）と、GitHub ID が未記入の人（コミットをその人に帰属できない）
+- GitHub ID が`none`の人は、コミットも PR も0件として判定する（人 × 月の表の GitHub の列は
+  空欄のまま）
+- 連続して該当した月数は、判定できない月で途切れる
 - OTel に依存しない
 - 参考値。分かるのは「この Organization に成果が見えない」ことまでで、どこで使ったかは
   分からない。ローカルだけの作業・未マージ・別の Organization の正当な業務を区別できないので、
   人に確かめるきっかけとして扱う
 
-### 27.8 パネルと管理職向け成果物
+### 27.8 表とレポート
 
-- `maturity-panel-<YYYYMM>-<org>.csv`: 1 行が 1 人の 1 か月。その月までの全月（入力にある月）を
-  含む。列は活用・自律・成果と効率・検知・段階・文脈（シート種別・部署・チーム・職種・
-  code-analytics の有無・GitHub と OTel の網羅）。行はメール昇順・月昇順。自律の列と OTel の
-  網羅は Step 71、段階は Step 63 で加わる
-- `maturity-dashboard-<YYYYMM>-<org>.html`: 散布図（LoC × マージ行。両対数）、個人の推移、段階
-  ごとの人数の推移、コホート（利用開始月で束ねて経過月数ごとの中央値）。外部通信なし・JS 無効でも
-  全内容が読める・メールはローカル部のみ（既存 dashboard と同じ 3 点）
+成果物は3つで、どれも`reports/summary/`に置く（組織の担当者へ共有する`reports/<org>/`には
+置かない。§6.2）。名前は`{種別}-{YYYYMM}-{組織名}.{拡張子}`。
+
+- `adoption-report-<YYYYMM>-<org>.html`: 見て判断するためのレポート。組織全体 → チーム・部署
+  ごと → 人ごと（参考）の順に並べる
+- `adoption-teams-<YYYYMM>-<org>.csv`: 1行が1つの集まり（組織全体・部署・チーム）の1か月。
+  レポートの数値の出どころ
+- `adoption-people-<YYYYMM>-<org>.csv`: 1行が1人の1か月。集まりの集計の材料で、人ごとの値は
+  参考
+
+共通の規則:
+
+- `adoption.enabled: false`が既定。有効にすると、正式分析のたびに分析した組織ごとに書く
+  （1組織だけの実行でも書く。速報では書かない）。GitHub・OTel の無い組織では、該当の列が
+  空欄になるだけで書ける
+- その月までの全月（入力に spend がある月）を含む。生データ（月次ファイル・週次累積・
+  github-cache・otel-cache）が正で、毎回それから作り直す（追記型の履歴ファイルを持たない）
+- 各月の値は、その月を対象月として分析したときの値にする（月ごとに分析を回し直す）。対象月の
+  値は usage-summary・github-summary と一致する。過去の月が入力の欠けで分析できないときは、
+  その月を飛ばして通知する
+- 行にするのは、その月にシートを持つ人（§15.5 の対象者と同じ）。複数スペースの組織は人の層
+  （§26.4）で合算する
 - 読者は CTO と開発責任者。組織の担当者へ共有する成果物（report・details・dashboard・
   recommendations・usage-summary・preview・preview-dashboard と、判定の版が v2（既定）のときの
   decision-evidence、opt-in の github-summary）の集合には含めない。docs にその旨を書く
-- `maturity.enabled: false`が既定。有効でも、GitHub・OTel の無い組織では該当の列が空欄になるだけで
-  書ける
 - 組織横断の比較は`reports/summary/<month>.md`にだけ書く
-- 複数スペースの組織は人の層（§26.4）で合算する
-- 生データ（月次ファイル・週次累積・github-cache・otel-cache）が正で、パネルは毎回それから作り直す
-  （追記型の履歴ファイルを持たない）
+
+人 × 月の表の列（Step 62。行はメール昇順・月昇順）:
+
+| 列 | 内容 |
+|---|---|
+| `email`・`month` | 人と月 |
+| `seat` | その月のシート種別。複数スペースの人は、主を先頭に`+`でつなぐ |
+| `department`・`team`・`role` | その月の分析が採用した members-info の値 |
+| `spend_complete` | その月の spend が全月データか（分析した全 workspace が全月なら True） |
+| `total_demand_usd`・`code_demand_usd`・`code_requests` | 全 product の需要・Claude Code の需要とリクエスト数（アカウントの和。確定できない値は空欄） |
+| `loc_with_cc` | Claude Code が加えた行（アカウントの和）。code-analytics に行の無い人は0、LoC の列を持つファイルがどの workspace にも無い月は空欄 |
+| `github_id` | GitHub ID の対応表の状態（`login`・`none`＝対象の Organization で開発しない・`unset`＝未記入）。GitHub 分析の無い組織は空欄 |
+| `github_data` | その月の GitHub の材料の状態（下の表） |
+| `github_cache_complete` | その月の GitHub の収集が完了したか（True / False）。False の月の値は部分的。キャッシュが無い月と GitHub 分析の無い組織は空欄 |
+| `merged_pr_count`・`lead_time_median_hours` | その人が作成した PR の件数と、lead time の中央値 |
+| `commit_count`・`lines_added_capped`・`large_commits` | その人に帰属したコミットの件数・上限つきの追加行・大きな変更の件数（§15.7） |
+| `cost_per_merged_line_usd` | `code_demand_usd` ÷ `lines_added_capped`（分母が0・どちらかが空欄なら空欄） |
+
+`github_data`は月ごとに全員同じ値で、上から順に最初に当てはまるものにする。
+
+| 値 | 意味 | GitHub の列 |
+|---|---|---|
+| `not_configured` | GitHub 分析を有効にしていない組織 | すべて空欄 |
+| `no_cache` | その月のキャッシュが無い | すべて空欄 |
+| `no_repository_list` | キャッシュに repository の一覧が無い | すべて空欄 |
+| `no_commits` | キャッシュがコミットを持たない | PR の列だけ書く |
+| `no_previous_month` | 直前の月のキャッシュが無いか、コミットを持たない | PR の列だけ書く |
+| `ok` | 上のどれでもない | 書く |
+
+- 直前の月のキャッシュが読めない月は、月をまたぐ重複（§15.7）を除けず行数が多く出るので、
+  コミットの列を空欄にする。時系列に並べると、その月だけ多く見えるため。github-summary は
+  1か月の値なので、同じ月でも値を書いて通知する（§15.7 のまま）。
+  `github.commit_lookback_months`が0のときは、重複を除かない設定なのでこの扱いをしない
+- 直前の月が読めれば、それより前の月が欠けていてもコミットの列を書く
+- 収集が完了していない月も、状態は上の表で決める。値が部分的であることは
+  `github_cache_complete`で読む（状態の列に重ねると、ほかの状態と同時に起きたときに
+  部分的な値であることが読めなくなるため）
+- GitHub の列は、`github_id`が`login`の人だけが値を持つ
+
+チーム × 月の表の列（Step 72。行は種別（組織全体・部署・チームの順）・名前・月の昇順）:
+
+| 列 | 内容 |
+|---|---|
+| `scope`・`name`・`month` | 種別（`organization`・`department`・`team`）と名前（組織全体は空欄）と月 |
+| `spend_complete`・`github_data`・`github_cache_complete` | 人 × 月の表と同じ |
+| `seat_holders`・`code_users`・`code_users_3m` | シートを持つ人・その月に Claude Code を使った人・3か月続けて使った人の数 |
+| `code_demand_usd`・`code_demand_median_usd` | Claude Code の需要の合計と、シートを持つ人の中央値 |
+| `loc_median_of_users` | Claude Code が加えた行の、使った人の中央値 |
+| `github_people` | GitHub ID が login の人の数 |
+| `merged_pr_count`・`pr_additions_median` | PR の件数と、1つの PR の追加行の中央値 |
+| `lead_time_median_hours`・`lead_time_p90_hours` | lead time の中央値と P90 |
+| `lines_added_capped` | 上限つきの追加行の合計 |
+| `code_demand_usd_of_github_people`・`cost_per_merged_line_usd` | マージ行を持つ人の需要の合計と、それ ÷ マージ行の合計 |
+
+レポート（Step 65）:
+
+- 最新の月の要約（使った人の数・需要・マージ行・マージ行あたりの費用）
+- 組織全体の月ごとの推移（1つの図に1つの指標の折れ線）と、組織全体の指標 × 月の数値の表
+- チームごと・部署ごとの、指標 × 月の数値の表。量は1人あたりで出し（需要はシートを持つ人、
+  GitHub の値は GitHub ID が login の人で割る）、前月比・直近3か月の平均とその前の3か月の
+  平均の比・推移の小さな線を添える。並びは人数の多い順
+- 人ごとの一覧（参考）: 人 × 月の色の濃淡で、需要・Claude Code が加えた行・マージ行を並べる。
+  並びは部署とメールの順で、量の多い順にしない
+- 人ごとの散布図（参考）: 最新の月の、Claude Code が加えた行 × マージ行と、需要 × マージ行
+  （両対数）
+- 過去の月の所属は、その月の分析が採用した members-info によることを注記する
+- 外部通信なし・JavaScript なしで全内容が読める・メールはローカル部のみ・明るい配色と
+  暗い配色の両方で読める
 
 ### 27.9 保存しないもの
 
@@ -5396,6 +5614,12 @@ Claude Code を使っているのに、この組織の GitHub Organization に�
 
 ### 27.10 後続
 
+- 共著の印による指標: コミットの共著者に Claude Code の既定の印があるコミットの割合
+  （成果のうち Claude Code が関わった分）。印を付けない設定では出ないので、Step 73 で
+  付いている割合を確かめてから、指標にするかを決める
+- レビューの往復の回数と、最初のレビューまでの時間（PR のレビューの収集が要る）
+- 最上位のモデルの割合（費用を意識した使い分け）、コミットのあった日数
+- 利用開始月で束ねた推移（コホート）と段階（§27.6）: 人を軸にした見方なので保留
 - メトリクス由来の値: Claude Code が作ったコミット・PR の数、稼働時間、Claude Code が消した行
   （と、消した行 ÷ 加えた行の比）。メトリクスの対応形式（生の時系列か、日次の集計か）を決めて
   から足す
