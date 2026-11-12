@@ -1847,3 +1847,36 @@ def test_github_section_and_unknown_keys_are_rejected(tmp_path, text, fragment):
     """github は辞書に限り、既定に無いキーを黙って受け付けない。"""
     with pytest.raises(ValueError, match=fragment):
         load_config(_override(tmp_path, text))
+
+
+# ---------------------------------------------------------- 人 × 月の表
+
+
+def test_adoption_is_disabled_by_default():
+    """人 × 月の表は既定で無効（adoption.enabled は False）。"""
+    assert load_config()["adoption"] == {"enabled": False}
+
+
+def test_adoption_can_be_enabled(tmp_path):
+    """真偽値の true で有効にできる。"""
+    cfg = load_config(_override(tmp_path, "adoption:\n  enabled: true\n"))
+    assert cfg["adoption"]["enabled"] is True
+
+
+@pytest.mark.parametrize("value", ["1", "0", '"true"', "yes-please", "1.0"])
+def test_adoption_enabled_accepts_only_booleans(tmp_path, value):
+    """数値・文字列の enabled はロード時にエラー。"""
+    with pytest.raises(ValueError, match="adoption.enabled"):
+        load_config(_override(tmp_path, f"adoption:\n  enabled: {value}\n"))
+
+
+@pytest.mark.parametrize("text,fragment", [
+    ("adoption:\n  enabled: null\n", "adoption.enabled"),
+    ("adoption:\n  stages: {}\n", "adoption.stages"),
+    ("adoption:\n  outside_org_min_lines: 1000\n", "adoption.outside_org_min_lines"),
+    ("adoption: true\n", "辞書"),
+])
+def test_adoption_rejects_null_unknown_keys_and_non_mappings(tmp_path, text, fragment):
+    """null・既定に無いキー（後続の Step のキーを含む）・辞書でない adoption は拒む。"""
+    with pytest.raises(ValueError, match=fragment):
+        load_config(_override(tmp_path, text))

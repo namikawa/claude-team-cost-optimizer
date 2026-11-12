@@ -536,6 +536,20 @@ def _validate_github(cfg: dict, errors: list[str]) -> None:
         errors.append("github.commit_lookback_months は 0 以上 12 以下の整数が必要です")
 
 
+def _validate_adoption(cfg: dict, errors: list[str]) -> None:
+    """人 × 月の表の有効・無効を検査する（真偽値だけを受け付ける）。
+
+    数値や文字列を真偽として読むと、`enabled: "false"` のような書き方が有効の意味に
+    なるため。null と未知のキーは上書きのマージが止める。
+    """
+    section = cfg["adoption"]
+    if not isinstance(section, dict):
+        errors.append("adoption セクションが辞書ではありません")
+        return
+    if not isinstance(section.get("enabled"), bool):
+        errors.append("adoption.enabled は真偽値（true / false）が必要です")
+
+
 def _validate_claude_export(cfg: dict, errors: list[str]) -> None:
     # claude.ai からの CSV 取得の共通設定。既定設定が必ず持ち、上書きはキーを消せないため
     # 常に検査する（取得を使わない組織しかなくても、編集ミスは編集した実行で検出する）
@@ -1026,6 +1040,7 @@ def _validate(cfg: dict) -> None:
     _validate_usage_credits(cfg, errors)
     _validate_organizations(cfg, errors)
     _validate_github(cfg, errors)
+    _validate_adoption(cfg, errors)
     _validate_claude_export(cfg, errors)
     _validate_cost_basis(cfg, errors)
     _validate_product_policy(cfg, errors)

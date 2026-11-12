@@ -50,6 +50,7 @@ LAYERS = {
     "data_quality": 20,
     "github_metrics": 20,
     "leakcheck": 20,
+    "adoption": 25,
     "decision_evidence": 25,
     "report": 30,
     "public_text": 30,

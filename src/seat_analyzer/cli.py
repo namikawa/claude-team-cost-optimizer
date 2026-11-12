@@ -10,10 +10,12 @@ import os
 import re
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import (
+    adoption,
     analyze,
     calendar_months,
     claude_export,
@@ -955,6 +957,12 @@ def _run_analyze(args: argparse.Namespace) -> int:
                     f"{org}: 速報モードでは github-summary を書きません"
                     "（参考値は正式分析でだけ出力）"
                 )
+            if cfg["adoption"]["enabled"]:
+                # 有効にした人 × 月の表を速報で黙って無視しない
+                print(
+                    f"{org}: 速報モードでは adoption-people を書きません"
+                    "（人 × 月の表は正式分析でだけ出力）"
+                )
             days = args.days
             # 入れ子の組織は --days の有無によらず workspace ごとの観測日数を突き合わせる
             # （速報は全 workspace に同じ倍率を掛けるので、--days では食い違いを直せない）
@@ -1004,19 +1012,33 @@ def _run_analyze(args: argparse.Namespace) -> int:
             notices = _stale_evidence_notices(result, org_output)
         metrics: github_metrics.GithubMetrics | None = None
         commits: github_metrics.CommitMetrics | None = None
+        caches: _PrCaches | None = None
+        loaded: _GithubMonthLoad | None = None
         if org in gated:
+            caches = _PrCaches(org_input / github_collect.PR_CACHE_DIRNAME, gated[org])
+            loaded = _load_github_month(
+                org_input, month, cfg, caches, _github_subjects(result)
+            )
             metrics, commits, github_notices = _write_github_summary(
-                org, org_input, org_output, month, cfg, gated[org], paths,
-                _github_subjects(result),
+                org, org_output, month, loaded, paths,
             )
             notices += github_notices
             if metrics is None:
                 # 書けなかった実行だけ、残っている成果物の時点が食い違うことを伝える。
                 # 設定に無い組織では通知もしない（設計書 §15.1）
                 notices += _stale_github_notices(org_output, month, org)
+        annotations: dict[str, str] = {}
+        if cfg["adoption"]["enabled"]:
+            # 人 × 月の表は組織の担当者へ共有しない資料なので、組織の出力ディレクトリ
+            # ではなく reports/summary/ に書く（考察の資料・混入チェックの対象にもしない）
+            path, annotations["adoption"], adoption_notices = _write_adoption_people(
+                org, org_input, output_dir, result, cfg, caches, loaded,
+            )
+            paths["adoption"] = path
+            notices += adoption_notices
         results.append(result)
         written.append((org, org_output))
-        _print_result(result, paths, evidence, notices, metrics, commits)
+        _print_result(result, paths, evidence, notices, metrics, commits, annotations)
 
     if skipped:
         print(f"\n! {month} のスペンドレポートが無いためスキップした組織: {', '.join(skipped)}")
@@ -2463,50 +2485,74 @@ def _github_subjects(result: analyze.OrgAnalysisResult) -> frozenset[str]:
 
     分析が採用したメンバー一覧で standard / premium と確認できた人で、複数 workspace の
     組織は分析した workspace のどれかで持てば入る（分析から飛ばした workspace は見ない）。
-    未割当・シート不明（members に居ない人を含む）は入れない。
+    未割当・シート不明（members に居ない人を含む）は入れない。定義は人 × 月の表の行と
+    同じ `adoption.seat_holders` が持つ（同じ判定を2か所に書かない）。
     """
-    return frozenset(
-        str(email)
-        for workspace in result.workspaces.values()
-        for email in workspace.users.loc[
-            workspace.users["current_seat"].isin(ingest.ASSIGNED_SEAT_TYPES), "email"
-        ]
-    )
+    return frozenset(adoption.seat_holders(result))
 
 
-def _write_github_summary(
-    org: str,
+class _PrCaches:
+    """1組織の PR キャッシュを、同じ実行の中で月ごとに1度だけ読む。
+
+    github-summary の前の月の読み込みと、人 × 月の表の各月の読み込みが同じ月を指すので、
+    読んだ結果を使い回す。読めないキャッシュの ValueError は覚えずにそのまま伝える
+    （次に同じ月を読めばもう一度止まる）。
+    """
+
+    def __init__(self, cache_dir: Path, github_org: str) -> None:
+        self._cache_dir = cache_dir
+        self._github_org = github_org
+        self._loaded: dict[str, github_collect.PrCache | None] = {}
+
+    def get(self, month: str) -> github_collect.PrCache | None:
+        """その月のキャッシュ（ファイルが無ければ None）。"""
+        if month not in self._loaded:
+            path = github_collect.pr_cache_path(self._cache_dir, month)
+            self._loaded[month] = (
+                github_collect.load_pr_cache(self._cache_dir, month, self._github_org)
+                if path.is_file() else None
+            )
+        return self._loaded[month]
+
+
+@dataclass(frozen=True)
+class _GithubMonthLoad:
+    """GitHub の1か月分の材料（github-summary と人 × 月の表が共有する）。
+
+    cache はその月のキャッシュで、ファイルが無ければ None。members・metrics はキャッシュが
+    repository の一覧を持つときだけ値を持ち、commits はさらにキャッシュがコミットを持つ
+    ときだけ値を持つ。lookback は前の月のキャッシュが揃わなかった月とその理由（月の
+    昇順に並べる前の、読んだ順）で、github-summary の通知の材料。previous_readable は
+    直前の月（暦で1つ前）のキャッシュを、月をまたぐ重複の除外に使えたか。
+    """
+
+    cache: github_collect.PrCache | None = None
+    members: github_collect.GithubMembers | None = None
+    metrics: github_metrics.GithubMetrics | None = None
+    commits: github_metrics.CommitMetrics | None = None
+    lookback: tuple[tuple[str, str], ...] = ()
+    previous_readable: bool = False
+
+
+def _load_github_month(
     org_input: Path,
-    org_output: Path,
     month: str,
     cfg: dict,
-    github_org: str,
-    paths: dict[str, Path],
+    caches: _PrCaches,
     subjects: frozenset[str],
-) -> tuple[
-    github_metrics.GithubMetrics | None, github_metrics.CommitMetrics | None, list[str],
-]:
-    """GitHub の参考値を書き、出力一覧へ加える（report などの成果物には触れない）。
+) -> _GithubMonthLoad:
+    """GitHub の1か月分の材料を読み、PR とコミットを集計する。
 
     材料は collect が保存したキャッシュだけで、gh もネットワークも呼ばない（同じ
-    キャッシュからは常に同じ内容になり、オフラインでも分析が完走する）。書けない場合は
-    何も書かず、理由と次の一手を通知で返す。壊れたキャッシュは `load_pr_cache` の
-    ValueError がそのまま伝わり、実行がエラーで止まる（黙って参考値を落とさない）。
-    subjects は対象者の email（`_github_subjects`）。
+    キャッシュからは常に同じ内容になり、オフラインでも分析が完走する）。キャッシュが
+    無い月と repository の一覧が無いキャッシュでは、対応表も読まずに集計の無い材料を
+    返す。壊れたキャッシュは `load_pr_cache` の ValueError がそのまま伝わり、実行が
+    エラーで止まる（黙って参考値を落とさない）。subjects は対象者の email
+    （`_github_subjects`）。
     """
-    cache_dir = org_input / github_collect.PR_CACHE_DIRNAME
-    command = f"collect --org {org} --source github --month {month}"
-    if not github_collect.pr_cache_path(cache_dir, month).is_file():
-        return None, None, [
-            (f"github-summary は書きません（github-cache に {month} のキャッシュが"
-             f"無いため。`{command}` を実行してください）")
-        ]
-    cache = github_collect.load_pr_cache(cache_dir, month, github_org)
-    if cache.repositories is None:
-        return None, None, [
-            ("github-summary は書きません（キャッシュに repository の一覧が無いため。"
-             f"`{command}` を再実行すると一覧が保存されます）")
-        ]
+    cache = caches.get(month)
+    if cache is None or cache.repositories is None:
+        return _GithubMonthLoad(cache=cache)
 
     members = github_collect.load_github_members(org_input, cfg, month)
     metrics = github_metrics.pr_metrics(
@@ -2514,32 +2560,67 @@ def _write_github_summary(
     )
     earlier: list[github_collect.PrCache] = []
     reasons: list[tuple[str, str]] = []
-    notices: list[str] = []
     if github_metrics.has_commits(cache):
         previous_month = month
         for _ in range(cfg["github"]["commit_lookback_months"]):
             previous_month = calendar_months.previous_month(previous_month)
-            if not github_collect.pr_cache_path(cache_dir, previous_month).is_file():
+            previous = caches.get(previous_month)
+            if previous is None:
                 reasons.append((previous_month, "無い"))
                 continue
-            previous = github_collect.load_pr_cache(cache_dir, previous_month, github_org)
             if not github_metrics.has_commits(previous):
                 reasons.append((previous_month, "コミットを持たない"))
                 continue
             earlier.append(previous)
             if not previous.complete:
                 reasons.append((previous_month, "収集が完了していない"))
-        if reasons:
-            detail = "・".join(f"{m} は{reason}" for m, reason in sorted(reasons))
-            notices.append(
-                "前の月のキャッシュが揃っていないため、月をまたいで同じコミットを数えている"
-                f"可能性があります（{detail}）。"
-                f"`collect --org {org} --source github --month <月>` で取り直せます"
-            )
     commits = github_metrics.commit_metrics(
         cache, members, cache.repositories, subjects, earlier=tuple(earlier),
         large_commit_lines=cfg["github"]["large_commit_lines"],
     )
+    return _GithubMonthLoad(
+        cache=cache, members=members, metrics=metrics, commits=commits,
+        lookback=tuple(reasons),
+        previous_readable=calendar_months.previous_month(month)
+        in {previous.month for previous in earlier},
+    )
+
+
+def _write_github_summary(
+    org: str,
+    org_output: Path,
+    month: str,
+    loaded: _GithubMonthLoad,
+    paths: dict[str, Path],
+) -> tuple[
+    github_metrics.GithubMetrics | None, github_metrics.CommitMetrics | None, list[str],
+]:
+    """GitHub の参考値を書き、出力一覧へ加える（report などの成果物には触れない）。
+
+    loaded は `_load_github_month` で読んだ対象月の材料。書けない場合は何も書かず、理由と
+    次の一手を通知で返す。
+    """
+    command = f"collect --org {org} --source github --month {month}"
+    if loaded.cache is None:
+        return None, None, [
+            (f"github-summary は書きません（github-cache に {month} のキャッシュが"
+             f"無いため。`{command}` を実行してください）")
+        ]
+    metrics, commits = loaded.metrics, loaded.commits
+    if metrics is None:
+        return None, None, [
+            ("github-summary は書きません（キャッシュに repository の一覧が無いため。"
+             f"`{command}` を再実行すると一覧が保存されます）")
+        ]
+
+    notices: list[str] = []
+    if loaded.lookback:
+        detail = "・".join(f"{m} は{reason}" for m, reason in sorted(loaded.lookback))
+        notices.append(
+            "前の月のキャッシュが揃っていないため、月をまたいで同じコミットを数えている"
+            f"可能性があります（{detail}）。"
+            f"`collect --org {org} --source github --month <月>` で取り直せます"
+        )
     if commits is None:
         notices.append(
             "GH_COMMITS_MISSING: github-summary の行数の列は空欄です"
@@ -2552,6 +2633,96 @@ def _write_github_summary(
     return metrics, commits, [
         *metrics.warnings, *(commits.warnings if commits is not None else ()), *notices,
     ]
+
+
+def _adoption_github(
+    org_input: Path,
+    month: str,
+    cfg: dict,
+    loaded: _GithubMonthLoad | None,
+) -> adoption.GithubMonth:
+    """人 × 月の表に写す、その月の GitHub の材料（loaded が None なら GitHub 分析の無い組織）。
+
+    キャッシュが無い月も対応表は読む（github_id の列は材料の状態によらず書くため）。
+    コミットの集計は状態が ok の月だけ写す（直前の月が読めない月の値は github-summary には
+    書くが、表には写さない。設計書 §27.8）。
+    """
+    if loaded is None:
+        return adoption.GITHUB_NOT_CONFIGURED
+    cache = loaded.cache
+    members = (
+        loaded.members if loaded.members is not None
+        else github_collect.load_github_members(org_input, cfg, month)
+    )
+    state = adoption.github_data_state(
+        configured=True,
+        has_cache=cache is not None,
+        has_repository_list=cache is not None and cache.repositories is not None,
+        has_commits=cache is not None and github_metrics.has_commits(cache),
+        previous_readable=loaded.previous_readable,
+        lookback_months=cfg["github"]["commit_lookback_months"],
+    )
+    return adoption.GithubMonth(
+        state=state,
+        members=members,
+        metrics=loaded.metrics,
+        commits=loaded.commits if state is adoption.GithubData.OK else None,
+        cache_complete=None if cache is None else cache.complete,
+    )
+
+
+def _write_adoption_people(
+    org: str,
+    org_input: Path,
+    output_dir: Path,
+    result: analyze.OrgAnalysisResult,
+    cfg: dict,
+    caches: _PrCaches | None,
+    target: _GithubMonthLoad | None,
+) -> tuple[Path, str, list[str]]:
+    """人 × 月の表を `reports/summary/` に書き、書いた先・出力一覧の添え書き・通知を返す。
+
+    月は入力に spend がある月のうち対象月以前（対象月は常に含める）。対象月は分析済みの
+    result と github-summary の材料 target を使い回し、過去の月はその月を対象月として
+    分析し直す（判定の版に依らない値だけを使うので既定の引数で呼ぶ）。各月の対象者と
+    GitHub の集計は、その月の分析結果から決める（その月の github-summary と同じ値になる）。
+
+    過去の月の分析が入力の欠けや不整合（FileNotFoundError・ValueError）で止まったら、その月を
+    飛ばして通知を1件足し、残りの月を続ける。過去の月の分析の警告は返さない。caches は
+    GitHub 分析の無い組織では None。
+    """
+    months = sorted(
+        {m for m in ingest.discover_org_months(org_input) if m <= result.month}
+        | {result.month}
+    )
+    rows: list[adoption.PersonMonth] = []
+    covered: list[str] = []
+    notices: list[str] = []
+    for month in months:
+        if month == result.month:
+            month_result, loaded = result, target
+        else:
+            try:
+                month_result = analyze.analyze_org(org_input, month, cfg, org)
+            except (FileNotFoundError, ValueError) as exc:
+                notices.append(
+                    f"adoption-people は {month} の行を書きません"
+                    f"（{month} を対象月として分析できないため: {exc}）"
+                )
+                continue
+            loaded = None if caches is None else _load_github_month(
+                org_input, month, cfg, caches, _github_subjects(month_result)
+            )
+        github = _adoption_github(org_input, month, cfg, loaded)
+        rows.extend(adoption.person_rows(month_result, github))
+        covered.append(month)
+
+    path = report.ADOPTION_PEOPLE.summary_path(output_dir, result.month, org)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    report.write_adoption_people(rows, path)
+    span = covered[0] if len(covered) == 1 else f"{covered[0]}〜{covered[-1]}"
+    people = len({row.email for row in rows})
+    return path, f"（{people} 名 × {span}・{len(rows)} 行）", notices
 
 
 def _stale_github_notices(org_output: Path, month: str, org: str) -> list[str]:
@@ -2688,7 +2859,13 @@ def _print_result(
     notices: Sequence[str] = (),
     metrics: github_metrics.GithubMetrics | None = None,
     commits: github_metrics.CommitMetrics | None = None,
+    annotations: Mapping[str, str] | None = None,
 ) -> None:
+    """1組織の分析結果の要約・警告・出力一覧を表示する。
+
+    annotations は出力一覧の種別 → パスの後ろに添える文字列（人 × 月の表の人数と月の範囲）。
+    """
+    annotations = annotations or {}
     print(f"\n=== {result.org} {result.month} 分析結果 ===")
     multi = result.has_multiple_workspaces
     if multi:
@@ -2725,7 +2902,7 @@ def _print_result(
 
     print("\n--- 出力 ---")
     for kind, path in paths.items():
-        print(f"  {kind}: {path}")
+        print(f"  {kind}: {path}{annotations.get(kind, '')}")
 
 
 def _print_totals(results: list[analyze.OrgAnalysisResult], summary_path: Path) -> None:
