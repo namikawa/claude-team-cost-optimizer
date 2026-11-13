@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from seat_analyzer import (
+    adoption,
     analyze,
     claude_export,
     decision_evidence,
@@ -36,6 +37,7 @@ from seat_analyzer.ingest import discover_orgs
 from seat_analyzer.product_usage import FEATURE_COLUMNS
 from seat_analyzer.report import (
     ADOPTION_PEOPLE,
+    ADOPTION_TEAMS,
     DASHBOARD,
     DECISION_EVIDENCE,
     DETAILS,
@@ -4827,8 +4829,8 @@ def test_adoption_does_not_change_the_other_artifacts(make_input, tmp_path):
     assert {DECISION_EVIDENCE.name("2026-06", "org-a"),
             GITHUB_SUMMARY.name("2026-06", "org-a")} <= set(plain_files)
     assert not (plain / "summary").exists()
-    assert [p.name for p in (enabled / "summary").iterdir()] == [
-        ADOPTION_PEOPLE.name("2026-06", "org-a")]
+    assert sorted(p.name for p in (enabled / "summary").iterdir()) == [
+        ADOPTION_PEOPLE.name("2026-06", "org-a"), ADOPTION_TEAMS.name("2026-06", "org-a")]
 
 
 def test_adoption_is_written_for_a_single_org_run(make_input, tmp_path, capsys):
@@ -4983,7 +4985,7 @@ def test_adoption_skips_a_past_month_that_cannot_be_analyzed(make_input, tmp_pat
     rows = _summary_rows(_adoption_path(out, org="org-x"))
     assert sorted({r["month"] for r in rows}) == ["2026-04", "2026-06"]
     printed = capsys.readouterr().out
-    assert printed.count("adoption-people は 2026-05 の行を書きません") == 1
+    assert printed.count("adoption-people・adoption-teams は 2026-05 の行を書きません") == 1
     assert "2026-04〜2026-06" in printed
 
 
@@ -4994,4 +4996,184 @@ def test_preview_does_not_write_adoption(make_input, tmp_path, capsys):
     assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a",
                      "--preview", "--days", "10") == 0
     assert not (out / "summary").exists()
-    assert capsys.readouterr().out.count("速報モードでは adoption-people を書きません") == 1
+    assert capsys.readouterr().out.count(
+        "速報モードでは adoption-people・adoption-teams を書きません") == 1
+
+
+# ----------------------------------------------- チーム × 月の表（adoption-teams）
+
+
+def _teams_path(out: Path, month: str = "2026-06", org: str = "org-a") -> Path:
+    """チーム × 月の表の書き込み先（reports/summary/）。"""
+    return out / SUMMARY_DIRNAME / ADOPTION_TEAMS.name(month, org)
+
+
+def _teams_org(out: Path, month: str = "2026-06", org: str = "org-a") -> dict[str, str]:
+    """チーム × 月の表の、その月の組織全体の行。"""
+    return next(r for r in _summary_rows(_teams_path(out, org=org))
+                if r["scope"] == "organization" and r["month"] == month)
+
+
+def _with_departments(input_dir: Path) -> None:
+    """`_three_months` の対応表に部署・チームを足す（ann は2部署を兼務、ben は未記入）。"""
+    (input_dir / "org-a" / "members-info.csv").write_text(
+        "email,部署,チーム,GitHub ID\n"
+        "ann@x.jp,架空開発一部; 架空開発二部,Orion-Team,ann-dev\n"
+        "ben@x.jp,,,なし\n",
+        encoding="utf-8", newline="\n",
+    )
+
+
+def _timed_pr(number: int, hours: int, month: str = "2026-06", login: str = "ann-dev") -> dict:
+    """lead time が hours 時間の PR（月の1日に作成）。"""
+    merged = dt.datetime.fromisoformat(f"{month}-01T00:00:00+00:00") + dt.timedelta(hours=hours)
+    return {**_pr_entry(number, login=login, merged=merged.strftime("%Y-%m-%dT%H:%M:%SZ")),
+            "created_at": f"{month}-01T00:00:00Z"}
+
+
+def test_adoption_teams_is_written_for_a_single_org_run(make_input, tmp_path, capsys):
+    """有効にした1組織だけの実行で2つの表を書き、チーム × 月の表の行も出力一覧に出す。"""
+    input_dir = _three_months(make_input)
+    _with_departments(input_dir)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a") == 0
+    people, teams = _adoption_path(out), _teams_path(out)
+    assert people.is_file() and teams.is_file()
+    printed = capsys.readouterr().out
+    assert f"adoption: {people}（2 名 × 2026-04〜2026-06・6 行）" in printed
+    # 組織全体・2部署・1チームの4集まり × 3か月
+    assert f"adoption-teams: {teams}（4 集まり × 2026-04〜2026-06・12 行）" in printed
+    rows = _summary_rows(teams)
+    assert [(r["scope"], r["name"]) for r in rows if r["month"] == "2026-06"] == [
+        ("organization", ""), ("department", "架空開発一部"), ("department", "架空開発二部"),
+        ("team", "Orion-Team")]
+
+
+def test_adoption_teams_rows_of_past_months_match_their_own_runs(make_input, tmp_path):
+    """過去の月の集まりの行は、その月を対象月にした実行の行と一致する（3か月の列を除く）。"""
+    input_dir = _three_months(make_input)
+    _with_departments(input_dir)
+    _write_pr_cache(input_dir, month="2026-05", entries=[_ann_pr("2026-05", 1, "b" * 40)])
+    _write_pr_cache(input_dir, entries=[_ann_pr("2026-06", 2, "c" * 40)])
+    config = _adoption_config(tmp_path, github={"org-a": GH_ORG})
+    latest = tmp_path / "latest"
+    assert _run_with(input_dir, latest, config, "--org", "org-a") == 0
+    rows = _summary_rows(_teams_path(latest))
+
+    def without_streak(row: dict[str, str]) -> dict[str, str]:
+        return {name: value for name, value in row.items() if name != "code_users_3m"}
+
+    for month in ("2026-04", "2026-05"):
+        own = tmp_path / month
+        assert main(["analyze", "--config", config, "--input-dir", str(input_dir),
+                     "--output-dir", str(own), "--org", "org-a", "--month", month]) == 0
+        own_rows = [without_streak(r) for r in _summary_rows(_teams_path(own, month))
+                    if r["month"] == month]
+        assert own_rows == [without_streak(r) for r in rows if r["month"] == month]
+        assert own_rows
+    assert _teams_org(latest)["code_users_3m"] == "1"   # ben は 2026-05 に使っていない
+
+
+def test_adoption_teams_matches_the_github_summary(make_input, tmp_path):
+    """組織全体の行の PR 数・lead time の中央値と P90 は github-summary の組織全体の行と一致する。
+
+    repository 名・login は CSV に現れない。
+    """
+    input_dir = _three_months(make_input)
+    _write_pr_cache(input_dir, entries=[_timed_pr(1, 2), _timed_pr(2, 5), _timed_pr(3, 40)])
+    out = tmp_path / "reports"
+    config = _adoption_config(tmp_path, github={"org-a": GH_ORG})
+    assert _run_with(input_dir, out, config, "--org", "org-a") == 0
+    team = _teams_org(out)
+    summary = next(r for r in _summary_rows(out_file(out, GITHUB_SUMMARY))
+                   if r["scope"] == "organization")
+    assert team["github_people"] == "1"
+    for name in ("merged_pr_count", "lead_time_median_hours", "lead_time_p90_hours"):
+        assert team[name] == summary[name], name
+    assert (team["merged_pr_count"], team["lead_time_median_hours"],
+            team["pr_additions_median"]) == ("3", "5.0", "10.0")
+    text = _teams_path(out).read_text(encoding="utf-8-sig")
+    assert "ann-dev" not in text and "repo-a" not in text
+
+
+def test_adoption_teams_without_github_people_is_blank(make_input, tmp_path):
+    """GitHub の対象の人が0人の月は、チーム × 月の表が空欄で github-summary は0件。"""
+    input_dir = _three_months(make_input)
+    _mapping(input_dir, "org-a", ("ann@x.jp,なし", "ben@x.jp,なし"))
+    _write_pr_cache(input_dir, entries=[_timed_pr(1, 2, login="outside-dev")])
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path, github={"org-a": GH_ORG}),
+                     "--org", "org-a") == 0
+    team = _teams_org(out)
+    assert team["github_people"] == "0"
+    assert all(team[name] == "" for name in (
+        "merged_pr_count", "pr_additions_median", "lead_time_median_hours",
+        "lead_time_p90_hours", "lines_added_capped", "code_demand_usd_of_github_people",
+        "cost_per_merged_line_usd"))
+    summary = next(r for r in _summary_rows(out_file(out, GITHUB_SUMMARY))
+                   if r["scope"] == "organization")
+    assert summary["merged_pr_count"] == "0"
+
+
+def test_adoption_teams_demand_is_rounded_after_adding(make_input, tmp_path):
+    """対象月の組織全体の需要の合計は、丸める前の値の和を最後に丸めた値。"""
+    input_dir = _three_months(make_input)
+    out = tmp_path / "reports"
+    config = _adoption_config(tmp_path)
+    assert _run_with(input_dir, out, config, "--org", "org-a") == 0
+    result = analyze.analyze_org(input_dir / "org-a", "2026-06", load_config(config), "org-a")
+    rows = adoption.person_rows(result, adoption.GITHUB_NOT_CONFIGURED)
+    expected = sum(row.code_demand_usd for row in rows)
+    assert _teams_org(out)["code_demand_usd"] == f"{expected:.2f}"
+
+
+def test_adoption_teams_without_github_has_blank_github_columns(make_input, tmp_path):
+    """GitHub 分析の無い組織でも書け、GitHub の列は空欄。"""
+    input_dir = _three_months(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a") == 0
+    rows = _summary_rows(_teams_path(out))
+    assert {r["github_data"] for r in rows} == {"not_configured"}
+    for name in ("github_cache_complete", "github_people", "merged_pr_count",
+                 "lines_added_capped", "cost_per_merged_line_usd"):
+        assert {r[name] for r in rows} == {""}, name
+
+
+def test_adoption_teams_of_a_nested_org_counts_a_person_once(make_input, tmp_path):
+    """入れ子の組織（2 workspace）で、2 アカウントの人も集まりに1人として入る。"""
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    with open(config, "a", encoding="utf-8", newline="\n") as stream:
+        stream.write("adoption:\n  enabled: true\n")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+    team = _teams_org(tmp_path / "reports", org="org-x")
+    assert (team["seat_holders"], team["code_users"], team["code_demand_usd"]) == (
+        "2", "1", "30.00")
+
+
+def test_adoption_teams_skips_a_past_month_that_cannot_be_analyzed(
+        make_input, tmp_path, capsys):
+    """飛ばした過去の月はどちらの表にも行が無く、その月を含む3か月の列が空欄になる。"""
+    input_dir, config = _nested_ready(
+        make_input, tmp_path, second_months=("2026-04", "2026-06"))
+    make_input({"2026-04": [spend_row("a@x.jp", 5.0)]}, org="org-x", workspace="main")
+    with open(config, "a", encoding="utf-8", newline="\n") as stream:
+        stream.write("adoption:\n  enabled: true\n")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+    out = tmp_path / "reports"
+    teams = _summary_rows(_teams_path(out, org="org-x"))
+    people = _summary_rows(_adoption_path(out, org="org-x"))
+    assert sorted({r["month"] for r in teams}) == ["2026-04", "2026-06"]
+    assert sorted({r["month"] for r in people}) == ["2026-04", "2026-06"]
+    assert {r["code_users_3m"] for r in teams} == {""}
+    assert capsys.readouterr().out.count("は 2026-05 の行を書きません") == 1
+
+
+def test_preview_writes_neither_adoption_table(make_input, tmp_path, capsys):
+    """速報ではチーム × 月の表も書かず、通知は2つの表を指す1行。"""
+    input_dir = _three_months(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a",
+                     "--preview", "--days", "10") == 0
+    assert not _teams_path(out).exists()
+    printed = capsys.readouterr().out
+    assert printed.count("adoption-teams") == 1

@@ -24,7 +24,8 @@ P75 / P90 の3点に件数を添えたもので、件数の下限は設けない
 1件の PR は必ず1つの区分に入る——個人別の件数・対象者に当たらない作成者・Bot・削除済みの
 アカウント・対象外 repository の5つで、先に該当した区分に入れる。区分の合計がキャッシュの
 全件数に一致することを値オブジェクトが検査するので、どこかの区分から静かに漏れた PR は
-結果を作る時点で落ちる。
+結果を作る時点で落ちる。区分の判定は1か所（`_pr_bucket`）にあり、対象者の PR ごとの値
+（`subject_prs`）も同じ判定を使うので、人ごとの件数と同じ PR の集合を返す。
 
 Bot が作った PR は個人の実績ではないので個人別の集計から外す（`author_type` が
 `BOT_AUTHOR_TYPE` の PR）。対象者に当たらない作成者の PR も外すが、外した分は件数と人数
@@ -48,6 +49,7 @@ repository の一覧が完全でない結果では集計しない（`RepoDiscove
 from __future__ import annotations
 
 import datetime as dt
+import enum
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -437,6 +439,44 @@ def _linked_inputs(
     return known_repos, linked, subject_emails
 
 
+@enum.unique
+class _PrBucket(enum.Enum):
+    """1件の PR が入る区分（`_pr_bucket` の結果。宣言順が判定の順）。"""
+
+    # repository の一覧に無い repository の PR
+    EXCLUDED_REPOSITORY = enum.auto()
+    # 作成者のアカウントが削除済み（login が無い）
+    DELETED_AUTHOR = enum.auto()
+    # 作成者が Bot
+    BOT = enum.auto()
+    # 作成者の login が対象者の login と一致する（人ごとの件数に数える）
+    SUBJECT = enum.auto()
+    # 上のどれでもない（対応表に無い作成者と、対応表にあっても対象者でない人）
+    UNMAPPED = enum.auto()
+
+
+def _pr_bucket(
+    pr: CachedPr, known_repos: set[str], linked: dict[str, GithubMemberLink],
+) -> _PrBucket:
+    """PR を区分へ振り分ける（`pr_metrics` と `subject_prs` が使う唯一の判定）。
+
+    known_repos と linked は `_linked_inputs` の戻り（小文字の repository 名と、対象者の
+    login（小文字）→ 対応表の行）。判定は対象外 repository → 削除済みのアカウント →
+    Bot → 対象者の login → それ以外の順で、先に当てはまった区分にする。判定を1つに
+    まとめるのは、人ごとの件数と PR ごとの値が同じ PR の集合から出ることを保つため。
+    """
+    if pr.repository.lower() not in known_repos:
+        return _PrBucket.EXCLUDED_REPOSITORY
+    if pr.author_login is None:
+        # 削除済みのアカウント（`CachedPr` の不変条件で author_type も None）
+        return _PrBucket.DELETED_AUTHOR
+    if pr.author_type == BOT_AUTHOR_TYPE:
+        return _PrBucket.BOT
+    if pr.author_login.lower() in linked:
+        return _PrBucket.SUBJECT
+    return _PrBucket.UNMAPPED
+
+
 def pr_metrics(
     cache: PrCache,
     members: GithubMembers,
@@ -470,26 +510,23 @@ def pr_metrics(
     unmapped_logins: set[str] = set()   # 人数を数えるためだけに持つ（結果へは残さない）
     unmapped_prs = bot_prs = deleted_author_prs = excluded_repository_prs = 0
     for pr in cache.prs:
-        if pr.repository.lower() not in known_repos:
+        bucket = _pr_bucket(pr, known_repos, linked)
+        if bucket is _PrBucket.EXCLUDED_REPOSITORY:
             excluded_repository_prs += 1
-            continue
-        if pr.author_login is None:
-            # 削除済みのアカウント（`CachedPr` の不変条件で author_type も None）。
+        elif bucket is _PrBucket.DELETED_AUTHOR:
             # 誰の実績かを知る手立てが無いので、対応表の記入では解消しない＝警告しない
             deleted_author_prs += 1
-            continue
-        if pr.author_type == BOT_AUTHOR_TYPE:
+        elif bucket is _PrBucket.BOT:
             bot_prs += 1
-            continue
-        login = pr.author_login.lower()
-        if login in counts:
+        elif bucket is _PrBucket.SUBJECT:
+            login = pr.author_login.lower()
             hours = lead_time_hours(pr)
             counts[login] += 1
             user_hours[login].append(hours)
             mapped_hours.append(hours)
         else:
             unmapped_prs += 1
-            unmapped_logins.add(login)
+            unmapped_logins.add(pr.author_login.lower())
 
     users = tuple(sorted(
         (
@@ -545,6 +582,71 @@ def pr_metrics(
         cache_complete=cache.complete,
         warnings=tuple(warnings),
     )
+
+
+@dataclass(frozen=True)
+class SubjectPr:
+    """対象者へ帰属した PR の1件分（集まりの PR の大きさと lead time の材料）。
+
+    email は作成者に当たる対象者の email で、対応表の鍵と同じ表記（前後空白を除いて
+    小文字）。lead_time_hours は `lead_time_hours` の値（0以上の有限な時）、additions は
+    PR の追加行（`CachedPr.additions`。0以上の整数）。
+
+    持つのはこの3つだけで、repository 名・PR 番号・login は持たせない。集まりの値は
+    PR の集合の代表値しか使わず、どの repository の何番の PR かは成果物に載せる対象では
+    ないため（設計書 §27.9）。不変条件は __post_init__ で検査する。型の誤りは
+    TypeError、値の誤りは ValueError。
+    """
+
+    email: str
+    lead_time_hours: float
+    additions: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.email, str):
+            raise TypeError(f"email には文字列が必要です: {type(self.email).__name__}")
+        # 表記の検査と正規化は対応表の1行へ委ねる（集計の側と同じ鍵で突き合わせるため）
+        link = GithubMemberLink(email=self.email, github_login=None)
+        object.__setattr__(self, "email", link.email)
+        object.__setattr__(
+            self, "lead_time_hours", _as_hours("lead_time_hours", self.lead_time_hours)
+        )
+        if isinstance(self.additions, bool) or not isinstance(self.additions, int):
+            raise TypeError(
+                f"additions には整数が必要です: {type(self.additions).__name__}"
+            )
+        if self.additions < 0:
+            raise ValueError(f"additions には0以上の整数が必要です: {self.additions!r}")
+
+
+def subject_prs(
+    cache: PrCache,
+    members: GithubMembers,
+    repos: RepoDiscovery,
+    subjects: frozenset[str],
+) -> tuple[SubjectPr, ...]:
+    """対象者へ帰属した PR ごとの値（email の昇順・同じ人の中はキャッシュの並びの順）。
+
+    入力は `pr_metrics` と同じ4つで、同じ検査（型・Organization の一致・repository の
+    一覧が完全か）を通す。入る PR は、`pr_metrics` が人ごとの件数（`merged_pr_count`）に
+    数える PR とちょうど同じ集合（区分の判定は `_pr_bucket` を共有する）なので、人ごとの
+    件数は同じ入力の `pr_metrics` の users と一致する。
+
+    人ごとの中央値は足し合わせられないので、集まりの lead time と PR の大きさはこの値の
+    集合から出す（設計書 §27.5）。警告は返さない（同じ入力の `pr_metrics` が出す）。
+    """
+    known_repos, linked, _ = _linked_inputs(cache, members, repos, subjects)
+    values = [
+        SubjectPr(
+            email=linked[pr.author_login.lower()].email,
+            lead_time_hours=lead_time_hours(pr),
+            additions=pr.additions,
+        )
+        for pr in cache.prs
+        if _pr_bucket(pr, known_repos, linked) is _PrBucket.SUBJECT
+    ]
+    # sorted は安定なので、同じ人の中はキャッシュの並び（repository・番号の順）のまま
+    return tuple(sorted(values, key=lambda value: value.email))
 
 
 @dataclass(frozen=True)

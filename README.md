@@ -102,6 +102,7 @@ seat-analyzer --version
 - `github-summary-YYYYMM-<組織名>.csv` — GitHub の merged PR 数・lead time・コミット単位の行数の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ）
 - `reports/summary/YYYY-MM.md` — 複数組織を一括分析した場合の組織横断サマリ（この名前は変わりません）
 - `reports/summary/adoption-people-YYYYMM-<組織名>.csv` — 人 × 月の表（Claude Code の需要・リクエスト数・Claude Code が加えた行と、GitHub の PR・コミット単位の行数を、1人の1か月を1行に並べた参考値。設定 `adoption.enabled: true` の組織の正式分析だけで出力し、組織の担当者へ共有する成果物には含めません）
+- `reports/summary/adoption-teams-YYYYMM-<組織名>.csv` — チーム × 月の表（人 × 月の表を組織全体・部署・チームごとの1か月へ畳んだ参考値。人数・Claude Code を使った人の数・需要の合計と中央値・PR 数・PR の大きさ・lead time・マージ行あたりの費用など。人 × 月の表と同じ設定・同じ条件で出力します）
 
 速報モード（`--preview`）は `preview-YYYYMM-<組織名>.md` と
 `preview-dashboard-YYYYMM-<組織名>.html` を出します。
@@ -114,7 +115,7 @@ seat-analyzer --version
 | --- | --- |
 | [docs/setup.md](docs/setup.md) | ゼロから動く状態にするまでのセットアップ手順（Claude Code に実行させる形式）、claude.ai からの CSV 取得の設定、定期実行の雛形（macOS） |
 | [docs/usage.md](docs/usage.md) | 入力データの構成、複数スペースの組織、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、claude.ai からの CSV 取得、速報モード |
-| [docs/reference.md](docs/reference.md) | レポート各セクションと複数スペースの組織の読み方、人 × 月の表の列、追加クレジットの上限、GitHub 分析の有効化、claude.ai からの CSV 取得の設定、判定ロジックの前提、判定の版と移行 |
+| [docs/reference.md](docs/reference.md) | レポート各セクションと複数スペースの組織の読み方、人 × 月・チーム × 月の表の列、追加クレジットの上限、GitHub 分析の有効化、claude.ai からの CSV 取得の設定、判定ロジックの前提、判定の版と移行 |
 | [docs/tooling.md](docs/tooling.md) | 考察の自動執筆（`discuss`）と公開テキストの検査（`check-text`） |
 | [CHANGELOG.md](CHANGELOG.md) | バージョンごとの変更履歴 |
 

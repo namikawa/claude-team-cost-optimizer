@@ -315,11 +315,14 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    付けない（担当者へ共有しない内部の文書で、月は既に名前に入っているため）
 
    `config.yaml` に `adoption:` の `enabled: true` を書くと、正式分析のたびに人 × 月の表
-   `reports/summary/adoption-people-YYYYMM-<組織名>.csv` も生成される（既定は無効。1組織
-   だけの実行でも書き、速報モードでは書かない）。Claude Code の需要・リクエスト数・Claude
-   Code が加えた行と、GitHub の PR・コミット単位の行数を、入力にある全月について1人の
-   1か月を1行に並べた参考値で、組織の担当者へ共有する成果物には含めない（列の意味は
-   reference.md の [adoption-people の列](./reference.md#adoption-people-の列人--月の表)）
+   `reports/summary/adoption-people-YYYYMM-<組織名>.csv` とチーム × 月の表
+   `reports/summary/adoption-teams-YYYYMM-<組織名>.csv` も生成される（既定は無効。1組織
+   だけの実行でも書き、速報モードでは書かない）。人 × 月の表は Claude Code の需要・
+   リクエスト数・Claude Code が加えた行と、GitHub の PR・コミット単位の行数を、入力にある
+   全月について1人の1か月を1行に並べた参考値で、チーム × 月の表はそれを組織全体・部署・
+   チームごとの1か月へ畳んだもの。どちらも組織の担当者へ共有する成果物には含めない（列の
+   意味は reference.md の [adoption-people の列](./reference.md#adoption-people-の列人--月の表)
+   と [adoption-teams の列](./reference.md#adoption-teams-の列チーム--月の表)）
 
    ファイル名の規則を変える前に生成した成果物（`report.md` 等）は自動で改名も削除も
    しない。再生成すると新旧が併存するので、旧名の整理は必要に応じて手で行う。
@@ -339,9 +342,9 @@ seat-analyzer collect --org <組織名> --source github --month YYYY-MM
 対象月に merge された PR のメタデータを `input/<組織名>/github-cache/prs-YYYY-MM.json`
 へ保存する。行数の集計は前の月のキャッシュも読むので、分析する月と、その前の
 `github.commit_lookback_months` か月ぶんを月を変えて順に収集する。複数の月を分析するなら、
-最も古い分析月の前の月ぶんも必要になる。人 × 月の表（adoption-people）は直前の月の
-キャッシュが無い月の行数を空欄にするので、行数を最初の月から出したい場合は、その前の月の
-キャッシュも収集しておく。
+最も古い分析月の前の月ぶんも必要になる。人 × 月の表とチーム × 月の表（adoption-people・
+adoption-teams）は直前の月のキャッシュが無い月の行数を空欄にするので、行数を最初の月から
+出したい場合は、その前の月のキャッシュも収集しておく。
 
 - 保存するのは repository 名・PR 番号・作成者・作成日時・merge 日時・追加行数・
   削除行数・draft かどうかと、PR に含まれるコミットの SHA・作者の login とメール・

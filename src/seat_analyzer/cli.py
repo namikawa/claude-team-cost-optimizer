@@ -958,10 +958,10 @@ def _run_analyze(args: argparse.Namespace) -> int:
                     "（参考値は正式分析でだけ出力）"
                 )
             if cfg["adoption"]["enabled"]:
-                # 有効にした人 × 月の表を速報で黙って無視しない
+                # 有効にした人 × 月・チーム × 月の表を速報で黙って無視しない
                 print(
-                    f"{org}: 速報モードでは adoption-people を書きません"
-                    "（人 × 月の表は正式分析でだけ出力）"
+                    f"{org}: 速報モードでは adoption-people・adoption-teams を書きません"
+                    "（人 × 月の表・チーム × 月の表は正式分析でだけ出力）"
                 )
             days = args.days
             # 入れ子の組織は --days の有無によらず workspace ごとの観測日数を突き合わせる
@@ -1029,12 +1029,14 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 notices += _stale_github_notices(org_output, month, org)
         annotations: dict[str, str] = {}
         if cfg["adoption"]["enabled"]:
-            # 人 × 月の表は組織の担当者へ共有しない資料なので、組織の出力ディレクトリ
-            # ではなく reports/summary/ に書く（考察の資料・混入チェックの対象にもしない）
-            path, annotations["adoption"], adoption_notices = _write_adoption_people(
+            # 人 × 月・チーム × 月の表は組織の担当者へ共有しない資料なので、組織の出力
+            # ディレクトリではなく reports/summary/ に書く（考察の資料・混入チェックの対象
+            # にもしない）
+            adoption_paths, adoption_annotations, adoption_notices = _write_adoption_tables(
                 org, org_input, output_dir, result, cfg, caches, loaded,
             )
-            paths["adoption"] = path
+            paths.update(adoption_paths)
+            annotations.update(adoption_annotations)
             notices += adoption_notices
         results.append(result)
         written.append((org, org_output))
@@ -2640,12 +2642,16 @@ def _adoption_github(
     month: str,
     cfg: dict,
     loaded: _GithubMonthLoad | None,
+    subjects: frozenset[str],
 ) -> adoption.GithubMonth:
-    """人 × 月の表に写す、その月の GitHub の材料（loaded が None なら GitHub 分析の無い組織）。
+    """人 × 月・チーム × 月の表に写す、その月の GitHub の材料（loaded が None なら GitHub
+    分析の無い組織）。
 
     キャッシュが無い月も対応表は読む（github_id の列は材料の状態によらず書くため）。
     コミットの集計は状態が ok の月だけ写す（直前の月が読めない月の値は github-summary には
-    書くが、表には写さない。設計書 §27.8）。
+    書くが、表には写さない。設計書 §27.8）。PR の集計がある月は、同じキャッシュ・対応表・
+    対象者（subjects）から PR ごとの値も作る（チーム × 月の表の PR の大きさと lead time の
+    材料。キャッシュは読み直さない）。
     """
     if loaded is None:
         return adoption.GITHUB_NOT_CONFIGURED
@@ -2662,16 +2668,20 @@ def _adoption_github(
         previous_readable=loaded.previous_readable,
         lookback_months=cfg["github"]["commit_lookback_months"],
     )
+    prs = None
+    if loaded.metrics is not None:
+        prs = github_metrics.subject_prs(cache, members, cache.repositories, subjects)
     return adoption.GithubMonth(
         state=state,
         members=members,
         metrics=loaded.metrics,
         commits=loaded.commits if state is adoption.GithubData.OK else None,
         cache_complete=None if cache is None else cache.complete,
+        prs=prs,
     )
 
 
-def _write_adoption_people(
+def _write_adoption_tables(
     org: str,
     org_input: Path,
     output_dir: Path,
@@ -2679,24 +2689,26 @@ def _write_adoption_people(
     cfg: dict,
     caches: _PrCaches | None,
     target: _GithubMonthLoad | None,
-) -> tuple[Path, str, list[str]]:
-    """人 × 月の表を `reports/summary/` に書き、書いた先・出力一覧の添え書き・通知を返す。
+) -> tuple[dict[str, Path], dict[str, str], list[str]]:
+    """人 × 月・チーム × 月の表を `reports/summary/` に書き、出力一覧の種別 → 書いた先・
+    種別 → 添え書き・通知を返す。
 
     月は入力に spend がある月のうち対象月以前（対象月は常に含める）。対象月は分析済みの
     result と github-summary の材料 target を使い回し、過去の月はその月を対象月として
     分析し直す（判定の版に依らない値だけを使うので既定の引数で呼ぶ）。各月の対象者と
     GitHub の集計は、その月の分析結果から決める（その月の github-summary と同じ値になる）。
+    月ごとの分析の回し直しと GitHub の材料の読み込みは1回だけ行い、2つの表を同じ月の集合・
+    同じ人 × 月の行から作る。
 
     過去の月の分析が入力の欠けや不整合（FileNotFoundError・ValueError）で止まったら、その月を
-    飛ばして通知を1件足し、残りの月を続ける。過去の月の分析の警告は返さない。caches は
-    GitHub 分析の無い組織では None。
+    飛ばして通知を1件足し、残りの月を続ける（飛ばした月はどちらの表にも行を作らない）。過去の
+    月の分析の警告は返さない。caches は GitHub 分析の無い組織では None。
     """
     months = sorted(
         {m for m in ingest.discover_org_months(org_input) if m <= result.month}
         | {result.month}
     )
-    rows: list[adoption.PersonMonth] = []
-    covered: list[str] = []
+    materials: list[adoption.MonthInputs] = []
     notices: list[str] = []
     for month in months:
         if month == result.month:
@@ -2706,23 +2718,37 @@ def _write_adoption_people(
                 month_result = analyze.analyze_org(org_input, month, cfg, org)
             except (FileNotFoundError, ValueError) as exc:
                 notices.append(
-                    f"adoption-people は {month} の行を書きません"
+                    f"adoption-people・adoption-teams は {month} の行を書きません"
                     f"（{month} を対象月として分析できないため: {exc}）"
                 )
                 continue
+        subjects = _github_subjects(month_result)
+        if month != result.month:
             loaded = None if caches is None else _load_github_month(
-                org_input, month, cfg, caches, _github_subjects(month_result)
+                org_input, month, cfg, caches, subjects
             )
-        github = _adoption_github(org_input, month, cfg, loaded)
-        rows.extend(adoption.person_rows(month_result, github))
-        covered.append(month)
+        github = _adoption_github(org_input, month, cfg, loaded, subjects)
+        materials.append(adoption.month_inputs(month_result, github))
 
-    path = report.ADOPTION_PEOPLE.summary_path(output_dir, result.month, org)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    report.write_adoption_people(rows, path)
+    covered = [material.month for material in materials]
     span = covered[0] if len(covered) == 1 else f"{covered[0]}〜{covered[-1]}"
-    people = len({row.email for row in rows})
-    return path, f"（{people} 名 × {span}・{len(rows)} 行）", notices
+    people_rows = [row for material in materials for row in material.rows]
+    team_rows = adoption.group_rows(materials)
+
+    people_path = report.ADOPTION_PEOPLE.summary_path(output_dir, result.month, org)
+    people_path.parent.mkdir(parents=True, exist_ok=True)
+    report.write_adoption_people(people_rows, people_path)
+    teams_path = report.ADOPTION_TEAMS.summary_path(output_dir, result.month, org)
+    report.write_adoption_teams(team_rows, teams_path)
+
+    people = len({row.email for row in people_rows})
+    groups = len({(row.scope, row.name) for row in team_rows})
+    paths = {"adoption": people_path, "adoption-teams": teams_path}
+    annotations = {
+        "adoption": f"（{people} 名 × {span}・{len(people_rows)} 行）",
+        "adoption-teams": f"（{groups} 集まり × {span}・{len(team_rows)} 行）",
+    }
+    return paths, annotations, notices
 
 
 def _stale_github_notices(org_output: Path, month: str, org: str) -> list[str]:
