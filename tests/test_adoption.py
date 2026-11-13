@@ -1,7 +1,9 @@
-"""人 × 月の表の1か月分の組み立て（adoption.person_rows。設計書 §27.8）のテスト。
+"""人 × 月の表の1か月分の組み立て（adoption.person_rows）と、集まり × 月の行
+（adoption.group_rows）のテスト（設計書 §27.5・§27.8）。
 
 入力は合成データだけで組み、`analyze.analyze_org` の結果をそのまま渡して確かめる。
 GitHub の材料は値オブジェクト（GithubMembers・GithubMetrics・CommitMetrics）を直接組む。
+集まりの規則だけを見るテストは、人 × 月の行（PersonMonth）を直接組んで渡す。
 """
 
 import dataclasses
@@ -16,8 +18,13 @@ from seat_analyzer.adoption import (
     GithubData,
     GithubId,
     GithubMonth,
+    GroupMonth,
+    GroupScope,
+    MonthInputs,
     PersonMonth,
     github_data_state,
+    group_rows,
+    month_inputs,
     person_rows,
     seat_holders,
 )
@@ -29,8 +36,10 @@ from seat_analyzer.github_metrics import (
     CommitTotals,
     GithubMetrics,
     LeadTimeSummary,
+    SubjectPr,
     UserCommitMetrics,
     UserPrMetrics,
+    summarize_lead_times,
 )
 
 from .conftest import CONFIG, SPEND_HEADER, spend_row
@@ -495,3 +504,471 @@ def test_same_input_gives_the_same_rows(make_input, tmp_path):
     cfg = _nested_cfg(tmp_path)
     assert person_rows(_analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED) == \
         person_rows(_analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED)
+
+
+# ============================================================ 集まり × 月の行
+
+DEPT_1 = "架空開発一部"
+DEPT_2 = "架空開発二部"
+TEAM_1 = "Orion-Team"
+TEAM_2 = "Vega-Team"
+
+# PR の列を書く状態と、キャッシュを読めた状態
+_PR_STATES = (GithubData.NO_COMMITS, GithubData.NO_PREVIOUS_MONTH, GithubData.OK)
+_CACHE_STATES = (GithubData.NO_REPOSITORY_LIST, *_PR_STATES)
+
+# 集まりの GitHub の値の列
+_GROUP_PR_COLUMNS = ("merged_pr_count", "pr_additions_median", "lead_time_median_hours",
+                     "lead_time_p90_hours")
+_GROUP_COMMIT_COLUMNS = ("lines_added_capped", "code_demand_usd_of_github_people")
+
+
+def _person(email: str, *, month: str = MONTH, department: str = "", team: str = "",
+            requests: float | None = 1.0, demand: float | None = 10.0, loc: int | None = None,
+            github_id: GithubId = GithubId.LOGIN, state: GithubData = GithubData.OK,
+            prs: int = 0, lines: int = 0) -> PersonMonth:
+    """集まりの規則を見るための人 × 月の1行（状態に合わせて GitHub の列を埋める）。"""
+    configured = state is not GithubData.NOT_CONFIGURED
+    gid = github_id if configured else None
+    pr_on = gid is GithubId.LOGIN and state in _PR_STATES
+    commit_on = gid is GithubId.LOGIN and state is GithubData.OK
+    return PersonMonth(
+        email=email, month=month, seat="premium", department=department, team=team, role="",
+        spend_complete=True, total_demand_usd=50.0, code_demand_usd=demand,
+        code_requests=requests, loc_with_cc=loc, github_id=gid, github_data=state,
+        github_cache_complete=True if state in _CACHE_STATES else None,
+        merged_pr_count=prs if pr_on else None,
+        lead_time_median_hours=1.0 if pr_on and prs else None,
+        commit_count=0 if commit_on else None,
+        lines_added_capped=lines if commit_on else None,
+        large_commits=0 if commit_on else None,
+    )
+
+
+def _auto_prs(rows: list[PersonMonth]) -> list[SubjectPr]:
+    """行の merged_pr_count と同じ件数の PR ごとの値（lead time 1 時・追加行 10）。"""
+    return [
+        SubjectPr(email=row.email, lead_time_hours=1.0, additions=10)
+        for row in rows if row.merged_pr_count for _ in range(row.merged_pr_count)
+    ]
+
+
+def _inputs(rows: list[PersonMonth], *, month: str = MONTH,
+            state: GithubData = GithubData.OK,
+            prs: list[SubjectPr] | None = None) -> MonthInputs:
+    """1か月分の材料（行は email の昇順へ並べ、PR ごとの値は省くと行の件数から作る）。"""
+    ordered = sorted(rows, key=lambda row: row.email)
+    return MonthInputs(
+        month=month, spend_complete=True, github_data=state,
+        github_cache_complete=True if state in _CACHE_STATES else None,
+        rows=tuple(ordered),
+        prs=(tuple(_auto_prs(ordered) if prs is None else prs)
+             if state in _PR_STATES else None),
+    )
+
+
+def _keyed(rows) -> dict[tuple[GroupScope, str, str], GroupMonth]:
+    """集まりの行を（種別・名前・月）→ 行の辞書にする。"""
+    return {(row.scope, row.name, row.month): row for row in rows}
+
+
+def _org(rows, month: str = MONTH) -> GroupMonth:
+    """その月の組織全体の行。"""
+    return _keyed(rows)[(GroupScope.ORGANIZATION, "", month)]
+
+
+def test_group_rows_are_sorted_by_scope_name_and_month():
+    """行は組織全体・部署・チームの3種で、種別・名前・月の昇順。組織全体の名前は空。"""
+    materials = [
+        _inputs([_person("b@x.jp", month=month, department=DEPT_2, team=TEAM_1),
+                 _person("a@x.jp", month=month, department=DEPT_1)], month=month)
+        for month in ("2026-06", "2026-05")
+    ]
+    rows = group_rows(materials)
+    assert [(row.scope, row.name, row.month) for row in rows] == [
+        (GroupScope.ORGANIZATION, "", "2026-05"), (GroupScope.ORGANIZATION, "", "2026-06"),
+        (GroupScope.DEPARTMENT, DEPT_1, "2026-05"), (GroupScope.DEPARTMENT, DEPT_1, "2026-06"),
+        (GroupScope.DEPARTMENT, DEPT_2, "2026-05"), (GroupScope.DEPARTMENT, DEPT_2, "2026-06"),
+        (GroupScope.TEAM, TEAM_1, "2026-05"), (GroupScope.TEAM, TEAM_1, "2026-06"),
+    ]
+    assert [scope.value for scope in GroupScope] == ["organization", "department", "team"]
+
+
+def _write_info(base: Path, rows: list[str]) -> None:
+    """部署・チームだけを記入した members-info.csv を置く。"""
+    (base / "members-info.csv").write_text(
+        "email,部署,チーム\n" + "".join(f"{row}\n" for row in rows),
+        encoding="utf-8", newline="\n",
+    )
+
+
+def _bea_prs() -> tuple[SubjectPr, ...]:
+    """`_metrics()` の bea の PR 2件に合う PR ごとの値。"""
+    return (SubjectPr(email="bea@x.jp", lead_time_hours=1.0, additions=30),
+            SubjectPr(email="bea@x.jp", lead_time_hours=2.0, additions=50))
+
+
+def test_counts_and_sums_match_the_person_rows(make_input):
+    """人数・合計は、同じ月・同じ集まりの人 × 月の行（丸める前の値）から数えた値と一致する。"""
+    input_dir = _single(make_input)
+    _write_info(input_dir / ORG, [f"bea@x.jp,{DEPT_1},{TEAM_1}", f"cai@x.jp,{DEPT_1},",
+                                  f"dan@x.jp,{DEPT_2},{TEAM_1}"])
+    github = dataclasses.replace(_github(GithubData.OK), prs=_bea_prs())
+    material = month_inputs(_analyze(input_dir), github)
+    rows = _keyed(group_rows([material]))
+    groups = {
+        (GroupScope.ORGANIZATION, ""): material.rows,
+        (GroupScope.DEPARTMENT, DEPT_1): [r for r in material.rows if r.department == DEPT_1],
+        (GroupScope.DEPARTMENT, DEPT_2): [r for r in material.rows if r.department == DEPT_2],
+        (GroupScope.TEAM, TEAM_1): [r for r in material.rows if r.team == TEAM_1],
+    }
+    assert set(rows) == {(scope, name, MONTH) for scope, name in groups}
+    for (scope, name), people in groups.items():
+        row = rows[(scope, name, MONTH)]
+        login = [p for p in people if p.github_id is GithubId.LOGIN]
+        assert row.seat_holders == len(people)
+        assert row.code_users == sum(1 for p in people if p.code_requests > 0)
+        assert row.code_demand_usd == sum(p.code_demand_usd for p in people)
+        assert row.merged_pr_count == (sum(p.merged_pr_count for p in login)
+                                       if login else None)
+        assert row.lines_added_capped == (sum(p.lines_added_capped for p in login)
+                                          if login else None)
+    assert rows[(GroupScope.ORGANIZATION, "", MONTH)].merged_pr_count == 2
+
+
+def test_concurrent_and_unassigned_people():
+    """兼務の人は両方の集まりに1人として入り、未記入の人は組織全体にだけ入る。"""
+    material = _inputs([
+        _person("a@x.jp", department=f"{DEPT_1}; {DEPT_2}", team=f"{TEAM_1}; {TEAM_1}"),
+        _person("b@x.jp", department=DEPT_1),
+        _person("c@x.jp"),
+        _person("d@x.jp", team=TEAM_2),
+    ])
+    rows = _keyed(group_rows([material]))
+    people = {(scope, name): row.seat_holders for (scope, name, _), row in rows.items()}
+    assert people == {
+        (GroupScope.ORGANIZATION, ""): 4,
+        (GroupScope.DEPARTMENT, DEPT_1): 2, (GroupScope.DEPARTMENT, DEPT_2): 1,
+        (GroupScope.TEAM, TEAM_1): 1, (GroupScope.TEAM, TEAM_2): 1,
+    }
+    # 部署の行の人数の和は組織全体と一致しない（兼務は2度・未記入は0度数える）
+    assert people[(GroupScope.DEPARTMENT, DEPT_1)] + people[(GroupScope.DEPARTMENT, DEPT_2)] != 4
+
+
+def test_same_name_in_department_and_team_is_two_rows():
+    """部署とチームで同じ名前があっても、種別が違えば別の行。"""
+    rows = group_rows([_inputs([_person("a@x.jp", department=TEAM_1, team=TEAM_1)])])
+    assert [(row.scope, row.name) for row in rows] == [
+        (GroupScope.ORGANIZATION, ""), (GroupScope.DEPARTMENT, TEAM_1),
+        (GroupScope.TEAM, TEAM_1)]
+
+
+def test_medians_use_all_seat_holders_for_demand_and_users_for_loc():
+    """需要の中央値は全員（0 の人を含む）、加えた行の中央値は使った人だけで取る。"""
+    org = _org(group_rows([_inputs([
+        _person("a@x.jp", requests=0.0, demand=0.0, loc=999),
+        _person("b@x.jp", requests=3.0, demand=10.0, loc=100),
+        _person("c@x.jp", requests=5.0, demand=30.0, loc=7),
+    ])]))
+    assert (org.code_users, org.code_demand_median_usd, org.loc_median_of_users) == (
+        2, 10.0, 53.5)
+
+
+def test_lead_time_and_pr_size_come_from_the_set_of_prs():
+    """lead time と PR の大きさは集まりの PR の集合から出し、人ごとの中央値をまとめない。"""
+    prs = [SubjectPr(email="a@x.jp", lead_time_hours=h, additions=n)
+           for h, n in ((1.0, 10), (2.0, 20), (30.0, 300))]
+    prs += [SubjectPr(email="b@x.jp", lead_time_hours=h, additions=n)
+            for h, n in ((40.0, 400), (50.0, 500))]
+    org = _org(group_rows([_inputs(
+        [_person("a@x.jp", prs=3), _person("b@x.jp", prs=2)], prs=prs)]))
+    expected = summarize_lead_times([1.0, 2.0, 30.0, 40.0, 50.0])
+    assert (org.merged_pr_count, org.pr_additions_median) == (5, 300.0)
+    assert (org.lead_time_median_hours, org.lead_time_p90_hours) == (
+        expected.median_hours, expected.p90_hours)
+    # 人ごとの中央値（2 時・45 時、20 行・450 行）の平均とは違う値になる
+    assert org.lead_time_median_hours != (2.0 + 45.0) / 2
+    assert org.pr_additions_median != (20 + 450) / 2
+
+
+def _drop_product_column(base: Path, rows: list[str]) -> None:
+    """spend を product の列の無いものに置き換える。"""
+    spend = base / "spend" / f"spend_{MONTH}.csv"
+    header = SPEND_HEADER.replace("Product,", "")
+    fields = [row.split(",") for row in rows]
+    spend.write_text(
+        header + "\n" + "".join(",".join(f[:2] + f[3:]) + "\n" for f in fields),
+        encoding="utf-8", newline="\n",
+    )
+
+
+def test_blank_materials_blank_the_group_values(make_input):
+    """材料の人の値が1人でも空欄なら、その集まりの列は空欄（人数は値を持つ）。"""
+    input_dir = _single(make_input)
+    org = _org(group_rows([month_inputs(_analyze(input_dir), GITHUB_NOT_CONFIGURED)]))
+    assert org.code_users == 2
+    assert org.loc_median_of_users is None   # code-analytics の無い月
+
+    _drop_product_column(input_dir / ORG,
+                         [spend_row("bea@x.jp", 40.0), spend_row("cai@x.jp", 5.0)])
+    org = _org(group_rows([month_inputs(_analyze(input_dir), GITHUB_NOT_CONFIGURED)]))
+    assert org.seat_holders == 3
+    assert (org.code_users, org.code_users_3m, org.code_demand_usd,
+            org.code_demand_median_usd, org.loc_median_of_users) == (
+        None, None, None, None, None)
+
+    org = _org(group_rows([_inputs([_person("a@x.jp", demand=None, lines=20),
+                                    _person("b@x.jp", lines=5)])]))
+    assert (org.lines_added_capped, org.code_demand_usd_of_github_people) == (25, None)
+    assert org.cost_per_merged_line_usd is None
+
+
+# 状態 → (PR の値を持つか, 行数・需要の和を持つか, github_people を持つか)
+_GROUP_STATE_COLUMNS = {
+    GithubData.NOT_CONFIGURED: (False, False, False),
+    GithubData.NO_CACHE: (False, False, True),
+    GithubData.NO_REPOSITORY_LIST: (False, False, True),
+    GithubData.NO_COMMITS: (True, False, True),
+    GithubData.NO_PREVIOUS_MONTH: (True, False, True),
+    GithubData.OK: (True, True, True),
+}
+
+
+@pytest.mark.parametrize("state", list(GithubData))
+def test_each_github_state_blanks_the_specified_group_columns(state):
+    """6つの状態ごとに、規定の列だけが空欄になる（PR の値と、行数・需要の和）。"""
+    rows = [_person("a@x.jp", state=state, prs=2, lines=40, department=DEPT_1),
+            _person("b@x.jp", state=state, github_id=GithubId.NONE, department=DEPT_2)]
+    keyed = _keyed(group_rows([_inputs(rows, state=state)]))
+    org = keyed[(GroupScope.ORGANIZATION, "", MONTH)]
+    pr, commit, people = _GROUP_STATE_COLUMNS[state]
+    assert (org.github_people is not None) is people
+    assert all((getattr(org, name) is not None) is pr for name in _GROUP_PR_COLUMNS)
+    assert all((getattr(org, name) is not None) is commit for name in _GROUP_COMMIT_COLUMNS)
+    if people:
+        assert org.github_people == 1
+        # login の人が0人の集まりは github_people が0で、GitHub の値の列はすべて空欄
+        nobody = keyed[(GroupScope.DEPARTMENT, DEPT_2, MONTH)]
+        assert nobody.github_people == 0
+        assert all(getattr(nobody, name) is None
+                   for name in (*_GROUP_PR_COLUMNS, *_GROUP_COMMIT_COLUMNS))
+    if commit:
+        assert (org.lines_added_capped, org.code_demand_usd_of_github_people) == (40, 10.0)
+
+
+def test_a_group_without_prs_has_zero_prs_and_no_lead_time():
+    """PR が0件の集まりは件数0で、PR の大きさと lead time が空欄。"""
+    org = _org(group_rows([_inputs([_person("a@x.jp", prs=0, lines=7)])]))
+    assert (org.merged_pr_count, org.pr_additions_median, org.lead_time_median_hours,
+            org.lead_time_p90_hours) == (0, None, None, None)
+    assert org.lines_added_capped == 7
+
+
+def test_code_users_3m_needs_three_consecutive_months():
+    """3か月続けて使った人は、暦で連続する3か月がそろう月だけ値を持つ。"""
+    months = ("2026-04", "2026-05", "2026-06")
+    materials = [_inputs([_person("a@x.jp", month=m), _person("b@x.jp", month=m)], month=m)
+                 for m in months]
+    rows = group_rows(materials)
+    assert [_org(rows, m).code_users_3m for m in months] == [None, None, 2]
+    # 間の月が無い並び（2026-05 が無い）は空欄
+    gap = [materials[0], materials[2]]
+    assert _org(group_rows(gap), "2026-06").code_users_3m is None
+
+
+def test_code_users_3m_counts_the_people_of_the_month():
+    """前の月に行が無い人は数えず、途中でチームが変わった人はその月のチームで数える。"""
+    materials = [
+        _inputs([_person("a@x.jp", month="2026-04", team=TEAM_1),
+                 _person("c@x.jp", month="2026-04", team=TEAM_2)], month="2026-04"),
+        _inputs([_person("a@x.jp", month="2026-05", team=TEAM_1),
+                 _person("c@x.jp", month="2026-05", team=TEAM_2, requests=0.0)],
+                month="2026-05"),
+        _inputs([_person("a@x.jp", month="2026-06", team=TEAM_2),
+                 _person("b@x.jp", month="2026-06", team=TEAM_2),
+                 _person("c@x.jp", month="2026-06", team=TEAM_2)], month="2026-06"),
+    ]
+    keyed = _keyed(group_rows(materials))
+    team = keyed[(GroupScope.TEAM, TEAM_2, "2026-06")]
+    # a は前の月の所属が違っても数え、b（前の月に行が無い）と c（5 月に使っていない）は数えない
+    assert (team.code_users, team.code_users_3m) == (3, 1)
+    assert keyed[(GroupScope.TEAM, TEAM_1, "2026-05")].code_users_3m is None
+
+
+def test_code_users_3m_is_blank_when_a_request_count_is_unknown():
+    """集まりの人の、行がある月の code_requests が None なら空欄。"""
+    materials = [
+        _inputs([_person("a@x.jp", month="2026-04"), _person("b@x.jp", month="2026-04")],
+                month="2026-04"),
+        _inputs([_person("a@x.jp", month="2026-05", requests=None)], month="2026-05"),
+        _inputs([_person("a@x.jp", month="2026-06"), _person("b@x.jp", month="2026-06")],
+                month="2026-06"),
+    ]
+    org = _org(group_rows(materials), "2026-06")
+    assert (org.code_users, org.code_users_3m) == (2, None)
+
+
+def test_a_month_without_seat_holders_has_only_the_organization_row():
+    """シートを持つ人が0人の月も組織全体の行を持ち、部署・チームの行は作らない。"""
+    months = ("2026-04", "2026-05", "2026-06")
+    materials = [_inputs([_person("a@x.jp", month=m, department=DEPT_1)], month=m)
+                 for m in months[:2]]
+    materials.append(_inputs([], month="2026-06"))
+    rows = group_rows(materials)
+    assert [row.month for row in rows if row.scope is GroupScope.DEPARTMENT] == list(months[:2])
+    org = _org(rows, "2026-06")
+    assert (org.seat_holders, org.code_users, org.code_users_3m, org.code_demand_usd) == (
+        0, 0, 0, 0.0)
+    assert (org.code_demand_median_usd, org.loc_median_of_users) == (None, None)
+    assert org.github_people == 0
+    assert all(getattr(org, name) is None
+               for name in (*_GROUP_PR_COLUMNS, *_GROUP_COMMIT_COLUMNS))
+    blank = _org(group_rows([_inputs([], state=GithubData.NOT_CONFIGURED)]))
+    assert blank.github_people is None
+
+
+def test_group_cost_per_merged_line():
+    """比率は login の人の需要の和 ÷ 行数の和で、分母0・分子が None なら None。"""
+    def org(**changes):
+        return _org(group_rows([_inputs([_person("a@x.jp", **changes),
+                                         _person("b@x.jp", lines=0)])]))
+    assert org(demand=30.0, lines=20).cost_per_merged_line_usd == pytest.approx(2.0)
+    assert org(lines=0).cost_per_merged_line_usd is None
+    assert org(demand=None, lines=20).cost_per_merged_line_usd is None
+
+
+def _group(**changes) -> GroupMonth:
+    """ok の月の組織全体の1行（changes で列を差し替える）。"""
+    base = GroupMonth(
+        scope=GroupScope.ORGANIZATION, name="", month=MONTH, spend_complete=True,
+        github_data=GithubData.OK, github_cache_complete=True, seat_holders=3,
+        code_users=2, code_users_3m=1, code_demand_usd=40.0, code_demand_median_usd=10.0,
+        loc_median_of_users=12.5, github_people=2, merged_pr_count=3,
+        pr_additions_median=20.0, lead_time_median_hours=2.0, lead_time_p90_hours=5.0,
+        lines_added_capped=60, code_demand_usd_of_github_people=30.0,
+    )
+    return dataclasses.replace(base, **changes)
+
+
+@pytest.mark.parametrize("changes", [
+    {"name": DEPT_1},
+    {"scope": GroupScope.DEPARTMENT},
+    {"scope": GroupScope.TEAM, "name": TEAM_1, "seat_holders": 0, "code_users": 0,
+     "code_users_3m": 0, "github_people": 0, "code_demand_median_usd": None,
+     "loc_median_of_users": None, "merged_pr_count": None, "pr_additions_median": None,
+     "lead_time_median_hours": None, "lead_time_p90_hours": None,
+     "lines_added_capped": None, "code_demand_usd_of_github_people": None},
+    {"code_users": 4},
+    {"code_users_3m": 3},
+    {"code_users": None},
+    {"github_people": 4},
+    {"github_people": 0},
+    {"github_data": GithubData.NO_COMMITS},
+    {"github_data": GithubData.NOT_CONFIGURED, "github_cache_complete": None},
+    {"github_data": GithubData.NO_CACHE},
+    {"merged_pr_count": 0},
+    {"pr_additions_median": None},
+    {"lead_time_median_hours": 6.0},
+    {"lead_time_p90_hours": float("inf")},
+    {"loc_median_of_users": -1.0},
+    {"seat_holders": -1},
+    {"month": "2026-13"},
+])
+def test_group_month_rejects_wrong_values(changes):
+    """値の誤り（名前と種別・人数の大小・状態と食い違う GitHub の列・中央値 > P90）は ValueError。"""
+    with pytest.raises(ValueError):
+        _group(**changes)
+
+
+@pytest.mark.parametrize("changes", [
+    {"scope": "organization"},
+    {"name": None},
+    {"seat_holders": True},
+    {"code_users": 1.0},
+    {"code_demand_usd": "40"},
+    {"github_data": "ok"},
+    {"spend_complete": 1},
+])
+def test_group_month_rejects_wrong_types(changes):
+    """型の誤り（語彙の文字列・真偽値の人数・数でない金額）は TypeError。"""
+    with pytest.raises(TypeError):
+        _group(**changes)
+
+
+def test_month_inputs_rejects_inconsistent_materials():
+    """月の値と行の食い違い・並び・PR ごとの値と件数の食い違いは ValueError、型の誤りは TypeError。"""
+    row = _person("a@x.jp", prs=2)
+    with pytest.raises(ValueError):
+        _inputs([row], month="2026-05")   # 行の月が違う
+    with pytest.raises(ValueError):
+        dataclasses.replace(_inputs([row]), github_data=GithubData.NO_COMMITS)
+    with pytest.raises(ValueError):
+        dataclasses.replace(_inputs([row]), spend_complete=False)
+    with pytest.raises(ValueError):
+        MonthInputs(month=MONTH, spend_complete=True, github_data=GithubData.OK,
+                    github_cache_complete=True, rows=(_person("b@x.jp"), _person("a@x.jp")),
+                    prs=())
+    with pytest.raises(ValueError):
+        _inputs([row, _person("a@x.jp")])   # 同じ人が2行
+    with pytest.raises(ValueError):
+        _inputs([row], prs=_auto_prs([row])[:1])   # 件数が merged_pr_count と違う
+    with pytest.raises(ValueError):
+        _inputs([_person("a@x.jp", github_id=GithubId.NONE)],
+                prs=[SubjectPr(email="a@x.jp", lead_time_hours=1.0, additions=1)])
+    with pytest.raises(ValueError):
+        dataclasses.replace(_inputs([row]), prs=None)   # PR の列を書く状態で欠ける
+    with pytest.raises(ValueError):
+        dataclasses.replace(_inputs([], state=GithubData.NO_CACHE), prs=())
+    with pytest.raises(TypeError):
+        dataclasses.replace(_inputs([row]), rows=[row])
+    with pytest.raises(TypeError):
+        dataclasses.replace(_inputs([row]), github_data="ok")
+
+
+def test_group_rows_rejects_duplicate_months_and_wrong_types():
+    """同じ月の材料が2つあれば ValueError、MonthInputs でない要素は TypeError。"""
+    material = _inputs([_person("a@x.jp")])
+    with pytest.raises(ValueError):
+        group_rows([material, material])
+    with pytest.raises(TypeError):
+        group_rows([material.rows])
+
+
+def test_month_inputs_requires_the_pr_values(make_input):
+    """PR の集計を持つ GitHub の材料に PR ごとの値が無ければ、1か月分の材料を作れない。"""
+    result = _analyze(_single(make_input))
+    with pytest.raises(ValueError):
+        month_inputs(result, _github(GithubData.OK))
+    material = month_inputs(result, dataclasses.replace(_github(GithubData.OK),
+                                                        prs=_bea_prs()))
+    assert material.prs == _bea_prs()
+    assert material.rows == person_rows(result, _github(GithubData.OK))
+
+
+@pytest.mark.parametrize(("state", "prs"), [
+    (GithubData.NO_REPOSITORY_LIST, ()),            # PR の集計を持たない状態
+    (GithubData.OK, _bea_prs()[:1]),                # 件数が集計と違う
+    (GithubData.OK, (*_bea_prs(),
+                     SubjectPr(email="cai@x.jp", lead_time_hours=1.0, additions=1))),
+])
+def test_github_month_rejects_pr_values_that_do_not_fit(state, prs):
+    """PR ごとの値が、状態と PR の集計に合わないと GithubMonth を作れない。"""
+    with pytest.raises(ValueError):
+        dataclasses.replace(_github(state), prs=prs)
+
+
+def test_github_month_rejects_pr_values_of_a_wrong_type():
+    """PR ごとの値が SubjectPr の tuple でなければ TypeError。"""
+    with pytest.raises(TypeError):
+        dataclasses.replace(_github(GithubData.OK), prs=list(_bea_prs()))
+
+
+def test_same_materials_give_the_same_group_rows():
+    """同じ入力から同じ結果になり、材料の月の順を変えても並びは変わらない。"""
+    materials = [
+        _inputs([_person("a@x.jp", month=m, department=f"{DEPT_2}; {DEPT_1}", team=TEAM_1),
+                 _person("b@x.jp", month=m, team=TEAM_2)], month=m)
+        for m in ("2026-04", "2026-05", "2026-06")
+    ]
+    assert group_rows(materials) == group_rows(list(reversed(materials)))
+    assert group_rows(materials) == group_rows(materials)

@@ -15,8 +15,10 @@ dashboard は同じ数値をタブに分けて見せる共有用の自己完結 
 ファイル名は `{種別}-{YYYYMM}-{組織名}.{拡張子}`（例: `report-202607-<組織名>.md`）で、
 共有でフォルダの外へ出してもどの組織のいつの分析かが分かる。以下では種別名だけで呼ぶ。
 
-このほか、組織の担当者へ共有しない資料として、人 × 月の表（adoption-people。既定は無効）を
-`reports/summary/` に書ける（[adoption-people の列](#adoption-people-の列人--月の表)）。
+このほか、組織の担当者へ共有しない資料として、人 × 月の表（adoption-people）とチーム × 月の
+表（adoption-teams）を `reports/summary/` に書ける（既定は無効。
+[adoption-people の列](#adoption-people-の列人--月の表)・
+[adoption-teams の列](#adoption-teams-の列チーム--月の表)）。
 
 以下のセクション名は、断りがなければ details と dashboard の両方に出るものを指す。
 片方にしか出ないものもあり、「シートが吸収した量の実測（E = API換算需要 − 実課金）」と
@@ -544,6 +546,95 @@ GitHub の列（`merged_pr_count` から `large_commits` まで）は、`github_
 
 収集が完了していない月も、状態は上の表で決める。値が部分的であることは
 `github_cache_complete` で読む。
+
+## adoption-teams の列（チーム × 月の表）
+
+人 × 月の表の行を、集まり（組織全体・部署・チーム）× 月へ畳んだ CSV。チーム・部署と組織
+全体で、Claude Code の活用と GitHub の成果が月ごとにどう変わったかを読むための材料。前月比
+などの変化は表に持たない。
+
+置き場所と有効化は人 × 月の表と同じで、`adoption.enabled: true` の組織の正式分析のたびに、
+人 × 月の表と一緒に `reports/summary/adoption-teams-<YYYYMM>-<組織名>.csv` を書く（1組織
+だけの実行でも書き、速報モードでは書かない）。月の範囲・各月の値の作り方・分析できない
+過去の月の扱いも人 × 月の表と同じで、2つの表は同じ月の集合・同じ人 × 月の行から作る。
+GitHub 分析を有効にしていない組織でも書ける（GitHub の列が空欄になる）。
+
+読者は CTO と開発責任者を想定している。人 × 月の表と同じく、組織の担当者へ共有する成果物
+の集合には含めず、考察の執筆（`discuss`）の資料にもならない。シートの判定には使わない
+参考値で、ほかの成果物の内容はこの表の有無で変わらない。メールアドレス・repository 名・
+login は書かない。
+
+行は次のとおり。
+
+- 1行が1つの集まりの1か月。`scope` が種別（`organization`＝組織全体・`department`＝部署・
+  `team`＝チーム）、`name` がその名前（組織全体は空欄）
+- 行は種別（組織全体・部署・チームの順）・名前・月の昇順に並べ、人数や量の多い順には
+  並べない
+- 組織全体は、その月にシートを持つ人の全員。シートを持つ人が0人の月も組織全体の行を書く
+  （分析できずに飛ばした月と区別するため）
+- 部署・チームは、その月の分析が採用した members-info の部署・チームの列で決める。過去の
+  月の所属も、その月の分析が採用した members-info による（日付つきの members-info を月ごとに
+  残していれば当時の所属になり、対象月より前のファイルが無い月は、後のファイルの所属になる）
+- 兼務（`;` 区切り）の人は、それぞれの集まりに1人として入る（按分しない）。部署・チームが
+  未記入の人は組織全体にだけ入る。このため、部署・チームの行の合計は組織全体と一致しない
+- 部署・チームの行は、その月に1人以上いる集まりだけ書く。部署とチームに同じ名前があっても
+  別の行になる
+
+各列の意味は次のとおり。
+
+- `scope` / `name` / `month` — 集まりの種別・名前と月（YYYY-MM）
+- `spend_complete` / `github_data` / `github_cache_complete` — その月の値で、人 × 月の表の
+  同名の列と同じ
+- `seat_holders` — 集まりの人数（その月にシートを持つ人）
+- `code_users` — その月に Claude Code のリクエストがあった人の数
+- `code_users_3m` — その月を含む、暦で連続する3か月とも Claude Code を使った人の数。数える
+  のはその月の集まりの人で、前の月の所属は問わない。前の月にシートを持たない人（前の月の
+  行が無い人）は数えない。3か月のどれかが表に無い（入力に無い・分析できずに飛ばした）月は
+  空欄
+- `code_demand_usd` — Claude Code の需要（API 換算・USD）の合計
+- `code_demand_median_usd` — シートを持つ人全員（使っていない人の 0 を含む）の Claude Code
+  の需要の中央値
+- `loc_median_of_users` — Claude Code を使った人（`code_users` に数えた人）の、Claude Code
+  が加えた行の中央値（小数1桁）
+- `github_people` — GitHub ID が `login` の人の数。GitHub 分析を有効にしていない組織は空欄
+- `merged_pr_count` — login の人が作成し、その月に merge された PR の件数
+- `pr_additions_median` — 同じ PR の追加行の中央値（1つの PR の大きさ。小数1桁）
+- `lead_time_median_hours` / `lead_time_p90_hours` — 同じ PR の lead time の中央値と P90
+  （小数1桁）。中央値は短い PR が多いと動きにくいので、遅い側を P90 で並べる
+- `lines_added_capped` — login の人の、大きな変更を除いた追加行の合計
+- `code_demand_usd_of_github_people` — login の人の Claude Code の需要の合計（行数が 0 の人も
+  含める）
+- `cost_per_merged_line_usd` — `code_demand_usd_of_github_people` ÷ `lines_added_capped`
+  （小数4桁）。分母が 0 か、どちらかが空欄なら空欄
+
+合計と中央値は丸める前の値から出す（1人ずつ丸めて書いた人 × 月の表・usage-summary の値の
+和とは、末尾の桁が違うことがある）。lead time と PR の大きさは、人ごとの中央値を平均せず、
+その集まりの login の人が作った PR の集合から出す（人ごとの中央値は足し合わせられない
+ため）。マージ行あたりの費用は、分子と分母を同じ人（login の人。行数が 0 の人も含める）で
+取る。行数が 0 の人を外すと、使っていてマージの無い人が多い集まりほど費用が小さく出るため。
+
+空欄になるのは次のとき。
+
+- 材料になる人の値が1人でも空欄なら、その集まりのその列は空欄にする（分からない値を 0 と
+  して数えない）。たとえば product の列が無い spend の月は Claude Code の列が、LoC の列を持つ
+  code-analytics が無い月は `loc_median_of_users` が空欄になる。login の人の誰かの需要が
+  空欄なら `code_demand_usd_of_github_people` と比率が空欄になる
+- 中央値は、材料の人が 0 人なら空欄（使った人が 0 人の集まりの `loc_median_of_users` など）
+- GitHub の列は、人 × 月の表と同じ状態の月だけ値を持つ。PR の列（`merged_pr_count` から
+  `lead_time_p90_hours` まで）は `github_data` が `no_commits`・`no_previous_month`・`ok` の
+  月、`lines_added_capped`・`code_demand_usd_of_github_people`・比率は `ok` の月だけ
+- GitHub の対象の人（login の人）が0人の集まりは、`github_people` を 0 にして GitHub の値の
+  列をすべて空欄にする（対象の人がいないことと、成果が0件だったことを区別する）。
+  github-summary の組織全体の行はこの場合も PR を 0 件と書くので、組織全体の PR 数はこの
+  場合だけ github-summary と一致しない
+- PR が 0 件の集まりは `merged_pr_count` が 0 で、PR の大きさと lead time は空欄
+
+GitHub の対象の人が1人以上いる月の、対象月の組織全体の行の PR 数・lead time の中央値と
+P90 は、同じ実行の github-summary の組織全体の行と一致する。
+
+人数の少ない集まりは、1人の動きで値が大きく振れる。閾値で隠さず人数（`seat_holders`・
+`code_users`・`github_people`）を並べて出すので、値は人数と合わせて読む。値の大小から因果
+（活用度が高い・低い）を断定する材料にもならない。
 
 ## 複数スペース（workspace）の組織の成果物
 

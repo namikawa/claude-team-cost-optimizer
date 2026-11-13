@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # 組織横断の資料を置くディレクトリ（出力ディレクトリ直下）。組織の担当者へ共有する
-# `<組織>/` の外に置き、横断サマリ（`<月>.md`）と人 × 月の表がここへ出る
+# `<組織>/` の外に置き、横断サマリ（`<月>.md`）と人 × 月・チーム × 月の表がここへ出る
 SUMMARY_DIRNAME = "summary"
 
 
@@ -84,8 +84,10 @@ USAGE_SUMMARY = Artifact("usage-summary", ".csv")
 DECISION_EVIDENCE = Artifact("decision-evidence", ".csv")
 # GitHub の参考値（GitHub 分析を有効にした組織で、対象月のキャッシュがあるときだけ書く）
 GITHUB_SUMMARY = Artifact("github-summary", ".csv")
-# 人 × 月の表（adoption.enabled の組織で、正式分析のときに reports/summary/ へ書く）
+# 人 × 月の表とチーム × 月の表（adoption.enabled の組織で、正式分析のときに
+# reports/summary/ へ書く）
 ADOPTION_PEOPLE = Artifact("adoption-people", ".csv")
+ADOPTION_TEAMS = Artifact("adoption-teams", ".csv")
 # 速報モードの成果物
 PREVIEW = Artifact("preview", ".md")
 PREVIEW_DASHBOARD = Artifact("preview-dashboard", ".html")

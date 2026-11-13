@@ -45,12 +45,14 @@ from seat_analyzer.github_metrics import (
     CommitTotals,
     GithubMetrics,
     LeadTimeSummary,
+    SubjectPr,
     UserCommitMetrics,
     UserPrMetrics,
     commit_metrics,
     has_commits,
     lead_time_hours,
     pr_metrics,
+    subject_prs,
     summarize_lead_times,
 )
 from seat_analyzer.ingest import MEMBERS_INFO_FILENAME
@@ -1498,3 +1500,104 @@ def test_commit_inputs_use_the_same_validation_as_pr_metrics():
     with pytest.raises(ValueError):
         _commit_metrics(cache, repos=RepoDiscovery(github_org=ORG, repos=(), status=403,
                                                  failure=GhFailure.ERROR))
+
+
+# ------------------------------------------------------- 対象者の PR ごとの値
+
+
+def _subject_inputs() -> tuple[PrCache, GithubMembers, RepoDiscovery, frozenset[str]]:
+    """5つの区分の PR がそろった入力（対象者は user1 と user2）。
+
+    user1（octocat）の PR 2件と user2（example-user）の PR 1件だけが対象者の PR で、ほかは
+    対象外 repository・削除済みの作成者・Bot・対象者でない作成者・対応表に無い作成者。
+    """
+    return (
+        _cache((
+            _hours_pr(1, 3, author_login="octocat", additions=40),
+            _hours_pr(2, 5, author_login="example-user", additions=7),
+            _hours_pr(3, 1, author_login="OctoCat", additions=12),
+            _hours_pr(4, 9, repository="repo-b", author_login="octocat"),
+            _hours_pr(5, 2, author_login=None, author_type=None),
+            _pr(number=6, author_login="example-bot[bot]", author_type=BOT_AUTHOR_TYPE),
+            _hours_pr(7, 4, author_login="no-seat-user"),
+            _hours_pr(8, 6, author_login="ghost-writer"),
+        )),
+        _members(
+            _link("user2@example.com", "example-user"),
+            _link("user1@example.com", "octocat"),
+            _link("user3@example.com", "no-seat-user"),
+        ),
+        _repos("repo-a"),
+        frozenset({"user1@example.com", "user2@example.com"}),
+    )
+
+
+def test_subject_prs_are_the_prs_counted_per_person():
+    """PR ごとの値に入るのは、pr_metrics が人ごとの件数に数える PR だけ。"""
+    inputs = _subject_inputs()
+    values = subject_prs(*inputs)
+    metrics = pr_metrics(*inputs)
+    per_person = {user.email: user.merged_pr_count for user in metrics.users}
+    assert per_person == {"user1@example.com": 2, "user2@example.com": 1}
+    assert {email: sum(1 for v in values if v.email == email)
+            for email in per_person} == per_person
+    assert len(values) == metrics.mapped_prs
+
+
+def test_subject_prs_carry_the_lead_time_and_the_additions():
+    """lead time は lead_time_hours と同じ値、追加行は PR の additions。"""
+    cache = _subject_inputs()[0]
+    values = subject_prs(*_subject_inputs())
+    assert [(v.email, v.lead_time_hours, v.additions) for v in values] == [
+        ("user1@example.com", lead_time_hours(cache.prs[0]), 40),
+        ("user1@example.com", lead_time_hours(cache.prs[2]), 12),
+        ("user2@example.com", lead_time_hours(cache.prs[1]), 7),
+    ]
+    assert [v.lead_time_hours for v in values] == [3.0, 1.0, 5.0]
+
+
+def test_subject_prs_are_in_email_then_cache_order():
+    """並びは email の昇順で、同じ人の中はキャッシュの並び（入力の順には依らない）。"""
+    cache, members, repos, subjects = _subject_inputs()
+    shuffled = _cache(tuple(reversed(cache.prs)))
+    reversed_members = _members(*reversed(members.entries))
+    assert subject_prs(shuffled, reversed_members, repos, subjects) == subject_prs(
+        cache, members, repos, subjects)
+    assert [v.email for v in subject_prs(cache, members, repos, subjects)] == [
+        "user1@example.com", "user1@example.com", "user2@example.com"]
+
+
+def test_subject_prs_use_the_same_input_checks_as_pr_metrics():
+    """別の Organization・完全でない一覧は ValueError、型の誤りは TypeError。"""
+    cache, members, repos, subjects = _subject_inputs()
+    with pytest.raises(ValueError, match="Organization が違います"):
+        subject_prs(cache, members, _repos("repo-a", github_org="other-org"), subjects)
+    with pytest.raises(ValueError, match="repository の一覧が完全でない"):
+        subject_prs(cache, members, RepoDiscovery(github_org=ORG, status=403), subjects)
+    for index in range(4):
+        args = [cache, members, repos, subjects]
+        args[index] = None
+        with pytest.raises(TypeError):
+            subject_prs(*args)
+    with pytest.raises(TypeError):
+        subject_prs(cache, members, repos, {"user1@example.com"})
+
+
+def test_subject_pr_validates_its_values():
+    """email は対応表の鍵の表記へ揃え、負の時間・負の行数は ValueError、型の誤りは TypeError。"""
+    assert SubjectPr(email=" User1@Example.com ", lead_time_hours=2, additions=3) == \
+        SubjectPr(email="user1@example.com", lead_time_hours=2.0, additions=3)
+    with pytest.raises(ValueError):
+        SubjectPr(email="user1@example.com", lead_time_hours=-1.0, additions=3)
+    with pytest.raises(ValueError):
+        SubjectPr(email="user1@example.com", lead_time_hours=float("nan"), additions=3)
+    with pytest.raises(ValueError):
+        SubjectPr(email="user1@example.com", lead_time_hours=1.0, additions=-1)
+    with pytest.raises(ValueError):
+        SubjectPr(email=" ", lead_time_hours=1.0, additions=1)
+    with pytest.raises(TypeError):
+        SubjectPr(email="user1@example.com", lead_time_hours="1", additions=1)
+    with pytest.raises(TypeError):
+        SubjectPr(email="user1@example.com", lead_time_hours=1.0, additions=True)
+    with pytest.raises(TypeError):
+        SubjectPr(email=None, lead_time_hours=1.0, additions=1)
