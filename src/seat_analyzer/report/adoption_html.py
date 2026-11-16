@@ -129,6 +129,7 @@ COLUMNS: dict[str, ColumnTraits] = {
     "loc_median_of_users": ColumnTraits(_SPEND),
     "loc_with_cc": ColumnTraits(_SPEND),
     "github_people": ColumnTraits("", github=True),
+    "outside_org_people": ColumnTraits(_SPEND, github=True),
     "lines_added_capped": ColumnTraits(_GITHUB, github=True),
     "merged_pr_count": ColumnTraits(_GITHUB, github=True),
     "pr_additions_median": ColumnTraits(_GITHUB, github=True),
@@ -160,7 +161,7 @@ def _traits(columns: Iterable[str]) -> ColumnTraits:
 
 @dataclass(frozen=True)
 class Metric:
-    """数値の表と集まりの一覧に出す指標1つ（設計書 §27.8 の13指標の表の1行）。
+    """数値の表と集まりの一覧に出す指標1つ（設計書 §27.8 の14指標の表の1行）。
 
     columns はチーム × 月の表の列で、1つならその列の値、2つなら分子 ÷ 分母（値なしは
     None）。fmt は値の表記、kind は変化の種類（`_COUNT`＝差・`_SHARE`＝ポイントの差・
@@ -228,6 +229,8 @@ METRICS = (
            lambda v: f"{v:,.0f}", _RATIO, overview=True),
     Metric("gh_people", "GitHub の対象", ("github_people",), lambda v: f"{v:.0f} 人",
            _COUNT, sep=True),
+    Metric("outside_org", "うち成果が見えない人", ("outside_org_people",),
+           lambda v: f"{v:.0f} 人", _COUNT),
     Metric("lines_pp", "マージ行 / 人", ("lines_added_capped", "github_people"),
            lambda v: f"{v:,.0f}", _RATIO, overview=True),
     Metric("pr_pp", "PR / 人", ("merged_pr_count", "github_people"),
@@ -675,6 +678,12 @@ def _heat_cell(row: Row | None, block: HeatBlock, who: str, month: str,
         value = _num(row[column]) or 0.0
         tip = (f"{head}: マージ行 {value:,.0f}・コミット {row['commit_count']} 件・"
                f"PR {row['merged_pr_count']} 件")
+        if row["outside_org"] == "True":
+            tip += (
+                f'（Claude Code が加えた行 {int(row["loc_with_cc"]):,} があるのに、この Organization に'
+                f'コミットも PR も無い月・{row["outside_org_months"]} か月連続）'
+            )
+            return {"cls": f"c {_bucket(value, block.edges)} fl", "title": tip, "text": "!"}
         return {"cls": f"c {_bucket(value, block.edges)}", "title": tip, "text": ""}
     if row[column] == "":
         return {"cls": "c nd", "title": f"{head}: データなし", "text": ""}

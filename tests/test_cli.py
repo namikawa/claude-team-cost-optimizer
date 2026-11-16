@@ -5125,7 +5125,7 @@ def test_adoption_teams_demand_is_rounded_after_adding(make_input, tmp_path):
     config = _adoption_config(tmp_path)
     assert _run_with(input_dir, out, config, "--org", "org-a") == 0
     result = analyze.analyze_org(input_dir / "org-a", "2026-06", load_config(config), "org-a")
-    rows = adoption.person_rows(result, adoption.GITHUB_NOT_CONFIGURED)
+    rows = adoption.person_rows(result, adoption.GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000)
     expected = sum(row.code_demand_usd for row in rows)
     assert _teams_org(out)["code_demand_usd"] == f"{expected:.2f}"
 
@@ -5266,3 +5266,91 @@ def test_preview_does_not_write_adoption_report(make_input, tmp_path):
     assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a",
                      "--preview", "--days", "10") == 0
     assert not _report_path(out).exists()
+
+
+def _outside_cli_setup(make_input, tmp_path: Path, minimum: int = 1000) -> tuple[Path, str]:
+    """各月に加えた行があり、対象の Organization には成果の無い合成入力と設定。"""
+    input_dir = _three_months(make_input)
+    base = input_dir / "org-a" / "code-analytics"
+    base.mkdir(parents=True, exist_ok=True)
+    for month in ("2026-04", "2026-05", "2026-06"):
+        (base / f"code_{month}.csv").write_text(
+            "Email,Lines with CC\nann@x.jp,1000\nben@x.jp,2000\n",
+            encoding="utf-8", newline="\n",
+        )
+        _write_pr_cache(input_dir, month=month, entries=[])
+    config = _adoption_config(tmp_path, github={"org-a": GH_ORG}, lookback=0)
+    with Path(config).open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(f"  outside_org_min_lines: {minimum}\n")
+    return input_dir, config
+
+
+def test_outside_org_cli_columns_streaks_and_threshold(make_input, tmp_path):
+    """正式分析で末尾3列と連続月数を書き、設定の下限を変えると判定が変わる。"""
+    input_dir, config = _outside_cli_setup(make_input, tmp_path)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, config, "--org", "org-a") == 0
+    rows = _summary_rows(_adoption_path(out))
+    ann = [r for r in rows if r["email"] == "ann@x.jp"]
+    assert [(r["outside_org"], r["outside_org_months"]) for r in ann] == [
+        ("True", "1"), ("True", "2"), ("True", "3")]
+    assert all(r["outside_org"] == r["outside_org_months"] == ""
+               for r in rows if r["email"] == "ben@x.jp")
+    assert _teams_org(out)["outside_org_people"] == "1"
+    assert list(rows[0])[-2:] == ["outside_org", "outside_org_months"]
+    assert list(_teams_org(out))[-1] == "outside_org_people"
+    assert 'class="c z fl"' in _report_path(out).read_text(encoding="utf-8")
+    config_path = Path(config)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "outside_org_min_lines: 1000", "outside_org_min_lines: 1001",
+        ),
+        encoding="utf-8", newline="\n",
+    )
+    other = tmp_path / "higher"
+    assert _run_with(input_dir, other, config, "--org", "org-a") == 0
+    higher = _summary_rows(_adoption_path(other))
+    assert all(r["outside_org"] == "False" and r["outside_org_months"] == "0"
+               for r in higher if r["email"] == "ann@x.jp")
+    for before, after in zip(rows, higher, strict=True):
+        assert {k: v for k, v in before.items() if not k.startswith("outside_org")} == {
+            k: v for k, v in after.items() if not k.startswith("outside_org")}
+    before_teams, after_teams = _summary_rows(_teams_path(out)), _summary_rows(_teams_path(other))
+    for before, after in zip(before_teams, after_teams, strict=True):
+        assert {k: v for k, v in before.items() if k != "outside_org_people"} == {
+            k: v for k, v in after.items() if k != "outside_org_people"}
+    assert {p.name: p.read_bytes() for p in (out / "org-a" / "2026-06").iterdir()} == {
+        p.name: p.read_bytes() for p in (other / "org-a" / "2026-06").iterdir()}
+
+
+def test_outside_org_cli_skipped_month_breaks_streak(make_input, tmp_path, monkeypatch, capsys):
+    """過去の分析を飛ばした正式分析は、その月を通知し次の該当月を1から数える。"""
+    input_dir, config = _outside_cli_setup(make_input, tmp_path)
+    original = analyze.analyze_org
+
+    def skip_missing_month(org_input, month, *args, **kwargs):
+        """過去の月の入力不足を再現する。"""
+        if month == "2026-05":
+            raise FileNotFoundError("合成入力の不足")
+        return original(org_input, month, *args, **kwargs)
+
+    monkeypatch.setattr(analyze, "analyze_org", skip_missing_month)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, config, "--org", "org-a") == 0
+    ann = [r for r in _summary_rows(_adoption_path(out)) if r["email"] == "ann@x.jp"]
+    assert [(r["month"], r["outside_org_months"]) for r in ann] == [
+        ("2026-04", "1"), ("2026-06", "1"),
+    ]
+    assert "2026-05 の行を書きません" in capsys.readouterr().out
+
+
+def test_outside_org_cli_without_github_has_three_blank_columns(make_input, tmp_path):
+    """GitHub 分析の無い組織でも2つの表を書き、管轄外の検知の3列は空欄。"""
+    input_dir = _three_months(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a") == 0
+    assert all(r["outside_org"] == r["outside_org_months"] == ""
+               for r in _summary_rows(_adoption_path(out)))
+    assert all(r["outside_org_people"] == "" for r in _summary_rows(_teams_path(out)))
+    text = _report_path(out).read_text(encoding="utf-8")
+    assert "うち成果が見えない人" not in text and 'class="outside-org-mark"' not in text

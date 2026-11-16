@@ -45,6 +45,8 @@ ADOPTION_PEOPLE_COLUMNS = (
     "lines_added_capped",
     "large_commits",
     "cost_per_merged_line_usd",
+    "outside_org",
+    "outside_org_months",
 )
 
 
@@ -82,6 +84,8 @@ _FORMATTERS = {
     "lines_added_capped": _whole,
     "large_commits": _whole,
     "cost_per_merged_line_usd": _share,
+    "outside_org": _flag,
+    "outside_org_months": _whole,
 }
 
 
@@ -141,6 +145,7 @@ ADOPTION_TEAMS_COLUMNS = (
     "lines_added_capped",
     "code_demand_usd_of_github_people",
     "cost_per_merged_line_usd",
+    "outside_org_people",
 )
 
 # チーム × 月の表の列ごとの書式。入力由来のテキスト（集まりの名前）には人 × 月の表の部署・
@@ -168,6 +173,7 @@ _TEAM_FORMATTERS = {
     "lines_added_capped": _whole,
     "code_demand_usd_of_github_people": _usd,
     "cost_per_merged_line_usd": _share,
+    "outside_org_people": _whole,
 }
 
 

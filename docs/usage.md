@@ -329,6 +329,11 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    [adoption-teams の列](./reference.md#adoption-teams-の列チーム--月の表)・
    [adoption-report](./reference.md#adoption-reportレポート)）
 
+   人 × 月の表の `outside_org` とレポートの「!」は、Claude Code が加えた行が一定以上あるのに
+   対象の GitHub Organization にコミットもマージ PR も無い月を、本人に確かめるきっかけとして
+   示す参考値。確かめて別の Organization の業務と分かった人は members-info の GitHub ID を
+   `なし` にする（詳細は [adoption-people の列](./reference.md#adoption-people-の列人--月の表)）。
+
    ファイル名の規則を変える前に生成した成果物（`report.md` 等）は自動で改名も削除も
    しない。再生成すると新旧が併存するので、旧名の整理は必要に応じて手で行う。
    記入済みの「## 考察」は旧名のレポートからも引き継がれる

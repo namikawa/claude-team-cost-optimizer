@@ -1854,8 +1854,10 @@ def test_github_section_and_unknown_keys_are_rejected(tmp_path, text, fragment):
 
 
 def test_adoption_is_disabled_by_default():
-    """人 × 月の表は既定で無効（adoption.enabled は False）。"""
-    assert load_config(PACKAGE_CONFIG_PATH)["adoption"] == {"enabled": False}
+    """人 × 月の表は既定で無効（adoption.enabled は False）で、管轄外の検知の行数の下限の既定は 1000。"""
+    cfg = load_config(PACKAGE_CONFIG_PATH)["adoption"]
+    assert cfg["enabled"] is False
+    assert cfg["outside_org_min_lines"] == 1000
 
 
 def test_adoption_can_be_enabled(tmp_path):
@@ -1874,10 +1876,24 @@ def test_adoption_enabled_accepts_only_booleans(tmp_path, value):
 @pytest.mark.parametrize("text,fragment", [
     ("adoption:\n  enabled: null\n", "adoption.enabled"),
     ("adoption:\n  stages: {}\n", "adoption.stages"),
-    ("adoption:\n  outside_org_min_lines: 1000\n", "adoption.outside_org_min_lines"),
     ("adoption: true\n", "辞書"),
 ])
 def test_adoption_rejects_null_unknown_keys_and_non_mappings(tmp_path, text, fragment):
     """null・既定に無いキー（後続の Step のキーを含む）・辞書でない adoption は拒む。"""
     with pytest.raises(ValueError, match=fragment):
         load_config(_override(tmp_path, text))
+
+
+@pytest.mark.parametrize("minimum", [1, 1000000000])
+def test_outside_org_min_lines_accepts_positive_integers(tmp_path, minimum):
+    """無効の既定でも、管轄外の検知の下限に1と大きな整数を指定できる。"""
+    cfg = load_config(_override(tmp_path, f"adoption:\n  outside_org_min_lines: {minimum}\n"))
+    assert cfg["adoption"]["outside_org_min_lines"] == minimum
+    assert cfg["adoption"]["enabled"] is False
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", '"1000"', "true", "false", "null"])
+def test_outside_org_min_lines_rejects_invalid_values(tmp_path, value):
+    """下限の値・型の誤りと null を、無効でもキー名つきのエラーにする。"""
+    with pytest.raises(ValueError, match="adoption.outside_org_min_lines"):
+        load_config(_override(tmp_path, f"adoption:\n  outside_org_min_lines: {value}\n"))
