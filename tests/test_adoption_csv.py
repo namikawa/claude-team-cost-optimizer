@@ -35,6 +35,7 @@ def _row(**changes) -> PersonMonth:
         loc_with_cc=345, github_id=GithubId.LOGIN, github_data=GithubData.OK,
         github_cache_complete=False, merged_pr_count=4, lead_time_median_hours=2.25,
         commit_count=6, lines_added_capped=300, large_commits=1,
+        outside_org=None, outside_org_months=None,
     )
     return dataclasses.replace(base, **changes)
 
@@ -71,7 +72,7 @@ def test_columns_follow_the_design_order(tmp_path):
         "total_demand_usd", "code_demand_usd", "code_requests", "loc_with_cc",
         "github_id", "github_data", "github_cache_complete", "merged_pr_count",
         "lead_time_median_hours", "commit_count", "lines_added_capped", "large_commits",
-        "cost_per_merged_line_usd",
+        "cost_per_merged_line_usd", "outside_org", "outside_org_months",
     )
 
 
@@ -86,6 +87,7 @@ def test_cells_use_the_shared_formats(tmp_path):
         "github_data": "ok", "github_cache_complete": "False", "merged_pr_count": "4",
         "lead_time_median_hours": "2.2", "commit_count": "6", "lines_added_capped": "300",
         "large_commits": "1", "cost_per_merged_line_usd": "0.3333",
+        "outside_org": "", "outside_org_months": "",
     }
 
 
@@ -159,6 +161,7 @@ def _team(**changes) -> GroupMonth:
         loc_median_of_users=101.5, github_people=3, merged_pr_count=7,
         pr_additions_median=42.25, lead_time_median_hours=2.25, lead_time_p90_hours=10.0,
         lines_added_capped=300, code_demand_usd_of_github_people=100.0,
+        outside_org_people=None,
     )
     return dataclasses.replace(base, **changes)
 
@@ -192,6 +195,7 @@ def test_team_columns_follow_the_design_order(tmp_path):
         "code_demand_median_usd", "loc_median_of_users", "github_people", "merged_pr_count",
         "pr_additions_median", "lead_time_median_hours", "lead_time_p90_hours",
         "lines_added_capped", "code_demand_usd_of_github_people", "cost_per_merged_line_usd",
+        "outside_org_people",
     )
 
 
@@ -207,6 +211,7 @@ def test_team_cells_use_the_shared_formats(tmp_path):
         "pr_additions_median": "42.2", "lead_time_median_hours": "2.2",
         "lead_time_p90_hours": "10.0", "lines_added_capped": "300",
         "code_demand_usd_of_github_people": "100.00", "cost_per_merged_line_usd": "0.3333",
+        "outside_org_people": "",
     }
 
 
@@ -286,3 +291,33 @@ def test_team_sums_are_rounded_after_adding(tmp_path):
     people_rows = _read(_write(tmp_path, people))
     assert [row["code_demand_usd"] for row in people_rows] == ["0.01", "0.01"]
     assert team_rows[0]["code_demand_usd"] == "0.03"
+
+
+def test_outside_org_people_and_streak_lexemes(tmp_path):
+    """末尾の2列は True・False・空欄と整数の月数で、それまでのセルを変えない。"""
+    base = _row(github_cache_complete=True, merged_pr_count=0, lead_time_median_hours=None,
+                commit_count=0, lines_added_capped=0, large_commits=0,
+                outside_org=False, outside_org_months=0)
+    flagged = dataclasses.replace(base, outside_org=True, outside_org_months=3)
+    plain = _read(_write(tmp_path, [base]))[0]
+    marked = _read(_write(tmp_path, [flagged]))[0]
+    old_columns = tuple(name for name in ADOPTION_PEOPLE_COLUMNS
+                        if name not in ("outside_org", "outside_org_months"))
+    assert {name: plain[name] for name in old_columns} == {
+        name: marked[name] for name in old_columns
+    }
+    assert (plain["outside_org"], plain["outside_org_months"]) == ("False", "0")
+    assert (marked["outside_org"], marked["outside_org_months"]) == ("True", "3")
+    blank = _read(_write(tmp_path, [_blank()]))[0]
+    assert (blank["outside_org"], blank["outside_org_months"]) == ("", "")
+
+
+@pytest.mark.parametrize("value", [None, 0, 2])
+def test_outside_org_group_count_lexeme(tmp_path, value):
+    """末尾の人数の列は整数か空欄で、それまでの列の字句を変えない。"""
+    plain = _read(_write_teams(tmp_path, [_team(github_cache_complete=True)]))[0]
+    changed = _read(_write_teams(tmp_path, [_team(github_cache_complete=True,
+                                                outside_org_people=value)]))[0]
+    assert changed.pop("outside_org_people") == ("" if value is None else str(value))
+    plain.pop("outside_org_people")
+    assert changed == plain

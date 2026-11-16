@@ -119,7 +119,9 @@ def _by_email(rows) -> dict[str, PersonMonth]:
 
 def test_rows_are_seat_holders_in_email_order(make_input):
     """行はシートを持つ人だけで、メール昇順（未割当・members に居ない人は行にしない）。"""
-    rows = person_rows(_analyze(_single(make_input)), GITHUB_NOT_CONFIGURED)
+    rows = person_rows(
+        _analyze(_single(make_input)), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    )
     assert [(row.email, row.seat) for row in rows] == [
         ("bea@x.jp", "premium"), ("cai@x.jp", "standard"), ("dan@x.jp", "standard"),
     ]
@@ -134,7 +136,7 @@ def test_demand_and_loc_match_the_features_and_users(make_input):
     workspace = result.workspaces[ORG]
     features = workspace.product_usage.features
     users = workspace.users.set_index("email")
-    rows = _by_email(person_rows(result, GITHUB_NOT_CONFIGURED))
+    rows = _by_email(person_rows(result, GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000))
     for email in ("bea@x.jp", "cai@x.jp"):
         row = rows[email]
         for name in ("total_demand_usd", "code_demand_usd", "code_requests"):
@@ -146,8 +148,9 @@ def test_demand_and_loc_match_the_features_and_users(make_input):
 
 def test_a_seat_holder_without_spend_has_zero_demand(make_input):
     """spend に行の無いシート保有者は、需要0・リクエスト数0（空欄にしない）。"""
-    row = _by_email(person_rows(_analyze(_single(make_input)), GITHUB_NOT_CONFIGURED))[
-        "dan@x.jp"]
+    row = _by_email(person_rows(
+        _analyze(_single(make_input)), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))["dan@x.jp"]
     assert (row.total_demand_usd, row.code_demand_usd, row.code_requests) == (0.0, 0.0, 0.0)
 
 
@@ -161,7 +164,9 @@ def test_spend_without_product_column_leaves_code_values_blank(make_input):
         header + "\n" + "".join(",".join(f[:2] + f[3:]) + "\n" for f in lines),
         encoding="utf-8", newline="\n",
     )
-    row = _by_email(person_rows(_analyze(input_dir), GITHUB_NOT_CONFIGURED))["bea@x.jp"]
+    row = _by_email(person_rows(
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))["bea@x.jp"]
     assert row.total_demand_usd == pytest.approx(40.0)
     assert row.code_demand_usd is None
     assert row.code_requests is None
@@ -170,10 +175,12 @@ def test_spend_without_product_column_leaves_code_values_blank(make_input):
 def test_loc_is_none_without_code_analytics_and_zero_without_a_row(make_input):
     """code-analytics の無い月は LoC が None、ファイルがあって行の無い人は0。"""
     input_dir = _single(make_input)
-    rows = person_rows(_analyze(input_dir), GITHUB_NOT_CONFIGURED)
+    rows = person_rows(_analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000)
     assert all(row.loc_with_cc is None for row in rows)
     _write_code(input_dir / ORG, [("bea@x.jp", 120)])
-    rows = _by_email(person_rows(_analyze(input_dir), GITHUB_NOT_CONFIGURED))
+    rows = _by_email(person_rows(
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))
     assert rows["bea@x.jp"].loc_with_cc == 120
     assert rows["dan@x.jp"].loc_with_cc == 0
 
@@ -188,7 +195,7 @@ def test_nested_org_sums_accounts_in_one_row(make_input, tmp_path):
     cfg = _nested_cfg(tmp_path)
     _write_code(input_dir / NESTED / "main", [("amy@x.jp", 30), ("bo@x.jp", 5)])
     result = _analyze(input_dir, cfg, NESTED)
-    rows = _by_email(person_rows(result, GITHUB_NOT_CONFIGURED))
+    rows = _by_email(person_rows(result, GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000))
     assert [(row.email, row.seat) for row in rows.values()] == [
         ("amy@x.jp", "standard+premium"), ("bo@x.jp", "premium"), ("cy@x.jp", "premium"),
     ]
@@ -209,7 +216,9 @@ def test_nested_org_sums_accounts_in_one_row(make_input, tmp_path):
     assert rows["cy@x.jp"].loc_with_cc == 0
 
     _write_code(input_dir / NESTED / "second", [("amy@x.jp", 12), ("cy@x.jp", 4)])
-    rows = _by_email(person_rows(_analyze(input_dir, cfg, NESTED), GITHUB_NOT_CONFIGURED))
+    rows = _by_email(person_rows(
+        _analyze(input_dir, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))
     assert (rows["amy@x.jp"].loc_with_cc, rows["cy@x.jp"].loc_with_cc) == (42, 4)
 
 
@@ -289,7 +298,7 @@ _STATE_COLUMNS = {
 def test_each_github_state_blanks_the_specified_columns(make_input, state):
     """github_data の6つの状態のそれぞれで、設計書の表のとおりの列だけが None になる。"""
     result = _analyze(_single(make_input))
-    bea = _by_email(person_rows(result, _github(state)))["bea@x.jp"]
+    bea = _by_email(person_rows(result, _github(state), outside_org_min_lines=1000))["bea@x.jp"]
     pr, commit, cache = _STATE_COLUMNS[state]
     assert bea.github_data is state
     assert all((getattr(bea, name) is not None) is pr for name in _PR_COLUMNS)
@@ -328,15 +337,21 @@ def test_incomplete_cache_month_keeps_its_state(make_input):
     """収集が未完了の月は github_cache_complete が False で、状態はほかの条件で決まる。"""
     result = _analyze(_single(make_input))
     for state in (GithubData.OK, GithubData.NO_PREVIOUS_MONTH, GithubData.NO_REPOSITORY_LIST):
-        bea = _by_email(person_rows(result, _github(state, complete=False)))["bea@x.jp"]
+        bea = _by_email(person_rows(
+            result, _github(state, complete=False), outside_org_min_lines=1000,
+        ))["bea@x.jp"]
         assert (bea.github_data, bea.github_cache_complete) == (state, False)
-    bea = _by_email(person_rows(result, _github(GithubData.NO_CACHE)))["bea@x.jp"]
+    bea = _by_email(person_rows(
+        result, _github(GithubData.NO_CACHE), outside_org_min_lines=1000,
+    ))["bea@x.jp"]
     assert bea.github_cache_complete is None
 
 
 def test_github_columns_are_only_for_login_people(make_input):
     """github_id は login・none・unset。login でない人は状態が ok でも GitHub の列が None。"""
-    rows = _by_email(person_rows(_analyze(_single(make_input)), _github(GithubData.OK)))
+    rows = _by_email(person_rows(
+        _analyze(_single(make_input)), _github(GithubData.OK), outside_org_min_lines=1000,
+    ))
     assert [rows[email].github_id for email in rows] == [
         GithubId.LOGIN, GithubId.NONE, GithubId.UNSET]
     for email in ("cai@x.jp", "dan@x.jp"):
@@ -351,7 +366,9 @@ def test_a_login_person_without_prs_has_no_lead_time(make_input):
         state=GithubData.NO_COMMITS, members=_members(), metrics=_metrics(prs=0),
         commits=None, cache_complete=True,
     )
-    bea = _by_email(person_rows(_analyze(_single(make_input)), github))["bea@x.jp"]
+    bea = _by_email(person_rows(
+        _analyze(_single(make_input)), github, outside_org_min_lines=1000,
+    ))["bea@x.jp"]
     assert (bea.merged_pr_count, bea.lead_time_median_hours) == (0, None)
 
 
@@ -366,6 +383,7 @@ def _row(**changes) -> PersonMonth:
         code_requests=10.0, loc_with_cc=None, github_id=GithubId.LOGIN,
         github_data=GithubData.OK, github_cache_complete=True, merged_pr_count=2,
         lead_time_median_hours=1.5, commit_count=3, lines_added_capped=20, large_commits=1,
+        outside_org=None, outside_org_months=None,
     )
     return dataclasses.replace(base, **changes)
 
@@ -394,19 +412,23 @@ def _write_partial(base: Path, rows: list[str]) -> None:
 def test_spend_complete_is_false_for_a_partial_month(make_input, tmp_path):
     """部分月は False。複数スペースで片方だけ部分月でも False。"""
     input_dir = _single(make_input)
-    assert all(row.spend_complete for row in person_rows(_analyze(input_dir),
-                                                         GITHUB_NOT_CONFIGURED))
+    assert all(row.spend_complete for row in person_rows(
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))
     _write_partial(input_dir / ORG, [spend_row("bea@x.jp", 20.0)])
-    assert not any(row.spend_complete for row in person_rows(_analyze(input_dir),
-                                                             GITHUB_NOT_CONFIGURED))
+    assert not any(row.spend_complete for row in person_rows(
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))
 
     nested = _nested(make_input)
     cfg = _nested_cfg(tmp_path)
-    assert all(row.spend_complete
-               for row in person_rows(_analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED))
+    assert all(row.spend_complete for row in person_rows(
+        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))
     _write_partial(nested / NESTED / "second", [spend_row("amy@x.jp", 25.0)])
-    assert not any(row.spend_complete
-                   for row in person_rows(_analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED))
+    assert not any(row.spend_complete for row in person_rows(
+        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))
 
 
 # ------------------------------------------------------------------ 不変条件
@@ -491,19 +513,22 @@ def test_rows_reject_metrics_of_another_month(make_input):
     github = GithubMonth(state=GithubData.NO_COMMITS, members=_members(), metrics=other,
                          commits=None, cache_complete=True)
     with pytest.raises(ValueError):
-        person_rows(result, github)
+        person_rows(result, github, outside_org_min_lines=1000)
 
 
 def test_same_input_gives_the_same_rows(make_input, tmp_path):
     """同じ入力からは同じ行・同じ並びになる。"""
     input_dir = _single(make_input)
-    first = person_rows(_analyze(input_dir), _github(GithubData.OK))
-    second = person_rows(_analyze(input_dir), _github(GithubData.OK))
+    first = person_rows(_analyze(input_dir), _github(GithubData.OK), outside_org_min_lines=1000)
+    second = person_rows(_analyze(input_dir), _github(GithubData.OK), outside_org_min_lines=1000)
     assert first == second
     nested = _nested(make_input)
     cfg = _nested_cfg(tmp_path)
-    assert person_rows(_analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED) == \
-        person_rows(_analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED)
+    assert person_rows(
+        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ) == person_rows(
+        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    )
 
 
 # ============================================================ 集まり × 月の行
@@ -542,6 +567,8 @@ def _person(email: str, *, month: str = MONTH, department: str = "", team: str =
         commit_count=0 if commit_on else None,
         lines_added_capped=lines if commit_on else None,
         large_commits=0 if commit_on else None,
+        outside_org=False if commit_on and loc is not None else None,
+        outside_org_months=0 if commit_on and loc is not None else None,
     )
 
 
@@ -614,7 +641,7 @@ def test_counts_and_sums_match_the_person_rows(make_input):
     _write_info(input_dir / ORG, [f"bea@x.jp,{DEPT_1},{TEAM_1}", f"cai@x.jp,{DEPT_1},",
                                   f"dan@x.jp,{DEPT_2},{TEAM_1}"])
     github = dataclasses.replace(_github(GithubData.OK), prs=_bea_prs())
-    material = month_inputs(_analyze(input_dir), github)
+    material = month_inputs(_analyze(input_dir), github, outside_org_min_lines=1000)
     rows = _keyed(group_rows([material]))
     groups = {
         (GroupScope.ORGANIZATION, ""): material.rows,
@@ -705,13 +732,17 @@ def _drop_product_column(base: Path, rows: list[str]) -> None:
 def test_blank_materials_blank_the_group_values(make_input):
     """材料の人の値が1人でも空欄なら、その集まりの列は空欄（人数は値を持つ）。"""
     input_dir = _single(make_input)
-    org = _org(group_rows([month_inputs(_analyze(input_dir), GITHUB_NOT_CONFIGURED)]))
+    org = _org(group_rows([month_inputs(
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    )]))
     assert org.code_users == 2
     assert org.loc_median_of_users is None   # code-analytics の無い月
 
     _drop_product_column(input_dir / ORG,
                          [spend_row("bea@x.jp", 40.0), spend_row("cai@x.jp", 5.0)])
-    org = _org(group_rows([month_inputs(_analyze(input_dir), GITHUB_NOT_CONFIGURED)]))
+    org = _org(group_rows([month_inputs(
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+    )]))
     assert org.seat_holders == 3
     assert (org.code_users, org.code_users_3m, org.code_demand_usd,
             org.code_demand_median_usd, org.loc_median_of_users) == (
@@ -846,6 +877,7 @@ def _group(**changes) -> GroupMonth:
         loc_median_of_users=12.5, github_people=2, merged_pr_count=3,
         pr_additions_median=20.0, lead_time_median_hours=2.0, lead_time_p90_hours=5.0,
         lines_added_capped=60, code_demand_usd_of_github_people=30.0,
+        outside_org_people=None,
     )
     return dataclasses.replace(base, **changes)
 
@@ -938,11 +970,11 @@ def test_month_inputs_requires_the_pr_values(make_input):
     """PR の集計を持つ GitHub の材料に PR ごとの値が無ければ、1か月分の材料を作れない。"""
     result = _analyze(_single(make_input))
     with pytest.raises(ValueError):
-        month_inputs(result, _github(GithubData.OK))
+        month_inputs(result, _github(GithubData.OK), outside_org_min_lines=1000)
     material = month_inputs(result, dataclasses.replace(_github(GithubData.OK),
-                                                        prs=_bea_prs()))
+                                                        prs=_bea_prs()), outside_org_min_lines=1000)
     assert material.prs == _bea_prs()
-    assert material.rows == person_rows(result, _github(GithubData.OK))
+    assert material.rows == person_rows(result, _github(GithubData.OK), outside_org_min_lines=1000)
 
 
 @pytest.mark.parametrize(("state", "prs"), [
@@ -972,3 +1004,272 @@ def test_same_materials_give_the_same_group_rows():
     ]
     assert group_rows(materials) == group_rows(list(reversed(materials)))
     assert group_rows(materials) == group_rows(materials)
+
+
+# ------------------------------------------------------------ 管轄外の検知
+
+
+def _outside_github(month: str = MONTH, *, commits: int = 0, prs: int = 0,
+                    state: GithubData = GithubData.OK, complete: bool = True,
+                    github_id: GithubId = GithubId.LOGIN) -> GithubMonth:
+    """管轄外の検知用の GitHub の材料（PR ごとの値を省いても人の行は作れる）。"""
+    original = _github(state, complete)
+    if state is GithubData.NOT_CONFIGURED:
+        return original
+    metrics = (
+        dataclasses.replace(_metrics(complete, prs), month=month) if state in _PR_STATES else None
+    )
+    totals = CommitTotals(commit_count=commits, lines_added=0, lines_removed=0,
+                          lines_added_capped=0, large_commits=0)
+    commit_metrics = CommitMetrics(
+        github_org=GH_ORG, month=month,
+        users=(UserCommitMetrics(email="bea@x.jp", totals=totals),),
+        unresolved_author_commits=0, counted_commits=commits,
+    ) if state is GithubData.OK else None
+    members = original.members
+    if github_id is not GithubId.LOGIN:
+        members = GithubMembers(
+            entries=(GithubMemberLink(email="bea@x.jp", github_login=None,
+                                      no_account=github_id is GithubId.NONE),),
+            source="members-info.csv", has_column=True, warnings=(),
+        )
+    return dataclasses.replace(original, members=members, metrics=metrics, commits=commit_metrics)
+
+
+def _outside_results(make_input, months=("2026-04", "2026-05", MONTH), loc=1000):
+    """各月に同じ人がシートを持ち、Claude Code が加えた行を持つ分析結果。"""
+    input_dir = make_input(
+        {m: [spend_row("bea@x.jp", 10.0)] for m in months},
+        members=["bea@x.jp,Premium"], org=ORG,
+    )
+    for m in months:
+        _write_code(input_dir / ORG, [("bea@x.jp", loc)], month=m)
+    return [_analyze(input_dir, month=m) for m in months]
+
+
+@pytest.mark.parametrize(("loc", "commits", "prs", "expected"), [
+    (1000, 0, 0, True), (999, 0, 0, False), (0, 0, 0, False),
+    (1000, 1, 0, False), (1000, 0, 1, False),
+])
+def test_outside_org_judges_threshold_and_either_output(make_input, loc, commits, prs, expected):
+    """下限ちょうどで該当し、行不足・コミットか PR のある月は該当しない。"""
+    result = _outside_results(make_input, (MONTH,), loc)[0]
+    row = person_rows(result, _outside_github(commits=commits, prs=prs),
+                      outside_org_min_lines=1000)[0]
+    assert row.outside_org is expected
+    assert row.outside_org_months == (1 if expected else 0)
+
+
+@pytest.mark.parametrize("state", list(GithubData))
+def test_outside_org_requires_ok_state(make_input, state):
+    """ok 以外のすべての材料の状態は False ではなく空欄。"""
+    result = _outside_results(make_input, (MONTH,))[0]
+    row = person_rows(result, _outside_github(state=state), outside_org_min_lines=1000)[0]
+    assert row.outside_org is (True if state is GithubData.OK else None)
+    assert row.outside_org_months == (1 if state is GithubData.OK else None)
+
+
+@pytest.mark.parametrize("github_id", [GithubId.NONE, GithubId.UNSET])
+def test_outside_org_does_not_judge_declared_or_unset_people(make_input, github_id):
+    """なし・未記入の人は、加えた行が下限以上でも判定しない。"""
+    result = _outside_results(make_input, (MONTH,))[0]
+    row = person_rows(result, _outside_github(github_id=github_id), outside_org_min_lines=1000)[0]
+    assert row.outside_org is None and row.outside_org_months is None
+
+
+def test_outside_org_requires_complete_collection_and_known_loc(make_input):
+    """収集途中と加えた行が空欄の月は、判定と連続月数が空欄。"""
+    unknown = _analyze(_single(make_input))
+    result = _outside_results(make_input, (MONTH,))[0]
+    for material, github in [
+        (result, _outside_github(complete=False)), (unknown, _outside_github()),
+    ]:
+        row = person_rows(material, github, outside_org_min_lines=1000)[0]
+        assert row.outside_org is None and row.outside_org_months is None
+
+
+@pytest.mark.parametrize("break_kind", ["false", "unknown", "absent", "declared", "no_previous"])
+def test_outside_org_streak_breaks_and_restarts(make_input, break_kind):
+    """非該当・不明・行なし・申告済み・前月なしで連続が途切れる。"""
+    results = _outside_results(make_input)
+    first = person_rows(results[0], _outside_github(results[0].month), outside_org_min_lines=1000)
+    assert first[0].outside_org_months == 1
+    middle_github = _outside_github(
+        results[1].month, commits=1 if break_kind == "false" else 0,
+        complete=break_kind != "unknown",
+        github_id=GithubId.NONE if break_kind == "declared" else GithubId.LOGIN,
+    )
+    second = person_rows(results[1], middle_github, outside_org_min_lines=1000, previous_rows=first)
+    expected = 0 if break_kind == "false" else None if break_kind in ("unknown", "declared") else 2
+    assert second[0].outside_org_months == expected
+    previous_rows = (
+        (dataclasses.replace(second[0], email="bob@example.com"),)
+        if break_kind == "absent" else second
+    )
+    if break_kind == "no_previous":
+        previous_rows = ()
+    third = person_rows(results[2], _outside_github(), outside_org_min_lines=1000,
+                        previous_rows=previous_rows)
+    assert third[0].outside_org is True and third[0].outside_org_months == 1
+
+
+def test_outside_org_streak_uses_person_rows_without_pr_details_across_year(make_input):
+    """PR ごとの値を持たない材料から作った行でも、年をまたいで1・2・3と数える。"""
+    results = _outside_results(make_input, ("2025-12", "2026-01", "2026-02"))
+    previous = ()
+    for expected, result in enumerate(results, 1):
+        github = _outside_github(result.month)
+        assert github.prs is None
+        previous = person_rows(result, github, outside_org_min_lines=1000, previous_rows=previous)
+        assert previous[0].outside_org_months == expected
+
+
+def test_outside_org_month_inputs_and_previous_validation(make_input):
+    """前月の材料を渡して数え、月の取り違えと人の重複は空の材料でも拒む。"""
+    results = _outside_results(make_input)
+    materials = []
+    for result in results:
+        github = dataclasses.replace(_outside_github(result.month), prs=())
+        materials.append(month_inputs(result, github, outside_org_min_lines=1000,
+                                      previous=materials[-1] if materials else None))
+    assert [m.rows[0].outside_org_months for m in materials] == [1, 2, 3]
+    for rows in (materials[0].rows, materials[1].rows * 2):
+        with pytest.raises(ValueError):
+            person_rows(results[2], _outside_github(),
+                        outside_org_min_lines=1000, previous_rows=rows)
+    empty = dataclasses.replace(materials[0], rows=())
+    with pytest.raises(ValueError):
+        month_inputs(results[2], _outside_github(), outside_org_min_lines=1000, previous=empty)
+    with pytest.raises(ValueError):
+        month_inputs(results[2], _outside_github(),
+                     outside_org_min_lines=1000, previous=materials[0])
+
+
+@pytest.mark.parametrize(("minimum", "error"), [(0, ValueError), (-1, ValueError),
+                                               (True, TypeError), (1.5, TypeError)])
+def test_outside_org_minimum_argument_is_positive_integer(make_input, minimum, error):
+    """人の行と月の材料の下限引数は、真偽値を除く1以上の整数。"""
+    result = _outside_results(make_input, (MONTH,))[0]
+    for build in (person_rows, month_inputs):
+        with pytest.raises(error):
+            build(result, _outside_github(), outside_org_min_lines=minimum)
+
+
+@pytest.mark.parametrize(("changes", "error"), [
+    ({"outside_org": None, "outside_org_months": None}, ValueError),
+    ({"github_cache_complete": False}, ValueError),
+    ({"loc_with_cc": None}, ValueError),
+    ({"commit_count": 1}, ValueError),
+    ({"merged_pr_count": 1, "lead_time_median_hours": 1.0}, ValueError),
+    ({"outside_org_months": 0}, ValueError),
+    ({"outside_org_months": None}, ValueError),
+    ({"outside_org": False}, ValueError),
+    ({"outside_org": "True"}, TypeError),
+    ({"outside_org_months": True}, TypeError),
+    ({"outside_org_months": 1.5}, TypeError),
+    ({"outside_org_months": -1}, ValueError),
+    ({"github_id": GithubId.NONE, "commit_count": None, "merged_pr_count": None,
+      "lines_added_capped": None, "large_commits": None}, ValueError),
+])
+def test_outside_org_person_invariants(changes, error):
+    """判定の可否・成果・連続月数の不整合と型の誤りを区別して拒む。"""
+    row = dataclasses.replace(_person("alice@example.com", loc=1000),
+                              outside_org=True, outside_org_months=1)
+    with pytest.raises(error):
+        dataclasses.replace(row, **changes)
+
+
+def test_outside_org_unknown_and_false_month_counts_are_distinct():
+    """空欄の判定に0、非該当に空欄を持たせることはできない。"""
+    with pytest.raises(ValueError):
+        dataclasses.replace(_person("alice@example.com"), outside_org_months=0)
+    with pytest.raises(ValueError):
+        dataclasses.replace(_person("alice@example.com", loc=0), outside_org_months=None)
+
+
+def test_outside_org_groups_count_without_changing_other_fields():
+    """兼務を含む各集まりで該当人数だけを足し、既存の列は母集団を変えず保つ。"""
+    people = [
+        _person("alice@example.com", loc=1000, department=f"{DEPT_1};=架空推進3部",
+                team=f"{TEAM_1};+Nebula-AI"),
+        _person("bob@example.com", loc=0, department=DEPT_1, team=TEAM_1, lines=20, prs=1),
+        _person("cy@example.com", github_id=GithubId.NONE, department=DEPT_1),
+        _person("dee@example.com", github_id=GithubId.UNSET, team=TEAM_1),
+    ]
+    flagged = [dataclasses.replace(people[0], outside_org=True, outside_org_months=1), *people[1:]]
+    before = group_rows([_inputs(people)])
+    after = group_rows([_inputs(flagged)])
+    old_fields = [f.name for f in dataclasses.fields(GroupMonth) if f.name != "outside_org_people"]
+    for plain, marked in zip(before, after, strict=True):
+        assert marked.outside_org_people == 1
+        assert {f: getattr(marked, f) for f in old_fields} == {
+            f: getattr(plain, f) for f in old_fields
+        }
+    assert {row.scope for row in after} == set(GroupScope)
+    assert _org(after).code_demand_usd_of_github_people == 20.0
+    assert _org(after).cost_per_merged_line_usd == 1.0
+
+
+def test_outside_org_groups_unknown_and_no_login_are_blank():
+    """login が0人か、login に判定が空欄の人がいれば人数は空欄。"""
+    known = dataclasses.replace(_person("alice@example.com", loc=1000),
+                                outside_org=True, outside_org_months=1)
+    for people in ([], [_person("bob@example.com", github_id=GithubId.NONE)],
+                   [known, _person("cy@example.com")]):
+        assert _org(group_rows([_inputs(people)])).outside_org_people is None
+    assert _org(group_rows([_inputs([_person("bob@example.com", loc=0)])])).outside_org_people == 0
+
+
+@pytest.mark.parametrize(("changes", "error"), [
+    ({"outside_org_people": 2}, ValueError),
+    ({"github_cache_complete": False}, ValueError),
+    ({"outside_org_people": -1}, ValueError),
+    ({"outside_org_people": True}, TypeError),
+    ({"outside_org_people": 0.5}, TypeError),
+])
+def test_outside_org_group_invariants(changes, error):
+    """集まりの該当人数の型・上限・収集完了の不変条件を検査する。"""
+    person = dataclasses.replace(_person("alice@example.com", loc=1000),
+                                 outside_org=True, outside_org_months=1)
+    row = _org(group_rows([_inputs([person])]))
+    with pytest.raises(error):
+        dataclasses.replace(row, **changes)
+
+
+@pytest.mark.parametrize("state", list(GithubData))
+def test_outside_org_group_counts_require_judgeable_people(state):
+    """各材料の状態で、login の人を判定できるときだけ集まりの人数が値を持つ。"""
+    person = _person("alice@example.com", state=state, loc=1000)
+    row = _org(group_rows([_inputs([person], state=state)]))
+    assert row.outside_org_people == (0 if state is GithubData.OK else None)
+    with pytest.raises(ValueError):
+        dataclasses.replace(row, outside_org_people=2)
+    if state is not GithubData.OK:
+        with pytest.raises(ValueError):
+            dataclasses.replace(row, outside_org_people=0)
+
+
+def test_outside_org_group_incomplete_collection_is_blank():
+    """収集途中で判定が空欄の login がいる集まりは、人数も空欄。"""
+    person = dataclasses.replace(
+        _person("alice@example.com", loc=1000), github_cache_complete=False,
+        outside_org=None, outside_org_months=None,
+    )
+    material = dataclasses.replace(_inputs([_person("alice@example.com", loc=1000)]),
+                                   rows=(person,), github_cache_complete=False)
+    row = _org(group_rows([material]))
+    assert row.outside_org_people is None
+    with pytest.raises(ValueError):
+        dataclasses.replace(row, outside_org_people=0)
+
+
+def test_outside_org_previous_inputs_reject_wrong_types(make_input):
+    """前月を渡す経路でも、分析結果・前月の材料・人の行の型の誤りは TypeError。"""
+    result = _outside_results(make_input, (MONTH,))[0]
+    previous = _inputs([], month="2026-05")
+    with pytest.raises(TypeError):
+        month_inputs(None, _outside_github(), outside_org_min_lines=1000, previous=previous)
+    with pytest.raises(TypeError):
+        month_inputs(result, _outside_github(), outside_org_min_lines=1000, previous=())
+    with pytest.raises(TypeError):
+        person_rows(result, _outside_github(), outside_org_min_lines=1000, previous_rows=(None,))

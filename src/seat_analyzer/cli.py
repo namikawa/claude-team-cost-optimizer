@@ -2699,7 +2699,8 @@ def _write_adoption_outputs(
     GitHub の集計は、その月の分析結果から決める（その月の github-summary と同じ値になる）。
     月ごとの分析の回し直しと GitHub の材料の読み込みは1回だけ行い、2つの表を同じ月の集合・
     同じ人 × 月の行から作る。レポートは2つの表に書いたのと同じ行から作る（レポートのために
-    読み直さない）。
+    読み直さない）。管轄外の検知の連続月数には、昇順で作った材料のうち暦で1つ前の月だけを
+    渡す（飛ばした月・入力に無い月で連続を途切れさせる）。
 
     過去の月の分析が入力の欠けや不整合（FileNotFoundError・ValueError）で止まったら、その月を
     飛ばして通知を1件足し、残りの月を続ける（飛ばした月はどちらの表にも行を作らない）。過去の
@@ -2729,7 +2730,15 @@ def _write_adoption_outputs(
                 org_input, month, cfg, caches, subjects
             )
         github = _adoption_github(org_input, month, cfg, loaded, subjects)
-        materials.append(adoption.month_inputs(month_result, github))
+        previous = (
+            materials[-1]
+            if materials and materials[-1].month == calendar_months.previous_month(month)
+            else None
+        )
+        materials.append(adoption.month_inputs(
+            month_result, github,
+            outside_org_min_lines=cfg["adoption"]["outside_org_min_lines"], previous=previous,
+        ))
 
     covered = [material.month for material in materials]
     span = covered[0] if len(covered) == 1 else f"{covered[0]}〜{covered[-1]}"

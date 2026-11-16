@@ -181,6 +181,7 @@
 <span><span class="sw nd"></span>材料なし</span>
 {% if v.has_github %}
 <span>– GitHub ID なし・未記入</span>
+<span><span class="outside-org-mark">!</span> Claude Code が加えた行があるのに、この Organization にコミットも PR も無い月</span>
 {% endif %}
 {% if v.missing %}
 <span>× 分析できなかった月</span>
@@ -270,6 +271,7 @@ GitHub の対象＝GitHub ID のある人。マージ行 / 人・PR / 人＝マ�
 PR の大きさ＝1 つの PR の追加行の中央値。
 リードタイム＝PR を作ってからマージまでの時間（中央値と、遅い側 1 割の境目）。
 費用 / マージ行＝GitHub の対象の人の需要の合計 ÷ その人たちのマージ行の合計。
+成果が見えない人＝その月に Claude Code が加えた行が一定以上あるのに、この Organization にコミットもマージされた PR も無い人（人ごとの一覧の「!」）。ローカルだけの作業・マージ前・別の Organization の業務を区別できないので、本人に確かめるきっかけとして読みます。
 {% endif %}
 前月比＝最新の月とその前の月の比。3 か月比＝直近 3 か月の平均と、その前の 3 か月の平均の比（6 か月そろうときだけ）。
 どちらも、人数は差、割合はポイントの差で書いています。「—」は材料がそろわない値です。

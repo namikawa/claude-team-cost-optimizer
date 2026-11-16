@@ -3,13 +3,15 @@
 1 か月分の分析結果（`analyze.analyze_org` の戻り）と、その月の GitHub の材料を受けて、
 その月にシートを持つ人ごとに1行を作る（人 × 月の表）。月をまたいで並べるのは呼び出し側で、
 `person_rows` は 1 か月分の行だけを返す。各月の値は、その月を対象月として分析した結果から
-取る。
+取る。管轄外の検知と連続月数は、設定の行数の下限と暦で1つ前の月の人の行から、行を作る
+時点で確定する（設計書 §27.7）。
 
 チーム × 月の表は、全月の人 × 月の行を集まり（組織全体・部署・チーム）× 月へ畳んで作る
 （`group_rows`）。集まりの値は人 × 月の行の値から出し、新しい集計の規則を作らない。例外は
 lead time と PR の大きさで、人ごとの中央値は足し合わせられないので、その集まりの人が作った
 PR の集合（`github_metrics.subject_prs`）から出す。前月比などの変化の計算はしない
-（レポートの仕事）。
+（レポートの仕事）。管轄外の検知の人数は login の人の判定から数え、不明な人がいれば
+空欄にする。該当した人も、ほかの集計の材料から外さない。
 
 値の出どころは成果物と同じものに限る。需要とリクエスト数は usage-summary と同じ
 `product_usage.features`、Claude Code が加えた行は report と同じ users の `loc_with_cc`、
@@ -300,6 +302,24 @@ GITHUB_NOT_CONFIGURED = GithubMonth(
 )
 
 
+def _outside_org_eligible(
+    github_id: GithubId | None, github_data: GithubData,
+    github_cache_complete: bool | None, loc_with_cc: int | None,
+) -> bool:
+    """管轄外の検知を判定できる人・月か（未申告の login と確定した材料だけ）。"""
+    return (
+        github_id is GithubId.LOGIN and github_data is GithubData.OK
+        and github_cache_complete is True and loc_with_cc is not None
+    )
+
+
+def _check_outside_org_min_lines(value: object) -> None:
+    """管轄外の検知の下限は1以上の整数（真偽値を整数として受けない）。"""
+    _check_count("outside_org_min_lines", value)
+    if value == 0:
+        raise ValueError("outside_org_min_lines には1以上の整数が必要です")
+
+
 @dataclass(frozen=True)
 class PersonMonth:
     """人 × 月の表の1行（1人の1か月）。
@@ -321,6 +341,11 @@ class PersonMonth:
     GitHub の値の列は、github_id が login の人だけが、状態が書くと決めた列（PR の列は
     no_commits・no_previous_month・ok、コミットの列は ok）でだけ値を持ち、それ以外は None。
     PR が0件の人の lead time は None で、1件以上なら値を持つ。
+
+    outside_org は、この Organization に成果が見えない月か。login・ok・収集完了・加えた行
+    が確定した月でだけ真偽値を持つ（申告済みの人や不明な材料を判定しないため）。True なら
+    コミットと PR は0件。outside_org_months は暦で連続して該当した月数で、True なら1以上、
+    False なら0、None なら None。下限は行に保存せず、行だけでは行数との大小を検査しない。
 
     比率（`cost_per_merged_line_usd`）は保存せず、分子と分母から出す（元の値を失わない
     ため）。不変条件は __post_init__ で検査する。型の誤りは TypeError、値の誤りは
@@ -346,6 +371,8 @@ class PersonMonth:
     commit_count: int | None
     lines_added_capped: int | None
     large_commits: int | None
+    outside_org: bool | None
+    outside_org_months: int | None
 
     def __post_init__(self) -> None:
         for name in ("email", "month", "seat", *_AFFILIATION_FIELDS):
@@ -370,6 +397,22 @@ class PersonMonth:
                 f"lead_time_median_hours には0以上の時間が必要です: {self.lead_time_median_hours!r}"
             )
         self._check_github()
+        if self.outside_org is not None:
+            _check_flag("outside_org", self.outside_org)
+        _check_optional_count("outside_org_months", self.outside_org_months)
+        eligible = _outside_org_eligible(
+            self.github_id, self.github_data, self.github_cache_complete, self.loc_with_cc,
+        )
+        if (self.outside_org is not None) != eligible:
+            raise ValueError("outside_org は判定できる人・月でだけ値を持ちます")
+        if self.outside_org is True and (self.commit_count != 0 or self.merged_pr_count != 0):
+            raise ValueError("outside_org が True の行はコミットと PR が0件です")
+        if (
+            (self.outside_org is None and self.outside_org_months is not None)
+            or (self.outside_org is False and self.outside_org_months != 0)
+            or (self.outside_org is True and not self.outside_org_months)
+        ):
+            raise ValueError("outside_org_months は None なら空欄、False なら0、True なら1以上です")
 
     def _check_github(self) -> None:
         """GitHub の列が、状態と対応表の状態から決まる顔ぶれに収まっているか。"""
@@ -556,13 +599,20 @@ def _spend_complete(result: OrgAnalysisResult) -> bool:
 
 
 def person_rows(
-    result: OrgAnalysisResult, github: GithubMonth,
+    result: OrgAnalysisResult, github: GithubMonth, *,
+    outside_org_min_lines: int, previous_rows: Iterable[PersonMonth] = (),
 ) -> tuple[PersonMonth, ...]:
     """1 か月分の人 × 月の行（シートを持つ人だけ・email の昇順）。
 
     result はその月を対象月として分析した結果、github はその月の GitHub の材料で、PR と
     コミットの集計は同じ月の同じ対象者（`seat_holders` の email）で作ったもの。集計の月が
     result の月と違えば ValueError。型の誤りは TypeError。
+
+    outside_org_min_lines は管轄外の検知の行数の下限（1以上の整数、真偽値は不可）。
+    previous_rows は暦で1つ前の月の人の行だけ（無ければ空）。該当する月は前の同じ人の
+    outside_org_months に1を足し、前の行が無い・None・0なら1。判定できなければ None、
+    該当しなければ0にする。前月でない行や同じ人の重複は ValueError（取り違えを止める）。
+    PR ごとの値は要らず、行を作る時点で判定と連続月数を確定する。
     """
     if not isinstance(result, OrgAnalysisResult):
         raise TypeError(
@@ -575,12 +625,33 @@ def person_rows(
             raise ValueError(
                 f"GitHub の集計の月が分析の月と違います: {metrics.month} / {result.month}"
             )
+    _check_outside_org_min_lines(outside_org_min_lines)
+    prior: dict[str, PersonMonth] = {}
+    for row in previous_rows:
+        if not isinstance(row, PersonMonth):
+            raise TypeError("previous_rows には PersonMonth が必要です")
+        if row.month != previous_month(result.month):
+            raise ValueError("previous_rows は暦で1つ前の月の行である必要があります")
+        if row.email in prior:
+            raise ValueError("previous_rows に同じ人の行が複数あります")
+        prior[row.email] = row
     holders = seat_holders(result)
     workspaces = [result.workspaces[name] for name in _workspace_order(result)]
     spend_complete = _spend_complete(result)
     rows = []
     for email, seats in holders.items():
         github_id = _github_id(github.members, email)
+        loc = _loc_sum(workspaces, email)
+        github_values = _github_values(github, email, github_id)
+        outside = months = None
+        if _outside_org_eligible(github_id, github.state, github.cache_complete, loc):
+            outside = (
+                loc >= outside_org_min_lines and github_values["commit_count"] == 0
+                and github_values["merged_pr_count"] == 0
+            )
+            previous = prior.get(email)
+            before = None if previous is None else previous.outside_org_months
+            months = 1 + (before or 0) if outside else 0
         rows.append(PersonMonth(
             email=email,
             month=result.month,
@@ -588,11 +659,13 @@ def person_rows(
             **_affiliation(workspaces, email),
             spend_complete=spend_complete,
             **{name: _feature_sum(workspaces, email, name) for name in _FEATURE_FIELDS},
-            loc_with_cc=_loc_sum(workspaces, email),
+            loc_with_cc=loc,
             github_id=github_id,
             github_data=github.state,
             github_cache_complete=github.cache_complete,
-            **_github_values(github, email, github_id),
+            **github_values,
+            outside_org=outside,
+            outside_org_months=months,
         ))
     return tuple(rows)
 
@@ -631,6 +704,9 @@ class MonthInputs:
     値で、人 × 月の行の同じ列と同じ意味。rows はその月の人 × 月の行（`person_rows` の結果。
     email の昇順で重複しない）。prs は対象者の PR ごとの値（`GithubMonth.prs`）で、PR の列を
     書く状態（no_commits・no_previous_month・ok）でだけ持ち、それ以外は None。
+
+    rows の管轄外の検知と連続月数は組み立て済みで、次の月の `month_inputs` にこの材料を
+    渡すと、その人の前月の連続月数を使える（暦で1つ前の月だけ受け付ける）。
 
     月の値を行とは別に持つのは、シートを持つ人が0人の月でも組織全体の行を作るため（行から
     月の値を読むと、行の無い月の値が決まらない）。
@@ -702,14 +778,29 @@ class MonthInputs:
                 )
 
 
-def month_inputs(result: OrgAnalysisResult, github: GithubMonth) -> MonthInputs:
+def month_inputs(
+    result: OrgAnalysisResult, github: GithubMonth, *, outside_org_min_lines: int,
+    previous: MonthInputs | None = None,
+) -> MonthInputs:
     """1か月分の材料を作る（人 × 月の行は `person_rows` で作る）。
 
     result はその月を対象月として分析した結果、github はその月の GitHub の材料で、PR の
     集計を持つ状態では PR ごとの値（`GithubMonth.prs`）も持つもの。型の誤りは TypeError、
     PR ごとの値が欠けているなど材料の不整合は ValueError。
+
+    outside_org_min_lines は1以上の整数の行数の下限（真偽値は不可）。previous は暦で1つ前の
+    月の材料（無ければ None）で、その人の行だけを person_rows に渡し、連続月数を決める。
+    月が違えば、行が0件の材料でも ValueError。飛ばした月の材料は渡さない。
     """
-    rows = person_rows(result, github)  # 型の検査もここで行う
+    if previous is not None and not isinstance(previous, MonthInputs):
+        raise TypeError("previous には MonthInputs か None が必要です")
+    rows = person_rows(
+        result, github, outside_org_min_lines=outside_org_min_lines,
+        previous_rows=() if previous is None else previous.rows,
+    )  # 型と下限の検査もここで行う
+    # 行が無い材料も month で検査し、前月の取り違えを止める。
+    if previous is not None and previous.month != previous_month(result.month):
+        raise ValueError("previous は暦で1つ前の月の材料である必要があります")
     return MonthInputs(
         month=result.month,
         spend_complete=_spend_complete(result),
@@ -746,6 +837,11 @@ class GroupMonth:
     集合の lead time の中央値と P90。lines_added_capped は login の人の上限つきの追加行の和、
     code_demand_usd_of_github_people は login の人の需要の和（行数が0の人も含める）。
 
+    outside_org_people は login の人のうち outside_org が True の人数。login が0人か、
+    1人でも判定が None なら None（分からない値を0として数えないため）。値を持つのは
+    login が1人以上・ok・収集完了の月だけで、github_people 以下。逆は成り立たない
+    （加えた行が空欄の人がいると None）。該当した人も、ほかの集計の材料から外さない。
+
     合計と中央値は丸める前の値から出す。材料の人の値が1人でも確定できなければ、その列は
     None（分からない値を0として数えない）。GitHub の値の列は、PR の列（件数・大きさ・
     lead time）が PR の列を書く状態、行数と需要の和が ok の状態でだけ値を持ち、login の
@@ -776,6 +872,7 @@ class GroupMonth:
     lead_time_p90_hours: float | None
     lines_added_capped: int | None
     code_demand_usd_of_github_people: float | None
+    outside_org_people: int | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.scope, GroupScope):
@@ -800,7 +897,7 @@ class GroupMonth:
             _check_flag("github_cache_complete", self.github_cache_complete)
         _check_count("seat_holders", self.seat_holders)
         for name in ("code_users", "code_users_3m", "github_people", "merged_pr_count",
-                     "lines_added_capped"):
+                     "lines_added_capped", "outside_org_people"):
             _check_optional_count(name, getattr(self, name))
         for name in ("code_demand_usd", "code_demand_median_usd",
                      "code_demand_usd_of_github_people"):
@@ -852,6 +949,12 @@ class GroupMonth:
                 f"{self.github_people} / {self.seat_holders}"
             )
         has_people = bool(self.github_people)
+        if self.outside_org_people is not None and (
+            not has_people or self.github_data is not GithubData.OK
+            or self.github_cache_complete is not True
+            or self.outside_org_people > self.github_people
+        ):
+            raise ValueError("outside_org_people は login がいて ok・収集完了の月で、対象人数以下です")
         pr_expected = has_people and self.github_data in _PR_STATES
         if (self.merged_pr_count is not None) != pr_expected:
             raise ValueError(
@@ -1019,6 +1122,11 @@ def _group_month(
         lead_time_p90_hours=lead_p90,
         lines_added_capped=lines,
         code_demand_usd_of_github_people=demand_of_people,
+        outside_org_people=(
+            sum(person.outside_org is True for person in linked)
+            if linked and all(person.outside_org is not None for person in linked)
+            else None
+        ),
     )
 
 

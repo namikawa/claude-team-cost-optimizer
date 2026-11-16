@@ -537,10 +537,11 @@ def _validate_github(cfg: dict, errors: list[str]) -> None:
 
 
 def _validate_adoption(cfg: dict, errors: list[str]) -> None:
-    """人 × 月の表の有効・無効を検査する（真偽値だけを受け付ける）。
+    """表とレポートの有効・無効（真偽値）と、管轄外の検知の下限を検査する。
 
     数値や文字列を真偽として読むと、`enabled: "false"` のような書き方が有効の意味に
-    なるため。null と未知のキーは上書きのマージが止める。
+    なるため。下限は1以上の整数（真偽値は不可）で、無効でも検査する。
+    null と未知のキーは上書きのマージが止める。
     """
     section = cfg["adoption"]
     if not isinstance(section, dict):
@@ -548,6 +549,9 @@ def _validate_adoption(cfg: dict, errors: list[str]) -> None:
         return
     if not isinstance(section.get("enabled"), bool):
         errors.append("adoption.enabled は真偽値（true / false）が必要です")
+    minimum = section.get("outside_org_min_lines")
+    if not _is_integer(minimum) or minimum < 1:
+        errors.append("adoption.outside_org_min_lines は1以上の整数が必要です")
 
 
 def _validate_claude_export(cfg: dict, errors: list[str]) -> None:

@@ -61,7 +61,16 @@ def _person(**changes) -> PersonMonth:
         code_demand_usd=8.0, code_requests=3.0, loc_with_cc=50, github_id=GithubId.LOGIN,
         github_data=GithubData.OK, github_cache_complete=True, merged_pr_count=2,
         lead_time_median_hours=1.5, commit_count=3, lines_added_capped=120, large_commits=0,
+        outside_org=False, outside_org_months=0,
     )
+    values = {field.name: getattr(base, field.name) for field in dataclasses.fields(base)}
+    values.update(changes)
+    eligible = (
+        values["github_id"] is GithubId.LOGIN and values["github_data"] is GithubData.OK
+        and values["github_cache_complete"] is True and values["loc_with_cc"] is not None
+    )
+    changes.setdefault("outside_org", False if eligible else None)
+    changes.setdefault("outside_org_months", 0 if eligible else None)
     return dataclasses.replace(base, **changes)
 
 
@@ -71,7 +80,7 @@ def _no_github_person(**changes) -> PersonMonth:
         "github_id": None, "github_data": GithubData.NOT_CONFIGURED,
         "github_cache_complete": None, "merged_pr_count": None,
         "lead_time_median_hours": None, "commit_count": None, "lines_added_capped": None,
-        "large_commits": None, **changes,
+        "large_commits": None, "outside_org": None, "outside_org_months": None, **changes,
     })
 
 
@@ -84,6 +93,7 @@ def _group(**changes) -> GroupMonth:
         loc_median_of_users=120.0, github_people=2, merged_pr_count=6,
         pr_additions_median=40.0, lead_time_median_hours=3.0, lead_time_p90_hours=9.0,
         lines_added_capped=800, code_demand_usd_of_github_people=200.0,
+        outside_org_people=None,
     )
     return dataclasses.replace(base, **changes)
 
@@ -569,7 +579,7 @@ def test_wrong_row_types_and_missing_organization_rows():
 
 
 def test_metric_definitions_match_the_design_table():
-    """13指標の変化の種類・一覧・途中の値になる条件は設計書 §27.8 の表のとおり。"""
+    """14指標の変化の種類・一覧・途中の値になる条件は設計書 §27.8 の表のとおり。"""
     table = {metric.key: (metric.kind, metric.overview, metric.partial) for metric in METRICS}
     assert table == {
         "holders": (_COUNT, False, ""),
@@ -579,6 +589,7 @@ def test_metric_definitions_match_the_design_table():
         "demand_median": (_RATIO, False, "s"),
         "loc_median": (_RATIO, True, "s"),
         "gh_people": (_COUNT, False, ""),
+        "outside_org": (_COUNT, False, "s"),
         "lines_pp": (_RATIO, True, "g"),
         "pr_pp": (_RATIO, True, "g"),
         "pr_size": (_RATIO, False, "g"),
@@ -629,3 +640,79 @@ def test_every_column_the_report_reads_is_in_the_column_table():
     read |= {_SCATTER_Y_COLUMN} | {column for _, _, column, _, _ in _SCATTERS}
     assert read <= set(COLUMNS)
     assert set(COLUMNS) <= set(ADOPTION_TEAMS_COLUMNS) | set(ADOPTION_PEOPLE_COLUMNS)
+
+
+def test_outside_org_mark_tooltip_and_unchanged_cells(tmp_path):
+    """該当するマージ行セルだけに印と本文色のクラスを足し、行数と連続月数を添える。"""
+    people = [_person(month=THREE[0]), _person(month=THREE[1], loc_with_cc=None),
+              _person(loc_with_cc=1234, merged_pr_count=0, lead_time_median_hours=None,
+                      commit_count=0, lines_added_capped=0, outside_org=True, outside_org_months=3)]
+    teams = _org(THREE, outside_org_people=1)
+    view = _report_view(people, teams, "org-z")
+    cells = view["people"]["rows"][1]["blocks"][2]
+    assert cells[0]["cls"] == "c b2" and cells[0]["text"] == ""
+    assert cells[1]["cls"] == "c b2" and cells[1]["text"] == ""
+    tip = (f"amy {LATEST}: マージ行 0・コミット 0 件・PR 0 件"
+           "（Claude Code が加えた行 1,234 があるのに、この Organization に"
+           "コミットも PR も無い月・3 か月連続）")
+    assert cells[2] == {"cls": "c z fl", "title": tip, "text": "!"}
+    html = _write(tmp_path, people, teams)
+    assert f'<td class="c z fl" title="{tip}">!</td>'.encode() in html
+    assert b'td.c.fl{color:var(--ink);font-weight:700;font-size:12.5px}' in html
+    assert _write(tmp_path, reversed(people), reversed(teams)) == html
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_outside_org_legend_and_explanation_always_appear_with_github(tmp_path, empty):
+    """該当者や人の行がなくても、GitHub 分析のある組織では凡例と読み方を出す。"""
+    people = [] if empty else [_person()]
+    text = _write(tmp_path, people, _org(THREE)).decode()
+    assert ('<span><span class="outside-org-mark">!</span> Claude Code が加えた行があるのに、'
+            'この Organization にコミットも PR も無い月</span>') in text
+    assert '.legend .outside-org-mark{font-weight:600;color:var(--ink)}' in text
+    assert ("成果が見えない人＝その月に Claude Code が加えた行が一定以上あるのに、この Organization に"
+            "コミットもマージされた PR も無い人（人ごとの一覧の「!」）。ローカルだけの作業・マージ前・"
+            "別の Organization の業務を区別できないので、本人に確かめるきっかけとして読みます。") in text
+    assert text.index("費用 / マージ行＝") < text.index("成果が見えない人＝")
+    assert '<td class="c z fl"' not in text
+
+
+def test_outside_org_metric_position_delta_and_no_overview_or_summary():
+    """人数の行は対象の次に置き差で比べ、区切り・一覧・要約・図には足さない。"""
+    teams = [
+        _group(month=month, outside_org_people=0 if i < 3 else 2) for i, month in enumerate(SIX)
+    ]
+    view = _report_view([], teams, "org-z")
+    rows = view["org_table"]["rows"]
+    index = next(i for i, row in enumerate(rows) if row["label"] == "GitHub の対象")
+    row = rows[index + 1]
+    assert row["label"] == "うち成果が見えない人"
+    assert row["cells"] == ["0 人"] * 3 + ["2 人"] * 3
+    assert row["delta"] == "+0" and row["trend3"] == "+2"
+    metric = _metric("outside_org")
+    assert not metric.sep and not metric.overview
+    assert all(tile.column != "outside_org_people" for tile in _TILES)
+    assert all(chart.column != "outside_org_people" for chart in _CHARTS)
+    changed = _report_view(
+        [], [*teams[:-1], dataclasses.replace(teams[-1], outside_org_people=1)], "org-z",
+    )
+    assert _row_of(changed["org_table"], "うち成果が見えない人")["delta"] == "−1"
+
+
+@pytest.mark.parametrize("partial_month", ["2026-03", "2026-05", "2026-06"])
+def test_outside_org_metric_partial_spend_suppresses_comparisons(partial_month):
+    """支出が途中の月は3か月比を止め、直近2か月にあれば前月比も止める。"""
+    teams = [_group(month=m, outside_org_people=1, spend_complete=m != partial_month) for m in SIX]
+    row = _row_of(_report_view([], teams, "org-z")["org_table"], "うち成果が見えない人")
+    assert row["trend3"] == "—"
+    assert row["delta"] == ("—" if partial_month in SIX[-2:] else "+0")
+
+
+def test_outside_org_metric_blank_and_no_github_display(tmp_path):
+    """空欄の人数はダッシュにし、GitHub 分析がなければ印・凡例・説明・行を出さない。"""
+    teams = [_group(month=m, outside_org_people=None, github_cache_complete=False) for m in SIX]
+    row = _row_of(_report_view([], teams, "org-z")["org_table"], "うち成果が見えない人")
+    assert row["cells"] == ["—"] * 6 and row["delta"] == "—" and row["trend3"] == "—"
+    text = _write(tmp_path, [_no_github_person()], [_no_github_group()]).decode()
+    for absent in ('class="c z fl"', 'class="outside-org-mark"', "成果が見えない人＝", "うち成果が見えない人"):
+        assert absent not in text
