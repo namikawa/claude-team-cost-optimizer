@@ -86,7 +86,11 @@ _FORMATTERS = {
 
 
 def _cells(row: PersonMonth) -> dict[str, str]:
-    """1行分のセル文字列（None は空欄）。"""
+    """1行分のセル文字列（None は空欄）。
+
+    レポート（adoption_html）もこのセルの字句から数値を読み戻す（CSV から検算した値と
+    末尾の桁がそろうように、字句を作る処理を1か所にする）。
+    """
     cells = {}
     for name in ADOPTION_PEOPLE_COLUMNS:
         value = getattr(row, name)
@@ -168,7 +172,7 @@ _TEAM_FORMATTERS = {
 
 
 def _team_cells(row: GroupMonth) -> dict[str, str]:
-    """チーム × 月の表の1行分のセル文字列（None は空欄）。"""
+    """チーム × 月の表の1行分のセル文字列（None は空欄）。レポートも使う（`_cells` と同じ）。"""
     cells = {}
     for name in ADOPTION_TEAMS_COLUMNS:
         value = getattr(row, name)

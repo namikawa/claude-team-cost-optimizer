@@ -8,9 +8,9 @@ v2（既定）のときに書く。write_all の成果物には含めない。
 GitHub の参考値（github-summary）も上の5種とは別で、GitHub 分析を有効にした組織で
 対象月のキャッシュがあるときだけ書く。同じく write_all の成果物には含めない。
 
-人 × 月の表（adoption-people）とチーム × 月の表（adoption-teams）は組織の担当者へ
-共有する成果物の外にあり、`reports/summary/` へ書く（adoption.enabled の組織の正式分析
-だけ）。
+人 × 月の表（adoption-people）・チーム × 月の表（adoption-teams）と、その2つの表の行から
+作るレポート（adoption-report）は組織の担当者へ共有する成果物の外にあり、
+`reports/summary/` へ書く（adoption.enabled の組織の正式分析だけ）。
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from .adoption_csv import (
     write_adoption_people,
     write_adoption_teams,
 )
+from .adoption_html import write_adoption_report
 from .csv_out import write_csv
 from .details import write_details
 from .document import WriteResult, discussion_body, document_body, write_discussion
@@ -39,6 +40,7 @@ from .html import write_html, write_preview_html
 from .markdown import write_markdown, write_org_summary, write_preview_markdown
 from .naming import (
     ADOPTION_PEOPLE,
+    ADOPTION_REPORT,
     ADOPTION_TEAMS,
     DASHBOARD,
     DECISION_EVIDENCE,
@@ -74,6 +76,7 @@ __all__ = [  # noqa: RUF022
     "ADOPTION_PEOPLE_COLUMNS",
     "write_adoption_teams",
     "ADOPTION_TEAMS_COLUMNS",
+    "write_adoption_report",
     "write_org_summary",
     "write_discussion",
     "WriteResult",
@@ -89,6 +92,7 @@ __all__ = [  # noqa: RUF022
     "GITHUB_SUMMARY",
     "ADOPTION_PEOPLE",
     "ADOPTION_TEAMS",
+    "ADOPTION_REPORT",
     "SUMMARY_DIRNAME",
     "PREVIEW",
     "PREVIEW_DASHBOARD",

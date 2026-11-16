@@ -21,6 +21,7 @@ from seat_analyzer import (
     decision_evidence,
     github_collect,
     ingest,
+    report,
     seat_changes,
 )
 from seat_analyzer.analyze import pipeline
@@ -37,6 +38,7 @@ from seat_analyzer.ingest import discover_orgs
 from seat_analyzer.product_usage import FEATURE_COLUMNS
 from seat_analyzer.report import (
     ADOPTION_PEOPLE,
+    ADOPTION_REPORT,
     ADOPTION_TEAMS,
     DASHBOARD,
     DECISION_EVIDENCE,
@@ -4830,7 +4832,8 @@ def test_adoption_does_not_change_the_other_artifacts(make_input, tmp_path):
             GITHUB_SUMMARY.name("2026-06", "org-a")} <= set(plain_files)
     assert not (plain / "summary").exists()
     assert sorted(p.name for p in (enabled / "summary").iterdir()) == [
-        ADOPTION_PEOPLE.name("2026-06", "org-a"), ADOPTION_TEAMS.name("2026-06", "org-a")]
+        ADOPTION_PEOPLE.name("2026-06", "org-a"), ADOPTION_REPORT.name("2026-06", "org-a"),
+        ADOPTION_TEAMS.name("2026-06", "org-a")]
 
 
 def test_adoption_is_written_for_a_single_org_run(make_input, tmp_path, capsys):
@@ -4997,7 +5000,7 @@ def test_preview_does_not_write_adoption(make_input, tmp_path, capsys):
                      "--preview", "--days", "10") == 0
     assert not (out / "summary").exists()
     assert capsys.readouterr().out.count(
-        "速報モードでは adoption-people・adoption-teams を書きません") == 1
+        "速報モードでは adoption-people・adoption-teams・adoption-report を書きません") == 1
 
 
 # ----------------------------------------------- チーム × 月の表（adoption-teams）
@@ -5177,3 +5180,89 @@ def test_preview_writes_neither_adoption_table(make_input, tmp_path, capsys):
     assert not _teams_path(out).exists()
     printed = capsys.readouterr().out
     assert printed.count("adoption-teams") == 1
+
+
+# ------------------------------------------------- レポート（adoption-report）
+
+
+def _report_path(out: Path, month: str = "2026-06", org: str = "org-a") -> Path:
+    """レポートの書き込み先（reports/summary/）。"""
+    return out / SUMMARY_DIRNAME / ADOPTION_REPORT.name(month, org)
+
+
+def test_adoption_report_is_written_for_a_single_org_run(make_input, tmp_path, capsys):
+    """有効にした1組織だけの実行でレポートを書き、出力一覧の2つの表の後に出す。"""
+    input_dir = _three_months(make_input)
+    _with_departments(input_dir)
+    _write_pr_cache(input_dir, entries=[_ann_pr("2026-06", 1, "a" * 40)])
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path, github={"org-a": GH_ORG}),
+                     "--org", "org-a") == 0
+    path = _report_path(out)
+    text = path.read_text(encoding="utf-8")
+    assert "<h1>Claude Code の活用と GitHub の成果 — org-a</h1>" in text
+    assert "<p>2026-04 〜 2026-06。" in text
+    assert '<h2 id="team">チームごとの推移</h2>' in text
+    assert '<h2 id="department">部署ごとの推移</h2>' in text
+    lines = capsys.readouterr().out.splitlines()
+    kinds = [line.split(":")[0].strip() for line in lines if line.startswith("  adoption")]
+    assert kinds == ["adoption", "adoption-teams", "adoption-report"]
+    assert f"  adoption-report: {path}" in lines
+
+
+def test_adoption_report_does_not_change_the_two_tables(make_input, tmp_path, monkeypatch):
+    """レポートを足しても、2つの表のバイト列は変わらない（レポートを書かない実行と一致）。"""
+    input_dir = _three_months(make_input)
+    _with_departments(input_dir)
+    _write_pr_cache(input_dir, entries=[_ann_pr("2026-06", 1, "a" * 40)])
+    config = _adoption_config(tmp_path, github={"org-a": GH_ORG})
+    with_report, without = tmp_path / "with", tmp_path / "without"
+    assert _run_with(input_dir, with_report, config, "--org", "org-a") == 0
+    monkeypatch.setattr(report, "write_adoption_report", lambda *args, **kwargs: None)
+    assert _run_with(input_dir, without, config, "--org", "org-a") == 0
+    for path in (_adoption_path(without), _teams_path(without)):
+        assert (with_report / SUMMARY_DIRNAME / path.name).read_bytes() == path.read_bytes()
+    assert _report_path(with_report).is_file()
+    assert not _report_path(without).exists()
+
+
+def test_adoption_report_without_github(make_input, tmp_path):
+    """GitHub 分析の無い組織でも書け、GitHub の指標を載せていない旨が出る。"""
+    input_dir = _three_months(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a") == 0
+    text = _report_path(out).read_text(encoding="utf-8")
+    assert "<h1>Claude Code の活用と成果 — org-a</h1>" in text
+    assert "この組織は GitHub 分析の対象ではないので" in text
+    assert 'id="scatter"' not in text
+
+
+def test_adoption_report_of_a_nested_org(make_input, tmp_path):
+    """入れ子の組織（2 workspace）でも書ける。"""
+    input_dir, config = _nested_ready(make_input, tmp_path)
+    with open(config, "a", encoding="utf-8", newline="\n") as stream:
+        stream.write("adoption:\n  enabled: true\n")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+    text = _report_path(tmp_path / "reports", org="org-x").read_text(encoding="utf-8")
+    assert "<h1>Claude Code の活用と成果 — org-x</h1>" in text
+
+
+def test_adoption_report_with_a_skipped_past_month(make_input, tmp_path):
+    """分析できずに飛ばした過去の月があっても書け、その月を値なしの月として冒頭に出す。"""
+    input_dir, config = _nested_ready(
+        make_input, tmp_path, second_months=("2026-04", "2026-06"))
+    make_input({"2026-04": [spend_row("a@x.jp", 5.0)]}, org="org-x", workspace="main")
+    with open(config, "a", encoding="utf-8", newline="\n") as stream:
+        stream.write("adoption:\n  enabled: true\n")
+    assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06") == 0
+    text = _report_path(tmp_path / "reports", org="org-x").read_text(encoding="utf-8")
+    assert "<p>2026-05 は、入力が欠けていて分析できなかった月です（値はありません）。</p>" in text
+
+
+def test_preview_does_not_write_adoption_report(make_input, tmp_path):
+    """速報ではレポートも書かない。"""
+    input_dir = _three_months(make_input)
+    out = tmp_path / "reports"
+    assert _run_with(input_dir, out, _adoption_config(tmp_path), "--org", "org-a",
+                     "--preview", "--days", "10") == 0
+    assert not _report_path(out).exists()

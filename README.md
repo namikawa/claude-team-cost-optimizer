@@ -103,6 +103,7 @@ seat-analyzer --version
 - `reports/summary/YYYY-MM.md` — 複数組織を一括分析した場合の組織横断サマリ（この名前は変わりません）
 - `reports/summary/adoption-people-YYYYMM-<組織名>.csv` — 人 × 月の表（Claude Code の需要・リクエスト数・Claude Code が加えた行と、GitHub の PR・コミット単位の行数を、1人の1か月を1行に並べた参考値。設定 `adoption.enabled: true` の組織の正式分析だけで出力し、組織の担当者へ共有する成果物には含めません）
 - `reports/summary/adoption-teams-YYYYMM-<組織名>.csv` — チーム × 月の表（人 × 月の表を組織全体・部署・チームごとの1か月へ畳んだ参考値。人数・Claude Code を使った人の数・需要の合計と中央値・PR 数・PR の大きさ・lead time・マージ行あたりの費用など。人 × 月の表と同じ設定・同じ条件で出力します）
+- `reports/summary/adoption-report-YYYYMM-<組織名>.html` — レポート（2つの表を、組織全体・チーム・部署の月ごとの変化と人ごとの参考の一覧として読める1枚の HTML にしたもの。JavaScript なし・外部通信なし。2つの表と同じ設定・同じ条件で出力します）
 
 速報モード（`--preview`）は `preview-YYYYMM-<組織名>.md` と
 `preview-dashboard-YYYYMM-<組織名>.html` を出します。

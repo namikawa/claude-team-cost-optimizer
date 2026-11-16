@@ -315,14 +315,18 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    付けない（担当者へ共有しない内部の文書で、月は既に名前に入っているため）
 
    `config.yaml` に `adoption:` の `enabled: true` を書くと、正式分析のたびに人 × 月の表
-   `reports/summary/adoption-people-YYYYMM-<組織名>.csv` とチーム × 月の表
-   `reports/summary/adoption-teams-YYYYMM-<組織名>.csv` も生成される（既定は無効。1組織
-   だけの実行でも書き、速報モードでは書かない）。人 × 月の表は Claude Code の需要・
+   `reports/summary/adoption-people-YYYYMM-<組織名>.csv`・チーム × 月の表
+   `reports/summary/adoption-teams-YYYYMM-<組織名>.csv`・レポート
+   `reports/summary/adoption-report-YYYYMM-<組織名>.html` の3つも生成される（既定は無効。
+   1組織だけの実行でも書き、速報モードでは書かない）。人 × 月の表は Claude Code の需要・
    リクエスト数・Claude Code が加えた行と、GitHub の PR・コミット単位の行数を、入力にある
    全月について1人の1か月を1行に並べた参考値で、チーム × 月の表はそれを組織全体・部署・
-   チームごとの1か月へ畳んだもの。どちらも組織の担当者へ共有する成果物には含めない（列の
-   意味は reference.md の [adoption-people の列](./reference.md#adoption-people-の列人--月の表)
-   と [adoption-teams の列](./reference.md#adoption-teams-の列チーム--月の表)）
+   チームごとの1か月へ畳んだもの。レポートは2つの表を、組織全体・チーム・部署の月ごとの
+   変化として読める1枚の HTML にしたもの。どれも組織の担当者へ共有する成果物には含めない
+   （列と節の意味は reference.md の
+   [adoption-people の列](./reference.md#adoption-people-の列人--月の表)・
+   [adoption-teams の列](./reference.md#adoption-teams-の列チーム--月の表)・
+   [adoption-report](./reference.md#adoption-reportレポート)）
 
    ファイル名の規則を変える前に生成した成果物（`report.md` 等）は自動で改名も削除も
    しない。再生成すると新旧が併存するので、旧名の整理は必要に応じて手で行う。
