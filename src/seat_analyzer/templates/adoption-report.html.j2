@@ -1,0 +1,280 @@
+{#
+  adoption-report（Claude Code の活用と GitHub の成果のレポート）のテンプレート。
+  表示の材料は report/adoption_html.py が組み立てて v に入れて渡す。タグはここだけが書く。
+
+  各行の前後の空白と行の間の改行は、読み込むときに落としてつなぐ（_join_lines）。
+  タグの途中や文の途中で改行しないこと（つないだときに前後の語がくっつく・空白が消える）。
+
+  JavaScript を使わず、外部の URL を読まない。注記は Jinja のコメントで書く（出力に残さない）。
+#}
+{# 1つの集まりの、指標 × 月の数値の表（組織全体と、チーム・部署ごとの表で共有する） #}
+{% macro metric_table(table) %}
+<table class="metric">
+<thead>
+<tr>
+<th class="m"></th>
+{% for h in table.heads %}
+<th><span class="yr">{% if h.year %}{{ h.year }}{% else %}&nbsp;{% endif %}</span>{{ h.label }}{{ h.mark }}</th>
+{% endfor %}
+<th>前月比</th><th>3 か月比</th><th>推移</th>
+</tr>
+</thead>
+<tbody>
+{% for row in table.rows %}
+<tr{% if row.sep %} class="sep"{% endif %}>
+<td class="m">{{ row.label }}</td>
+{% for cell in row.cells %}
+<td>{{ cell }}</td>
+{% endfor %}
+<td class="d">{{ row.delta }}</td>
+<td class="d">{{ row.trend3 }}</td>
+<td class="sp">{{ sparkline(row.spark) }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% endmacro %}
+{# 推移の小さな線 #}
+{% macro sparkline(s) %}
+<svg class="sp" viewBox="{{ s.viewbox }}" role="img">{% for points in s.segments %}<polyline class="spark" points="{{ points }}"/>{% endfor %}{% if s.dot %}<circle class="sparkdot" cx="{{ s.dot.cx }}" cy="{{ s.dot.cy }}" r="2.5"/>{% endif %}</svg>
+{% endmacro %}
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Claude Code の活用と成果 {{ v.org }} {{ v.latest }}</title>
+<style>{{ css|safe }}</style>
+</head>
+<body>
+<main>
+<h1>Claude Code の活用と{% if v.has_github %} GitHub の{% endif %}成果 — {{ v.org }}</h1>
+<p>{{ v.first }} 〜 {{ v.latest }}。組織全体 → チーム・部署ごと → 人ごと（参考）の順に並べています。数値は参考値で、評価には使いません。</p>
+{% if not v.has_github %}
+<p>この組織は GitHub 分析の対象ではないので、GitHub の成果の指標（マージ行・PR・リードタイム・マージ行あたりの費用）は載せていません。</p>
+{% endif %}
+{% if v.missing %}
+<p>{{ v.missing }} は、入力が欠けていて分析できなかった月です（値はありません）。</p>
+{% endif %}
+{% if v.partial_spend or v.partial_github %}
+<p>{% if v.partial_spend %}＊ は、支出レポートが月の途中までの月です。{% endif %}{% if v.partial_github %}† は、GitHub の収集が完了していない月です。{% endif %}これらの月の値は途中までの値で、その値が絡む前月比・3 か月比は出していません。</p>
+{% endif %}
+<nav>
+{% for link in v.nav %}
+<a href="{{ link.href }}">{{ link.label }}</a>
+{% endfor %}
+</nav>
+
+{# 最新の月の要約（組織全体の行から） #}
+<div class="tiles">
+{% for tile in v.tiles %}
+<div class="card tile">
+<div class="label">{{ tile.label }}</div>
+<div class="value">{{ tile.value }}</div>
+<div class="delta">前月比 {{ tile.delta }}</div>
+<div class="sub">{{ tile.sub }}</div>
+</div>
+{% endfor %}
+</div>
+
+{# 組織全体の推移 #}
+<h2 id="org">組織全体の月ごとの推移</h2>
+<p>1 つの図に 1 つの指標です。点に重ねると値が出ます。1 人あたりの値は下の表にあります。</p>
+<div class="charts">
+{% for item in v.charts %}
+{% set c = item.chart %}
+<div class="card chart">
+<h3>{{ item.title }}</h3>
+<p class="sub">{{ item.sub }}</p>
+<svg viewBox="{{ c.viewbox }}" role="img">
+{% for t in c.ticks %}
+<line class="{{ t.cls }}" x1="{{ t.x1 }}" x2="{{ t.x2 }}" y1="{{ t.y }}" y2="{{ t.y }}"/>
+<text x="{{ t.label_x }}" y="{{ t.label_y }}" text-anchor="end">{{ t.label }}</text>
+{% endfor %}
+{% for label in c.axis_labels %}
+<text x="{{ label.x }}" y="{{ label.y }}" text-anchor="middle">{{ label.text }}</text>
+{% endfor %}
+{% for points in c.segments %}
+<polyline class="line" points="{{ points }}"/>
+{% endfor %}
+{% for dot in c.dots %}
+<circle class="hit" cx="{{ dot.cx }}" cy="{{ dot.cy }}" r="12"><title>{{ dot.tip }}</title></circle>
+<circle class="dot" cx="{{ dot.cx }}" cy="{{ dot.cy }}" r="4"><title>{{ dot.tip }}</title></circle>
+{% endfor %}
+{% if c.value_label %}
+<text class="val" x="{{ c.value_label.x }}" y="{{ c.value_label.y }}">{{ c.value_label.text }}</text>
+{% endif %}
+</svg>
+</div>
+{% endfor %}
+</div>
+<div class="card group spaced" id="{{ v.org_anchor }}">
+<h3>組織全体の数値</h3>
+<p class="sub">量は 1 人あたりです（人数の増減の影響を除くため）。指標の意味は末尾の「指標の読み方」</p>
+{{ metric_table(v.org_table) }}
+</div>
+
+{# チームごと・部署ごと（その種別の行がある組織だけ） #}
+{% for section in v.sections %}
+<h2 id="{{ section.id }}">{{ section.title }}ごとの推移</h2>
+<p>並びは人数の多い順です。兼務の人はそれぞれの{{ section.title }}に入れています。人数の少ないところは 1 人の動きで大きく振れます。</p>
+{% set ov = section.overview %}
+<div class="card scroll spaced">
+<h3>{{ section.title }}の一覧（{{ v.latest }}）</h3>
+<p class="sub">最新の月の値と変化です。線はその{{ section.title }}の中の推移で、上下の幅は{{ section.title }}ごとに違います。名前から下の表へ移れます。</p>
+<table class="ov">
+<thead>
+<tr>
+<th>{{ ov.head }}</th>
+{% for label in ov.labels %}
+<th>{{ label }}</th>
+{% endfor %}
+</tr>
+</thead>
+<tbody>
+{% for row in ov.rows %}
+<tr{% if row.is_org %} class="org"{% endif %}>
+<td class="g"><a href="#{{ row.anchor }}">{{ row.name }}</a><span class="n">{{ row.holders }}</span></td>
+{% for cell in row.cells %}
+<td>
+<div class="ov-top">
+{{ sparkline(cell.spark) }}
+<span class="v">{{ cell.value }}</span>
+</div>
+<div class="ov-d">前月比 {{ cell.delta }}</div>
+{% if cell.trend3 is not none %}
+<div class="ov-d">3 か月比 {{ cell.trend3 }}</div>
+{% endif %}
+</td>
+{% endfor %}
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+<div class="groups">
+{% for card in section.cards %}
+<div class="card group" id="{{ card.anchor }}">
+<h3>{{ card.name }}</h3>
+<p class="sub">{{ card.sub }}</p>
+{{ metric_table(card.table) }}
+</div>
+{% endfor %}
+</div>
+{% endfor %}
+
+{# 人ごとの一覧（参考） #}
+{% set p = v.people %}
+<h2 id="people">人ごとの一覧（参考）</h2>
+<p>色が濃い（暗い配色では明るい）ほど量が多い月です。横に見ると 1 人の変化が分かります。並びは部署とメールの順です。セルに重ねると値が出ます（全部の値は adoption-people の CSV にあります）。</p>
+{% for block in p.legend %}
+<div class="legend">
+<span><b>{{ block.title }}</b></span>
+{% for sw in block.swatches %}
+<span><span class="sw {{ sw.cls }}"></span>{{ sw.label }}</span>
+{% endfor %}
+</div>
+{% endfor %}
+<div class="legend">
+<span><b>共通</b></span>
+<span><span class="sw z"></span>0</span>
+<span><span class="sw nd"></span>材料なし</span>
+{% if v.has_github %}
+<span>– GitHub ID なし・未記入</span>
+{% endif %}
+{% if v.missing %}
+<span>× 分析できなかった月</span>
+{% endif %}
+<span>空白 その月はシートなし</span>
+</div>
+<div class="card scroll">
+<table class="heat">
+<thead>
+<tr>
+<th></th><th></th><th></th>
+{% for block in p.blocks %}
+{% if not loop.first %}<td class="gap"></td>{% endif %}
+<th class="grp" colspan="{{ p.span }}">{{ block.title }}</th>
+{% endfor %}
+</tr>
+<tr>
+<th></th><th></th><th></th>
+{% for block in p.blocks %}
+{% if not loop.first %}<td class="gap"></td>{% endif %}
+{% for h in block.heads %}
+<th><span class="yr">{% if h.year %}{{ h.year }}{% else %}&nbsp;{% endif %}</span>{{ h.label }}{{ h.mark }}</th>
+{% endfor %}
+{% endfor %}
+</tr>
+</thead>
+<tbody>
+{% for row in p.rows %}
+{% if row.department is defined %}
+<tr><td class="dept" colspan="3">{{ row.department }}</td></tr>
+{% else %}
+<tr>
+<td class="name">{{ row.name }}</td>
+<td class="meta">{{ row.seat }}</td>
+<td class="meta">{{ row.github }}</td>
+{% for cells in row.blocks %}
+{% if not loop.first %}<td class="gap"></td>{% endif %}
+{% for cell in cells %}
+{% if cell.cls %}<td class="{{ cell.cls }}" title="{{ cell.title }}">{{ cell.text }}</td>{% else %}<td></td>{% endif %}
+{% endfor %}
+{% endfor %}
+</tr>
+{% endif %}
+{% endfor %}
+</tbody>
+</table>
+</div>
+
+{# 人ごとの散布図（参考。GitHub 分析のある組織だけ） #}
+{% if v.scatter %}
+<h2 id="scatter">{{ v.scatter.heading }}</h2>
+<p>1 つの点が 1 人です（GitHub ID のある人）。目盛りは対数で、0 も左端・下端に置いています。点に重ねると名前と値が出ます。</p>
+<div class="charts">
+{% for item in v.scatter.charts %}
+{% set c = item.chart %}
+<div class="card chart">
+<h3>{{ item.title }}</h3>
+<p class="sub">{{ item.sub }}</p>
+<svg viewBox="{{ c.viewbox }}" role="img">
+{% for g in c.grid %}
+<line class="{{ g.cls }}" x1="{{ g.x1 }}" x2="{{ g.x2 }}" y1="{{ g.y1 }}" y2="{{ g.y2 }}"/>
+<text x="{{ g.label_x }}" y="{{ g.label_y }}" text-anchor="{{ g.anchor }}">{{ g.label }}</text>
+{% endfor %}
+<text x="{{ c.x_name.x }}" y="{{ c.x_name.y }}" text-anchor="middle">{{ c.x_name.text }}</text>
+<text transform="{{ c.y_name.transform }}" text-anchor="middle">{{ c.y_name.text }}</text>
+{% for point in c.points %}
+<circle class="hit" cx="{{ point.cx }}" cy="{{ point.cy }}" r="12"><title>{{ point.tip }}</title></circle>
+<circle class="dot" cx="{{ point.cx }}" cy="{{ point.cy }}" r="5"><title>{{ point.tip }}</title></circle>
+{% endfor %}
+</svg>
+</div>
+{% endfor %}
+</div>
+{% endif %}
+
+{# 指標の読み方 #}
+<h2 id="about">指標の読み方</h2>
+<p class="note">
+使った人の割合＝シートを持つ人のうち、その月に Claude Code を使った人。
+3 か月続けて使った人の割合＝その月を含む 3 か月とも使った人。
+需要 / 人＝Claude Code の需要（API 換算）÷ シートを持つ人。
+需要の中央値＝真ん中の人の需要（需要 / 人との差が大きいほど、一部の人に偏っている）。
+加えた行（中央値）＝Claude Code が加えた行の、使った人の中央値。
+{% if v.has_github %}
+GitHub の対象＝GitHub ID のある人。マージ行 / 人・PR / 人＝マージ行（上限つき）・マージされた PR ÷ GitHub の対象の人。
+マージ行＝コミットの作者ごとに数えた追加行から、1 コミットで上限を超える大きな変更を除いた合計。
+PR の大きさ＝1 つの PR の追加行の中央値。
+リードタイム＝PR を作ってからマージまでの時間（中央値と、遅い側 1 割の境目）。
+費用 / マージ行＝GitHub の対象の人の需要の合計 ÷ その人たちのマージ行の合計。
+{% endif %}
+前月比＝最新の月とその前の月の比。3 か月比＝直近 3 か月の平均と、その前の 3 か月の平均の比（6 か月そろうときだけ）。
+どちらも、人数は差、割合はポイントの差で書いています。「—」は材料がそろわない値です。
+</p>
+<p class="note">過去の月の所属（部署・チーム）は、その月の分析が採用したメンバー情報によります。需要とリクエスト数は支出レポート、加えた行は Claude Code analytics{% if v.has_github %}、PR とコミットは GitHub{% endif %} の値です。数値の出どころは、同じフォルダの adoption-teams（チーム × 月）と adoption-people（人 × 月）の CSV です。</p>
+</main>
+</body>
+</html>

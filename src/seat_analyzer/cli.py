@@ -958,10 +958,10 @@ def _run_analyze(args: argparse.Namespace) -> int:
                     "（参考値は正式分析でだけ出力）"
                 )
             if cfg["adoption"]["enabled"]:
-                # 有効にした人 × 月・チーム × 月の表を速報で黙って無視しない
+                # 有効にした人 × 月・チーム × 月の表とレポートを速報で黙って無視しない
                 print(
-                    f"{org}: 速報モードでは adoption-people・adoption-teams を書きません"
-                    "（人 × 月の表・チーム × 月の表は正式分析でだけ出力）"
+                    f"{org}: 速報モードでは adoption-people・adoption-teams・adoption-report を"
+                    "書きません（人 × 月の表・チーム × 月の表・レポートは正式分析でだけ出力）"
                 )
             days = args.days
             # 入れ子の組織は --days の有無によらず workspace ごとの観測日数を突き合わせる
@@ -1029,10 +1029,10 @@ def _run_analyze(args: argparse.Namespace) -> int:
                 notices += _stale_github_notices(org_output, month, org)
         annotations: dict[str, str] = {}
         if cfg["adoption"]["enabled"]:
-            # 人 × 月・チーム × 月の表は組織の担当者へ共有しない資料なので、組織の出力
-            # ディレクトリではなく reports/summary/ に書く（考察の資料・混入チェックの対象
-            # にもしない）
-            adoption_paths, adoption_annotations, adoption_notices = _write_adoption_tables(
+            # 人 × 月・チーム × 月の表とレポートは組織の担当者へ共有しない資料なので、組織の
+            # 出力ディレクトリではなく reports/summary/ に書く（考察の資料・混入チェックの
+            # 対象にもしない）
+            adoption_paths, adoption_annotations, adoption_notices = _write_adoption_outputs(
                 org, org_input, output_dir, result, cfg, caches, loaded,
             )
             paths.update(adoption_paths)
@@ -2681,7 +2681,7 @@ def _adoption_github(
     )
 
 
-def _write_adoption_tables(
+def _write_adoption_outputs(
     org: str,
     org_input: Path,
     output_dir: Path,
@@ -2690,15 +2690,16 @@ def _write_adoption_tables(
     caches: _PrCaches | None,
     target: _GithubMonthLoad | None,
 ) -> tuple[dict[str, Path], dict[str, str], list[str]]:
-    """人 × 月・チーム × 月の表を `reports/summary/` に書き、出力一覧の種別 → 書いた先・
-    種別 → 添え書き・通知を返す。
+    """人 × 月・チーム × 月の表と、その2つの表の行から作るレポートを `reports/summary/` に
+    書き、出力一覧の種別 → 書いた先・種別 → 添え書き・通知を返す。
 
     月は入力に spend がある月のうち対象月以前（対象月は常に含める）。対象月は分析済みの
     result と github-summary の材料 target を使い回し、過去の月はその月を対象月として
     分析し直す（判定の版に依らない値だけを使うので既定の引数で呼ぶ）。各月の対象者と
     GitHub の集計は、その月の分析結果から決める（その月の github-summary と同じ値になる）。
     月ごとの分析の回し直しと GitHub の材料の読み込みは1回だけ行い、2つの表を同じ月の集合・
-    同じ人 × 月の行から作る。
+    同じ人 × 月の行から作る。レポートは2つの表に書いたのと同じ行から作る（レポートのために
+    読み直さない）。
 
     過去の月の分析が入力の欠けや不整合（FileNotFoundError・ValueError）で止まったら、その月を
     飛ばして通知を1件足し、残りの月を続ける（飛ばした月はどちらの表にも行を作らない）。過去の
@@ -2740,10 +2741,13 @@ def _write_adoption_tables(
     report.write_adoption_people(people_rows, people_path)
     teams_path = report.ADOPTION_TEAMS.summary_path(output_dir, result.month, org)
     report.write_adoption_teams(team_rows, teams_path)
+    report_path = report.ADOPTION_REPORT.summary_path(output_dir, result.month, org)
+    report.write_adoption_report(people_rows, team_rows, report_path, org=org)
 
     people = len({row.email for row in people_rows})
     groups = len({(row.scope, row.name) for row in team_rows})
-    paths = {"adoption": people_path, "adoption-teams": teams_path}
+    paths = {"adoption": people_path, "adoption-teams": teams_path,
+             "adoption-report": report_path}
     annotations = {
         "adoption": f"（{people} 名 × {span}・{len(people_rows)} 行）",
         "adoption-teams": f"（{groups} 集まり × {span}・{len(team_rows)} 行）",

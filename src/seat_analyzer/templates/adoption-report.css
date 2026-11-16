@@ -1,0 +1,73 @@
+/* adoption-report（Claude Code の活用と GitHub の成果のレポート）のスタイル。
+   dashboard.css とは別のファイルにしている（dashboard.css はすべてのダッシュボードに埋め込まれ、
+   変えるとそれらの出力が変わるため）。埋め込む前にコメントを落とすので、ここの説明は出力に出ない。
+
+   色はすべて :root の変数で持ち、暗い配色は閲覧する環境の設定（prefers-color-scheme）に従って
+   変数を差し替える。切り替えの部品は置かない（JavaScript を使わないため）。 */
+:root{color-scheme:light;--page:#f9f9f7;--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;
+--grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--series:#2a78d6;--zero:#e1e0d9;
+--b1:#86b6ef;--b2:#5598e7;--b3:#2a78d6;--b4:#1c5cab;--b5:#0d366b}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--ink:#f0efec;
+--ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--series:#3987e5;
+--zero:#2c2c2a;--b1:#184f95;--b2:#256abf;--b3:#3987e5;--b4:#6da7ec;--b5:#b7d3f6}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font:14px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1400px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:40px 0 4px}h3{font-size:15px;margin:0}
+p{margin:4px 0;color:var(--ink2)}.note{font-size:12.5px;color:var(--ink2)}
+a{color:inherit}nav{font-size:13px;color:var(--ink2);margin:8px 0 0}nav a{margin-right:14px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+/* 図や表の枠のうち、見出しの直後に置くもの（上に間を空ける） */
+.card.spaced{margin-top:12px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:14px}
+.tile .label{font-size:12.5px;color:var(--ink2)}.tile .value{font-size:26px;font-weight:600;line-height:1.3}
+.tile .delta{font-size:12.5px;color:var(--ink2)}.tile .sub{font-size:12px;color:var(--muted)}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:12px;margin-top:12px}
+.chart h3{font-size:13.5px}.chart .sub,.group .sub{font-size:12px;color:var(--muted);margin:0 0 4px}
+svg{display:block;width:100%;height:auto}
+svg text{font:11px system-ui,-apple-system,"Segoe UI",sans-serif;fill:var(--muted);font-variant-numeric:tabular-nums}
+svg text.val{fill:var(--ink);font-weight:600;font-size:12px}
+.gridline{stroke:var(--grid);stroke-width:1}.axisline{stroke:var(--axis);stroke-width:1}
+.line{fill:none;stroke:var(--series);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+/* 点の当たり判定（大きい透明の円）は、見える点の直前に置く */
+.dot{fill:var(--series);stroke:var(--surface);stroke-width:2}.hit{fill:transparent}
+.hit:hover+.dot,.dot:hover{stroke:var(--ink)}
+/* 月が増えて幅に収まらない表は、枠の中で横にスクロールする */
+.scroll,.group{overflow-x:auto}.groups{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}
+table{font-variant-numeric:tabular-nums}th{vertical-align:bottom}
+.yr{display:block;font-size:10.5px;color:var(--muted);font-weight:400}
+table.metric{border-collapse:collapse;width:100%;font-size:12.5px}
+table.metric th{font-weight:500;color:var(--muted);text-align:right;padding:2px 6px;white-space:nowrap}
+table.metric td{text-align:right;padding:3px 6px;border-top:1px solid var(--grid);white-space:nowrap;color:var(--ink)}
+table.metric td.m,table.metric th.m{text-align:left;color:var(--ink2)}
+table.metric td.d{color:var(--ink2)}table.metric td.sp{width:92px;padding:0 0 0 6px}
+table.metric tr.sep td{border-top:1px solid var(--axis)}
+table.ov{border-collapse:collapse;width:100%;font-size:12.5px}
+table.ov th{font-weight:500;color:var(--muted);text-align:left;padding:2px 10px 4px;white-space:nowrap}
+table.ov td{padding:6px 10px;border-top:1px solid var(--grid);white-space:nowrap;vertical-align:top}
+table.ov td.g{color:var(--ink);font-weight:600}table.ov td.g .n{display:block;font-weight:400;font-size:12px;color:var(--muted)}
+table.ov tr.org td{border-bottom:1px solid var(--axis)}
+.ov-top{display:flex;align-items:center;gap:8px}.ov-top .v{font-weight:600;color:var(--ink)}
+.ov-d{font-size:11.5px;color:var(--ink2)}
+.spark{fill:none;stroke:var(--series);stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round}
+.sparkdot{fill:var(--series)}svg.sp{width:86px;height:22px;flex:none}
+table.heat{border-collapse:separate;border-spacing:2px;font-size:12px}
+table.heat th{font-weight:500;color:var(--ink2);text-align:center;padding:0 2px;white-space:nowrap}
+table.heat th.grp{font-size:12.5px;color:var(--ink);padding-bottom:2px}
+table.heat td.name{color:var(--ink);padding-right:10px;white-space:nowrap}
+table.heat td.meta{color:var(--muted);padding-right:10px;white-space:nowrap}
+table.heat td.gap{width:14px}
+table.heat td.c{width:26px;min-width:26px;height:20px;border-radius:3px;text-align:center;font-size:11px;line-height:20px;padding:0}
+/* 色の段（b1〜b5）と、段と別の見た目（z＝0・nd＝値なし・na＝GitHub ID なし／未記入・分析できなかった月） */
+td.c.z{background:var(--zero)}td.c.b1{background:var(--b1)}td.c.b2{background:var(--b2)}
+td.c.b3{background:var(--b3)}td.c.b4{background:var(--b4)}td.c.b5{background:var(--b5)}
+td.c.nd{box-shadow:inset 0 0 0 1px var(--axis)}td.c.na{color:var(--muted)}
+td.c:hover{outline:2px solid var(--ink);outline-offset:0}
+td.dept{color:var(--ink2);font-weight:600;padding-top:10px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 18px;font-size:12px;color:var(--ink2);margin:4px 0}.legend b{display:inline-block;min-width:15em}
+.legend span.sw{display:inline-block;width:18px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:4px}
+/* 凡例の見本の色（人ごとの一覧のセルと同じ見た目） */
+.legend span.sw.z{background:var(--zero)}.legend span.sw.nd{box-shadow:inset 0 0 0 1px var(--axis)}
+.legend span.sw.b1{background:var(--b1)}.legend span.sw.b2{background:var(--b2)}.legend span.sw.b3{background:var(--b3)}
+.legend span.sw.b4{background:var(--b4)}.legend span.sw.b5{background:var(--b5)}
+.legend b{font-weight:600;color:var(--ink)}
