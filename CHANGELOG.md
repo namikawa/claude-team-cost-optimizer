@@ -1,15 +1,20 @@
 # 変更履歴
 
-## [未リリース]
+## [1.6.0] - 2026-11-17
 
 ### 追加
 
 - github-summary にコミット単位の行数の列を追加した
+- github-summary の行数について、集計から外したコミットや前の月のキャッシュの不足などを実行時に知らせるようにした
 - 設定 `github.large_commit_lines`・`github.commit_lookback_months` を追加した
 - 人 × 月の表 `reports/summary/adoption-people-YYYYMM-<組織名>.csv`（Claude Code の利用と GitHub の成果を1人の1か月を1行に並べた参考値）を追加した
 - チーム × 月の表 `reports/summary/adoption-teams-YYYYMM-<組織名>.csv`（人 × 月の表を組織全体・部署・チームごとの1か月へ畳んだ参考値）を追加した
 - レポート `reports/summary/adoption-report-YYYYMM-<組織名>.html`（2つの表を、組織全体・チーム・部署の月ごとの変化として読める1枚の HTML にしたもの）を追加した
 - 設定 `adoption.enabled`（人 × 月の表・チーム × 月の表・レポートを書くか。既定は無効）を追加した
+
+### 変更
+
+- members-info の GitHub ID の `なし` を、対象の GitHub Organization で PR もコミットもしない人を表す値にした（これまでは PR を作らない人）
 
 ## [1.5.0] - 2026-11-10
 
@@ -267,6 +272,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.6.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.6.0
 [1.5.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.5.0
 [1.4.6]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.6
 [1.4.5]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.4.5

@@ -318,11 +318,12 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    `reports/summary/adoption-people-YYYYMM-<組織名>.csv`・チーム × 月の表
    `reports/summary/adoption-teams-YYYYMM-<組織名>.csv`・レポート
    `reports/summary/adoption-report-YYYYMM-<組織名>.html` の3つも生成される（既定は無効。
-   1組織だけの実行でも書き、速報モードでは書かない）。人 × 月の表は Claude Code の需要・
-   リクエスト数・Claude Code が加えた行と、GitHub の PR・コミット単位の行数を、入力にある
-   全月について1人の1か月を1行に並べた参考値で、チーム × 月の表はそれを組織全体・部署・
-   チームごとの1か月へ畳んだもの。レポートは2つの表を、組織全体・チーム・部署の月ごとの
-   変化として読める1枚の HTML にしたもの。どれも組織の担当者へ共有する成果物には含めない
+   1組織だけの実行でも書き、速報モードでは書かない。GitHub 分析を有効にしていない組織でも
+   書き、GitHub の列は空欄になる）。人 × 月の表は Claude Code の需要・リクエスト数・
+   Claude Code が加えた行と、GitHub の PR・コミット単位の行数を、入力にある月のうち対象月
+   までの全月について1人の1か月を1行に並べた参考値で、チーム × 月の表はそれを組織全体・
+   部署・チームごとの1か月へ畳んだもの。レポートは2つの表を、組織全体・チーム・部署の月ごと
+   の変化として読める1枚の HTML にしたもの。どれも組織の担当者へ共有する成果物には含めない
    （列と節の意味は reference.md の
    [adoption-people の列](./reference.md#adoption-people-の列人--月の表)・
    [adoption-teams の列](./reference.md#adoption-teams-の列チーム--月の表)・
@@ -347,8 +348,8 @@ seat-analyzer collect --org <組織名> --source github --month YYYY-MM
 へ保存する。行数の集計は前の月のキャッシュも読むので、分析する月と、その前の
 `github.commit_lookback_months` か月ぶんを月を変えて順に収集する。複数の月を分析するなら、
 最も古い分析月の前の月ぶんも必要になる。人 × 月の表とチーム × 月の表（adoption-people・
-adoption-teams）は直前の月のキャッシュが無い月の行数を空欄にするので、行数を最初の月から
-出したい場合は、その前の月のキャッシュも収集しておく。
+adoption-teams）は、直前の月のキャッシュが無いかコミットを持たない月の行数を空欄にするので、
+行数を最初の月から出したい場合は、その前の月のキャッシュも収集しておく。
 
 - 保存するのは repository 名・PR 番号・作成者・作成日時・merge 日時・追加行数・
   削除行数・draft かどうかと、PR に含まれるコミットの SHA・作者の login とメール・
@@ -374,7 +375,8 @@ adoption-teams）は直前の月のキャッシュが無い月の行数を空欄
   取り直す（検索の反映遅れで日付境界の PR を取りこぼさないため）。同じ PR は何度取っても
   1件にまとまる
 - 収集したキャッシュは `analyze` の判定と report などの成果物には影響しない。参考値の成果物
-  `github-summary` の材料になる（列の意味は [reference.md](./reference.md)）
+  `github-summary` と、`adoption.enabled` を有効にしたときの人 × 月の表・チーム × 月の表・
+  レポートの材料になる（列の意味は [reference.md](./reference.md)）
 
 ## claude.ai からの CSV 取得（有効にした組織のみ）
 
@@ -540,7 +542,9 @@ seat-analyzer analyze --preview [--org <組織名>] [--days 10]
 
 - 出力は `reports/<組織名>/<月>/` の `preview-YYYYMM-<組織名>.md` と
   `preview-dashboard-YYYYMM-<組織名>.html`（経営層共有向けの速報ダッシュボード）。
-  正式分析の判定と成果物には影響しない
+  正式分析の判定と成果物には影響しない。github-summary と、`adoption.enabled` を有効にした
+  ときの人 × 月の表・チーム × 月の表・レポートは書かない（有効にしている組織には、実行時に
+  その旨を知らせる）
 - 需要を月末ペースに日割り換算し、遊休候補 / Standard候補 / Premium妥当 /
   判断保留 などの一次判断ラベルを付ける。境界付近は判断保留に倒す
 - 日割り換算は利用の偏りを補正しない参考値。シート変更の確定判断は正式分析で行うこと。

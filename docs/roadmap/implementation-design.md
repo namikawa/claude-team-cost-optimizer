@@ -377,9 +377,9 @@ user@example.com,架空推進3部,Nebula-AI,エンジニア,250,,example-user
 値:
 
 - 空欄 = 未記入（未対応として扱いwarning）
-- `なし` / `none` / `-` = 対象のGitHub OrganizationでPRを作らない（アカウントが無い、または別の
-  Organizationで開発する）と判断した人（未対応として扱うがwarningなし。月々のPRの有無では
-  書き換えず、開発する場所が変わったらloginを書く）
+- `なし` / `none` / `-` = 対象のGitHub Organizationで開発しない（PRを作らず、コミットもしない）と
+  判断した人（未対応として扱うがwarningなし。月々のPRの有無では書き換えず、開発する場所が
+  変わったらloginを書く）
 - それ以外 = GitHubのlogin
 
 制約:

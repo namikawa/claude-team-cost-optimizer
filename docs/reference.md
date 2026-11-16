@@ -438,7 +438,8 @@ PR の件数・リードタイムなど既存の列は引き続き書く。
 作者の login が対象者の対応表に当たればその人の行数にする。login が無いときだけ、
 帰属する PR の作成者が対象者ならその人へ帰属させるため、別の人のコミットが混ざる
 可能性がある。login があって対象者に当たらない場合は PR の作成者へ戻さない。
-解決できない作者は `unresolved_author_commits` の件数だけ残し、行数には入れない。
+解決できない作者は `unresolved_author_commits` の件数だけ残し、行数には入れない（実行時にも
+件数を警告する）。
 コミットの作者のメールアドレス（`author_email`）は使わない。
 
 追加行が `github.large_commit_lines` を超えるコミットは「大きな変更」として
@@ -555,8 +556,8 @@ GitHub の列（`merged_pr_count` から `large_commits` まで）は、`github_
 全体で、Claude Code の活用と GitHub の成果が月ごとにどう変わったかを読むための材料。前月比
 などの変化は表に持たない。
 
-置き場所と有効化は人 × 月の表と同じで、`adoption.enabled: true` の組織の正式分析のたびに、
-人 × 月の表とレポート（adoption-report）と一緒に
+置き場所と有効化は人 × 月の表と同じで、`adoption.enabled: true` のとき、正式分析のたびに
+分析した組織ごとに、人 × 月の表とレポート（adoption-report）と一緒に
 `reports/summary/adoption-teams-<YYYYMM>-<組織名>.csv` を書く（1組織だけの実行でも書き、
 速報モードでは書かない）。月の範囲・各月の値の作り方・分析できない過去の月の扱いも人 × 月の
 表と同じで、2つの表は同じ月の集合・同じ人 × 月の行から作る。GitHub 分析を有効にしていない
@@ -645,9 +646,9 @@ P90 は、同じ実行の github-summary の組織全体の行と一致する。
 活用と GitHub の成果が、組織全体・チーム・部署で月ごとにどう変わったかを見て判断するための
 レポートで、主に読むのはチーム・部署の月ごとの変化。人ごとの値は参考として載せる。
 
-置き場所と有効化は2つの表と同じで、`adoption.enabled: true` の組織の正式分析のたびに、2つの
-表と同じ実行で `reports/summary/adoption-report-<YYYYMM>-<組織名>.html` を書く（1組織だけの
-実行でも書き、速報モードでは書かない）。設定はほかに無い。
+置き場所と有効化は2つの表と同じで、`adoption.enabled: true` のとき、正式分析のたびに分析した
+組織ごとに、2つの表と同じ実行で `reports/summary/adoption-report-<YYYYMM>-<組織名>.html` を
+書く（1組織だけの実行でも書き、速報モードでは書かない）。設定はほかに無い。
 
 読者は CTO と開発責任者を想定している。2つの表と同じく、組織の担当者へ共有する成果物の
 集合には含めず、考察の執筆（`discuss`）の資料にもならない。シートの判定にも、人やチームの
@@ -863,9 +864,9 @@ V2 の判定は記入された上限で分岐し、空欄は実課金があっ�
 
 ## GitHub 分析の有効化（config.yaml > organizations）
 
-GitHub の情報（PR 数・リードタイム）を参考値として使うかどうかは組織ごとに決める。
-`organizations` に書いた組織だけが対象で、書かない組織は GitHub 関連の処理と警告から
-一切除外される。
+GitHub の情報（PR 数・リードタイム・コミット単位の行数）を参考値として使うかどうかは
+組織ごとに決める。`organizations` に書いた組織だけが対象で、書かない組織は GitHub 関連の
+処理と警告から一切除外される。
 
 ```yaml
 organizations:
@@ -875,8 +876,9 @@ organizations:
 
 キーは入力ディレクトリ直下の組織名、値はその組織の GitHub Organization 名。両者は
 一致しない前提の対応表なので、名前が同じ組織でも省略はできない。`organizations` の
-直下だけは既定に無いキー（組織名）を書けるが、その中身に書けるのは `github_org` だけで、
-値が GitHub の Organization 名として読めなければ設定の読み込みでエラーになる。
+直下だけは既定に無いキー（組織名）を書けるが、その中身に書けるのは `github_org`・
+`workspaces`・`secondary_breakeven_usd`・`claude_export` だけで、`github_org` の値が
+GitHub の Organization 名として読めなければ設定の読み込みでエラーになる。
 
 ### GitHub ID の列（email → GitHub login の対応表）
 

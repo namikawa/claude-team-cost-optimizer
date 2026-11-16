@@ -1817,7 +1817,8 @@ def test_invalid_decision_version_is_rejected_on_load(tmp_path, value):
 
 def test_github_defaults():
     """コミット集計の閾値と過去キャッシュの参照月数の既定値を固定する。"""
-    assert load_config()["github"] == {"large_commit_lines": 5000, "commit_lookback_months": 3}
+    assert load_config(PACKAGE_CONFIG_PATH)["github"] == {
+        "large_commit_lines": 5000, "commit_lookback_months": 3}
 
 
 @pytest.mark.parametrize("key,values", [
@@ -1854,7 +1855,7 @@ def test_github_section_and_unknown_keys_are_rejected(tmp_path, text, fragment):
 
 def test_adoption_is_disabled_by_default():
     """人 × 月の表は既定で無効（adoption.enabled は False）。"""
-    assert load_config()["adoption"] == {"enabled": False}
+    assert load_config(PACKAGE_CONFIG_PATH)["adoption"] == {"enabled": False}
 
 
 def test_adoption_can_be_enabled(tmp_path):
