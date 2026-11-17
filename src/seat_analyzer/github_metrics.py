@@ -39,11 +39,12 @@ repository の一覧が完全でない結果では集計しない（`RepoDiscove
 黙って小さく出る。同じ理由で、収集し切れていないキャッシュ（`PrCache.complete` が False）は
 集計するが「部分的な値」であることを警告に残す。
 
-行数は対象 repository の PR のコミットを作者の login へ帰属させる（§15.7）。login が
-無いときだけ最初に merge された PR の作成者へ戻し、メールは使わない。oid の重複、
-マージコミット、PR のマージで新しく作られたコミット、前の月の対象 PR に出た oid は
-数えない。Bot・draft・削除済み作成者の PR も材料にする。大きな変更は上限つき追加行の
-合計からだけ外し、保存上限を超えたコミットと解決できない作者は件数で警告する。
+行数は対象 repository の PR のコミットを作者の login へ帰属させる（§15.7）。対象者の
+login の照合を優先し、当たらず login が無いか作者が Claude のときは、最初に merge された
+PR の作成者へ戻す。Claude は login が `claude` かを小文字で比較し、メールは使わない。
+oid の重複、マージコミット、PR のマージで新しく作られたコミット、前の月の対象 PR に
+出た oid は数えない。Bot・draft・削除済み作成者の PR も材料にする。大きな変更は上限つき
+追加行の合計からだけ外し、保存上限を超えたコミットと解決できない作者は件数で警告する。
 """
 
 from __future__ import annotations
@@ -68,6 +69,9 @@ from .github_collect import (
 # 個人の実績から外す作成者の種別（GraphQL の `__typename`）。完全一致で見る——種別は
 # 収集の側が字句のまま写すので、ここで表記を寄せると別の種別を Bot として畳みかねない
 BOT_AUTHOR_TYPE = "Bot"
+
+# GitHub が Claude のコミットの作者に結び付けるアカウントの login。小文字へ揃えて比較する
+CLAUDE_AUTHOR_LOGIN = "claude"
 
 # `CachedPr` が保証する日時の表記（UTC 固定）
 _TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
@@ -768,6 +772,11 @@ def has_commits(cache: PrCache) -> bool:
     return cache.schema == 2 and all(pr.commits is not None for pr in cache.prs)
 
 
+def _uses_pr_author(login: str | None) -> bool:
+    """作者の login が無いか Claude で、PR の作成者へ戻せるか。"""
+    return login is None or login.lower() == CLAUDE_AUTHOR_LOGIN
+
+
 def commit_metrics(
     cache: PrCache,
     members: GithubMembers,
@@ -779,9 +788,11 @@ def commit_metrics(
 ) -> CommitMetrics | None:
     """キャッシュのコミットを作者ごとの行数へ畳む（設計書 §15.7）。
 
-    数える規則と作者の解決はモジュールの docstring を参照。対象月のキャッシュが schema 2
-    でないか、commits が None の PR を含むときは None を返す（has_commits の判定）。
-    PR が0件の schema 2 は全員0の結果を返す。
+    作者の login が対象者に当たればその人へ帰属させる。当たらず login が無いか作者が
+    Claude のときだけ、帰属する PR の作成者が対象者ならその人へ戻す。login の比較は
+    大文字小文字を区別せず、メールは使わない。数える規則はモジュールの docstring を参照。
+    対象月のキャッシュが schema 2 でないか、commits が None の PR を含むときは None を
+    返す（has_commits の判定）。PR が0件の schema 2 は全員0の結果を返す。
 
     earlier は対象月より前の、コミットを持つキャッシュ。月の重複は許さず、渡す順には
     依らない。large_commit_lines は設定から受け取る大きな変更の閾値で、既定値を持たない。
@@ -836,7 +847,9 @@ def commit_metrics(
             if commit.is_merge or commit.oid in generated:
                 continue
             counted += 1
-            login = commit.author_login if commit.author_login is not None else pr.author_login
+            login = commit.author_login
+            if (login is None or login.lower() not in linked) and _uses_pr_author(login):
+                login = pr.author_login
             if login is None or login.lower() not in linked:
                 unresolved += 1
                 continue
@@ -859,8 +872,9 @@ def commit_metrics(
     if unresolved:
         warnings.append(
             f"シートを持つ人に帰属できなかったコミット {unresolved} 件を行数の集計から"
-            "除外しました（作者の login がシートを持つ人に当たらないコミットと、作者の"
-            " GitHub アカウントが分からず PR の作成者もシートを持つ人でないコミット）"
+            "除外しました（作者の login がシートを持つ人にも Claude にも当たらないコミットと、"
+            "作者の GitHub アカウントが分からないか作者が Claude で、PR の作成者もシートを"
+            "持つ人でないコミット）"
         )
     return CommitMetrics(
         github_org=cache.github_org,

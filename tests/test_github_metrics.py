@@ -1266,7 +1266,7 @@ def test_commits_belong_to_the_author_including_bot_and_deleted_author_prs(
     ("ALICE-DEV", "octocat", "User", 1),
 ])
 def test_commit_author_resolution_does_not_use_email(login, pr_login, pr_type, expected):
-    """作者の login を優先し、無い場合だけ PR の作成者へ戻してメールを使わない。"""
+    """作者の login を優先し、無い場合か Claude の場合だけ PR の作成者へ戻してメールを使わない。"""
     result = _commit_metrics(_cache((_pr(
         author_login=pr_login, author_type=pr_type,
         commits=(_commit(author_login=login, author_email="a@example.com"),),
@@ -1276,6 +1276,137 @@ def test_commit_author_resolution_does_not_use_email(login, pr_login, pr_type, e
     assert result.counted_commits == 1
     if login == "ALICE-DEV":
         assert result.users[1].totals.commit_count == 1
+
+
+@pytest.mark.parametrize("login,pr_login,pr_type,email", [
+    ("claude", "octocat", "User", "a@example.com"),
+    ("Claude", "alice-dev", "User", "b@example.com"),
+    ("CLAUDE", "OctoCat", "User", "a@example.com"),
+    ("claude", "outsider", "User", None),
+    ("claude", "helper-bot", "Bot", None),
+    ("claude", None, None, None),
+    ("claude-bot", "octocat", "User", None),
+    ("outsider", "octocat", "User", None),
+])
+def test_claude_commit_author_resolution(login, pr_login, pr_type, email):
+    """Claude の login だけを大小文字によらず PR 作成者へ戻し、帰属できなければ残す。"""
+    result = _commit_metrics(_cache((_pr(
+        author_login=pr_login, author_type=pr_type, commits=(_commit(author_login=login),),
+    ),)))
+    assert {user.email: user.totals.commit_count for user in result.users} == {
+        "a@example.com": int(email == "a@example.com"),
+        "b@example.com": int(email == "b@example.com"),
+    }
+    assert result.unresolved_author_commits == int(email is None)
+    assert result.counted_commits == 1
+
+
+def test_claude_commit_totals_match_commits_authored_by_pr_creator():
+    """Claude のコミットの件数・行数・上限つき追加行・大きな変更を PR 作成者へ入れる。"""
+    commits = (_commit(author_login="claude"),
+               _commit("b" * 40, author_login="claude", additions=101, deletions=7))
+    claude = _commit_metrics(_cache((_pr(commits=commits),)))
+    human = _commit_metrics(_cache((_pr(commits=tuple(
+        replace(commit, author_login="octocat") for commit in commits
+    )),)))
+    assert claude.users[0].totals == human.users[0].totals == CommitTotals(2, 111, 9, 10, 1)
+    assert claude.users[1].totals == CommitTotals(0, 0, 0, 0, 0)
+    assert claude.unresolved_author_commits == 0
+
+
+@pytest.mark.parametrize("login,author_email,expected", [
+    ("outsider", "noreply@anthropic.com", 0),
+    ("claude", "a@example.com", 1),
+    ("claude", "b@example.com", 1),
+    ("claude", "other@example.com", 1),
+    ("claude", None, 1),
+])
+def test_claude_commit_resolution_ignores_author_email(login, author_email, expected):
+    """Claude の判定は作者のメールアドレスの値や有無によらず login だけで行う。"""
+    result = _commit_metrics(_cache((_pr(commits=(
+        _commit(author_login=login, author_email=author_email),
+    )),)))
+    assert result.users[0].totals.commit_count == expected
+    assert result.unresolved_author_commits == 1 - expected
+
+
+@pytest.mark.parametrize("login", ["claude", "Claude", "CLAUDE"])
+def test_claude_subject_login_precedes_pr_creator(login):
+    """対象者の login に当たる Claude のコミットは PR 作成者へ戻さない。"""
+    members = _members(_link("a@example.com", "octocat"), _link("b@example.com", "Claude"))
+    result = _commit_metrics(
+        _cache((_pr(commits=(_commit(author_login=login),)),)), members=members,
+    )
+    assert result.users[0].totals.commit_count == 0
+    assert result.users[1].totals == CommitTotals(1, 10, 2, 10, 0)
+    assert result.unresolved_author_commits == 0
+
+
+@pytest.mark.parametrize("login", ["claude", None])
+def test_claude_and_missing_login_fallback_ignore_pr_author_type(login):
+    """PR 作成者への帰属は Bot かどうかによらず対象者の login と照合する。"""
+    members = _members(_link("a@example.com", "octocat"), _link("b@example.com", "helper-bot"))
+    result = _commit_metrics(_cache((_pr(
+        author_login="helper-bot", author_type="Bot", commits=(_commit(author_login=login),),
+    ),)), members=members)
+    assert result.users[0].totals.commit_count == 0
+    assert result.users[1].totals == CommitTotals(1, 10, 2, 10, 0)
+    assert result.unresolved_author_commits == 0
+
+
+@pytest.mark.parametrize("same_time,other_repo", [(False, False), (True, False), (True, True)])
+def test_duplicate_claude_commit_uses_first_merged_pr(same_time, other_repo):
+    """Claude の重複コミットも merge 時刻・repository の小文字・番号で1回だけ帰属する。"""
+    commit = _commit(author_login="claude")
+    first = _pr(number=20, repository="Repo-A", author_login="octocat",
+                merged_at="2026-08-03T00:00:00Z", commits=(commit,))
+    second = _pr(number=10, repository="repo-b" if other_repo else "repo-a",
+                 author_login="alice-dev", commits=(commit,),
+                 merged_at=first.merged_at if same_time else "2026-08-04T00:00:00Z")
+    result = _commit_metrics(_cache((first, second)))
+    expected_first = not same_time or other_repo
+    assert result.users[0].totals.commit_count == int(expected_first)
+    assert result.users[1].totals.commit_count == int(not expected_first)
+    assert result.counted_commits == 1
+    assert result.unresolved_author_commits == 0
+
+
+def test_claude_mixed_commits_preserve_counts_and_unresolved_warning():
+    """Claude を含む集計でも対象者と未解決へ排他的に分け、規則に沿う警告を出す。"""
+    commits = tuple(_commit(f"{n:040x}", author_login=login) for n, login in enumerate(
+        ("claude", "octocat", "alice-dev", None, "outsider", "claude-bot")
+    ))
+    result = _commit_metrics(_cache((
+        _pr(commits=commits),
+        _pr(number=13, author_login="outsider",
+            commits=(_commit("f" * 40, author_login="claude"),)),
+    )))
+    assert [user.totals.commit_count for user in result.users] == [3, 1]
+    assert result.unresolved_author_commits == 3
+    assert (result.totals.commit_count + result.unresolved_author_commits
+            == result.counted_commits == 7)
+    assert result.warnings == (
+        ("シートを持つ人に帰属できなかったコミット 3 件を行数の集計から除外しました"
+         "（作者の login がシートを持つ人にも Claude にも当たらないコミットと、作者の GitHub "
+         "アカウントが分からないか作者が Claude で、PR の作成者もシートを持つ人でないコミット）"),
+    )
+
+
+def test_claude_commits_do_not_change_pr_metrics():
+    """Claude のコミットがあっても PR の件数・lead time・区分の内訳を変えない。"""
+    prs = (
+        _pr(number=1), _pr(number=2, author_login="alice-dev"),
+        _pr(number=3, author_login="outsider"),
+        _pr(number=4, author_login="helper-bot", author_type="Bot"),
+        _pr(number=5, author_login=None, author_type=None),
+        _pr(number=6, repository="outside"),
+    )
+    members = _members(_link("a@example.com", "octocat"), _link("b@example.com", "alice-dev"))
+    before = _pr_metrics(_cache(prs), members, _repos("repo-a"))
+    after = _pr_metrics(_cache(tuple(replace(
+        pr, commits=(_commit(author_login="claude"),), commit_count=1,
+    ) for pr in prs)), members, _repos("repo-a"))
+    assert before == after
 
 
 @pytest.mark.parametrize("same_time,other_repo", [(False, False), (True, False), (True, True)])
