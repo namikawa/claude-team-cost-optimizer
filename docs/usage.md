@@ -27,6 +27,7 @@ input/
     code-analytics/   cc_YYYY-MM.csv           （任意）
     members-info.csv                           （任意）
     github-cache/     prs-YYYY-MM.json         （collect が作る。手で編集しない）
+    otel-cache/       otel-YYYY-MM.json        （collect が作る。手で編集しない）
   <組織名B>/
     ...
 ```
@@ -116,7 +117,7 @@ columns:
 ## 複数の Team スペースを運用する組織（入れ子レイアウト）
 
 1 つの組織に主スペースと副スペースがある場合、入力をスペースごとに分ける。
-`members-info.csv`（日付つきも）と `github-cache/` は組織直下に置く。
+`members-info.csv`（日付つきも）と `github-cache/`・`otel-cache/` は組織直下に置く。
 
 ```
 input/
@@ -132,6 +133,7 @@ input/
     members-info.csv
     members-info-YYYY-MM-DD.csv
     github-cache/
+    otel-cache/       otel-YYYY-MM.json
 ```
 
 新しい組織の雛形は `seat-analyzer init-org <組織名> --workspaces main,second` で作れる。
@@ -181,8 +183,8 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
 ### 既存の組織を複数スペースの構成へ移す
 
 1. `input/<組織名>/main/` を作り、`spend/`・`members/`・`code-analytics/` をその下へ移す。
-   `members-info.csv`（日付つきも）と `github-cache/` は組織直下に残す。従来レイアウトの
-   データがある組織には `init-org --workspaces` を使えないので手で移す。
+   `members-info.csv`（日付つきも）と `github-cache/`・`otel-cache/` は組織直下に残す。
+   従来レイアウトのデータがある組織には `init-org --workspaces` を使えないので手で移す。
 2. `config.yaml` の `organizations.<組織名>.workspaces` に、まず主の `main` だけを登録し、
    `primary: true` を付ける。
 3. `seat-analyzer doctor --org <組織名>` で構造の検査が通ることを確かめる。
@@ -530,6 +532,44 @@ Cookie が見つからないときや期限が分からないときは `ログ�
 有効なセッションのままログイン画面を開くとアプリへ戻されるため、期限の前でも先に消して
 ログインし直せるようにしている（消すのはセッションの Cookie だけで、組織の切替などに使う
 他の Cookie は残す）。ログインしたら Chrome を閉じる。次回の取得から有効になる。
+
+## OpenTelemetry の集計の取得（有効にした組織のみ）
+
+`organizations.<組織名>.otel` を設定した組織の1か月を BigQuery から取得する。
+設定手順は [setup.md](./setup.md) の「OpenTelemetry の取得を設定する」を参照。
+取得元は Cloud Logging のシンクの形のイベント表だけで、メトリクスの表は読まない。
+
+```bash
+seat-analyzer collect --source otel --org org-a --month 2026-10 --dry-run
+seat-analyzer collect --source otel --org org-a --month 2026-10
+```
+
+`--org` は1つ、`--month` は必須。取得できるのは翌月の2日（UTC）以降で、終わっていない月は
+保存しない。`--dry-run` は始まっている月なら使え、表の定義の確認と読み取り量の見積もりを
+表示して終わる（「（--dry-run のため取得していません）」を添え、保存しない）。
+
+保存先は `input/org-a/otel-cache/otel-2026-10.json`。同じ月を再取得すると置き換える。
+複数スペースの組織でも組織直下に置く。キャッシュは手で編集しない。
+
+表示の例（組織名・件数・読み取り量は合成値）:
+
+```text
+org-a 2026-10: 表の定義を確認しました（表に無い属性: permission_mode, tool_source）
+org-a 2026-10: 読み取り量の見積もり 327.8 MiB（上限 1.9 GiB）
+org-a 2026-10: 2 人・イベントの行 10 件・セッションの行 2 件 → input/org-a/otel-cache/otel-2026-10.json
+  集計しなかったイベント: organization.id が空 3 件・別の組織 5 件・メールアドレスが空 2 件
+```
+
+表に無い任意属性がなければ1行目の括弧は出ない。集計したイベントが無く、除外だけがある
+場合は、`organization_ids` と利用者のメールアドレスの属性を確かめる案内が出る。
+集計名と区分、失敗の種類は [reference.md](./reference.md) の「OpenTelemetry の取得」を参照。
+
+読み取り量は MiB・GiB（1024の累乗）で表示する。見積もりが `otel.maximum_bytes_billed`
+（既定は 2000000000 byte）を超えれば実行せず、`--dry-run` でも終了コード1になる。
+実行時にも同じ上限を渡す。問い合わせのたびに BigQuery の課金が生じうるので、定期実行には
+入れず、人が都度実行する。失敗時や行数・件数が合わない場合は、既存キャッシュを変更しない。
+
+取得しても、分析の成果物（表・レポート・判定）は変わらない。
 
 ## 速報モード（部分月データでの一次判断）
 

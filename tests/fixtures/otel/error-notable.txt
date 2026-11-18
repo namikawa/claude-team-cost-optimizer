@@ -1,0 +1,2 @@
+BigQuery error in show operation: Not found: Table example-
+project:claude_code_otel.no_such_table_zz

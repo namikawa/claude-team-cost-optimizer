@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from seat_analyzer import (
     adoption,
@@ -21,12 +22,13 @@ from seat_analyzer import (
     decision_evidence,
     github_collect,
     ingest,
+    otel_collect,
     report,
     seat_changes,
 )
 from seat_analyzer.analyze import pipeline
 from seat_analyzer.claude_export import list_chrome_pids
-from seat_analyzer.cli import main
+from seat_analyzer.cli import _byte_size, main
 from seat_analyzer.config import load_config
 from seat_analyzer.domain import ReasonCode
 from seat_analyzer.github_collect import (
@@ -55,6 +57,7 @@ from seat_analyzer.report.format import _fmt_usd
 
 from .conftest import CONFIG, REPO_ROOT, SPEND_HEADER, out_file, spend_row
 from .test_decision_evidence import _with_uuid, _write_info
+from .test_otel_collect import NOW, fixture, renumber, reply, result_rows, stub
 
 
 def _run(input_dir: Path, tmp_path: Path, *extra: str) -> tuple[int, Path]:
@@ -2032,8 +2035,6 @@ def test_collect_rejects_a_bad_month(make_input, tmp_path, monkeypatch, capsys, 
     ["collect", "--source", "github", "--org", "org-a", "--org", "org-b",
      "--month", COLLECT_MONTH],                                        # github は1組織ずつ
     ["collect", "--source", "github", "--org", "org-a",
-     "--month", COLLECT_MONTH, "--dry-run"],                           # claude 専用
-    ["collect", "--source", "github", "--org", "org-a",
      "--month", COLLECT_MONTH, "--profile", "corp"],                   # claude 専用
     ["collect", "--source", "github", "--org", "org-a",
      "--month", COLLECT_MONTH, "--keep-browser"],                      # claude 専用
@@ -2089,6 +2090,16 @@ def test_collect_requires_its_options(args):
     with pytest.raises(SystemExit) as excinfo:
         main(args)
     assert excinfo.value.code == 2
+
+
+def test_collect_github_rejects_dry_run(capsys):
+    """GitHub での dry-run は専用の理由を表示して終了コード2にする。"""
+    with pytest.raises(SystemExit) as excinfo:
+        main(["collect", "--source", "github", "--org", "org-a",
+              "--month", COLLECT_MONTH, "--dry-run"])
+    assert excinfo.value.code == 2
+    assert capsys.readouterr().err.splitlines()[-1].endswith(
+        "--dry-run は --source github では使えません")
 
 
 def test_collect_failure_text_covers_every_failure():
@@ -5354,3 +5365,148 @@ def test_outside_org_cli_without_github_has_three_blank_columns(make_input, tmp_
     assert all(r["outside_org_people"] == "" for r in _summary_rows(_teams_path(out)))
     text = _report_path(out).read_text(encoding="utf-8")
     assert "うち成果が見えない人" not in text and 'class="outside-org-mark"' not in text
+
+
+# --- collect --source otel（実機には接続しない） ---
+
+
+def _otel_cli_config(tmp_path, enabled=True, nested=False):
+    """合成の表と UUID で組織単位の OTel 取得を設定する。"""
+    entry = {"otel": {"bigquery": {"project": "example-project", "dataset": "claude_code_otel",
+                                   "logs_table": "logs"},
+                       "organization_ids": ["00000000-0000-4000-8000-000000000001"]}}
+    if nested:
+        entry["workspaces"] = {"main": {"primary": True}}
+    path = tmp_path / "otel-config.yaml"
+    path.write_text(yaml.safe_dump({"organizations": {"org-a": entry if enabled else {}}}),
+                    encoding="utf-8", newline="\n")
+    return str(path)
+
+
+def _otel_cli(tmp_path, input_dir, *extra, enabled=True, nested=False):
+    """OTel CLI の対象月と組織を固定する。"""
+    return main(["collect", "--source", "otel", "--org", "org-a", "--month", "2026-10",
+                 "--config", _otel_cli_config(tmp_path, enabled, nested),
+                 "--input-dir", str(input_dir), *extra])
+
+
+def _stub_otel_cli(monkeypatch, responses=None):
+    """現在日時と bq の3段の応答を固定する。"""
+    run, calls = stub(responses)
+    monkeypatch.setattr(otel_collect, "run_bq", run)
+    monkeypatch.setattr(otel_collect, "_now", lambda: NOW)
+    return calls
+
+
+@pytest.mark.parametrize("extra", [
+    ["--month", "2026-10"], ["--org", "org-a"],
+    ["--org", "org-a", "--org", "org-b", "--month", "2026-10"],
+])
+def test_otel_cli_requires_one_org_and_month(extra, capsys):
+    """OTel は組織1つと対象月の明示を必須にする。"""
+    with pytest.raises(SystemExit) as exc:
+        main(["collect", "--source", "otel", *extra])
+    assert exc.value.code == 2
+    assert "--source otel では" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("extra", [
+    ["--profile", "example"], ["--keep-browser"], ["--timeout", "1"],
+    ["--import", "example"], ["--setup", "example"], ["--finish-setup", "example"],
+    ["--login", "example"], ["--list-orgs", "example"], ["--check-login"],
+])
+def test_otel_cli_rejects_claude_only_options(extra, capsys):
+    """claude 専用のオプションは既存の文と終了コード2で拒否する。"""
+    with pytest.raises(SystemExit) as exc:
+        main(["collect", "--source", "otel", "--org", "org-a", "--month", "2026-10", *extra])
+    assert exc.value.code == 2
+    assert f"{extra[0]} は --source claude でだけ使えます" in capsys.readouterr().err
+
+
+def test_otel_cli_disabled_org(make_input, tmp_path, monkeypatch, capsys):
+    """OTel を設定していない組織では呼び出さず、設定の案内で止まる。"""
+    input_dir = _clean_org(make_input)
+    calls = _stub_otel_cli(monkeypatch)
+    assert _otel_cli(tmp_path, input_dir, enabled=False) == 1
+    err = capsys.readouterr().err
+    assert "組織 org-a は OpenTelemetry の取得が有効ではありません" in err
+    assert "organizations.org-a.otel" in err
+    assert calls == []
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_otel_cli_collection_output(make_input, tmp_path, monkeypatch, capsys, nested):
+    """平坦・入れ子レイアウトとも組織直下に保存し、件数を表示する。"""
+    input_dir = _clean_org(make_input)
+    if nested:
+        spend = input_dir / "org-a" / "spend"
+        main_dir = input_dir / "org-a" / "main"
+        main_dir.mkdir()
+        spend.rename(main_dir / "spend")
+    calls = _stub_otel_cli(monkeypatch)
+    assert _otel_cli(tmp_path, input_dir, nested=nested) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "org-a 2026-10: 表の定義を確認しました\n" in out
+    assert "読み取り量の見積もり 327.8 MiB（上限 1.9 GiB）" in out
+    assert "2 人・イベントの行 10 件・セッションの行 2 件" in out
+    path = input_dir / "org-a" / "otel-cache" / "otel-2026-10.json"
+    assert str(path) in out and path.is_file()
+    assert "organization.id が空 3 件・別の組織 5 件・メールアドレスが空 2 件" in out
+    assert len(calls) == 3
+
+
+def test_otel_cli_dry_run_output(make_input, tmp_path, monkeypatch, capsys):
+    """dry-run は属性の欠落と見積もりを表示するだけで取得・保存しない。"""
+    input_dir = _clean_org(make_input)
+    schema = json.loads(fixture("schema.json"))
+    labels = next(field for field in schema if field["name"] == "labels")
+    labels["fields"] = [field for field in labels["fields"]
+                        if field["name"] not in ("tool_source", "permission_mode")]
+    calls = _stub_otel_cli(monkeypatch, [reply(schema),
+                                       otel_collect.BqResult(stdout=fixture("dry-run.json"))])
+    assert _otel_cli(tmp_path, input_dir, "--dry-run") == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "（表に無い属性: permission_mode, tool_source）" in out
+    assert "327.8 MiB（上限 1.9 GiB）" in out
+    assert "（--dry-run のため取得していません）" in out
+    assert len(calls) == 2
+    assert not (input_dir / "org-a" / "otel-cache").exists()
+
+
+@pytest.mark.parametrize("dry", [False, True])
+def test_otel_cli_failure_output(make_input, tmp_path, monkeypatch, capsys, dry):
+    """取得の失敗は標準エラーと終了コード1に写す。"""
+    input_dir = _clean_org(make_input)
+    calls = _stub_otel_cli(monkeypatch, [otel_collect.BqResult(failure=otel_collect.TIMEOUT)])
+    assert _otel_cli(tmp_path, input_dir, *(["--dry-run"] if dry else [])) == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "bq の応答がありません" in err
+    assert len(calls) == 1
+
+
+def test_otel_cli_excluded_only_warning(make_input, tmp_path, monkeypatch, capsys):
+    """対象イベントが無く除外だけがある場合は成功のまま設定確認を案内する。"""
+    input_dir = _clean_org(make_input)
+    rows = result_rows()[10:14]
+    rows[-1]["count"] = "10"
+    _stub_otel_cli(monkeypatch, [otel_collect.BqResult(stdout=fixture("schema.json")),
+                                otel_collect.BqResult(stdout=fixture("dry-run.json")),
+                                reply(renumber(rows))])
+    assert _otel_cli(tmp_path, input_dir) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "集計したイベントがありません。organization_ids と、" in out
+    assert "利用者のメールアドレスの属性を確かめてください" in out
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    (0, "0.0 MiB"), (343675820, "327.8 MiB"), (2_000_000_000, "1.9 GiB"),
+    (1024 ** 3, "1.0 GiB"), (1024 ** 3 - 1, "1024.0 MiB"),
+    ((1024 ** 3) * 10 ** 400, f"{10 ** 400}.0 GiB"),
+])
+def test_otel_byte_size(value, expected):
+    """単位の境界と大きな上限も小数1桁で表示する。"""
+    assert _byte_size(value) == expected

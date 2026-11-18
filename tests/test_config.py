@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import pytest
 import yaml
 
-from seat_analyzer import config
+from seat_analyzer import config, otel_collect
 from seat_analyzer.cli import WORKSPACE_CONFIG_TEMPLATE, main
 from seat_analyzer.config import PACKAGE_CONFIG_PATH, _is_ambiguous_path, load_config
 from seat_analyzer.github_collect import gated_orgs
@@ -1038,6 +1038,12 @@ def test_version_flag_prints_version(capsys):
 # claude_export を書かなかった組織・workspace の区画（不活性を表す雛形の既定）
 UNSET_CLAUDE_EXPORT = {"profile": "", "org_id": "", "kinds": ["members", "spend", "code"]}
 
+# otel を書かなかった組織の区画（不活性を表す雛形の既定）
+UNSET_OTEL = {
+    "bigquery": {"project": "", "dataset": "", "logs_table": ""},
+    "organization_ids": [],
+}
+
 
 def test_organizations_accepts_names_that_are_not_in_the_default(tmp_path):
     """organizations の直下だけは利用者が決めるキー（組織名）を書ける。"""
@@ -1056,12 +1062,14 @@ def test_organizations_accepts_names_that_are_not_in_the_default(tmp_path):
             "workspaces": {},
             "secondary_breakeven_usd": None,
             "claude_export": UNSET_CLAUDE_EXPORT,
+            "otel": UNSET_OTEL,
         },
         "another-example": {
             "github_org": "Another-Example-1",
             "workspaces": {},
             "secondary_breakeven_usd": None,
             "claude_export": UNSET_CLAUDE_EXPORT,
+            "otel": UNSET_OTEL,
         },
     }
 
@@ -1897,3 +1905,121 @@ def test_outside_org_min_lines_rejects_invalid_values(tmp_path, value):
     """下限の値・型の誤りと null を、無効でもキー名つきのエラーにする。"""
     with pytest.raises(ValueError, match="adoption.outside_org_min_lines"):
         load_config(_override(tmp_path, f"adoption:\n  outside_org_min_lines: {value}\n"))
+
+
+# --- OpenTelemetry の設定（値の収集は層15、設定の検査はここで行う） ---
+
+_OTEL_UUID = "00000000-0000-4000-8000-000000000001"
+_OTEL_UPPER_UUID = "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"
+_OTEL_BQ = {"project": "example-project", "dataset": "claude_code_otel", "logs_table": "logs"}
+
+
+def _otel_config(tmp_path, entry=None, common=None):
+    """OTel の設定だけを既定へ重ねる（合成値）。"""
+    data = {"organizations": {"org-a": {} if entry is None else entry}}
+    if common is not None:
+        data["otel"] = common
+    return load_config(_override(tmp_path, yaml.safe_dump(data, allow_unicode=True)))
+
+
+@pytest.mark.parametrize("entry", [{}, {"otel": {}}, {"otel": {"bigquery": {}}},
+                                   {"otel": {"organization_ids": []}}])
+def test_otel_empty_settings_are_disabled(tmp_path, entry):
+    """既存の設定と空の otel はいずれも取得の対象外になる。"""
+    cfg = _otel_config(tmp_path, entry)
+    assert cfg["organizations"]["org-a"]["otel"] == UNSET_OTEL
+    assert otel_collect.gated_orgs(cfg) == {}
+    assert cfg["otel"]["maximum_bytes_billed"] == 2_000_000_000
+
+
+@pytest.mark.parametrize("key", ["project", "dataset", "logs_table"])
+@pytest.mark.parametrize("value", ["", "bad.name", "bad name", "bad`name", "bad/name", 12,
+                                   True, [], None])
+def test_otel_bigquery_names_are_required_and_closed(tmp_path, key, value):
+    """有効にした表は3つの名前が必須で、SQL に埋め込める字句だけを受ける。"""
+    bq = {**_OTEL_BQ, key: value}
+    with pytest.raises(ValueError, match="otel.bigquery"):
+        _otel_config(tmp_path, {"otel": {"bigquery": bq, "organization_ids": [_OTEL_UUID]}})
+
+
+@pytest.mark.parametrize("value", ["a", "0", "EXAMPLE_1-a"])
+def test_otel_accepts_safe_names(tmp_path, value):
+    """1字以上の英数字・アンダースコア・ハイフンを表名に使える。"""
+    bq = dict.fromkeys(_OTEL_BQ, value)
+    assert _otel_config(tmp_path, {"otel": {"bigquery": bq, "organization_ids": [_OTEL_UUID]}})
+
+
+@pytest.mark.parametrize("ids", ["uuid", [1], [True], [None], [{}], ["not-a-uuid"],
+                                 [_OTEL_UUID, _OTEL_UUID],
+                                 [_OTEL_UPPER_UUID, _OTEL_UPPER_UUID.lower()]])
+def test_otel_uuid_shape_and_duplicates(tmp_path, ids):
+    """UUID の型・字句・大小文字を無視した重複を ValueError にする。"""
+    with pytest.raises(ValueError, match="organization_ids"):
+        _otel_config(tmp_path, {"otel": {"bigquery": _OTEL_BQ, "organization_ids": ids}})
+
+
+@pytest.mark.parametrize("entry", [
+    {"otel": {"organization_ids": [_OTEL_UUID]}},
+    {"otel": {"bigquery": _OTEL_BQ}},
+])
+def test_otel_requires_table_and_filter_ids(tmp_path, entry):
+    """UUID だけや、継承もできない表だけの指定では有効にできない。"""
+    with pytest.raises(ValueError, match="otel"):
+        _otel_config(tmp_path, entry)
+
+
+@pytest.mark.parametrize("maximum", ["2000000000", True, False, 0, -1, 1.5, [], None])
+def test_otel_maximum_bytes_is_positive_integer(tmp_path, maximum):
+    """読み取り量の上限の型と範囲の誤りを ValueError の文で伝える。"""
+    with pytest.raises(ValueError, match="otel.maximum_bytes_billed"):
+        _otel_config(tmp_path, common={"maximum_bytes_billed": maximum})
+
+
+def test_otel_explicit_ids_override_inherited_and_are_lowercase(tmp_path):
+    """明示指定を優先し、設定の大文字を保ち、取得対象には小文字 UUID を返す。"""
+    cfg = _otel_config(tmp_path, {
+        "otel": {"bigquery": _OTEL_BQ, "organization_ids": [_OTEL_UPPER_UUID]},
+        "claude_export": {"profile": "example", "org_id": _OTEL_UUID},
+    })
+    target = otel_collect.gated_orgs(cfg)["org-a"]
+    assert target.organization_ids == (_OTEL_UPPER_UUID.lower(),)
+    assert cfg["organizations"]["org-a"]["otel"]["organization_ids"] == [_OTEL_UPPER_UUID]
+    assert target.source == otel_collect.TableLocation(
+        "example-project", "claude_code_otel", "logs")
+
+
+def test_otel_inherits_single_workspace_uuid(tmp_path):
+    """明示指定が空なら組織直下の claude_export.org_id を使う。"""
+    cfg = _otel_config(tmp_path, {
+        "otel": {"bigquery": _OTEL_BQ},
+        "claude_export": {"profile": "example", "org_id": _OTEL_UPPER_UUID},
+    })
+    assert otel_collect.gated_orgs(cfg)["org-a"].organization_ids == (_OTEL_UPPER_UUID.lower(),)
+
+
+def test_otel_inherits_multiple_workspace_uuids_in_order(tmp_path):
+    """複数スペースの空でない org_id を設定の記述順で集める。"""
+    entry = {"otel": {"bigquery": _OTEL_BQ}, "workspaces": {
+        "second": {"claude_export": {"profile": "example", "org_id": _OTEL_UPPER_UUID}},
+        "main": {"primary": True, "claude_export": {"profile": "example", "org_id": _OTEL_UUID}},
+        "empty": {},
+    }}
+    data = {"organizations": {"org-a": entry}}
+    cfg = load_config(_override(tmp_path, yaml.safe_dump(data, sort_keys=False)))
+    assert otel_collect.gated_orgs(cfg)["org-a"].organization_ids == (
+        _OTEL_UPPER_UUID.lower(), _OTEL_UUID)
+    assert otel_collect.organization_ids({"claude_export": {"org_id": _OTEL_UPPER_UUID},
+                                         "workspaces": {"main": {"claude_export": {
+                                             "org_id": _OTEL_UPPER_UUID.lower()}}}}) == (
+                                                 _OTEL_UPPER_UUID.lower(),)
+
+
+@pytest.mark.parametrize("entry", [
+    {"otel": "bad"}, {"otel": {"bigquery": "bad"}},
+    {"otel": {"bigquery": _OTEL_BQ}, "claude_export": {"org_id": 1}},
+    {"otel": {"bigquery": _OTEL_BQ}, "workspaces": {"main": 1}},
+])
+def test_otel_wrong_types_never_raise_typeerror(tmp_path, entry):
+    """周辺の型の誤りも traceback にせず既存の設定エラーにそろえる。"""
+    with pytest.raises(ValueError):
+        _otel_config(tmp_path, entry)

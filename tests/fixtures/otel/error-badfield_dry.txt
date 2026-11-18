@@ -1,0 +1,3 @@
+Error in query string: Field name no_such_attr_zz does not exist in
+STRUCT<prompt_length STRING, terminal_type STRING, prompt STRING, ...> at
+[1:168]

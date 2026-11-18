@@ -78,7 +78,7 @@ decision_v2:
 # 組織ごとの設定。キーは入力ディレクトリ直下の組織名で、organizations の直下と
 # workspaces の直下だけは既定に無いキー（利用者が決める名前）を書ける。その中身は
 # 従来どおり厳格で、書けるのは github_org / workspaces / secondary_breakeven_usd /
-# claude_export の4つ。
+# claude_export / otel の5つ。
 #
 # github_org は GitHub 分析を有効にする組織だけに書く（組織ごとの opt-in）。値はその組織の
 # GitHub Organization 名で、入力ディレクトリの組織名とは一致しない前提の対応表として書く。
@@ -135,7 +135,26 @@ decision_v2:
 #           claude_export:
 #             profile: corp
 #             org_id: 00000000-0000-4000-8000-000000000003
+# otel は OpenTelemetry のイベントを BigQuery に集めている組織だけに書く。
+#   bigquery.project     問い合わせを実行する project（英数字と _・-）
+#   bigquery.dataset     イベント表の dataset（英数字と _・-）
+#   bigquery.logs_table  Cloud Logging のシンクの形のイベント表（英数字と _・-）
+#   organization_ids    絞り込む claude.ai の組織 UUID（空なら組織直下と各 workspace の
+#                       claude_export.org_id を使う。どちらも無い場合はエラー）
+# 3つの表名はすべて必要。3つとも空で organization_ids も空なら対象外。
+#   organizations:
+#     org-a:
+#       otel:
+#         bigquery:
+#           project: example-project
+#           dataset: claude_code_otel
+#           logs_table: logs
+#         organization_ids: [00000000-0000-4000-8000-000000000001]
 organizations: {}
+
+# OpenTelemetry の取得（collect --source otel）。設定した組織だけを月単位で取得する。
+otel:
+  maximum_bytes_billed: 2000000000  # 問い合わせの読み取り量の上限（byte）。1以上の整数
 
 # GitHub のコミット行数の集計（github-summary の参考値）
 github:

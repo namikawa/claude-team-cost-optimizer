@@ -919,7 +919,7 @@ organizations:
 キーは入力ディレクトリ直下の組織名、値はその組織の GitHub Organization 名。両者は
 一致しない前提の対応表なので、名前が同じ組織でも省略はできない。`organizations` の
 直下だけは既定に無いキー（組織名）を書けるが、その中身に書けるのは `github_org`・
-`workspaces`・`secondary_breakeven_usd`・`claude_export` だけで、`github_org` の値が
+`workspaces`・`secondary_breakeven_usd`・`claude_export`・`otel` だけで、`github_org` の値が
 GitHub の Organization 名として読めなければ設定の読み込みでエラーになる。
 
 ### GitHub ID の列（email → GitHub login の対応表）
@@ -1114,6 +1114,7 @@ organizations:
 `--setup`・`--finish-setup`・`--login`・`--list-orgs`・`--check-login`・`--import` は単独で使う
 （`--list-orgs` と `--check-login` だけは `--timeout`・`--keep-browser` を併用できる）。これらと
 `--profile`・`--dry-run`・`--keep-browser`・`--timeout` は `--source github` では使えない。
+`--source otel` で使えるのは、このうち `--dry-run` だけ。
 組み合わせの誤りは終了コード 2。
 
 終了コードは、対象のすべての (組織, 種別) を配置できたときだけ 0。1 件でも失敗・時間切れが
@@ -1240,6 +1241,116 @@ staging に残る）。
 日付を使う（取り込む日ではない）。`created_at` が無いかタイムゾーン付きの ISO 8601 でなければ
 `--import` は配置せずに止まる。取得日が期間の外か終了日と同じとき、前月モード、メンバー一覧と
 支出レポートは元のファイル名のまま。staging のファイルの名前は変えない。
+
+## OpenTelemetry の取得（config.yaml > organizations.<組織名>.otel）
+
+`collect --source otel` は有効にした組織のイベント表を、人 × 日（UTC）× 集計名 × 区分に
+集計して取得する。設定は組織単位で、複数スペースでも `otel` は組織直下に書く。
+
+| キー | 内容 |
+|---|---|
+| `organizations.<組織名>.otel.bigquery.project` | 問い合わせを実行する project。未指定は空文字 |
+| `organizations.<組織名>.otel.bigquery.dataset` | イベント表の dataset。未指定は空文字 |
+| `organizations.<組織名>.otel.bigquery.logs_table` | イベント表の名前。未指定は空文字 |
+| `organizations.<組織名>.otel.organization_ids` | 絞り込む claude.ai の組織 UUID のリスト。未指定は空 |
+| `otel.maximum_bytes_billed` | 読み取り量の上限（byte）。真偽値を除く1以上の整数。既定は 2000000000 |
+
+3つの表名はすべて必要で、英数字と `_`・`-` の1字以上。3つとも空で UUID も空なら無効
+（`otel: {}` も同じ）。UUID だけの指定では有効にできない。
+
+絞り込みの UUID は、`otel.organization_ids` が空でなければその値を使う。空なら、組織直下の
+`claude_export.org_id` と各 workspace の `claude_export.org_id` の空でない値を、記述順に
+重複なく集める。どちらも無ければ有効な `otel` の設定はロード時にエラーになる。
+UUID は8-4-4-4-12桁の16進数で、大小文字を区別せず小文字にそろえる。明示指定での重複は
+エラー。指定と一致しない・空の `organization.id`、メールアドレスが空のイベントを除外し、
+それぞれの件数を記録する。
+
+失敗時は終了コード1で理由を標準エラーに表示し、キャッシュを書かない。
+
+| 失敗 | 対処 |
+|---|---|
+| `bq` が見つからない | Google Cloud SDK を導入し、PATH に `bq` を置く |
+| 認証が無い・切れている | `gcloud auth login` を実行する |
+| project・dataset・表が無い、または権限が無い | 表の場所、表を読む権限、project で問い合わせを実行する権限を確かめる |
+| 応答が無い | 接続と BigQuery の状態を確かめて再実行する（定義は60秒、問い合わせは600秒で打ち切る） |
+| 必須列が無い | 表の形を確かめる。最上位の `timestamp`（TIMESTAMP）と `labels`（RECORD）配下の `event_name`・`user_email`・`organization_id`・`session_id` が必要 |
+| 読み取り量が上限を超える | `--dry-run` の見積もりと課金を確認し、必要なら `otel.maximum_bytes_billed` を変更する |
+| 出力を解釈できない、行数・イベント件数の和が合わない | 不完全な結果は保存されない。原因を除いて取り直す |
+| 月が始まっていない・取得時期より前 | 見積もりは月の開始以降、取得は翌月2日（UTC）以降に行う |
+| 分類できない `bq` の失敗 | 添えられた出力の先頭3行を確認する |
+
+任意の属性の列が無い場合は、その属性が付いていないものとして集計し、名前を表示する。
+`bq` の利用者設定（`.bigqueryrc`）は読ませない。SQL は標準入力、月と UUID は問い合わせの
+引数で渡す。`--profile`・`--keep-browser`・`--timeout`・`--import`・`--setup`・
+`--finish-setup`・`--login`・`--list-orgs`・`--check-login` は claude 専用で、otel に
+付けると終了コード2。`--dry-run` は定義と見積もりだけで保存しない。
+
+### otel-cache（collect が作るキャッシュ）
+
+`input/<組織名>/otel-cache/otel-YYYY-MM.json` は1組織×1か月の集計。schema は1。
+同じ月の再実行は原子的に置き換える。行の並びはイベントが email・date・name・区分の JSON
+（キー昇順）、セッションが email・date・terminal の昇順になる。
+
+| 項目 | 内容 |
+|---|---|
+| `schema`・`organization`・`month` | 形式の版、入力ディレクトリの組織名、対象月 |
+| `source` | `project`・`dataset`・`table` の名前 |
+| `organization_ids` | 絞り込みに使った小文字の組織 UUID |
+| `scanned_events` | 月の範囲にあったイベントの総数 |
+| `excluded_events` | `organization_empty`・`organization_other`・`email_empty` の件数。無い種類は0 |
+| `absent_attributes` | 表に列が無かった任意属性の名前（昇順） |
+| `query` | `estimated_bytes`（byte）と `executed_at`（実行日時 UTC） |
+| `rows` | `email`・`date`・`name`・`attrs`・`count`。`api_request` だけトークン4項目も持つ |
+| `sessions` | `email`・`date`・`terminal`・`count` |
+
+`rows` の例（合成値）:
+
+```json
+{"email": "alice@example.com", "date": "2026-10-01", "name": "api_request",
+ "attrs": {"terminal": "interactive", "model": "other", "origin": "main", "effort": "high",
+           "agent": false, "skill": false, "mcp": false, "plugin": false},
+ "count": 12, "input_tokens": 3400, "output_tokens": 5600,
+ "cache_read_tokens": 120000, "cache_creation_tokens": 8000}
+```
+
+件数は正の整数、トークンは0以上の整数（元の NULL は0）。イベントが無い月も総数0の
+空のキャッシュを作る。イベント件数の和と除外件数の和を足すと `scanned_events` になる。
+セッション数はこの和に含めない。一意キーはイベントが email・date・集計名・区分の組、
+セッションが email・date・端末の種類。
+
+集計名と区分（`attrs` はその集計名の区分だけを持つ）:
+
+| 集計名 | 区分 | 値と畳み方 |
+|---|---|---|
+| すべて | `terminal` | `terminal.type` が `non-interactive` なら `non_interactive`、それ以外と属性なしは `interactive` |
+| `api_request` | `model` | 英数字と `.`・`_`・`:`・`[`・`]`・`-` だけの100字以内のモデル名。それ以外は `other` |
+| `api_request` | `origin` | `query_source` が `repl_main_thread` なら `main`、`sdk` なら `sdk`、`agent:builtin:` で始まれば `subagent_builtin`、そのほかの `agent:` は `subagent_custom`、それ以外と属性なしは `other` |
+| `api_request` | `effort` | `low`・`medium`・`high`・`xhigh`・`max`。属性なしは `none`、それ以外は `other` |
+| `api_request` | `agent`・`skill`・`mcp`・`plugin` | エージェント・スキル・MCP サーバー・プラグインの名前の属性が付いているか（true / false） |
+| `tool_decision` | `tool` | `edit`（Edit・Write・MultiEdit・NotebookEdit）・`shell`（Bash・PowerShell）・`mcp`・`agent`（Agent・Task）・`skill`（Skill）・`other` |
+| `tool_decision` | `decision` | `accept`・`reject`・`other` |
+| `tool_decision` | `source` | `config`・`hook`・`user_permanent`・`user_temporary`・`user_abort`・`user_reject`・`other` |
+| `tool_decision` | `permission_mode` | `default`・`plan`・`acceptEdits`・`bypassPermissions`・`dontAsk`・`auto`。属性なしは `none`、それ以外は `other` |
+| `user_prompt` | `command_source` | `builtin`・`custom`・`mcp`。属性なしは `none`、それ以外は `other` |
+| そのほかのイベント | `terminal` だけ | 件数だけを持つ |
+| セッション（イベントとは別） | `terminal` | 月内に `api_request` のあったセッションを、その月の最初の `api_request` の日に数える |
+
+イベント名は `claude_code.` を除き、英小文字・数字・`_` の64字以内、それ以外は `other`。
+`tool` の `mcp` は出どころ（`tool_source`）が `mcp` のもの。出どころの属性が無い場合は、
+ツール名が `mcp_tool` または `mcp__` で始まるものを `mcp` にする。ホストの組み込みツール
+（出どころが `sdk_host_builtin_mcp`）は、ツール名でほかの区分に分ける。
+セッションは人ごとに数え、非対話の `api_request` が1件でもあれば `non_interactive`。
+月をまたぐセッションは両方の月で1回ずつ数える。ID は保存しない。
+
+保存しないものは、プロンプト・応答・API の本文、ツールの引数・入出力・コマンド、エラー文、
+ホストのパス、リポジトリの URL・owner・名前、費用、セッション ID・request ID。
+ツール・エージェント・スキル・プラグイン・MCP サーバー・コマンドの名前と `query_source`
+の値自体も保存せず、上の区分か有無だけを持つ。本文・引数・パス・費用の列は SQL でも
+参照しない。生の `bq` の応答と問い合わせの SQL も保存しない。
+
+読み戻しでは schema・形・語彙・件数を検査し、`source` と `organization_ids` の集合が
+現在の設定と違えば取り直しを案内する。UUID の並びだけの違いでは取り直さない。
+取得しても、分析の成果物（表・レポート・判定）は変わらない。
 
 ## モデル単価（config.yaml > model_prices）
 

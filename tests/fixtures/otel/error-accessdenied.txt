@@ -1,0 +1,3 @@
+BigQuery error in query operation: Access Denied: Table example-
+project:claude_code_otel.logs: User does not have permission to query table
+example-project:claude_code_otel.logs, or perhaps it does not exist.

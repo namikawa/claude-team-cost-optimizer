@@ -15,6 +15,7 @@ Claude Code を想定している。macOS / Windows / Linux の差異は、Claud
   システムに Python が無くてもよい
 - 任意で Claude Code CLI。レポートの考察を自動執筆する機能にだけ使う。分析そのものには不要
 - 任意で Google Chrome。claude.ai からの CSV 取得（`collect --source claude`）にだけ使う
+- 任意で Google Cloud SDK の `bq`。OpenTelemetry の取得（`collect --source otel`）にだけ使う
 
 ## 人が行うこと
 
@@ -700,6 +701,47 @@ pmset -g sched
 - スリープ中に過ぎた予定は、起床後に 1 回だけまとめて実行される
 - 取得する月は、実行した時点の日付で決まる
 - 長く止まっていた分はさかのぼらない。予定した月が過ぎていれば、その月は手動で置く
+
+## OpenTelemetry の取得を設定する（任意）
+
+Claude Code の OpenTelemetry のイベントを Cloud Logging のシンクで BigQuery に貯めている
+組織だけが対象。対応するのは、最上位に `timestamp`（TIMESTAMP）、`labels`（RECORD）の下に
+`event_name`・`user_email`・`organization_id`・`session_id` を持つイベント表の形だけ。
+メトリクスの表は読まない。収集基盤の構築はこのツールでは行わない。
+
+必要なのは Google Cloud SDK に含まれる `bq` コマンド（PATH に置く）、`gcloud auth login`
+による認証、表を読む権限と、その project で問い合わせを実行する権限。
+認証情報は gcloud に任せる。Windows でのこの取得の動作は確かめていない。
+
+ワークスペースの `config.yaml` に次のように書く。例の表名と UUID は合成値なので、
+導入した収集基盤の値に置き換える。名前は英数字と `_`・`-` だけを使う。
+
+```yaml
+organizations:
+  org-a:
+    otel:
+      bigquery:
+        project: example-project
+        dataset: claude_code_otel
+        logs_table: logs
+      organization_ids: [00000000-0000-4000-8000-000000000001]
+otel:
+  maximum_bytes_billed: 2000000000
+```
+
+`organization_ids` を空にすると、組織直下または各 workspace の `claude_export.org_id` を
+使う。どちらも無ければ設定エラーになる。表の3つの名前と UUID がすべて空なら無効。
+
+始まっている月を指定して、表の定義と読み取り量の見積もりを確かめる。
+
+```bash
+seat-analyzer collect --source otel --org org-a --month 2026-10 --dry-run
+```
+
+`--dry-run` はキャッシュを書かない。見積もりが `otel.maximum_bytes_billed` を超える場合は
+実行しない。必要なら読み取り量と課金を確認して上限を変更する。取得は月ごとに人が
+都度実行し、定期実行には入れない。使い方と保存先は [usage.md](./usage.md) の
+「OpenTelemetry の集計の取得」を参照。
 
 ## アップデート
 

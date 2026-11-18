@@ -1,0 +1,209 @@
+[
+  {
+    "mode": "NULLABLE",
+    "name": "logName",
+    "type": "STRING"
+  },
+  {
+    "mode": "NULLABLE",
+    "name": "timestamp",
+    "type": "TIMESTAMP"
+  },
+  {
+    "mode": "NULLABLE",
+    "name": "receiveTimestamp",
+    "type": "TIMESTAMP"
+  },
+  {
+    "mode": "NULLABLE",
+    "name": "severity",
+    "type": "STRING"
+  },
+  {
+    "mode": "NULLABLE",
+    "name": "insertId",
+    "type": "STRING"
+  },
+  {
+    "fields": [
+      {
+        "mode": "NULLABLE",
+        "name": "agent_name",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "cache_creation_tokens",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "cache_read_tokens",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "command_name",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "command_source",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "cost_usd",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "decision",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "effort",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "error",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "event_name",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "input_tokens",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "mcp_server_name",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "mcp_tool_name",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "model",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "organization_id",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "output_tokens",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "permission_mode",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "plugin_name",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "prompt",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "prompt_text",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "query_source",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "request_id",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "response",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "session_id",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "skill_name",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "source",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "terminal_type",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "tool_input",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "tool_name",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "tool_parameters",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "tool_source",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "user_email",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "vcs_ref_head_revision",
+        "type": "STRING"
+      },
+      {
+        "mode": "NULLABLE",
+        "name": "workspace_host_paths",
+        "type": "STRING"
+      }
+    ],
+    "mode": "NULLABLE",
+    "name": "labels",
+    "type": "RECORD"
+  },
+  {
+    "mode": "NULLABLE",
+    "name": "trace",
+    "type": "STRING"
+  }
+]

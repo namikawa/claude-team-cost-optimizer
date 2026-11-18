@@ -25,6 +25,7 @@ from . import (
     github_collect,
     github_metrics,
     ingest,
+    otel_collect,
     public_text,
     report,
     seat_changes,
@@ -235,24 +236,26 @@ def main(argv: list[str] | None = None) -> int:
     pcol = sub.add_parser(
         "collect",
         help="外部データを収集する（github は PR のメタデータをキャッシュへ保存し、claude は "
-             "claude.ai の CSV を入力ディレクトリへ配置する）",
+             "claude.ai の CSV を入力ディレクトリへ配置し、otel は OpenTelemetry の月の集計を"
+             "キャッシュへ保存する）",
     )
     pcol.add_argument(
         "--org", action="append", metavar="組織名",
-        help="対象組織（input/ 直下のディレクトリ名）。github は1組織ずつ指定する（必須）。"
+        help="対象組織（input/ 直下のディレクトリ名）。github・otel は1組織ずつ指定する（必須）。"
              "claude は複数指定可で、省略時は claude_export を設定した全組織",
     )
     pcol.add_argument(
-        "--source", required=True, choices=["github", "claude"],
+        "--source", required=True, choices=["github", "claude", "otel"],
         help="収集元。github は merged PR のメタデータを取得する"
              f"（{WORKSPACE_CONFIG_NAME} の organizations.<組織名>.github_org を"
              "設定した組織のみ）。claude は claude.ai の CSV（メンバー一覧・支出レポート・"
              "Claude Code analytics）を取得する（organizations.<組織名>.claude_export を"
-             "設定した組織のみ）",
+             "設定した組織のみ）。otel は OpenTelemetry の月の集計を取得する"
+             "（organizations.<組織名>.otel を設定した組織のみ）",
     )
     pcol.add_argument(
         "--month",
-        help="対象月 (YYYY-MM)。github は必須。claude は当月か前月で、省略時は当月",
+        help="対象月 (YYYY-MM)。github・otel は必須。claude は当月か前月で、省略時は当月",
     )
     pcol.add_argument(
         "--profile", metavar="名前",
@@ -260,7 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     pcol.add_argument(
         "--dry-run", action="store_true",
-        help="claude のみ: 取得の計画を表示して終了する（ブラウザを起動しない）",
+        help="claude は取得の計画を表示する（ブラウザを起動しない）。"
+             "otel は表の定義の確認と読み取り量の見積もりだけを行い、保存しない",
     )
     pcol.add_argument(
         "--keep-browser", action="store_true",
@@ -1161,6 +1165,16 @@ def _check_collect_args(parser: argparse.ArgumentParser, args: argparse.Namespac
     できるため止める）。
     """
     given = _collect_flags(args)
+    if args.source == "otel":
+        if not args.org or len(args.org) != 1:
+            parser.error("--source otel では --org を1つだけ指定してください")
+        if args.month is None:
+            parser.error("--source otel では --month が必要です")
+        for flag in ("--profile", "--keep-browser", "--timeout", "--import", "--setup",
+                     "--finish-setup", "--login", "--list-orgs", "--check-login"):
+            if given[flag]:
+                parser.error(f"{flag} は --source claude でだけ使えます")
+        return
     if args.source == "github":
         if not args.org or len(args.org) != 1:
             parser.error("--source github では --org を1つだけ指定してください")
@@ -1169,6 +1183,8 @@ def _check_collect_args(parser: argparse.ArgumentParser, args: argparse.Namespac
         for flag in ("--profile", "--dry-run", "--keep-browser", "--timeout", "--import",
                      "--setup", "--finish-setup", "--login", "--list-orgs", "--check-login"):
             if given[flag]:
+                if flag == "--dry-run":
+                    parser.error("--dry-run は --source github では使えません")
                 parser.error(f"{flag} は --source claude でだけ使えます")
         return
     if args.timeout is not None and args.timeout < 1:
@@ -1188,7 +1204,8 @@ def _run_collect(args: argparse.Namespace) -> int:
 
     github の対象は GitHub 分析を有効にした組織だけで、保存するのは merged PR の
     メタデータとコミット（設計書 §7.6）と、そのとき参照できた repository の一覧。claude は
-    `_run_collect_claude` が受け持つ。どちらもレポートは書かず、判定にも影響しない。
+    `_run_collect_claude`、otel は `_run_collect_otel` が受け持つ。
+    いずれもレポートは書かず、判定にも影響しない。
     """
     cfg = load_config(args.config)
     input_dir = _resolve_dir(args.input_dir, cfg, "input")
@@ -1199,6 +1216,9 @@ def _run_collect(args: argparse.Namespace) -> int:
     # 入れ子レイアウトの組織も受け付ける（キャッシュと対応表は組織直下に置くため、
     # workspace の分け方に依らない）
     org, org_input = _resolve_input_targets(input_dir, args.org)[0]
+
+    if args.source == "otel":
+        return _run_collect_otel(args, cfg, org, org_input, month)
 
     enabled = github_collect.gated_orgs(cfg)
     if org not in enabled:
@@ -1254,6 +1274,58 @@ def _run_collect(args: argparse.Namespace) -> int:
     if not collected.complete:
         print("  対象月の直近の期間は次回の実行で再取得します"
               "（期間の終わりから1日が過ぎるまで完了にしないため）")
+    return 0
+
+
+def _byte_size(value: int) -> str:
+    """読み取り量を1024の累乗で、小数1桁の MiB・GiB にする。"""
+    unit, label = (1024 ** 3, "GiB") if value >= 1024 ** 3 else (1024 ** 2, "MiB")
+    # 上限に桁の制限はない。全体を float にせず端数だけを丸めて、桁あふれを防ぐ。
+    whole, remainder = divmod(value, unit)
+    tenths = round(remainder * 10 / unit)
+    return f"{whole + tenths // 10}.{tenths % 10} {label}"
+
+
+def _run_collect_otel(args: argparse.Namespace, cfg: dict, org: str,
+                      org_input: Path, month: str) -> int:
+    """OpenTelemetry の月の集計を取得し、定義・見積もり・保存結果を表示する。"""
+    enabled = otel_collect.gated_orgs(cfg)
+    if org not in enabled:
+        raise ValueError(
+            f"組織 {org} は OpenTelemetry の取得が有効ではありません"
+            f"（{WORKSPACE_CONFIG_NAME} の organizations.{org}.otel に"
+            " BigQuery の表を設定してください）"
+        )
+    maximum = cfg["otel"]["maximum_bytes_billed"]
+
+    def on_schema(absent: tuple[str, ...]) -> None:
+        suffix = "（表に無い属性: " + ", ".join(absent) + "）" if absent else ""
+        print(f"{org} {month}: 表の定義を確認しました{suffix}", flush=True)
+
+    def on_estimate(estimated: int) -> None:
+        print(f"{org} {month}: 読み取り量の見積もり {_byte_size(estimated)}"
+              f"（上限 {_byte_size(maximum)}）", flush=True)
+
+    cache_dir = org_input / otel_collect.OTEL_CACHE_DIRNAME
+    cache = otel_collect.collect_events(
+        org, month, cache_dir, enabled[org], maximum, dry_run=args.dry_run,
+        on_schema=on_schema, on_estimate=on_estimate,
+    )
+    if cache is None:
+        print("（--dry-run のため取得していません）")
+        return 0
+    people = len({row.email for row in (*cache.rows, *cache.sessions)})
+    print(f"{org} {month}: {people} 人・イベントの行 {len(cache.rows)} 件"
+          f"・セッションの行 {len(cache.sessions)} 件 → "
+          f"{otel_collect.otel_cache_path(cache_dir, month)}")
+    excluded = dict(cache.excluded_events)
+    print("  集計しなかったイベント: "
+          f"organization.id が空 {excluded['organization_empty']} 件"
+          f"・別の組織 {excluded['organization_other']} 件"
+          f"・メールアドレスが空 {excluded['email_empty']} 件")
+    if not cache.rows and sum(excluded.values()) > 0:
+        print("集計したイベントがありません。organization_ids と、"
+              "利用者のメールアドレスの属性を確かめてください")
     return 0
 
 
