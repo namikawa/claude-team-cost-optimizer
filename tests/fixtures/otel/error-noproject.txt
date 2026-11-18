@@ -1,0 +1,3 @@
+BigQuery error in show operation: Project missing-project is not
+found. Make sure it references valid GCP project that hasn't been deleted.;
+Project id: missing-project

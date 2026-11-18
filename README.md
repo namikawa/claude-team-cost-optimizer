@@ -27,6 +27,10 @@ Python（3.11 以上）は uv が用意します。レポートの考察を自�
 （`collect --source claude`）を使う場合は Google Chrome も必要です（この機能の実機での
 確認は macOS）。
 
+OpenTelemetry の月の集計の取得（`collect --source otel`）は、イベントを BigQuery に
+貯めている組織だけが使う任意の機能で、Google Cloud SDK の `bq` と認証・権限が必要です。
+設定は [セットアップ手順](docs/setup.md) を参照してください。
+
 ## インストール
 
 [Releases](https://github.com/namikawa/claude-team-cost-optimizer/releases) で最新リリースに

@@ -1,0 +1,3 @@
+BigQuery error in query operation: Not found: Table example-
+project:claude_code_otel.no_such_table_zz was not found in location asia-
+northeast1

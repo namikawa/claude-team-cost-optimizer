@@ -128,6 +128,10 @@ def _org(section: dict | None = None, workspaces: dict | None = None) -> dict:
         "workspaces": workspaces or {},
         "secondary_breakeven_usd": None,
         "claude_export": section or UNSET,
+        "otel": {
+            "bigquery": {"project": "", "dataset": "", "logs_table": ""},
+            "organization_ids": [],
+        },
     }
 
 

@@ -15,7 +15,7 @@ from pathlib import Path, PurePath
 
 import yaml
 
-from . import claude_export
+from . import claude_export, otel_collect
 from .admin_inputs import ORGANIZATION_OPTIONAL_COLUMNS, USERS_OPTIONAL_COLUMNS
 from .github_collect import is_github_org_name
 from .ingest import (
@@ -290,6 +290,10 @@ _ORGANIZATION_ENTRY = {
     "workspaces": {},
     "secondary_breakeven_usd": None,
     "claude_export": _CLAUDE_EXPORT_ENTRY,
+    "otel": {
+        "bigquery": {"project": "", "dataset": "", "logs_table": ""},
+        "organization_ids": [],
+    },
 }
 
 # organizations.<組織名>.workspaces.<workspace名> に書けるキーと、未指定を表す既定値。
@@ -552,6 +556,64 @@ def _validate_adoption(cfg: dict, errors: list[str]) -> None:
     minimum = section.get("outside_org_min_lines")
     if not _is_integer(minimum) or minimum < 1:
         errors.append("adoption.outside_org_min_lines は1以上の整数が必要です")
+
+
+def _validate_otel(cfg: dict, errors: list[str]) -> None:
+    """取得元の字句・UUID と読み取り量の上限を検査する（無効なら取得しない）。"""
+    common = cfg["otel"]
+    if not isinstance(common, dict):
+        errors.append("otel セクションが辞書ではありません")
+        return
+    maximum = common.get("maximum_bytes_billed")
+    if not _is_integer(maximum) or maximum < 1:
+        errors.append("otel.maximum_bytes_billed は 1 以上の整数が必要です")
+    organizations = cfg["organizations"]
+    if not isinstance(organizations, dict):
+        return
+    for name, entry in organizations.items():
+        if not isinstance(entry, dict):
+            continue
+        section = entry.get("otel", {})
+        where = f"organizations.{name}.otel"
+        if not isinstance(section, dict):
+            errors.append(f"{where} は辞書が必要です")
+            continue
+        bq = section.get("bigquery", {})
+        if not isinstance(bq, dict):
+            errors.append(f"{where}.bigquery は辞書が必要です")
+            continue
+        values = [bq.get(key, "") for key in ("project", "dataset", "logs_table")]
+        for key, value in zip(("project", "dataset", "logs_table"), values):
+            if value != "" and not otel_collect.is_bigquery_name(value):
+                errors.append(f"{where}.bigquery.{key} は英数字と _・- の文字列が必要です")
+        ids = section.get("organization_ids", [])
+        if not isinstance(ids, list) or not all(
+            isinstance(value, str) and _CLAUDE_ORG_ID_RE.fullmatch(value) for value in ids
+        ):
+            errors.append(f"{where}.organization_ids は claude.ai の組織 UUID のリストが必要です")
+            continue
+        normalized = [value.lower() for value in ids]
+        if len(set(normalized)) != len(normalized):
+            errors.append(f"{where}.organization_ids に重複があります")
+        if not any(values) and not ids:
+            continue
+        if not all(values):
+            errors.append(f"{where}.bigquery は project・dataset・logs_table の3つとも必要です")
+        # 不正な claude_export の形は既存の検査が報告する。継承の関数には検査できる
+        # 形だけを渡し、利用者の型の誤りを内部の TypeError にしない。
+        sections = [entry.get("claude_export", {})]
+        workspaces = entry.get("workspaces", {})
+        if not isinstance(workspaces, dict):
+            continue
+        if any(not isinstance(value, dict) for value in workspaces.values()):
+            continue
+        sections.extend(value.get("claude_export", {}) for value in workspaces.values())
+        if any(not isinstance(value, dict) or not isinstance(value.get("org_id", ""), str)
+               for value in sections):
+            continue
+        if not otel_collect.organization_ids(entry):
+            errors.append(f"{where} の絞り込みに使う組織 UUID がありません。"
+                          "organization_ids または claude_export.org_id を設定してください")
 
 
 def _validate_claude_export(cfg: dict, errors: list[str]) -> None:
@@ -1046,6 +1108,7 @@ def _validate(cfg: dict) -> None:
     _validate_github(cfg, errors)
     _validate_adoption(cfg, errors)
     _validate_claude_export(cfg, errors)
+    _validate_otel(cfg, errors)
     _validate_cost_basis(cfg, errors)
     _validate_product_policy(cfg, errors)
     _validate_discussion(cfg, errors)
