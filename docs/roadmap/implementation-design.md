@@ -473,22 +473,29 @@ repository + "#" + PR number
 
 ### 7.7 OpenTelemetry cache
 
-Claude Code の OpenTelemetry（§27）のイベントを BigQuery から読み、人 × 日 × 次元の集計だけを
+Claude Code の OpenTelemetry（§27）のイベントを BigQuery から読み、人 × 日 × 区分の集計だけを
 月ごとに保存する。
 
 保存する:
 
-- schema
+- schema（集計名と区分の語彙を変えたら上げる。読めない schema のキャッシュは、取り直しを
+  案内して読まない）
 - organization（入力ディレクトリの組織名）
 - month
-- source（project・dataset・table の名前と、使った SQL テンプレートの名前と版）
+- source（project・dataset・table の名前）
 - organization_ids（絞り込みに使った claude.ai の組織 UUID）
-- excluded_events（`organization.id`が`organization_ids`に一致しない、または空のため集計しなかった
-  イベントの件数）
-- query（読み取り量の見積もりと実績 byte・実行日時 UTC）
-- rows: 1 行が 人（`user.email`）× 日（UTC）× 集計名 × 属性の組 × 値
-  - 集計名と属性は §27.5 の表に閉じる（それ以外の属性は SQL に書かない）
-  - 値は件数かトークン数
+- scanned_events（月の範囲にあったイベントの総数。rows の件数の和と excluded_events の和を
+  足すと、この数になる）
+- excluded_events（集計しなかったイベントの件数。`organization.id`が空・`organization_ids`に
+  一致しない・利用者のメールアドレスが空、の3つを分けて持つ）
+- absent_attributes（表に列が無かった任意の属性の名前。§27.3）
+- query（読み取り量の見積もり byte・実行日時 UTC）
+- rows: 1 行が 人（`user.email`）× 日（UTC）× 集計名 × 区分の組 × 値
+  - 集計名は、イベントの名前（接頭辞の`claude_code.`を除いたもの）
+  - 区分は §27.3 の表に閉じる（それ以外の属性は SQL に書かない）
+  - 値は件数。`api_request`はトークン数（入力・出力・キャッシュ読取・キャッシュ書込）も持つ
+- sessions: 1 行が 人 × 日（UTC）× 端末の種類 × セッションの数（§27.3）。イベントの行とは
+  別に持つ（イベントの名前と重ならないようにするため）
 
 保存しない:
 
@@ -498,14 +505,21 @@ Claude Code の OpenTelemetry（§27）のイベントを BigQuery から読み�
 - エラー文（`error`）
 - ホストのパス（`workspace.host_paths`）
 - リポジトリの URL・owner・名前（`vcs.*`）
+- ツール・エージェント・スキル・プラグイン・MCP サーバー・コマンドの名前と、`query_source`の
+  値そのもの（決まった区分か有無に畳んで持つ。§27.3）
 - 費用（`cost_usd`。Claude Code 自身の見積もりで、費用は spend の値を使う。§27.3）
 - セッション ID・request ID（集計の粒度より細かい識別子）
 
 一意キー:
 
 ```text
-email + "|" + date + "|" + 集計名 + "|" + 属性の組
+rows:     email + "|" + date + "|" + 集計名 + "|" + 区分の組
+sessions: email + "|" + date + "|" + 端末の種類
 ```
+
+キャッシュを読む側は、source と organization_ids が今の設定と一致することを確かめ、一致
+しなければ取り直しを案内して読まない（設定を変える前のキャッシュを、変えた後の対象の完全な
+結果として扱わないため）。
 
 ## 8. Identity
 
@@ -1499,10 +1513,12 @@ Chromeをログイン画面で起動し、人が行う手順（ログイン・�
 （`--list-orgs`と`--check-login`だけは`--timeout`・`--keep-browser`を併用できる）。claude専用の
 オプションを`--source github`に付けると終了コード2。
 
-`--source otel`は`organizations.<組織名>.otel`を設定した組織だけで、BigQuery を`bq` CLI で読んで
-月の集計を`otel-cache/`へ保存する（§27.3）。`--dry-run`は読み取り量の見積もりだけを表示して
-終わる。見積もりが`otel.maximum_bytes_billed`を超えるときは実行しない。定期実行（§14.5）には
-含めない（サブスクリプションの外の課金が生じるため、人が都度実行する）。
+`--source otel`は`organizations.<組織名>.otel`を設定した組織だけで、`--org`は1つ、`--month`は
+必須。BigQuery を`bq` CLI で読んで月の集計を`otel-cache/`へ保存する（§27.3）。終わっていない月は
+取得しない。`--dry-run`は表の定義の確認と読み取り量の見積もりだけを表示して終わり、保存しない。
+見積もりが`otel.maximum_bytes_billed`を超えるときは実行しない。`--dry-run`を除くclaude専用の
+オプションを付けると終了コード2。定期実行（§14.5）には含めない（サブスクリプションの外の課金が
+生じるため、人が都度実行する）。
 
 判定の版は「`--decision-version`の明示指定 > `config.yaml`の`decision.version` > `v2`」で決まる
 （Track 11で既定を`v2`にした。それまでは`decision_v2.enabled`による併記のopt-inで、既定は`v1`）。
@@ -1594,8 +1610,13 @@ decision-evidenceを常に併記する。`v1`は従来の判定（allowanceモ�
 
 `OTEL_COVERAGE_LOW`と`OTEL_USER_MISSING`は §27.4 の網羅率の検査。テレメトリが届いていない人を
 「使っていない人」と読ませないための issue で、人 × 月の表ではその人の OTel 由来の列を空欄にする。
-`OTEL_ATTRIBUTE_MISSING`は、集計に必須の属性（利用者のメールアドレス・`organization.id`）が
-表に無い場合。`otel`を設定していない組織では OTel の issue は一切出ない。
+そのほかは取得の前提の検査で、`OTEL_BQ_NOT_AUTHENTICATED`は`bq`が無いか認証が切れている、
+`OTEL_BQ_NOT_ACCESSIBLE`は project・dataset・表が見つからないか権限が無い、
+`OTEL_QUERY_TOO_LARGE`は読み取り量の見積もりが上限を超えた、`OTEL_PARTIAL_RESULT`は受け取った
+行数が問い合わせの返した行数と合わない、`OTEL_ATTRIBUTE_MISSING`は集計に必須の列（イベントの
+時刻と名前・利用者のメールアドレス・`organization.id`・`session.id`）が表に無い場合。取得の
+コマンドは同じ種類の失敗を理由の文で表示する（§27.3）。issue としての結線は doctor で行う。
+`otel`を設定していない組織では OTel の issue は一切出ない。
 
 ### Policy
 
@@ -4053,11 +4074,11 @@ Step 74（コミットの共著の印の指標）は見送った。
 対象:
 
 - `src/seat_analyzer/otel_collect.py`（新規・層 15）
-- `src/seat_analyzer/sql/`（SQL テンプレート。`.py`でない同梱物）
+- `src/seat_analyzer/sql/`（同梱の SQL。`.py`でない同梱物）
 - `src/seat_analyzer/cli.py`
 - `src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`
 - `tests/test_otel_collect.py`
-- `docs/setup.md`・`docs/usage.md`・`docs/reference.md`
+- `docs/setup.md`・`docs/usage.md`・`docs/reference.md`・`CHANGELOG.md`
 
 実装:
 
@@ -4066,18 +4087,28 @@ Step 74（コミットの共著の印の指標）は見送った。
 受け入れ条件:
 
 - 読むのはイベントの表だけで、メトリクスの表を読まない
-- 本文・引数・パス・リポジトリ・費用の列をテンプレートに書かない（テストがテンプレートを
-  検査する）
-- `organization.id`が`organization_ids`に一致しない・空のイベントを集計せず、件数を記録する
+- 同梱の SQL が参照する列が許可リストに閉じ、本文・引数・パス・リポジトリ・費用の列を
+  含まない（テストが SQL を検査する）
+- 名前を持ちうる属性（ツール・エージェント・スキル・プラグイン・MCP サーバー・コマンドの
+  名前と`query_source`）の値が、区分か有無に畳まれてキャッシュに入る
+- `organization.id`が`organization_ids`に一致しない・空のイベントと、利用者のメールアドレスが
+  空のイベントを集計せず、件数を分けて記録する
+- 必須の列が表に無ければ問い合わせずに止まり、任意の属性の列が無ければ、その属性を付いて
+  いないものとして数えて名前を記録する
+- 終わっていない月は取得しない。`--dry-run`は保存しない
 - dry-run の見積もりが上限を超えたら実行しない
 - `bq`の出力は fixture で検証し、unit test はネットワークに出ない
-- 同じ入力から同じ JSON（行の順序を固定）
-- 認証なし・権限なし・途中失敗で部分結果を完全な結果として保存しない
-- wheel に`sql/`が入る
+- 同じ問い合わせ結果から、同じ行の並びのキャッシュになる
+- 認証なし・権限なし・0行の結果・行数や件数の不一致で、部分結果を完全な結果として保存しない
+- 取得元の表か組織 UUID が今の設定と違うキャッシュを、読み戻しで受け付けない
+- wheel に同梱の SQL が入る
+- `otel`を設定していない組織の取得は設定の案内で止まり、分析の成果物は変わらない
 
 今回は行わない:
 
-- doctor・指標
+- doctor・網羅率・指標
+- 別の形の表への対応、`bq`の場所を指定する設定
+- Windows での実機の確認（`bq`がバッチファイルで提供される環境での起動）
 
 #### Step 61: OpenTelemetry の網羅率
 
@@ -4303,6 +4334,10 @@ Step 74（コミットの共著の印の指標）は見送った。
 
 - §27.5 のうち、元データが OpenTelemetry のイベントの行。人 × 月の表に列を足し、チーム × 月の
   表とレポートに同じ指標を集まりの単位で足す
+- OpenTelemetry の指標は、GitHub の成果の指標と同じ表・同じレポートに並べる。成果が変化した
+  月に、使い方がどう動いていたかを読む手がかりにするため（§27.1）。OpenTelemetry だけの
+  成果物は作らない
+- 表とレポートに出す指標は、着手のときに決める（§27.5 の行は候補）
 
 受け入れ条件:
 
@@ -4984,7 +5019,6 @@ claude_export:
   login_warning_days: 3                     # --check-loginで「期限間近」にする残り日数
 
 otel:
-  bq_path: ""                               # 空文字 = PATHのbq
   maximum_bytes_billed: 2000000000          # 1回の問い合わせで読む量の上限（byte）。見積もりが超えたら実行しない
   coverage_warning_ratio: 0.7               # OTelのAPIリクエストの件数 ÷ spendのClaude Codeのリクエスト数がこれを下回る人×月を警告（§27.4）
   coverage_min_requests: 100                # spendのClaude Codeのリクエスト数がこれに満たない人×月は網羅率を判定しない
@@ -5431,11 +5465,16 @@ Claude Code の活用とその変化を、チーム・部署と組織全体の�
   表・レポート・検知は出せる
 - OTel は組織ごとに導入の有無が違う。導入した組織だけが`otel`を設定し（§27.2）、未設定の組織は
   OTel 関連の処理と警告から一切除外される（GitHub の`github_org`と同じゲート）
+- OTel の指標は単独では読まない。GitHub の成果の指標（§15）と同じ集まり・同じ月に並べ、
+  成果が変化した月に、使い方がどう動いていたかを読む手がかりにする。OTel だけのレポートは
+  作らない。活用の度合いの変化も参考として読み、良し悪しを断定しない
 - OTel は利用側の収集基盤（collector → BigQuery）に蓄積されている前提で、このツールは BigQuery を
   読むだけ。collector の設定・配布・保持はこのツールの範囲外
-- 対応する表の形は、Cloud Logging のシンクでイベントを BigQuery へ入れたもの。1 行が 1 イベントで、
-  属性は`labels`の下の文字列として持ち（属性名の`.`は`_`になる）、`timestamp`の日付で分割されて
-  いる。別の形の表に合わせるときは SQL テンプレートを差し替える
+- 対応する表の形は1つで、Cloud Logging のシンクでイベントを BigQuery へ入れたもの。1 行が
+  1 イベントで、属性は`labels`の下の文字列として持ち（属性名の`.`は`_`になる）、`timestamp`の
+  日付で分割されている。属性の列は、その属性を持つイベントが初めて届いたときに作られるので、
+  Claude Code の版や収集の設定によって付かない属性は、列そのものが無いことがある（§27.3）。
+  別の形の表への対応は後続（§27.10）
 - 読むのはイベントだけで、メトリクス（`claude_code.*`の計数）は読まない。メトリクスの保存形式は
   収集基盤ごとに違う（生の時系列・日次の集計など）ため、対応形式を決めてから足す。メトリクスに
   しか無い値（Claude Code が作ったコミット・PR の数、稼働時間、Claude Code が消した行）は後続
@@ -5455,7 +5494,6 @@ organizations:
         logs_table: logs
       organization_ids: []
 otel:
-  bq_path: ""
   maximum_bytes_billed: 2000000000
   coverage_warning_ratio: 0.7
   coverage_min_requests: 100
@@ -5465,11 +5503,18 @@ adoption:
   stages: {}
 ```
 
-- `organizations.<組織名>.otel`を書いた組織だけが OTel の対象。`logs_table`（イベントの表）は必須
+- `organizations.<組織名>.otel`を書いた組織だけが OTel の対象。`project`・`dataset`・
+  `logs_table`（イベントの表）は3つとも必須で、英数字と`_`・`-`だけを受け付ける（表の名前は
+  SQL に埋め込むため。それ以外の文字はロード時にエラー）。3つとも空で`organization_ids`も
+  空の`otel`は、書いていないのと同じに扱う（対象にしない）
 - `organization_ids`は OTel の`organization.id`で絞る claude.ai の組織 UUID。省略時は
   `claude_export.org_id`（複数スペースの組織は各 workspace のもの）を使う。両方無ければロード時に
   エラー。一致しないイベントと`organization.id`が空のイベントは集計せず、除いた件数をキャッシュに
-  記録して取得時に表示する
+  記録して取得時に表示する。UUID は大文字と小文字を区別せずに比べる（設定の値もイベントの
+  値も小文字にそろえる）
+- `otel.maximum_bytes_billed`は1以上の整数。読み取り量は、その月のイベントの数（利用者の数と
+  利用量）に比例する。見積もりが既定を超える組織は、`--dry-run`の見積もりを見て上げる
+- `bq`の場所を指定する設定は持たない（PATH から探す。`gh`と同じ）
 - `adoption.enabled`は OTel・GitHub の有無と独立で、どちらも無い組織でも有効にできる
 - `adoption.outside_org_min_lines`は管轄外の検知（§27.7）の行数の下限で、1以上の整数。既定は
   1000。0 を受け付けないのは、Claude Code が加えた行が0の人まで該当になるため
@@ -5478,24 +5523,92 @@ adoption:
 
 ### 27.3 取得（`collect --source otel`）
 
+1組織の1か月を、1回の問い合わせで人 × 日 × 区分の件数に畳んで保存する。
+
 - `bq` CLI を subprocess で呼ぶ（`gh`と同じ流儀。認証は gcloud に任せ、token を Python へ取り出さ
-  ない）
+  ない）。利用者の`bq`の設定ファイルは読ませない（結果の開始行や保存先の表などの既定を
+  引き継ぐと、結果が欠けたり、ほかの表へ書き込んだりするため）
+- 月の範囲と日の区切りは UTC にする。支出レポートの月と同じ境界にして、網羅率（§27.4）の
+  件数の比がずれないようにするため
+- 終わっていない月は取得しない。翌月の2日（UTC）になるまでは、理由を表示して終了コード 1 で
+  終わる。月の終わりから1日の余裕を置くのは、遅れて届くイベントを取りこぼさないため。
+  途中までのキャッシュを作らないので、キャッシュを読む側は月の途中の値を扱わなくてよい。
+  `--dry-run`は保存しないので、始まっている月ならいつでも実行できる
+- 問い合わせの前に表の定義を読み（データは読まない）、SQL が参照する列があるかを確かめる
+  - 必須の列（イベントの時刻・イベントの名前・利用者のメールアドレス・`organization.id`・
+    `session.id`）が無ければ、問い合わせずに止める
+  - 任意の属性の列が無ければ、その属性はどのイベントにも付いていないものとして数え、
+    無かった属性の名前をキャッシュに記録して表示する。列が無いことと、列はあるが値が付いて
+    いないことを、集計の値では区別しない
 - 読む前に`--dry_run`で読み取り量（byte）を出し、`otel.maximum_bytes_billed`を超えるときは実行
   しない。実行時も同じ値を`--maximum_bytes_billed`に渡す
-- SQL は同梱のテンプレート（`src/seat_analyzer/sql/`。`.py`でない同梱物なので wheel に入ることを
-  確かめる）に、月の範囲（UTC）・`organization.id`・テーブル名を埋める。日付のパーティション列で
-  絞る
-- SELECT する列は §27.5 の集計に要るものだけ。本文・引数・パスの列（§7.7 の「保存しない」）は
-  テンプレートに書かない（テストがテンプレートを検査する）
+- SQL は同梱の1つ（`.py`でない同梱物なので wheel に入ることを確かめる）。月の範囲と
+  `organization.id`は問い合わせの引数で渡し、SQL に埋め込むのは設定のロード時に検査した表の
+  名前だけにする。日付のパーティション列で絞る
+- SQL が参照する列は許可リストで管理する。許可リストは下の表の集計に要る列だけで、本文・
+  引数・パスの列（§7.7 の「保存しない」）を含まない。テストは、同梱の SQL が許可リストの外の
+  列を参照していないことを検査する
 - イベントの費用（`api_request`の`cost_usd`）は読まない。Claude Code 自身の見積もりで、この
   ツールの単価計算と一致することを前提にできないため。費用は spend の値を使い、OTel からは
   件数とトークン数だけを取る
-- 集計は SQL 側で人 × 日 × 次元まで行い、行の単位のデータをローカルへ持ち込まない。セッション数は
-  セッションの最初のイベントの日に数える（セッション ID そのものは持ち込まない）
-- 結果は`otel-cache/otel-YYYY-MM.json`（§7.7）。同じ月の再実行は置き換え
-- 認証なし・権限なし・上限超過・途中失敗はそれぞれ issue（§17）にし、部分結果を完全な結果として
+- 集計は SQL 側で人 × 日 × 区分まで行い、行の単位のデータをローカルへ持ち込まない
+- 名前や自由な値を持ちうる属性は、SQL の中で決まった区分か有無に畳んでから持ち帰る。区分に
+  当てはまらない値は`other`にする。属性が付いていないことに意味がある区分（`effort`・
+  `permission_mode`・`command_source`）は、付いていないイベントを`none`として分けて持つ
+- `organization.id`が`organization_ids`に一致しない・空のイベントと、利用者のメールアドレスが
+  空のイベントは集計せず、件数を分けて記録して表示する
+- 問い合わせは、結果の行数と、月の範囲にあったイベントの総数を一緒に返す（総数の行は、
+  イベントが1件も無い月にも返る）。次のどれかに当たる結果は、途中までの結果として扱い、
   保存しない
+  - 結果が0行
+  - 受け取った行数が、問い合わせの返した行数と一致しない
+  - イベントの行の件数の和と、集計しなかった件数の和を足しても、総数にならない
+- 結果は`otel-cache/otel-YYYY-MM.json`（§7.7）。同じ月の再実行は置き換え。行の並びを固定し、
+  同じ問い合わせ結果からは同じ行の並びになる
+- 失敗は種類ごとの理由の文で表示し、終了コード 1 で終わる（`bq`が無い・認証が切れている・
+  project や dataset や表が見つからないか権限が無い・必須の列が無い・見積もりが上限を
+  超えた・行数が合わない）。部分結果を完全な結果として保存しない。`bq`は失敗の種類を
+  終了コードで区別しないので、出力の文言で分類し、分類できない失敗は種類を決めずに`bq`の
+  出力を添えて表示する
 - 定期実行（§14.5）には含めない。サブスクリプションの外の課金が生じるため、人が都度実行する
+
+集計名と区分:
+
+| 集計名 | 区分 | 値と畳み方 |
+|---|---|---|
+| すべて | `terminal` | `interactive`・`non_interactive`。端末の種類（`terminal.type`）が非対話のイベントが`non_interactive`、それ以外と属性の無いイベントは`interactive` |
+| `api_request` | `model` | モデル名。英数字と`.`・`_`・`:`・`[`・`]`・`-`だけの100字以内の値を通し、それ以外は`other` |
+| `api_request` | `origin` | `query_source`が`repl_main_thread`なら`main`、`sdk`なら`sdk`、`agent:builtin:`で始まれば`subagent_builtin`、そのほかの`agent:`で始まる値は`subagent_custom`、それ以外と属性の無いイベントは`other` |
+| `api_request` | `effort` | `low`・`medium`・`high`・`xhigh`・`max`・`none`・`other` |
+| `api_request` | `agent`・`skill`・`mcp`・`plugin` | エージェント・スキル・MCP サーバー・プラグインの名前の属性が付いているか（true / false） |
+| `tool_decision` | `tool` | `edit`（Edit・Write・MultiEdit・NotebookEdit）・`shell`（Bash・PowerShell）・`mcp`・`agent`（Agent・Task）・`skill`（Skill）・`other` |
+| `tool_decision` | `decision` | `accept`・`reject`・`other` |
+| `tool_decision` | `source` | `config`・`hook`・`user_permanent`・`user_temporary`・`user_abort`・`user_reject`・`other` |
+| `tool_decision` | `permission_mode` | `default`・`plan`・`acceptEdits`・`bypassPermissions`・`dontAsk`・`auto`・`none`・`other` |
+| `user_prompt` | `command_source` | `builtin`・`custom`・`mcp`・`none`・`other` |
+| そのほかのイベント | `terminal`だけ | 件数だけを持つ |
+| セッション（イベントの行とは別に持つ） | `terminal` | その月に`api_request`のあったセッションの数。月の中で最初の`api_request`の日に数える |
+
+- イベントの名前は、英小文字・数字・`_`だけの64字以内の値を通し、それ以外は`other`に
+  まとめる
+- `origin`を接頭辞で畳むのは、イベントの`query_source`が固定の語彙ではなく、サブエージェントの
+  名前を含むため。`other`には、要約や題名の生成などの補助の問い合わせが入る
+- `tool`の`mcp`は、ツールの出どころ（`tool_source`）が`mcp`のイベント。出どころの属性が無い
+  イベントでは、ツール名が`mcp_tool`（名前を伏せて送るときの値）か`mcp__`で始まるものを
+  `mcp`にする。ホストのアプリが組み込みで持つツール（出どころが`sdk_host_builtin_mcp`）は、
+  ツール名で`edit`・`shell`などに分け、当てはまらなければ`other`
+- `terminal`を全部の集計に持つのは、非対話の分が混ざると、プロンプト数・セッション数・判断の
+  出どころが読めなくなるため。非対話は、`claude -p`などの自動実行と、SDK を通す画面
+  （デスクトップアプリなど）の両方を含み、この属性では分けられない（§27.10）。セッションは、
+  非対話の`api_request`が1件でもあれば`non_interactive`
+- `permission_mode`のように新しい版の Claude Code だけが付ける属性は、`none`の件数も持つ。
+  付いているイベントだけを分母にできるようにするため（§27.5）
+- セッションは、その月の範囲の中で、人ごとに数える。月をまたぐセッションは両方の月で1回ずつ
+  数え、日ごとの値を月で足すと、その人がその月に`api_request`を出したセッションの数になる。
+  セッション ID そのものは持ち込まない
+- 上の表に無い属性（応答の速さの指定、自動承認の分類器の判定、圧縮やスキルの起動の
+  きっかけなど）は持たない。要るようになったら区分を足して schema を上げ、月ごとに取り直す
+  （表に残っている月は取り直せる）
 
 ### 27.4 網羅率
 
@@ -5522,12 +5635,12 @@ adoption:
 |---|---|---|
 | 活用 | Claude Code の需要（API 換算）・リクエスト数 | spend（Claude Code product。§9.2） |
 | 活用 | Claude Code が加えた行 | code-analytics（claude.ai のエクスポート） |
-| 活用 | 稼働日数・セッション数 | OTel のイベント（イベントのある日の数と、セッションの数） |
+| 活用 | 稼働日数・セッション数 | OTel のイベント（`api_request`のある日の数と、セッションの数） |
 | 活用 | プロンプト数 | イベント`user_prompt`（件数のみ） |
 | 活用 | トークン（モデル別） | イベント`api_request`（`model`とトークンの種別） |
-| 自律 | 編集の受け入れ・却下と判断の出どころ（自動承認か都度か） | イベント`tool_decision`（`tool_name`・`decision`・`source`） |
+| 自律 | 編集の受け入れ・却下と判断の出どころ（自動承認か都度か） | イベント`tool_decision`（ツールの区分・`decision`・`source`） |
 | 自律 | 権限モードの構成 | イベント`tool_decision`（`permission_mode`） |
-| 自律 | サブエージェント・補助クエリの割合 | イベント`api_request`（`query_source`） |
+| 自律 | サブエージェント・補助クエリの割合 | イベント`api_request`（`query_source`を畳んだ区分） |
 | 自律 | スキル・エージェント・MCP の利用 | イベント`api_request`（スキル・エージェント・MCP サーバーの名前の属性の有無。名前は件数に畳む） |
 | 自律 | スラッシュコマンドの利用（組込み・カスタム・MCP の別） | イベント`user_prompt`（`command_source`） |
 | 自律 | API エラー率 | イベント`api_error`と`api_request`（件数のみ） |
@@ -5537,6 +5650,9 @@ adoption:
 
 - 元データが spend・code-analytics・GitHub の行は Step 62（検知は Step 64）、OTel のイベントの
   行は Step 71 で表に入る
+- OTel のイベントの行は候補で、キャッシュの集計名と区分（§27.3）から出す。表とレポートに
+  出す指標は Step 71 で決め、GitHub の成果の指標と同じ表に並べる（§27.1）。端末の種類が
+  非対話の分は、区分で分けて数えられる
 - 比率は分子・分母を列に持ち、比率そのものは表で計算して列にする（元の値を失わない）
 - 中央値のように日次から月次へ畳めない統計は持たない（件数・合計・トークンに閉じる）
 - イベントの種類や Claude Code の版によって付かない属性（`permission_mode`など）は、付いている
@@ -5843,3 +5959,7 @@ Organization に成果が見えない人 × 月に印を付ける。該当した
   突き合わせ、「Claude Code のセッションを経た PR の割合」を出す（HEAD の SHA を集めている
   組織のみ）
 - 週次の粒度: 週次の累積スナップショットと OTel の日次から、月内の推移を出す
+- 別の形の表への対応: OTLP の形のまま BigQuery へ入れた表など。対応する形を決めてから、
+  形ごとの SQL を足す
+- 非対話の内訳: 収集側が入口の属性（`app.entrypoint`）を出している組織で、自動実行と、
+  SDK を通す画面での利用を分ける
