@@ -559,7 +559,7 @@ def _validate_adoption(cfg: dict, errors: list[str]) -> None:
 
 
 def _validate_otel(cfg: dict, errors: list[str]) -> None:
-    """取得元の字句・UUID と読み取り量の上限を検査する（無効なら取得しない）。"""
+    """取得元の字句・UUID、読み取り量の上限と網羅率の設定を検査する。"""
     common = cfg["otel"]
     if not isinstance(common, dict):
         errors.append("otel セクションが辞書ではありません")
@@ -567,6 +567,17 @@ def _validate_otel(cfg: dict, errors: list[str]) -> None:
     maximum = common.get("maximum_bytes_billed")
     if not _is_integer(maximum) or maximum < 1:
         errors.append("otel.maximum_bytes_billed は 1 以上の整数が必要です")
+    products = common.get("coverage_products")
+    if not isinstance(products, list) or not products or not all(map(_is_text, products)):
+        errors.append("otel.coverage_products は空でない文字列を1つ以上持つリストが必要です")
+    for name in _duplicate_product_names(common, "coverage_products"):
+        errors.append(f"otel.coverage_products に同じ product 名が複数あります: {name}")
+    ratio = common.get("coverage_warning_ratio")
+    if not _is_finite(ratio) or not 0 < ratio <= 1:
+        errors.append("otel.coverage_warning_ratio は 0 より大きく 1 以下の数値が必要です")
+    minimum = common.get("coverage_min_output_tokens")
+    if not _is_integer(minimum) or minimum < 0:
+        errors.append("otel.coverage_min_output_tokens は 0 以上の整数が必要です")
     organizations = cfg["organizations"]
     if not isinstance(organizations, dict):
         return

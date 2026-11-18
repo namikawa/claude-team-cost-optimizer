@@ -6,6 +6,8 @@
 
 - OpenTelemetry の月の集計を取得するコマンド `collect --source otel` を追加した
 - 設定 `organizations.<組織名>.otel`・`otel.maximum_bytes_billed` を追加した
+- `doctor` に OpenTelemetry に届いている割合の検査を追加した
+- 設定 `otel.coverage_products`・`otel.coverage_warning_ratio`・`otel.coverage_min_output_tokens` を追加した
 
 ## [1.6.1] - 2026-11-18
 

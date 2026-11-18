@@ -743,6 +743,11 @@ seat-analyzer collect --source otel --org org-a --month 2026-10 --dry-run
 都度実行し、定期実行には入れない。使い方と保存先は [usage.md](./usage.md) の
 「OpenTelemetry の集計の取得」を参照。
 
+取得した月は `doctor` で OpenTelemetry に届いている割合を確かめられる。分母にする
+product は `otel.coverage_products`（既定は Claude Code と Cowork）で指定する。
+テレメトリの設定が届かない product は一覧から外す。条件と設定の詳細は
+[届いている割合の検査（doctor）](./reference.md#届いている割合の検査doctor)を参照。
+
 ## アップデート
 
 導入と同じ手順で行う。最新リリースの wheel の URL をステップ 2 のコマンドで調べ、

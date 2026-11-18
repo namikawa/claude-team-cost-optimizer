@@ -152,9 +152,12 @@ decision_v2:
 #         organization_ids: [00000000-0000-4000-8000-000000000001]
 organizations: {}
 
-# OpenTelemetry の取得（collect --source otel）。設定した組織だけを月単位で取得する。
+# OpenTelemetry の月ごとの取得（collect --source otel）と検査（doctor）。設定した組織のみ。
 otel:
   maximum_bytes_billed: 2000000000  # 問い合わせの読み取り量の上限（byte）。1以上の整数
+  coverage_products: ["Claude Code", "Cowork"]  # OpenTelemetry のイベントとして届く product。空でない名前を1つ以上。テレメトリの設定が届かない product は外す
+  coverage_warning_ratio: 0.7  # 網羅率がこの比を下回る人を警告する。0より大きく1以下
+  coverage_min_output_tokens: 100000  # 網羅率を判定する spend の対象 product の出力トークンの下限。0以上の整数
 
 # GitHub のコミット行数の集計（github-summary の参考値）
 github:

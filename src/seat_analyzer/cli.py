@@ -758,8 +758,9 @@ def _latest_month(org_input: Path) -> str | None:
 def _inspect_org(
     org_input: Path, month: str | None, cfg: dict, org: str,
     github: tuple[str, github_collect.GithubProbes] | None = None,
+    otel: otel_collect.OtelTarget | None = None,
 ) -> list[QualityIssue]:
-    """1組織分の入力検査（構造 + 入力の中身 + 有効なら GitHub）。
+    """1組織分の入力検査（構造・入力の中身・有効なら GitHub と OpenTelemetry）。
 
     入れ子レイアウトでは未開始の workspace を警告して飛ばし、開始済みの workspace
     ごとに検査を回して scope を持たせる。混在レイアウトは構造の報告だけに留める
@@ -768,10 +769,15 @@ def _inspect_org(
     github は GitHub 分析を有効にした組織の (Organization 名, probe の結果)。メンバー
     一覧と突き合わせる workspace は members-info の検査と同じものを渡す（入れ子なら
     開始済みの workspace、単一なら組織直下、混在なら無し）。
+
+    otel は OpenTelemetry を有効にした組織の取得元と UUID。構造の検査が通った組織で、
+    未開始と確認できたものを除く全 workspace を網羅率の検査に渡す。
     """
     issues = data_quality.workspace_issues(org_input, cfg, org)
+    inspect_coverage = otel is not None and not issues
     layout, workspaces = ingest.detect_workspace_layout(org_input)
     member_dirs: list[Path] = []
+    spend_dirs: list[Path] = []
     if layout == ingest.WORKSPACE_LAYOUT_NESTED:
         started = []
         for workspace in workspaces:
@@ -788,6 +794,7 @@ def _inspect_org(
                             org, month, workspace))
                         continue
                     started.append(workspace_dir)
+            spend_dirs.append(workspace_dir)
             issues.extend(data_quality.inspect_input(
                 workspace_dir, month, cfg, org=org, workspace=workspace))
         issues.extend(data_quality.person_issues(org_input, month, cfg, org))
@@ -795,6 +802,7 @@ def _inspect_org(
     elif layout == ingest.WORKSPACE_LAYOUT_SINGLE:
         issues.extend(data_quality.inspect_input(org_input, month, cfg, org=org))
         member_dirs = [org_input]
+        spend_dirs = [org_input]
     if layout != ingest.WORKSPACE_LAYOUT_MIXED:
         issues.extend(data_quality.members_info_issues(
             org_input, month, cfg, org, member_dirs))
@@ -802,6 +810,8 @@ def _inspect_org(
         github_org, probes = github
         issues.extend(data_quality.inspect_github(
             org_input, month, cfg, org, github_org, probes, member_dirs))
+    if inspect_coverage:
+        issues.extend(data_quality.inspect_otel(org_input, month, cfg, org, otel, spend_dirs))
     return data_quality.sort_issues(issues)
 
 
@@ -843,11 +853,12 @@ def _run_doctor(args: argparse.Namespace) -> int:
     enabled = github_collect.gated_orgs(cfg)
     gated = {org: enabled[org] for org, _ in targets if org in enabled}
     probes = github_collect.probe_github(gated.values()) if gated else None
+    otel_targets = otel_collect.gated_orgs(cfg)
 
     for org, org_input in targets:
         # 組織ごとのレポートが自己完結するよう、GitHub の issue もその組織へ合流させる
         github = (gated[org], probes) if org in gated and probes is not None else None
-        issues = _inspect_org(org_input, month, cfg, org, github)
+        issues = _inspect_org(org_input, month, cfg, org, github, otel_targets.get(org))
         all_issues.extend(issues)
         if not as_json:
             _print_issues(org, month, issues)

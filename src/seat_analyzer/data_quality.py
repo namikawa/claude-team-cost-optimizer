@@ -1,4 +1,4 @@
-"""既存入力（Spend / Members / GitHub）の検査と、構造化品質issueの整列・JSON直列化。
+"""既存入力（Spend / Members / GitHub / OpenTelemetry）の検査と、品質issueの整列・JSON直列化。
 
 `inspect_input` は doctor の検査本体で、1組織・1対象月の入力を読み、issueを返す
 だけの純粋な関数（出力整形と終了コードは cli が担当）。同じ入力からは常にバイト
@@ -12,6 +12,9 @@
 `inspect_github` と `github_config_issues` は GitHub 分析を有効にした組織のための検査で、
 gh の実行結果（`github_collect.probe_github` が返す値）と対応表を issue へ写す。gh を
 呼ぶのは probe 側だけなので、この2つも同じ入力から常に同じ出力を返す。
+
+`inspect_otel` は OpenTelemetry を有効にした組織の月次キャッシュと spend を読み、
+`otel_coverage` が求めた網羅率を issue へ写す。どちらも BigQuery に接続しない。
 
 整列と直列化は別の関心事として分けてある。`issues_to_json` は渡された順をそのまま
 保持するため、「同一のissue多重集合なら常に同一の文字列」は `sort_issues` を通した
@@ -27,14 +30,17 @@ from __future__ import annotations
 
 import calendar
 import dataclasses
+import enum
 import json
+import math
 import os
-from collections.abc import Iterable
+from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 import pandas as pd
 
-from . import calendar_months, github_collect, ingest, pricing
+from . import calendar_months, github_collect, ingest, otel_collect, pricing
 from .domain import IssueCode, QualityIssue, ScopeValue, Severity
 from .github_collect import (
     GhAuth,
@@ -44,6 +50,7 @@ from .github_collect import (
     GithubMembers,
     GithubProbes,
 )
+from .product_usage import normalize_product_name
 
 # Severityの宣言順（ERROR→WARNING）をそのまま整列順に使う
 _SEVERITY_ORDER = {severity: index for index, severity in enumerate(Severity)}
@@ -218,6 +225,28 @@ def _sample(emails: Iterable[str]) -> list[str]:
     return sorted(emails)[:_MAX_LISTED]
 
 
+class _MonthCoverage(enum.Enum):
+    """ファイル名の期間から見た spend の月の状態。
+
+    FULL は暦上の全月、PARTIAL は暦の日数に満たない部分月、UNCONFIRMED は
+    単日の日付の命名で期間を確認できない月。`_partial_month_issues` の部分月の
+    警告と `inspect_otel` の網羅率の検査で同じ判定を使う。
+    """
+
+    FULL = enum.auto()
+    PARTIAL = enum.auto()
+    UNCONFIRMED = enum.auto()
+
+
+def _month_coverage(period: ingest.FilePeriod, month: str) -> _MonthCoverage:
+    """ファイル名が示す期間で、暦上の全月と確かめられるかを返す。"""
+    if period.kind == "date":
+        return _MonthCoverage.UNCONFIRMED
+    if period.days is None or period.days >= _days_in_month(month):
+        return _MonthCoverage.FULL
+    return _MonthCoverage.PARTIAL
+
+
 def _partial_month_issues(
     input_dir: Path, month: str, spend_months: list[str], cfg: dict, org: str
 ) -> list[QualityIssue]:
@@ -251,8 +280,11 @@ def _partial_month_issues(
                 org, m,
             ))
             continue
+        coverage = _month_coverage(period, m)
+        if coverage is _MonthCoverage.FULL:
+            continue
         days_in_month = _days_in_month(m)
-        if period.kind == "date":
+        if coverage is _MonthCoverage.UNCONFIRMED:
             issues.append(_issue(
                 Severity.WARNING, IssueCode.PARTIAL_MONTH,
                 f"{m} のスペンドはファイル名が単日日付（{period.start:%m-%d}）のため、"
@@ -261,8 +293,6 @@ def _partial_month_issues(
                 "（月中の一次判断は analyze --preview を使ってください）",
                 org, m, snapshot_date=f"{period.start:%Y-%m-%d}", days_in_month=days_in_month,
             ))
-            continue
-        if period.days is None or period.days >= days_in_month:
             continue
         note = (
             "この月が判定窓に入るあいだは、正式分析で変更推奨を出しません"
@@ -1023,6 +1053,279 @@ def inspect_github(
     issues.extend(_github_mapping_issues(
         input_dir, month, cfg, org, github_org, workspace_dirs))
     return sort_issues(issues)
+
+
+@enum.unique
+class OtelCoverageStatus(enum.StrEnum):
+    """人 × 月で OpenTelemetry が届いている割合を確かめた状態。"""
+
+    UNKNOWN = "unknown"
+    NOT_JUDGED = "not_judged"
+    MISSING = "missing"
+    LOW = "low"
+    OK = "ok"
+
+
+@dataclasses.dataclass(frozen=True)
+class OtelUserCoverage:
+    """正規化したメールアドレスと、その人の月の状態・トークン数・比。
+
+    spend の和は対象 product だけを数え、判定不能なら None。OTel の和は
+    api_request だけを数え、キャッシュに属性が無ければ None。比は判定した人
+    だけが持ち、イベントが無い人（MISSING）の比は 0.0。
+    """
+
+    email: str
+    status: OtelCoverageStatus
+    spend_output_tokens: int | float | None
+    otel_output_tokens: int | None
+    ratio: float | None
+
+
+@dataclasses.dataclass(frozen=True)
+class OtelCoverage:
+    """1か月の人別・組織全体の網羅率と、キャッシュの出力トークン属性の有無。
+
+    users はメールアドレスの昇順。組織のトークン数は、判定不能を除いた spend の
+    出力が正の人だけを分子と分母の両方に数える。該当者がいなければ比は None。
+    """
+
+    month: str
+    users: tuple[OtelUserCoverage, ...]
+    output_tokens_absent: bool
+    spend_output_tokens: int | float
+    otel_output_tokens: int
+    ratio: float | None
+
+
+def _sum_output_tokens(values: Sequence[int | float]) -> int | float:
+    """整数は正確に足し、小数を含むときも明細の順序による丸めの差を抑える。"""
+    if any(isinstance(value, float) for value in values):
+        return math.fsum(values)
+    return sum(values)
+
+
+def _spend_output_tokens(
+    spends: Iterable[pd.DataFrame], month: str, products: Sequence[str],
+) -> tuple[dict[str, list[int | float]], set[str]]:
+    """利用者ごとに対象の出力トークンを集め、分母が不明な人も返す。"""
+    target = {normalize_product_name(product) for product in products}
+    required = {"email", "completion_tokens", "month"}
+    tokens: dict[str, list[int | float]] = defaultdict(list)
+    unknown: set[str] = set()
+    for spend in spends:
+        if not isinstance(spend, pd.DataFrame):
+            raise TypeError("spend の明細は DataFrame が必要です")
+        if missing := required.difference(spend.columns):
+            raise ValueError(f"spend の明細に必要な列がありません: {', '.join(sorted(missing))}")
+        if not spend["month"].eq(month).fillna(False).all():
+            raise ValueError(f"spend の明細にキャッシュと異なる月があります: {month}")
+
+        emails = spend["email"].astype("string").str.strip().str.lower()
+        users = emails.str.contains("@", na=False)
+        products_in_spend = (
+            spend.loc[users, "product"].astype("string").map(normalize_product_name,
+                                                           na_action="ignore")
+            if "product" in spend else [None] * int(users.sum())
+        )
+        for email, product, value in zip(
+            emails[users], products_in_spend, spend.loc[users, "completion_tokens"],
+        ):
+            amounts = tokens[email]
+            if pd.isna(product):
+                unknown.add(email)
+            elif product in target:
+                if pd.isna(value) or not math.isfinite(value):
+                    unknown.add(email)
+                else:
+                    # pandas は欠損が混じる整数列を float にすることがある。
+                    integer = int(value)
+                    amounts.append(integer if integer == value else float(value))
+    return tokens, unknown
+
+
+def _otel_user_coverage(
+    email: str, spend: float, output: int, observed: bool, unknown: bool,
+    output_absent: bool, warning_ratio: float, minimum: int,
+) -> OtelUserCoverage:
+    """対象の利用量とイベントの有無を、判定の優先順に当てはめる。"""
+    if output_absent or unknown:
+        return OtelUserCoverage(email, OtelCoverageStatus.UNKNOWN, None,
+                                None if output_absent else output, None)
+    if spend == 0 or spend < minimum:
+        return OtelUserCoverage(email, OtelCoverageStatus.NOT_JUDGED, spend, output, None)
+    if not observed:
+        return OtelUserCoverage(email, OtelCoverageStatus.MISSING, spend, output, 0.0)
+    ratio = output / spend
+    status = OtelCoverageStatus.LOW if ratio < warning_ratio else OtelCoverageStatus.OK
+    return OtelUserCoverage(email, status, spend, output, ratio)
+
+
+def otel_coverage(
+    spends: Iterable[pd.DataFrame], cache: otel_collect.OtelCache, products: Sequence[str],
+    warning_ratio: float, min_output_tokens: int,
+) -> OtelCoverage:
+    """1か月の spend とキャッシュから、人別・組織全体の網羅率を計算する。
+
+    spends には各 workspace の load_spend と同じ形の明細を渡す。月が異なる明細は
+    取り違えとして拒む。対象 product と閾値は検査済みの設定値を渡す。
+    ファイルは読まず、キャッシュのイベント行だけを観測に使う。
+    """
+    if not isinstance(cache, otel_collect.OtelCache):
+        raise TypeError("OpenTelemetry の集計は OtelCache が必要です")
+    spent, unknown = _spend_output_tokens(spends, cache.month, products)
+    observed: set[str] = set()
+    output: dict[str, int] = defaultdict(int)
+    for row in cache.rows:
+        email = row.email.strip().lower()
+        observed.add(email)
+        if row.name == "api_request":
+            output[email] += row.output_tokens or 0
+    absent = "output_tokens" in cache.absent_attributes
+    users = []
+    org_spent = []
+    org_output = 0
+    for email in sorted(spent.keys() | observed):
+        spend_tokens = _sum_output_tokens(spent.get(email, ()))
+        output_tokens = output.get(email, 0)
+        user = _otel_user_coverage(
+            email, spend_tokens, output_tokens, email in observed, email in unknown,
+            absent, warning_ratio, min_output_tokens,
+        )
+        users.append(user)
+        if user.status is not OtelCoverageStatus.UNKNOWN and spend_tokens > 0:
+            org_spent.append(spend_tokens)
+            org_output += output_tokens
+    org_total = _sum_output_tokens(org_spent)
+    return OtelCoverage(cache.month, tuple(users), absent, org_total, org_output,
+                        org_output / org_total if org_total else None)
+
+
+def _truncate_coverage_ratio(output: int, spend: float) -> float:
+    """トークン数から比を小数2桁で切り捨て、message と scope の値をそろえる。"""
+    numerator, denominator = spend.as_integer_ratio()
+    return ((output * 100 * denominator) // numerator) / 100
+
+
+def _otel_low_issue(
+    users: list[OtelUserCoverage], coverage: OtelCoverage, org: str, products: str,
+    warning_ratio: float,
+) -> QualityIssue:
+    """比の小さい人から例を選び、表示だけを小数2桁に切り捨てる。"""
+    examples = sorted(users, key=lambda user: (user.ratio, user.email))[:_MAX_LISTED]
+    ratios = [
+        _truncate_coverage_ratio(user.otel_output_tokens, user.spend_output_tokens)
+        for user in examples
+    ]
+    sample = ", ".join(f"{user.email}（{ratio:.2f}）" for user, ratio in zip(examples, ratios))
+    org_ratio = _truncate_coverage_ratio(coverage.otel_output_tokens, coverage.spend_output_tokens)
+    return _issue(
+        Severity.WARNING, IssueCode.OTEL_COVERAGE_LOW,
+        f"OpenTelemetry に届いている割合が低い人が {len(users)} 名います（例: {sample}）。"
+        f"出力トークンの比（OpenTelemetry ÷ spend の {products}）が {warning_ratio!s} 未満で、"
+        "この人の OpenTelemetry 由来の値は、利用の一部しか表していません"
+        f"（組織全体の比は {org_ratio:.2f}）。"
+        "テレメトリの設定が入っていない端末で使っていないかを確かめてください",
+        org, coverage.month, users=len(users), emails=[user.email for user in examples],
+        ratios=ratios, warning_ratio=warning_ratio, organization_ratio=org_ratio,
+    )
+
+
+def _otel_coverage_issues(
+    coverage: OtelCoverage, org: str, products: Sequence[str], warning_ratio: float,
+) -> list[QualityIssue]:
+    """判定不能の理由と警告対象の例を、組織ごとの issue にする。"""
+    month = coverage.month
+    if coverage.output_tokens_absent:
+        return [_issue(
+            Severity.WARNING, IssueCode.OTEL_COVERAGE_UNAVAILABLE,
+            "OpenTelemetry のキャッシュに出力トークンが無いため、"
+            "届いている割合を確かめられません"
+            "（取得したイベントの表に、出力トークンの属性の列がありませんでした）",
+            org, month, reason="output_tokens_absent",
+        )]
+    product_names = "・".join(products)
+    by_status: dict[OtelCoverageStatus, list[OtelUserCoverage]] = defaultdict(list)
+    for user in coverage.users:
+        by_status[user.status].append(user)
+    issues = []
+    if unknown := by_status[OtelCoverageStatus.UNKNOWN]:
+        emails = [user.email for user in unknown[:_MAX_LISTED]]
+        issues.append(_issue(
+            Severity.WARNING, IssueCode.OTEL_COVERAGE_UNAVAILABLE,
+            f"spend に、product 名が空の行か、{product_names} の行で出力トークンを"
+            f"読めない行がある人が {len(unknown)} 名いて、"
+            f"OpenTelemetry に届いている割合を確かめられません（例: {', '.join(emails)}）",
+            org, month, reason="spend_rows_unreadable", users=len(unknown), emails=emails,
+        ))
+    if low := by_status[OtelCoverageStatus.LOW]:
+        issues.append(_otel_low_issue(low, coverage, org, product_names, warning_ratio))
+    if missing := by_status[OtelCoverageStatus.MISSING]:
+        emails = [user.email for user in missing[:_MAX_LISTED]]
+        org_ratio = _truncate_coverage_ratio(
+            coverage.otel_output_tokens, coverage.spend_output_tokens,
+        )
+        issues.append(_issue(
+            Severity.WARNING, IssueCode.OTEL_USER_MISSING,
+            f"spend に {product_names} の利用があるのに、"
+            f"OpenTelemetry にイベントが1件も無い人が {len(missing)} 名います"
+            f"（例: {', '.join(emails)}。組織全体の比は {org_ratio:.2f}）。"
+            "テレメトリの設定が端末に入っているか、利用者のメールアドレスの属性が"
+            "届いているかを確かめてください",
+            org, month, users=len(missing), emails=emails, organization_ratio=org_ratio,
+        ))
+    return sort_issues(issues)
+
+
+def inspect_otel(
+    input_dir: Path | str, month: str | None, cfg: dict, org: str,
+    target: otel_collect.OtelTarget, workspace_dirs: Iterable[Path | str],
+) -> list[QualityIssue]:
+    """OpenTelemetry を有効にした1組織分の網羅率の検査（整列済み）。
+
+    input_dir は組織のキャッシュがある場所。workspace_dirs には単一レイアウトの
+    組織直下か、入れ子レイアウトの未開始を除いた全 workspace を渡す。
+    全月の spend がそろった月だけキャッシュを読み、BigQuery には接続しない。
+    """
+    if month is None:
+        return []
+    spends = []
+    for directory in workspace_dirs:
+        try:
+            result = ingest.load_spend(Path(directory), month, cfg)
+            period = ingest.file_period(result.source)
+        except (OSError, ValueError):
+            return []
+        if period is None or _month_coverage(period, month) is not _MonthCoverage.FULL:
+            return []
+        spends.append(result.df)
+    if not spends:
+        return []
+
+    input_dir = Path(input_dir)
+    cache_dir = input_dir / otel_collect.OTEL_CACHE_DIRNAME
+    try:
+        cache = otel_collect.load_otel_cache(cache_dir, month, org, target)
+    except (ValueError, OSError) as exc:
+        if isinstance(exc, ValueError):
+            reason = _reason(exc, input_dir)
+        else:
+            filename = otel_collect.otel_cache_path(cache_dir, month).name
+            reason = (f"{otel_collect.OTEL_CACHE_DIRNAME}/{filename} を開けません"
+                      "（権限とファイルの状態を確かめてください）")
+        return [_issue(
+            Severity.WARNING, IssueCode.OTEL_COVERAGE_UNAVAILABLE,
+            f"OpenTelemetry のキャッシュを読めないため、届いている割合を確かめられません: {reason}",
+            org, month, reason="cache_unreadable",
+        )]
+    if cache is None:
+        return []
+    settings = cfg["otel"]
+    products = settings["coverage_products"]
+    warning_ratio = settings["coverage_warning_ratio"]
+    coverage = otel_coverage(spends, cache, products, warning_ratio,
+                             settings["coverage_min_output_tokens"])
+    return _otel_coverage_issues(coverage, org, products, warning_ratio)
 
 
 def workspace_config_issues(cfg: dict, orgs: Iterable[str]) -> list[QualityIssue]:

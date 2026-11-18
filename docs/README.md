@@ -6,8 +6,8 @@ claude-team-cost-optimizer のドキュメント一覧。ツールの概要と�
 ## 利用者向け
 
 - [setup.md](./setup.md) — ゼロから動く状態にするまでのセットアップ手順（Claude Code に実行させる形式）、claude.ai からの CSV 取得の設定、定期実行の雛形（macOS）、OpenTelemetry の取得の設定
-- [usage.md](./usage.md) — 入力データの構成、複数スペースの組織、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、claude.ai からの CSV 取得、OpenTelemetry の集計の取得、速報モード
-- [reference.md](./reference.md) — レポート各セクションと複数スペースの組織の読み方、人 × 月・チーム × 月の表の列と adoption-report の読み方、追加クレジットの上限、GitHub 分析の有効化、claude.ai からの CSV 取得の設定、OpenTelemetry の取得の設定とキャッシュ、判定ロジックの前提、判定の版と移行
+- [usage.md](./usage.md) — 入力データの構成、複数スペースの組織、CSV のエクスポート手順、月次運用、GitHub の PR メタデータの収集、claude.ai からの CSV 取得、OpenTelemetry の集計の取得と割合の検査、速報モード
+- [reference.md](./reference.md) — レポート各セクションと複数スペースの組織の読み方、人 × 月・チーム × 月の表の列と adoption-report の読み方、追加クレジットの上限、GitHub 分析の有効化、claude.ai からの CSV 取得の設定、OpenTelemetry の取得の設定・キャッシュ・割合の検査、判定ロジックの前提、判定の版と移行
 - [tooling.md](./tooling.md) — 考察の自動執筆（`discuss`）と公開テキストの検査（`check-text`）
 
 ## 保守者向け
