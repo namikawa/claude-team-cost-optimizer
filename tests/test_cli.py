@@ -19,6 +19,7 @@ from seat_analyzer import (
     adoption,
     analyze,
     claude_export,
+    data_quality,
     decision_evidence,
     github_collect,
     ingest,
@@ -56,6 +57,12 @@ from seat_analyzer.report import (
 from seat_analyzer.report.format import _fmt_usd
 
 from .conftest import CONFIG, REPO_ROOT, SPEND_HEADER, out_file, spend_row
+from .test_data_quality import (
+    _api_request,
+    _coverage_spend_row,
+    _unexpected_otel_call,
+    _write_coverage_cache,
+)
 from .test_decision_evidence import _with_uuid, _write_info
 from .test_otel_collect import NOW, fixture, renumber, reply, result_rows, stub
 
@@ -5510,3 +5517,140 @@ def test_otel_cli_excluded_only_warning(make_input, tmp_path, monkeypatch, capsy
 def test_otel_byte_size(value, expected):
     """単位の境界と大きな上限も小数1桁で表示する。"""
     assert _byte_size(value) == expected
+
+
+# --- doctor の OpenTelemetry の検査 ---
+
+
+@pytest.fixture
+def otel_doctor(tmp_path, monkeypatch):
+    """合成の取得元を設定し、網羅率の検査中に bq へ出ないことも確かめる。"""
+    monkeypatch.setattr(otel_collect, "run_bq", _unexpected_otel_call)
+
+    def run(input_dir, *extra, enabled=True, nested=False):
+        path = Path(_otel_cli_config(tmp_path, enabled=enabled, nested=nested))
+        if nested:
+            config = yaml.safe_load(path.read_text(encoding="utf-8"))
+            config["organizations"]["org-a"]["workspaces"]["second"] = {}
+            path.write_text(yaml.safe_dump(config), encoding="utf-8", newline="\n")
+        return _doctor_with(str(path), input_dir, "--org", "org-a", "--month", "2026-10", *extra)
+
+    return run
+
+
+def _otel_doctor_input(make_input, output=200000, *, workspace=None, month="2026-10"):
+    """対象の出力トークンを指定した spend と同じ月の members を置く。"""
+    email = "alice@example.com"
+    return make_input({month: [_coverage_spend_row(email, output)]},
+                      members=[f"{email},Premium"], members_month=month,
+                      org="org-a", workspace=workspace)
+
+
+def test_doctor_does_not_inspect_otel_without_the_config(
+    make_input, otel_doctor, monkeypatch, capsys,
+):
+    """未設定の組織は検査を呼ばず、キャッシュの有無で出力が変わらない。"""
+    input_dir = _otel_doctor_input(make_input)
+    monkeypatch.setattr(data_quality, "inspect_otel", _unexpected_otel_call)
+
+    assert otel_doctor(input_dir, "--format", "json", enabled=False) == 0
+    before = capsys.readouterr()
+    _write_coverage_cache(input_dir / "org-a", _api_request("alice@example.com", 100000))
+    assert otel_doctor(input_dir, "--format", "json", enabled=False) == 0
+    after = capsys.readouterr()
+    assert after == before
+    assert not any(issue["code"].startswith("OTEL_") for issue in json.loads(after.out))
+
+
+def test_doctor_reports_otel_warning_in_org_text_and_json(make_input, otel_doctor, capsys):
+    """割合の警告を組織の節と JSON に出し、警告だけなら終了コードは 0。"""
+    input_dir = _otel_doctor_input(make_input)
+    _write_coverage_cache(input_dir / "org-a", _api_request("alice@example.com", 100000))
+
+    assert otel_doctor(input_dir) == 0
+    captured = capsys.readouterr()
+    section = captured.out.split("=== org-a 2026-10 入力検査 ===")[1]
+    assert "[warning] OTEL_COVERAGE_LOW: " in section
+
+    assert otel_doctor(input_dir, "--format", "json") == 0
+    issue, = json.loads(capsys.readouterr().out)
+    assert (issue["code"], issue["severity"]) == ("OTEL_COVERAGE_LOW", "warning")
+    assert issue["scope"]["org"] == "org-a"
+    assert issue["scope"]["month"] == "2026-10"
+    assert issue["scope"]["ratios"] == [0.5]
+
+
+def test_doctor_otel_has_no_warning_for_uncached_month(make_input, otel_doctor, capsys):
+    """有効にした組織でも、対象月のキャッシュが無ければ OpenTelemetry の issue は出ない。"""
+    input_dir = _otel_doctor_input(make_input)
+    assert otel_doctor(input_dir, "--format", "json") == 0
+    assert not any(issue["code"].startswith("OTEL_")
+                   for issue in json.loads(capsys.readouterr().out))
+
+
+def test_doctor_otel_combines_started_workspaces(make_input, otel_doctor, capsys):
+    """同じ人の workspace ごとの出力を足して、組織の警告へ写す。"""
+    input_dir = _otel_doctor_input(make_input, 100000, workspace="main")
+    _otel_doctor_input(make_input, 100000, workspace="second")
+    _write_coverage_cache(input_dir / "org-a", _api_request("alice@example.com", 100000))
+
+    assert otel_doctor(input_dir, "--format", "json", nested=True) == 0
+    issue, = [issue for issue in json.loads(capsys.readouterr().out)
+              if issue["code"] == "OTEL_COVERAGE_LOW"]
+    assert issue["scope"]["ratios"] == [0.5]
+    assert "workspace" not in issue["scope"]
+
+
+def test_doctor_otel_skips_organization_with_workspace_mismatch(
+    make_input, otel_doctor, monkeypatch, capsys,
+):
+    """設定にある workspace が欠けていれば、残りの spend だけで比を計算しない。"""
+    input_dir = _otel_doctor_input(make_input, workspace="main")
+    _write_coverage_cache(input_dir / "org-a", _api_request("alice@example.com", 100000))
+    monkeypatch.setattr(data_quality, "inspect_otel", _unexpected_otel_call)
+
+    assert otel_doctor(input_dir, "--format", "json", nested=True) == 1
+    codes = {issue["code"] for issue in json.loads(capsys.readouterr().out)}
+    assert "WORKSPACE_CONFIG_MISMATCH" in codes
+    assert not any(code.startswith("OTEL_") for code in codes)
+
+
+def test_doctor_otel_ignores_unstarted_workspace(make_input, otel_doctor, capsys):
+    """対象月より後に始まる workspace を除き、残りの spend で検査する。"""
+    input_dir = _otel_doctor_input(make_input, workspace="main")
+    _otel_doctor_input(make_input, workspace="second", month="2026-11")
+    _write_coverage_cache(input_dir / "org-a", _api_request("alice@example.com", 100000))
+
+    assert otel_doctor(input_dir, "--format", "json", nested=True) == 0
+    issues = {issue["code"]: issue for issue in json.loads(capsys.readouterr().out)}
+    assert issues["MISSING_SPEND"]["scope"]["workspace"] == "second"
+    assert issues["OTEL_COVERAGE_LOW"]["scope"]["ratios"] == [0.5]
+
+
+def test_doctor_otel_passes_workspace_with_uncertain_start(
+    make_input, otel_doctor, monkeypatch, capsys,
+):
+    """開始を確認できなかった workspace も網羅率の検査に渡す。"""
+    input_dir = _otel_doctor_input(make_input, workspace="main")
+    _otel_doctor_input(make_input, workspace="second")
+    original_started = ingest.workspace_started
+    original_spend = ingest.load_spend
+
+    def workspace_started(directory, month):
+        if directory.name == "second":
+            raise ValueError("spend の期間が不明")
+        return original_started(directory, month)
+
+    def load_spend(directory, *args, **kwargs):
+        if directory.name == "second":
+            raise ValueError("spend の期間が不明")
+        return original_spend(directory, *args, **kwargs)
+
+    monkeypatch.setattr(ingest, "workspace_started", workspace_started)
+    monkeypatch.setattr(ingest, "load_spend", load_spend)
+    _write_coverage_cache(input_dir / "org-a", _api_request("alice@example.com", 100000))
+
+    assert otel_doctor(input_dir, "--format", "json", nested=True) == 1
+    codes = {issue["code"] for issue in json.loads(capsys.readouterr().out)}
+    assert "MISSING_SPEND" in codes
+    assert not any(code.startswith("OTEL_") for code in codes)

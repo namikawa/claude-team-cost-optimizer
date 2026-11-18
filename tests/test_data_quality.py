@@ -3,18 +3,23 @@ import json
 import random
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
+from seat_analyzer import ingest, otel_collect
 from seat_analyzer.cli import main
 from seat_analyzer.data_quality import (
+    OtelCoverageStatus,
     _reason,
     github_config_issues,
     inspect_github,
     inspect_input,
+    inspect_otel,
     issue_to_dict,
     issues_to_canonical_json,
     issues_to_json,
     members_info_issues,
+    otel_coverage,
     person_issues,
     sort_issues,
     workspace_config_issues,
@@ -24,6 +29,7 @@ from seat_analyzer.domain import IssueCode, QualityIssue, Severity
 from seat_analyzer.github_collect import GhFailure, GhResult, probe_github
 
 from .conftest import CONFIG, SPEND_HEADER, requires_symlink, spend_row
+from .test_otel_collect import MONTH as OTEL_MONTH, NOW, TARGET
 
 EXPECTED_CODES = {
     # 入力
@@ -65,6 +71,10 @@ EXPECTED_CODES = {
     "GH_RATE_LIMITED",
     "GH_PARTIAL_RESULT",
     "GITHUB_CONFIG_UNMATCHED",
+    # OpenTelemetry
+    "OTEL_COVERAGE_LOW",
+    "OTEL_USER_MISSING",
+    "OTEL_COVERAGE_UNAVAILABLE",
     # Policy
     "PROHIBITED_PRODUCT_OBSERVED",
     "CAPACITY_SIGNAL_UNAVAILABLE",
@@ -75,8 +85,8 @@ def test_issue_code_vocabulary_is_fixed():
     # __members__はaliasも列挙するため、別名の紛れ込みも検出できる
     members = IssueCode.__members__
     assert set(members) == EXPECTED_CODES
-    assert len(members) == 35
-    assert len(EXPECTED_CODES) == 35
+    assert len(members) == 38
+    assert len(EXPECTED_CODES) == 38
 
 
 def test_issue_code_value_equals_name():
@@ -1374,3 +1384,538 @@ def test_doctor_defaults_to_v2_partial_month_and_gap_notes(make_input, capsys):
     gap, = [i for i in issues if i["code"] == "MISSING_HISTORY_MONTH"]
     assert "欠月より前の月は判定の履歴に入らない" in gap["message"]
     assert "要観察（データ蓄積待ち）" in gap["message"]
+
+
+# --- OpenTelemetry の網羅率 ---
+
+_COVERAGE_PRODUCTS = ("Claude Code", "Cowork")
+_ALICE = "alice@example.com"
+
+
+def _coverage_spend_row(email, output, product="Claude Code"):
+    """費用から逆算せず、出力トークンと product を指定した spend の行を作る。"""
+    row = {
+        "Email": email, "Account UUID": "uuid-x", "Product": product,
+        "Model": "claude-sonnet-4-6", "Model Family": "claude-sonnet",
+        "Request Count": 10, "Prompt Tokens": 3000, "Completion Tokens": output,
+        "Total Gross Spend USD": 1.0, "Total Net Spend USD": 1.0,
+    }
+    return ",".join(str(row[column]) for column in SPEND_HEADER.split(","))
+
+
+def _coverage_spend_frame(*rows, month=OTEL_MONTH):
+    """load_spend が返す形の明細を組み立てる。"""
+    frame = pd.DataFrame(rows, columns=["email", "product", "completion_tokens"])
+    return frame.assign(month=month)
+
+
+def _api_request(email, output, day="01"):
+    """出力トークンを指定して、読み戻せる api_request の行を作る。"""
+    attrs = {
+        "terminal": "interactive", "model": "claude-sonnet-4-6", "origin": "main", "effort": "none",
+        "agent": False, "skill": False, "mcp": False, "plugin": False,
+    }
+    return otel_collect.EventRow(email, f"{OTEL_MONTH}-{day}", "api_request",
+                                 tuple(sorted(attrs.items())), 3, 11, output, 17, 19)
+
+
+def _coverage_cache(*rows, absent=(), sessions=()):
+    """組織・月・取得元を固定し、イベントと除外の件数をそろえる。"""
+    return otel_collect.OtelCache(
+        "org-a", OTEL_MONTH, TARGET.source, TARGET.organization_ids, sum(row.count for row in rows),
+        tuple((kind, 0) for kind in otel_collect.EXCLUDED_KINDS), absent, 100,
+        NOW.strftime("%Y-%m-%dT%H:%M:%SZ"), rows, sessions,
+    )
+
+
+def _write_coverage_cache(directory, *rows, absent=()):
+    """実際の書き込み経路で、読み戻しできる合成キャッシュを置く。"""
+    path = otel_collect.otel_cache_path(directory / otel_collect.OTEL_CACHE_DIRNAME, OTEL_MONTH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    otel_collect._write_cache(path, _coverage_cache(*rows, absent=absent))
+    return path
+
+
+@pytest.mark.parametrize(("rows", "output", "status", "spend", "ratio"), [
+    pytest.param([("Claude Code", 200000)], 190000, OtelCoverageStatus.OK, 200000, 0.95,
+                 id="enough"),
+    pytest.param([("Claude Code", 200000)], 140000, OtelCoverageStatus.OK, 200000, 0.7,
+                 id="exact-ratio"),
+    pytest.param([("Claude Code", 200000)], 139999, OtelCoverageStatus.LOW, 200000, 0.699995,
+                 id="below-ratio"),
+    pytest.param([("Claude Code", 200000)], None, OtelCoverageStatus.MISSING, 200000, 0.0,
+                 id="no-events"),
+    pytest.param([("Claude Code", 100000)], 0, OtelCoverageStatus.LOW, 100000, 0.0,
+                 id="exact-minimum"),
+    pytest.param([("Claude Code", 99999)], None, OtelCoverageStatus.NOT_JUDGED, 99999, None,
+                 id="below-minimum"),
+    pytest.param([("Chat", 200000)], None, OtelCoverageStatus.NOT_JUDGED, 0, None,
+                 id="chat-only"),
+    pytest.param([], 5000, OtelCoverageStatus.NOT_JUDGED, 0, None, id="cache-only"),
+    pytest.param([("Claude Code", 100000)], 150000, OtelCoverageStatus.OK, 100000, 1.5,
+                 id="above-one"),
+    pytest.param([("Claude Code", 200000), ("", 10)], 200000, OtelCoverageStatus.UNKNOWN,
+                 None, None, id="empty-product"),
+    pytest.param([("Claude Code", 200000), ("  ", 10)], 200000, OtelCoverageStatus.UNKNOWN,
+                 None, None, id="blank-product"),
+    pytest.param([("Claude Code", 200000), (None, 10)], 200000, OtelCoverageStatus.UNKNOWN,
+                 None, None, id="missing-product"),
+    pytest.param([("Claude Code", 200000), ("Claude Code", None)], 200000,
+                 OtelCoverageStatus.UNKNOWN, None, None, id="unreadable-target"),
+    pytest.param([("Claude Code", 200000), ("Chat", None)], 200000,
+                 OtelCoverageStatus.OK, 200000, 1.0, id="unreadable-other"),
+    pytest.param([("Chat", None)], None, OtelCoverageStatus.NOT_JUDGED, 0, None,
+                 id="unreadable-chat-only"),
+])
+def test_otel_coverage_classifies_user(rows, output, status, spend, ratio):
+    """人の状態は出力トークンとイベントの有無に応じ、境界を含めて排他的に決まる。"""
+    frame = _coverage_spend_frame(*[(_ALICE, *row) for row in rows])
+    events = () if output is None else (_api_request(_ALICE, output),)
+    result = otel_coverage([frame], _coverage_cache(*events), _COVERAGE_PRODUCTS, 0.7, 100000)
+    assert result.month == OTEL_MONTH
+    assert result.output_tokens_absent is False
+    user, = result.users
+    assert user.email == _ALICE
+    assert user.status is status
+    assert user.spend_output_tokens == spend
+    assert user.otel_output_tokens == (0 if output is None else output)
+    assert user.ratio == ratio
+
+
+def test_otel_coverage_uses_events_for_presence_and_api_requests_for_tokens():
+    """tool_decision は観測を示し、sessions だけではイベントが届いたと扱わない。"""
+    bob = "bob@example.com"
+    frame = _coverage_spend_frame((_ALICE, "Claude Code", 200000), (bob, "Claude Code", 200000))
+    tool = otel_collect.EventRow(_ALICE, f"{OTEL_MONTH}-01", "tool_decision", (), 7)
+    session = otel_collect.SessionRow(bob, f"{OTEL_MONTH}-01", "interactive", 4)
+    session_only = otel_collect.SessionRow(
+        "carol@example.com", f"{OTEL_MONTH}-01", "interactive", 4,
+    )
+    result = otel_coverage([frame], _coverage_cache(tool, sessions=(session, session_only)),
+                           _COVERAGE_PRODUCTS, 0.7, 100000)
+    alice, bob_user = result.users
+    assert alice.status is OtelCoverageStatus.LOW
+    assert alice.otel_output_tokens == 0
+    assert alice.ratio == 0.0
+    assert bob_user.status is OtelCoverageStatus.MISSING
+
+
+def test_otel_coverage_uses_configured_products_and_normalizes_names():
+    """既定は Claude Code と Cowork を数え、対象名の表記ゆれを吸収する。"""
+    frame = _coverage_spend_frame((_ALICE, " claude code ", 100000),
+                                  (_ALICE, "Cowork", 100000), (_ALICE, "Chat", 300000))
+    cache = _coverage_cache(_api_request(_ALICE, 150000))
+    both = otel_coverage([frame], cache, _COVERAGE_PRODUCTS, 0.7, 100000)
+    code = otel_coverage([frame], cache, ("Claude Code",), 0.7, 100000)
+    assert both.users[0].status is OtelCoverageStatus.OK
+    assert both.users[0].spend_output_tokens == 200000
+    assert both.users[0].ratio == 0.75
+    assert code.users[0].spend_output_tokens == 100000
+    assert code.users[0].ratio == 1.5
+
+
+def test_otel_coverage_combines_workspaces_and_normalizes_email():
+    """表記違いのメールを同一人へそろえ、明細とイベントの順序によらず合算する。"""
+    bob = "bob@example.com"
+    first = _coverage_spend_frame((bob, "Claude Code", 200000),
+                                  (" ALICE@example.com ", "Claude Code", 100000),
+                                  ("org-service", "Claude Code", 900000))
+    second = _coverage_spend_frame((_ALICE, "Cowork", 100000))
+    rows = (_api_request(bob, 200000), _api_request(_ALICE, 80000, "02"),
+            _api_request(" Alice@Example.com ", 70000))
+    result = otel_coverage([first, second], _coverage_cache(*rows),
+                           _COVERAGE_PRODUCTS, 0.7, 100000)
+    reversed_result = otel_coverage([second, first.iloc[::-1]], _coverage_cache(*reversed(rows)),
+                                    _COVERAGE_PRODUCTS, 0.7, 100000)
+    assert result == reversed_result
+    assert tuple(user.email for user in result.users) == (_ALICE, bob)
+    assert result.users[0].status is OtelCoverageStatus.OK
+    assert result.users[0].spend_output_tokens == 200000
+    assert result.users[0].otel_output_tokens == 150000
+    assert result.users[0].ratio == 0.75
+    assert result.spend_output_tokens == 400000
+    assert result.otel_output_tokens == 350000
+    assert result.ratio == 0.875
+
+
+def test_otel_coverage_missing_product_column_only_affects_users_in_that_frame():
+    """product 列が無い明細の利用者は、別の明細に対象 product の行があっても判定不能になる。"""
+    bob, carol = "bob@example.com", "carol@example.com"
+    first = _coverage_spend_frame((_ALICE, "Claude Code", 200000), (bob, "Claude Code", 200000))
+    second = _coverage_spend_frame((_ALICE, "", 1), (carol, "", 100000)).drop(columns="product")
+    cache = _coverage_cache(*[_api_request(email, 200000) for email in (_ALICE, bob, carol)])
+    result = otel_coverage([first, second], cache, _COVERAGE_PRODUCTS, 0.7, 100000)
+    alice, bob_user, carol_user = result.users
+    assert alice.status is OtelCoverageStatus.UNKNOWN
+    assert alice.spend_output_tokens is None
+    assert bob_user.status is OtelCoverageStatus.OK
+    assert carol_user.status is OtelCoverageStatus.UNKNOWN
+    assert carol_user.spend_output_tokens is None
+    assert result.spend_output_tokens == result.otel_output_tokens == 200000
+    assert result.ratio == 1.0
+
+
+def test_otel_coverage_absent_output_marks_all_users_unknown():
+    """出力トークン属性が無い場合はキャッシュだけにいる人も含めて判定不能になる。"""
+    frame = _coverage_spend_frame((_ALICE, "Claude Code", 200000))
+    cache = _coverage_cache(_api_request("bob@example.com", 0), absent=("output_tokens",))
+    result = otel_coverage([frame], cache, _COVERAGE_PRODUCTS, 0.7, 100000)
+    assert result.output_tokens_absent is True
+    assert len(result.users) == 2
+    for user in result.users:
+        assert user.status is OtelCoverageStatus.UNKNOWN
+        assert user.spend_output_tokens is user.otel_output_tokens is user.ratio is None
+    assert result.spend_output_tokens == result.otel_output_tokens == 0
+    assert result.ratio is None
+
+
+def test_otel_coverage_organization_uses_same_users_for_both_totals():
+    """spend にいる出力が正の人だけを、判定下限にかかわらず組織合計に含める。"""
+    bob = "bob@example.com"
+    frame = _coverage_spend_frame((_ALICE, "Claude Code", 200000))
+    cache = _coverage_cache(_api_request(bob, 200000))
+    result = otel_coverage([frame], cache, _COVERAGE_PRODUCTS, 0.7, 100000)
+    assert result.users[0].status is OtelCoverageStatus.MISSING
+    assert result.users[1].status is OtelCoverageStatus.NOT_JUDGED
+    assert result.spend_output_tokens == 200000
+    assert result.otel_output_tokens == 0
+    assert result.ratio == 0.0
+
+    frame = _coverage_spend_frame((bob, "Claude Code", 50000))
+    result = otel_coverage([frame], cache, _COVERAGE_PRODUCTS, 0.7, 100000)
+    assert result.users[0].status is OtelCoverageStatus.NOT_JUDGED
+    assert result.spend_output_tokens == 50000
+    assert result.otel_output_tokens == 200000
+    assert result.ratio == 4.0
+
+
+def test_otel_coverage_with_no_eligible_spend_has_no_organization_ratio():
+    """判定不能の利用とキャッシュにだけある利用では組織の比を計算しない。"""
+    frame = _coverage_spend_frame((_ALICE, "", 200000))
+    cache = _coverage_cache(_api_request(_ALICE, 200000), _api_request("bob@example.com", 200000))
+    result = otel_coverage([frame], cache, _COVERAGE_PRODUCTS, 0.7, 100000)
+    assert result.spend_output_tokens == result.otel_output_tokens == 0
+    assert result.ratio is None
+
+
+def test_otel_coverage_minimum_zero_skips_only_zero_spend():
+    """下限が 0 のときも出力が 0 なら比を出さず、出力が 1 なら判定する。"""
+    bob = "bob@example.com"
+    frame = _coverage_spend_frame((_ALICE, "Claude Code", 0), (bob, "Claude Code", 1))
+    cache = _coverage_cache(_api_request(_ALICE, 1), _api_request(bob, 1))
+    result = otel_coverage([frame], cache, _COVERAGE_PRODUCTS, 0.7, 0)
+    alice, bob_user = result.users
+    assert alice.status is OtelCoverageStatus.NOT_JUDGED
+    assert alice.ratio is None
+    assert bob_user.status is OtelCoverageStatus.OK
+    assert bob_user.ratio == 1.0
+
+
+def test_otel_coverage_requires_expected_argument_types():
+    """キャッシュと各明細が期待する型でなければ TypeError にする。"""
+    with pytest.raises(TypeError, match="OtelCache"):
+        otel_coverage([], {}, _COVERAGE_PRODUCTS, 0.7, 100000)
+    with pytest.raises(TypeError, match="DataFrame"):
+        otel_coverage([{}], _coverage_cache(), _COVERAGE_PRODUCTS, 0.7, 100000)
+
+
+@pytest.mark.parametrize("column", ["email", "completion_tokens", "month"])
+def test_otel_coverage_requires_spend_columns(column):
+    """純粋関数が使う spend の列が無ければ ValueError にする。"""
+    frame = _coverage_spend_frame().drop(columns=column)
+    with pytest.raises(ValueError, match=column):
+        otel_coverage([frame], _coverage_cache(), _COVERAGE_PRODUCTS, 0.7, 100000)
+
+
+@pytest.mark.parametrize("other_month", ["2026-11", pd.NA])
+def test_otel_coverage_rejects_wrong_spend_month(other_month):
+    """別月や月不明の行が混ざる明細は ValueError にする。"""
+    frame = _coverage_spend_frame((_ALICE, "Claude Code", 100000), month=OTEL_MONTH)
+    frame = pd.concat([frame, frame.assign(month=other_month)], ignore_index=True)
+    with pytest.raises(ValueError, match="キャッシュと異なる月"):
+        otel_coverage([frame], _coverage_cache(), _COVERAGE_PRODUCTS, 0.7, 100000)
+
+
+def test_otel_coverage_accepts_empty_spend_frame():
+    """必須列を持つ空の明細はキャッシュの月に使える。"""
+    result = otel_coverage([_coverage_spend_frame()], _coverage_cache(),
+                           _COVERAGE_PRODUCTS, 0.7, 100000)
+    assert result.users == ()
+    assert result.ratio is None
+
+
+def _unexpected_otel_call(*_args, **_kwargs):
+    pytest.fail("この経路からは呼ばれません")
+
+
+@pytest.fixture
+def inspect_otel_month(cfg, monkeypatch):
+    """ローカル入力だけで、組織と月を固定して網羅率を検査する。"""
+    monkeypatch.setattr(otel_collect, "run_bq", _unexpected_otel_call)
+
+    def inspect(directory, *workspaces):
+        return inspect_otel(directory, OTEL_MONTH, cfg, "org-a", TARGET, workspaces or [directory])
+
+    return inspect
+
+
+def test_inspect_otel_has_no_issue_without_cache(make_input, inspect_otel_month):
+    """spend が全月でも、キャッシュが無ければ issue を出さない。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
+    assert inspect_otel_month(root) == []
+
+
+@pytest.mark.parametrize(("filename", "judged"), [
+    ("spend-2026-10-01-to-2026-10-15.csv", False),
+    ("spend-2026-10-15.csv", False),
+    ("spend_2026-10.csv", True),
+    ("spend-2026-10-01-to-2026-10-31.csv", True),
+])
+def test_inspect_otel_requires_full_month_spend(make_snapshots, inspect_otel_month, filename,
+                                                judged):
+    """期間が全月か月のみの命名の spend でだけ網羅率を検査する。"""
+    root = make_snapshots(
+        OTEL_MONTH, {}, extra_files={filename: [_coverage_spend_row(_ALICE, 200000)]},
+    )
+    _write_coverage_cache(root)
+    issues = inspect_otel_month(root)
+    if judged:
+        issue, = issues
+        assert issue.code is IssueCode.OTEL_USER_MISSING
+    else:
+        assert issues == []
+
+
+@pytest.mark.parametrize("second_state", ["missing", "partial", "full"])
+def test_inspect_otel_requires_all_workspace_inputs(make_input, inspect_otel_month, second_state):
+    """各 workspace が全月であることを求め、そろえば組織の spend を合算する。"""
+    row = _coverage_spend_row(_ALICE, 100000)
+    root = make_input({OTEL_MONTH: [row]}, org="org-a", workspace="main") / "org-a"
+    make_input({"2026-09" if second_state == "missing" else OTEL_MONTH: [row]},
+               org="org-a", workspace="second")
+    second = root / "second"
+    if second_state == "partial":
+        spend = second / "spend" / f"spend_{OTEL_MONTH}.csv"
+        spend.rename(spend.with_name("spend-2026-10-01-to-2026-10-15.csv"))
+    _write_coverage_cache(root, _api_request(_ALICE, 100000))
+    issues = inspect_otel_month(root, root / "main", second)
+    if second_state == "full":
+        issue, = issues
+        assert issue.code is IssueCode.OTEL_COVERAGE_LOW
+        assert issue.scope["ratios"] == (0.5,)
+    else:
+        assert issues == []
+
+
+def test_inspect_otel_checks_spend_before_cache(make_snapshots, inspect_otel_month):
+    """部分月で止める場合は壊れたキャッシュについても issue を出さない。"""
+    root = make_snapshots(OTEL_MONTH, {"2026-10-15": [_coverage_spend_row(_ALICE, 200000)]})
+    path = _write_coverage_cache(root)
+    path.write_text("{", encoding="utf-8", newline="\n")
+    assert inspect_otel_month(root) == []
+
+
+def test_inspect_otel_skips_unreadable_or_unconfirmed_spend(
+    cfg, make_input, inspect_otel_month, monkeypatch,
+):
+    """spend が読めない場合やファイルの期間を得られない場合は検査を保留する。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
+    _write_coverage_cache(root)
+
+    for failure in (ValueError("spend"), OSError("spend")):
+        def unreadable(*_args, exc=failure):
+            raise exc
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ingest, "load_spend", unreadable)
+            assert inspect_otel_month(root) == []
+
+    result = ingest.load_spend(root, OTEL_MONTH, cfg)
+    monkeypatch.setattr(ingest, "load_spend",
+                        lambda *_: dataclasses.replace(result, source=Path("unknown.csv")))
+    assert inspect_otel_month(root) == []
+
+
+@pytest.mark.parametrize("damage", ["json", "organization_ids", "schema"])
+def test_inspect_otel_reports_unreadable_cache(make_input, inspect_otel_month, damage):
+    """JSON・UUID・schema が不正なキャッシュを、相対パスで取り直すように伝える。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
+    path = _write_coverage_cache(root)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if damage == "json":
+        body = "{"
+    else:
+        payload[damage] = (
+            ["00000000-0000-4000-8000-000000000002"] if damage == "organization_ids" else 2
+        )
+        body = json.dumps(payload)
+    path.write_text(body, encoding="utf-8", newline="\n")
+
+    issue, = inspect_otel_month(root)
+    assert issue.code is IssueCode.OTEL_COVERAGE_UNAVAILABLE
+    assert issue.severity is Severity.WARNING
+    assert dict(issue.scope) == {"org": "org-a", "month": OTEL_MONTH, "reason": "cache_unreadable"}
+    assert str(root.parent) not in issue.message
+    assert "otel-2026-10.json: キャッシュを読めません" in issue.message
+    assert "collect --source otel" in issue.message
+
+
+def test_inspect_otel_preserves_relative_cache_path(make_input, inspect_otel_month, monkeypatch):
+    """相対指定されたキャッシュの例外は相対の表記を保つ。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
+    _write_coverage_cache(root).write_text("{", encoding="utf-8", newline="\n")
+    monkeypatch.chdir(root.parent)
+    issue, = inspect_otel_month(Path(root.name))
+    assert f"{Path(root.name) / 'otel-cache' / 'otel-2026-10.json'}:" in issue.message
+    assert str(root.parent) not in issue.message
+
+
+def test_inspect_otel_reports_cache_permission_error_without_os_path(
+    make_input, inspect_otel_month, monkeypatch,
+):
+    """キャッシュを開けない文は権限と相対名を伝え、入力の置き場所で変わらない。"""
+    for org_dir in ("first/org-a", "second/org-a"):
+        root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]}, org=org_dir)
+
+    def permission_error(cache_dir, month, *_args):
+        path = otel_collect.otel_cache_path(cache_dir, month)
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(otel_collect, "load_otel_cache", permission_error)
+    issue, = inspect_otel_month(root / "first" / "org-a")
+    other, = inspect_otel_month(root / "second" / "org-a")
+    assert issue.code is IssueCode.OTEL_COVERAGE_UNAVAILABLE
+    assert issue.scope["reason"] == "cache_unreadable"
+    assert "otel-cache/otel-2026-10.json を開けません" in issue.message
+    assert issue == other
+
+
+def test_inspect_otel_reports_only_absent_output_warning(make_input, inspect_otel_month):
+    """出力トークン属性が無い月は、人別の状態にかかわらず理由を1件だけ伝える。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000),
+                               _coverage_spend_row("bob@example.com", 200000, "")]})
+    _write_coverage_cache(root, _api_request(_ALICE, 0), absent=("output_tokens",))
+    issue, = inspect_otel_month(root)
+    assert issue.code is IssueCode.OTEL_COVERAGE_UNAVAILABLE
+    assert issue.severity is Severity.WARNING
+    assert dict(issue.scope) == {
+        "org": "org-a", "month": OTEL_MONTH, "reason": "output_tokens_absent",
+    }
+
+
+def test_inspect_otel_groups_warnings_with_deterministic_examples(make_input, inspect_otel_month):
+    """3種の警告だけを整列し、例の順と組織の比を message と scope でそろえる。"""
+    root = make_input({OTEL_MONTH: [
+        _coverage_spend_row(_ALICE, 200000), _coverage_spend_row("bob@example.com", 200000),
+        _coverage_spend_row("carol@example.com", 200000),
+        _coverage_spend_row("dave@example.com", 200000, " "),
+        _coverage_spend_row("ed@example.com", 200000),
+        _coverage_spend_row("fay@example.com", 10000), _coverage_spend_row("dave@example.com", "x"),
+    ]})
+    _write_coverage_cache(root, _api_request(_ALICE, 120000),
+                          _api_request("bob@example.com", 100000),
+                          _api_request("ed@example.com", 200000),
+                          _api_request("dave@example.com", 200000))
+    issues = inspect_otel_month(root)
+    assert issues == inspect_otel_month(root) == sort_issues(issues)
+    low, unavailable, missing = issues
+    assert low.code is IssueCode.OTEL_COVERAGE_LOW
+    assert unavailable.code is IssueCode.OTEL_COVERAGE_UNAVAILABLE
+    assert missing.code is IssueCode.OTEL_USER_MISSING
+    assert all(issue.severity is Severity.WARNING for issue in issues)
+    assert dict(low.scope) == {
+        "org": "org-a", "month": OTEL_MONTH, "users": 2, "emails": ("bob@example.com", _ALICE),
+        "ratios": (0.5, 0.6), "warning_ratio": 0.7, "organization_ratio": 0.51,
+    }
+    assert "bob@example.com（0.50）, alice@example.com（0.60）" in low.message
+    assert "組織全体の比は 0.51" in low.message
+    assert "Claude Code・Cowork" in low.message
+    assert dict(unavailable.scope) == {
+        "org": "org-a", "month": OTEL_MONTH, "reason": "spend_rows_unreadable",
+        "users": 1, "emails": ("dave@example.com",),
+    }
+    assert dict(missing.scope) == {
+        "org": "org-a", "month": OTEL_MONTH, "users": 1, "emails": ("carol@example.com",),
+        "organization_ratio": 0.51,
+    }
+    for issue in issues:
+        assert tuple(issue.scope)[:2] == ("org", "month")
+        assert "ed@example.com" not in issue.message
+        assert "fay@example.com" not in issue.message
+
+
+@pytest.mark.parametrize(("output", "display"), [(139999, 0.69), (114000, 0.57)])
+def test_inspect_otel_truncates_ratios_from_token_totals(make_input, inspect_otel_month,
+                                                         output, display):
+    """比の表示は四捨五入をせず、浮動小数の積による 0.01 のずれも避ける。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
+    _write_coverage_cache(root, _api_request(_ALICE, output))
+    issue, = inspect_otel_month(root)
+    assert issue.code is IssueCode.OTEL_COVERAGE_LOW
+    assert issue.scope["ratios"] == (display,)
+    assert issue.scope["organization_ratio"] == display
+    assert f"{_ALICE}（{display:.2f}）" in issue.message
+    assert f"組織全体の比は {display:.2f}" in issue.message
+    assert "0.70" not in issue.message
+
+
+def test_inspect_otel_examples_use_unrounded_ratios_and_limit(make_input, inspect_otel_month):
+    """例は切り捨て前の比と email で並べて5人まで載せ、人数は全員を数える。"""
+    emails = tuple(f"{letter}@example.com" for letter in "abcdef")
+    root = make_input({
+        OTEL_MONTH: [_coverage_spend_row(email, 200000) for email in reversed(emails)],
+    })
+    outputs = (119999, 118000, 117000, 116000, 116000, 100000)
+    _write_coverage_cache(root, *[_api_request(email, output)
+                                  for email, output in zip(emails, outputs)])
+    issue, = inspect_otel_month(root)
+    assert issue.code is IssueCode.OTEL_COVERAGE_LOW
+    assert issue.scope["users"] == 6
+    assert issue.scope["emails"] == tuple(emails[index] for index in (5, 3, 4, 2, 1))
+    assert emails[0] not in issue.message
+
+
+def test_inspect_otel_uses_configured_warning_ratio(cfg, make_input, inspect_otel_month):
+    """同じ比でも設定の閾値を上げると警告が出て、その値を丸めずに伝える。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
+    _write_coverage_cache(root, _api_request(_ALICE, 150000))
+    assert inspect_otel_month(root) == []
+    for threshold in (0.8, 0.8000001):
+        cfg["otel"]["coverage_warning_ratio"] = threshold
+        issue, = inspect_otel_month(root)
+        assert issue.code is IssueCode.OTEL_COVERAGE_LOW
+        assert issue.scope["warning_ratio"] == threshold
+        assert f"{threshold} 未満" in issue.message
+
+
+def test_inspect_otel_uses_configured_minimum_tokens(cfg, make_input, inspect_otel_month):
+    """同じ利用でも出力トークン下限を上げると警告の対象から外れる。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
+    _write_coverage_cache(root, _api_request(_ALICE, 100000))
+    issue, = inspect_otel_month(root)
+    assert issue.code is IssueCode.OTEL_COVERAGE_LOW
+    cfg["otel"]["coverage_min_output_tokens"] = 200001
+    assert inspect_otel_month(root) == []
+
+
+def test_inspect_otel_uses_configured_products(cfg, make_input, inspect_otel_month):
+    """対象 product の設定を変えると分母が変わり、同じキャッシュでも警告が消える。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 100000),
+                               _coverage_spend_row(_ALICE, 100000, "Cowork")]})
+    _write_coverage_cache(root, _api_request(_ALICE, 100000))
+    issue, = inspect_otel_month(root)
+    assert issue.code is IssueCode.OTEL_COVERAGE_LOW
+    assert issue.scope["ratios"] == (0.5,)
+    cfg["otel"]["coverage_products"] = ["Claude Code"]
+    assert inspect_otel_month(root) == []
+
+
+@pytest.mark.parametrize(("month", "has_workspaces"), [(None, True), (OTEL_MONTH, False)])
+def test_inspect_otel_requires_month_and_workspaces(cfg, tmp_path, monkeypatch,
+                                                    month, has_workspaces):
+    """月か workspace が無いときは、ファイルを開かずに終了する。"""
+    monkeypatch.setattr(otel_collect, "run_bq", _unexpected_otel_call)
+    monkeypatch.setattr(otel_collect, "load_otel_cache", _unexpected_otel_call)
+    monkeypatch.setattr(ingest, "load_spend", _unexpected_otel_call)
+    assert inspect_otel(tmp_path, month, cfg, "org-a", TARGET,
+                        [tmp_path] if has_workspaces else []) == []

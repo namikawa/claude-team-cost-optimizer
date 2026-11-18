@@ -29,7 +29,8 @@ Python（3.11 以上）は uv が用意します。レポートの考察を自�
 
 OpenTelemetry の月の集計の取得（`collect --source otel`）は、イベントを BigQuery に
 貯めている組織だけが使う任意の機能で、Google Cloud SDK の `bq` と認証・権限が必要です。
-設定は [セットアップ手順](docs/setup.md) を参照してください。
+取得した月は `doctor` で、OpenTelemetry に届いている割合を確かめられます。
+取得の設定は [セットアップ手順](docs/setup.md) を参照してください。
 
 ## インストール
 

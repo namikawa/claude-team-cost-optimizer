@@ -1975,6 +1975,52 @@ def test_otel_maximum_bytes_is_positive_integer(tmp_path, maximum):
         _otel_config(tmp_path, common={"maximum_bytes_billed": maximum})
 
 
+def test_otel_coverage_defaults_and_product_override(tmp_path):
+    """既定の値を読み、product の指定はリスト全体を置き換える。"""
+    default = _otel_config(tmp_path)["otel"]
+    assert default["coverage_products"] == ["Claude Code", "Cowork"]
+    assert default["coverage_warning_ratio"] == 0.7
+    assert default["coverage_min_output_tokens"] == 100000
+    override = _otel_config(tmp_path, common={"coverage_products": ["Claude Code"]})["otel"]
+    assert override == {**default, "coverage_products": ["Claude Code"]}
+
+
+@pytest.mark.parametrize(("value", "message"), [
+    ([], "空でない文字列を1つ以上"),
+    ([1], "空でない文字列を1つ以上"),
+    (["  "], "空でない文字列を1つ以上"),
+    (["Cowork", " cowork "], "同じ product 名が複数あります: cowork"),
+    (["Café", "CAFE\u0301"], "同じ product 名が複数あります: CAFE\u0301"),
+])
+def test_otel_coverage_rejects_invalid_products(tmp_path, value, message):
+    """空や型の誤りのほか、照合では区別できない product の重複も拒む。"""
+    with pytest.raises(ValueError, match=f"otel.coverage_products .*{message}"):
+        _otel_config(tmp_path, common={"coverage_products": value})
+
+
+@pytest.mark.parametrize("value", [0, -0.2, 1.01, True, "0.7", float("nan"), float("inf")])
+def test_otel_coverage_rejects_invalid_warning_ratios(tmp_path, value):
+    """閾値は有限の数で 0 より大きく 1 以下に限る。"""
+    with pytest.raises(ValueError, match="otel.coverage_warning_ratio"):
+        _otel_config(tmp_path, common={"coverage_warning_ratio": value})
+
+
+@pytest.mark.parametrize("value", [-1, 0.5, True, "100000"])
+def test_otel_coverage_rejects_invalid_minimum_tokens(tmp_path, value):
+    """トークンの下限は真偽値を除く 0 以上の整数に限る。"""
+    with pytest.raises(ValueError, match="otel.coverage_min_output_tokens"):
+        _otel_config(tmp_path, common={"coverage_min_output_tokens": value})
+
+
+def test_otel_coverage_accepts_config_boundaries(tmp_path):
+    """閾値 1 と下限 0 は設定できる。"""
+    settings = _otel_config(tmp_path, common={
+        "coverage_warning_ratio": 1, "coverage_min_output_tokens": 0,
+    })["otel"]
+    assert settings["coverage_warning_ratio"] == 1
+    assert settings["coverage_min_output_tokens"] == 0
+
+
 def test_otel_explicit_ids_override_inherited_and_are_lowercase(tmp_path):
     """明示指定を優先し、設定の大文字を保ち、取得対象には小文字 UUID を返す。"""
     cfg = _otel_config(tmp_path, {
