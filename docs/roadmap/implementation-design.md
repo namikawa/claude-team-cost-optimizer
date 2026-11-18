@@ -1600,23 +1600,23 @@ decision-evidenceを常に併記する。`v1`は従来の判定（allowanceモ�
 
 ### OpenTelemetry issue
 
-- `OTEL_BQ_NOT_AUTHENTICATED`
-- `OTEL_BQ_NOT_ACCESSIBLE`
-- `OTEL_QUERY_TOO_LARGE`
-- `OTEL_PARTIAL_RESULT`
-- `OTEL_ATTRIBUTE_MISSING`
 - `OTEL_COVERAGE_LOW`
 - `OTEL_USER_MISSING`
+- `OTEL_COVERAGE_UNAVAILABLE`
 
-`OTEL_COVERAGE_LOW`と`OTEL_USER_MISSING`は §27.4 の網羅率の検査。テレメトリが届いていない人を
-「使っていない人」と読ませないための issue で、人 × 月の表ではその人の OTel 由来の列を空欄にする。
-そのほかは取得の前提の検査で、`OTEL_BQ_NOT_AUTHENTICATED`は`bq`が無いか認証が切れている、
-`OTEL_BQ_NOT_ACCESSIBLE`は project・dataset・表が見つからないか権限が無い、
-`OTEL_QUERY_TOO_LARGE`は読み取り量の見積もりが上限を超えた、`OTEL_PARTIAL_RESULT`は受け取った
-行数が問い合わせの返した行数と合わない、`OTEL_ATTRIBUTE_MISSING`は集計に必須の列（イベントの
-時刻と名前・利用者のメールアドレス・`organization.id`・`session.id`）が表に無い場合。取得の
-コマンドは同じ種類の失敗を理由の文で表示する（§27.3）。issue としての結線は doctor で行う。
-`otel`を設定していない組織では OTel の issue は一切出ない。
+3つとも §27.4 の網羅率の検査で、doctor が warning として出す。テレメトリが一部しか届いて
+いない人を「あまり使っていない人」と読ませないための issue で、人 × 月の表では、状態が
+`low`・`missing`・`unknown`の人の OTel 由来の列を空欄にする。`OTEL_COVERAGE_LOW`は届いて
+いる割合が閾値を下回る人、`OTEL_USER_MISSING`は OTel にイベントが1件も無い人、
+`OTEL_COVERAGE_UNAVAILABLE`は割合を確かめられない場合（キャッシュを読めない・キャッシュに
+出力トークンが無い・spend に、product 名が空の行か、対象 product で出力トークンを読めない
+行がある）。`otel`を設定していない組織では OTel の issue は一切出ない。
+
+取得の失敗（`bq`が無いか認証が切れている・project や dataset や表が見つからないか権限が
+無い・必須の列が無い・読み取り量の見積もりが上限を超えた・行数が合わない）は issue に
+しない。取得のコマンドが理由の文で表示する（§27.3）。doctor は BigQuery に接続しない。接続・
+認証・表の定義・読み取り量の見積もりは、取得のコマンドの`--dry-run`で確かめられる。認証の
+切れを、OTel を使わない検査の失敗にしないため。
 
 ### Policy
 
@@ -4118,25 +4118,36 @@ Step 74（コミットの共著の印の指標）は見送った。
 
 対象:
 
-- `src/seat_analyzer/data_quality.py`
+- `src/seat_analyzer/data_quality.py`・`src/seat_analyzer/domain.py`
+- `src/seat_analyzer/config.py`・`src/seat_analyzer/default-config.yaml`
 - `src/seat_analyzer/cli.py`
-- `tests/test_data_quality.py`
-- `docs/reference.md`
+- `tests/test_data_quality.py`・`tests/test_config.py`・`tests/test_cli.py`
+- `docs/setup.md`・`docs/usage.md`・`docs/reference.md`・`CHANGELOG.md`
 
 実装:
 
-- §27.4
+- §27.4・§27.2・§17
 
 受け入れ条件:
 
-- 比は件数で見る（OpenTelemetry の API リクエストの件数 ÷ spend の Claude Code のリクエスト数）
-- 比率の閾値と、判定する最小のリクエスト数は config
+- 比は出力トークンで見る（OpenTelemetry の API リクエストの出力トークン ÷ spend の対象
+  product の出力トークン）
+- 対象 product・比の閾値・判定する最小の出力トークンは config
 - `otel`の無い組織では issue が出ない
-- 網羅率の低い人 × 月を後続が参照できる形（純粋関数の戻り値）で返す
+- その月のキャッシュが無いとき・対象月の spend が無いか全月と確かめられないとき・workspace の
+  構成が設定と食い違うときは、OpenTelemetry の issue が出ない
+- 読めないキャッシュ・出力トークンの無いキャッシュ・spend の product 名が空の行と、対象
+  product で出力トークンを読めない行を、届いていると扱わず、確かめられないことを issue で
+  伝える
+- 人 × 月の状態を後続が参照できる形（純粋関数の戻り値）で返す
+- doctor は BigQuery に接続しない（`bq`を呼ばない）
+- 分析の成果物は変わらない
 
 今回は行わない:
 
-- 人 × 月の表
+- 人 × 月の表（OpenTelemetry 由来の列を空欄にするのは Step 71）
+- 分析の実行時の通知（Step 71 で、列と一緒に出す）
+- doctor からの BigQuery の検査（認証・表・列。取得のコマンドの`--dry-run`で確かめる）
 
 #### Step 62: 人 × 月の表
 
@@ -4210,7 +4221,7 @@ Step 74（コミットの共著の印の指標）は見送った。
 受け入れ条件:
 
 - 段階はルールだけで再現できる（合成スコアを作らない）
-- 網羅率の低い人 × 月は`不明`
+- 網羅率の状態が`low`・`missing`・`unknown`の人 × 月は`不明`
 - 組織行に段階ごとの人数と前月からの遷移
 
 今回は行わない:
@@ -4327,7 +4338,9 @@ Step 74（コミットの共著の印の指標）は見送った。
 
 - `src/seat_analyzer/adoption.py`
 - `src/seat_analyzer/report/adoption_csv.py`・`src/seat_analyzer/report/adoption_html.py`
-- `tests/test_adoption.py`・`tests/test_adoption_csv.py`・`tests/test_adoption_html.py`
+- `src/seat_analyzer/cli.py`
+- `tests/test_adoption.py`・`tests/test_adoption_csv.py`・`tests/test_adoption_html.py`・
+  `tests/test_cli.py`
 - `docs/reference.md`
 
 実装:
@@ -4338,11 +4351,15 @@ Step 74（コミットの共著の印の指標）は見送った。
   月に、使い方がどう動いていたかを読む手がかりにするため（§27.1）。OpenTelemetry だけの
   成果物は作らない
 - 表とレポートに出す指標は、着手のときに決める（§27.5 の行は候補）
+- 網羅率（§27.4）の判定を分析の実行時に行い、空欄にした人数を通知する。月の単位で判定
+  しない月（キャッシュが無い・spend が全月でない）と、読めないキャッシュの扱いも、着手の
+  ときに決める
 
 受け入れ条件:
 
 - `otel`の無い組織では OpenTelemetry 由来の列が空欄で、それ以外の列の値は変わらない
-- 網羅率の低い人 × 月は OpenTelemetry 由来の列が空欄で、集まりの値にも入れない
+- 網羅率の状態が`low`・`missing`・`unknown`の人 × 月は OpenTelemetry 由来の列が空欄で、
+  集まりの値にも入れない
 - 比率は分子と分母を列に持つ
 - スキル・エージェント・MCP・コマンドの名前を列にも値にも出さない
 
@@ -5020,8 +5037,9 @@ claude_export:
 
 otel:
   maximum_bytes_billed: 2000000000          # 1回の問い合わせで読む量の上限（byte）。見積もりが超えたら実行しない
-  coverage_warning_ratio: 0.7               # OTelのAPIリクエストの件数 ÷ spendのClaude Codeのリクエスト数がこれを下回る人×月を警告（§27.4）
-  coverage_min_requests: 100                # spendのClaude Codeのリクエスト数がこれに満たない人×月は網羅率を判定しない
+  coverage_products: ["Claude Code", "Cowork"]  # 網羅率の分母にするspendのproduct（OTelのイベントとして届くproduct。§27.4）
+  coverage_warning_ratio: 0.7               # OTelの出力トークン ÷ spendの対象productの出力トークンがこれを下回る人×月を警告（§27.4）
+  coverage_min_output_tokens: 100000        # spendの対象productの出力トークンがこれに満たない人×月は網羅率を判定しない
 
 adoption:
   enabled: false                            # 人×月・チーム×月の表とレポート（§27.8）。既定は不活性
@@ -5114,7 +5132,7 @@ V1の撤去は既定化から最低3か月後の別Step（番号は着手時に�
 - Step 57〜62・64・65・71〜73・75完了（Step 63 は保留・Step 74 は見送り）
 - `otel`も`adoption.enabled`も無い組織の全goldenが不変
 - OpenTelemetry cacheと§27の成果物に禁止フィールド（§7.7・§27.9）が無い
-- 網羅率の低い人×月はOpenTelemetry由来の列が空欄になる
+- 網羅率の状態が`low`・`missing`・`unknown`の人×月はOpenTelemetry由来の列が空欄になる
 - §27の成果物にリポジトリ名・owner名・他組織の情報が無い
 - `bq`の実行がdry-runの見積もりと上限の確認を経ないと起きない
 
@@ -5495,8 +5513,9 @@ organizations:
       organization_ids: []
 otel:
   maximum_bytes_billed: 2000000000
+  coverage_products: ["Claude Code", "Cowork"]
   coverage_warning_ratio: 0.7
-  coverage_min_requests: 100
+  coverage_min_output_tokens: 100000
 adoption:
   enabled: false
   outside_org_min_lines: 1000
@@ -5515,6 +5534,10 @@ adoption:
 - `otel.maximum_bytes_billed`は1以上の整数。読み取り量は、その月のイベントの数（利用者の数と
   利用量）に比例する。見積もりが既定を超える組織は、`--dry-run`の見積もりを見て上げる
 - `bq`の場所を指定する設定は持たない（PATH から探す。`gh`と同じ）
+- `otel.coverage_products`は、網羅率（§27.4）の分母にする spend の product の名前。空でない
+  文字列を1つ以上書く。照合の規則（§27.4）で同じになる名前を2回書くと、ロード時にエラー
+- `otel.coverage_warning_ratio`は0より大きく1以下の数。`otel.coverage_min_output_tokens`は
+  0以上の整数（0 は下限なし）
 - `adoption.enabled`は OTel・GitHub の有無と独立で、どちらも無い組織でも有効にできる
 - `adoption.outside_org_min_lines`は管轄外の検知（§27.7）の行数の下限で、1以上の整数。既定は
   1000。0 を受け付けないのは、Claude Code が加えた行が0の人まで該当になるため
@@ -5529,7 +5552,7 @@ adoption:
   ない）。利用者の`bq`の設定ファイルは読ませない（結果の開始行や保存先の表などの既定を
   引き継ぐと、結果が欠けたり、ほかの表へ書き込んだりするため）
 - 月の範囲と日の区切りは UTC にする。支出レポートの月と同じ境界にして、網羅率（§27.4）の
-  件数の比がずれないようにするため
+  比がずれないようにするため
 - 終わっていない月は取得しない。翌月の2日（UTC）になるまでは、理由を表示して終了コード 1 で
   終わる。月の終わりから1日の余裕を置くのは、遅れて届くイベントを取りこぼさないため。
   途中までのキャッシュを作らないので、キャッシュを読む側は月の途中の値を扱わなくてよい。
@@ -5612,20 +5635,79 @@ adoption:
 
 ### 27.4 網羅率
 
-テレメトリが届いていない人を「使っていない人」と読む誤りを防ぐため、OTel の値を使う前に網羅率を
-確かめる。
+テレメトリが一部しか届いていない人を「あまり使っていない人」と読む誤りを防ぐため、OTel の
+値を使う前に、人 × 月で届いている割合（網羅率）を確かめる。
 
-- 人 × 月で、OTel の`api_request`イベントの件数と、spend の Claude Code product のリクエスト数を
-  比べる。比（OTel ÷ spend）が`otel.coverage_warning_ratio`（既定 0.7）を下回る人 × 月は
-  `OTEL_COVERAGE_LOW`、spend に Claude Code のリクエストがあって OTel に行が無い人は
-  `OTEL_USER_MISSING`
-- spend のリクエスト数が`otel.coverage_min_requests`（既定 100）に満たない人 × 月は、比を判定
-  しない（件数が小さいと比が安定しない）
-- 費用の比では見ない（イベントの費用は Claude Code 自身の見積もりで、このツールの単価計算と
+- 網羅率は出力トークンの比。人 × 月で、OTel の`api_request`イベントの出力トークンの合計 ÷
+  spend の対象 product の出力トークンの合計
+- リクエストの件数の比では見ない。spend のリクエストと`api_request`イベントは1対1に対応
+  しない（イベントを伴わないリクエストがある）ので、件数の比は、届いている人でも1に
+  ならない。出力トークンの比は、生成された出力の量で重みを付けた割合になる。入力と
+  キャッシュのトークンは、分子にも分母にも入れない
+- 費用の比でも見ない（イベントの費用は Claude Code 自身の見積もりで、このツールの単価計算と
   一致することを前提にできない。§27.3）
-- 組織の網羅率（件数の合計の比）を doctor と analyze の警告に出す
-- 網羅率の低い人 × 月は、人 × 月の表で OTel 由来の列を空欄にし、集まりの値にも入れない
-  （段階を出す場合は`不明`にする）
+- 対象 product は`otel.coverage_products`（既定は Claude Code と Cowork）。OTel のイベントは
+  product を区別せず、Claude Code と同じ仕組みで動く product の利用も、同じイベントとして
+  届くことがある。分母を、届く product にそろえる。テレメトリの設定がその product に
+  届かない構成の組織は、一覧から外す。名前は、前後の空白を除き、Unicode の正規化形式と
+  大文字小文字の違いを無視した完全一致で照合する（product の分類 §9.1 と同じ規則）
+- 人はメールアドレスで突き合わせる（前後の空白を除き、小文字にそろえる）。spend は利用者の
+  行だけを使い（組織サービスの行を除く）、シートの有無は問わない
+- 複数 workspace の組織は、対象月に始まっている workspace（§26.6）の spend を、人ごとに全部
+  足す（OTel のキャッシュは workspace を区別しない）。取得の対象の組織 UUID（§27.2）と、
+  spend を足す workspace が、同じ範囲であることが前提。UUID が一部の workspace だけだと、
+  ほかの workspace の利用が届いていないと出る。spend を置いていない workspace のイベントが
+  キャッシュに入ると、比が高く出る
+
+状態を持つのは、その月の spend か OTel のキャッシュに行のある人。どちらにも行の無い人は、
+利用が見えない人なので、`not_judged`と同じに扱う。人 × 月の状態は次の5つで、上から順に
+当てはめる。
+
+| 状態 | 条件 |
+|---|---|
+| `unknown`（判定できない） | spend のその人の行に、product 名が空の行か、対象 product で出力トークンを数値として読めない行がある。または、キャッシュに出力トークンが無い（表に列が無かった。§27.3） |
+| `not_judged`（判定しない） | spend の対象 product の出力トークンが、0 か、`otel.coverage_min_output_tokens`（既定 100000）に満たない |
+| `missing`（届いていない） | OTel にその人のイベントが1件も無い |
+| `low`（低い） | 網羅率が`otel.coverage_warning_ratio`（既定 0.7）を下回る |
+| `ok` | 上のどれでもない |
+
+- `unknown`を別に持つのは、分からない行を0として数えると分母が小さくなり、届いていない人を
+  届いていると読むため。product の列が無い明細に行のある人は、`unknown`になる。対象外と
+  分かる product の行は、出力トークンを読めなくても分母を変えないので、状態に効かない
+- 出力トークンの下限を置くのは、利用の小さい人は、1つのセッションが届いたかどうかで比が
+  大きく動くため。`not_judged`の人の OTel の値は、そのまま使う
+- 比が1を超える側は検査しない（対象 product の一覧に、届いている product が足りないと起きる）
+- 組織の網羅率は、spend に対象 product の出力トークンがある人（`unknown`の人を除く）の、
+  OTel の出力トークンの合計 ÷ spend の対象 product の出力トークンの合計。分子と分母を同じ
+  人でそろえ、spend に居ない人の OTel の分を入れない
+- キャッシュが対象月の全体を観測していることが前提。収集を月の途中から始めた月と、表の
+  保持期間を過ぎてから取得した月は、届いていた人も低く出る（組織の網羅率も一緒に下がる）
+- 月の単位で判定しないのは、次のどれかのとき
+  - その月の OTel のキャッシュが無い
+  - 始まっている workspace のどれかで、対象月の spend が無いか、全月と確かめられない。
+    キャッシュは終わった月の全体なので、途中までの spend と比べると比が高く出る。全月と
+    確かめられるのは、ファイル名の期間が暦の日数に届いているときと、月だけの命名のとき。
+    単日の日付の命名は期間を確かめられないので、判定しない（`PARTIAL_MONTH`と同じ判定）
+  - workspace の構成が設定と食い違う（§26.8 の構造の検査が issue を出す）。分母から
+    workspace が抜けると、比が高く出る
+
+doctor は、`otel`を設定した組織の対象月について、状態を issue にする（§17）。どれも warning で、
+シートの分析を止めない。
+
+- `low`の人が居れば`OTEL_COVERAGE_LOW`、`missing`の人が居れば`OTEL_USER_MISSING`。人数と、
+  例（比の小さい順に5人まで）と、組織の網羅率を伝える
+- `unknown`の人が居るときと、キャッシュを読めないとき（形や語彙の不正、取得元の表か組織 UUID が
+  今の設定と違う。§7.7）は`OTEL_COVERAGE_UNAVAILABLE`。確かめられないことを、届いている
+  ことと区別して伝える
+- 月の単位で判定しないときは、OTel の issue を出さない。取得は月が終わってから人が行う
+  （§27.3）ので、当月の検査のたびに「キャッシュが無い」と出すと、ほかの警告が埋もれる。
+  spend と workspace の構成の問題は、それぞれの検査（`MISSING_SPEND`・`PARTIAL_MONTH`・
+  §26.8）が伝える
+- doctor は BigQuery に接続しない（§17）
+
+分析では、人 × 月の表に OTel の列を書くとき（Step 71）に同じ判定を使う。`low`・`missing`・
+`unknown`の人 × 月は、OTel 由来の列を空欄にし、集まりの値にも入れない（段階を出す場合は
+`不明`にする）。空欄にした人数は、実行時の通知で伝える。
 
 ### 27.5 指標
 
@@ -5653,6 +5735,9 @@ adoption:
 - OTel のイベントの行は候補で、キャッシュの集計名と区分（§27.3）から出す。表とレポートに
   出す指標は Step 71 で決め、GitHub の成果の指標と同じ表に並べる（§27.1）。端末の種類が
   非対話の分は、区分で分けて数えられる
+- OTel のイベントは product を区別しない。Claude Code と同じ仕組みで動く product の利用が
+  同じイベントとして届く組織では、OTel 由来の指標はその分を含み、分けられない（§27.4）。
+  列の説明に書く
 - 比率は分子・分母を列に持ち、比率そのものは表で計算して列にする（元の値を失わない）
 - 中央値のように日次から月次へ畳めない統計は持たない（件数・合計・トークンに閉じる）
 - イベントの種類や Claude Code の版によって付かない属性（`permission_mode`など）は、付いている
@@ -5716,7 +5801,7 @@ adoption:
 - `定着`: 継続して使い、Claude Code が加えた行がある
 - `自律`: 自動承認・サブエージェント・スキルを使っている
 - `高度`: `自律`に加えて、カスタムコマンド・MCP を使い、効率の指標が組織の上位にある
-- `不明`: 網羅率が低い（§27.4）
+- `不明`: 網羅率の状態が`low`・`missing`・`unknown`（§27.4）
 
 `自律`と`高度`の判定には OTel の列が要る。OTel を設定していない組織での扱いは Step 63 で決める。
 
@@ -5963,3 +6048,6 @@ Organization に成果が見えない人 × 月に印を付ける。該当した
   形ごとの SQL を足す
 - 非対話の内訳: 収集側が入口の属性（`app.entrypoint`）を出している組織で、自動実行と、
   SDK を通す画面での利用を分ける
+- 網羅率の対象 product の、組織ごと・時期ごとの指定: `otel.coverage_products`は、全部の
+  組織と月に同じ一覧を当てる。テレメトリの届く product が組織や時期によって違うときに、
+  分けて指定できるようにする

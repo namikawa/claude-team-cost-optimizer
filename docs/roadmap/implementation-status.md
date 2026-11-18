@@ -23,7 +23,7 @@
   コミットの共著の印の指標（Step 74）は見送り、作者が Claude のコミットを PR の作成者へ
   帰属させる直し（Step 75）を完了した（2026-11-17）。Step 64・75 を v1.6.1 としてリリース
   した（2026-11-18）。OpenTelemetry の取得（Step 60）を完了した（2026-11-18）。
-  次の候補は OpenTelemetry の網羅率（Step 61）。
+  次は OpenTelemetry の網羅率（Step 61）で、網羅率の規定を決めた（2026-11-18・設計書 §27.4）。
   Step 58 と、Claude Code analytics の LoC の列の見出し「Lines accepted」への対応（PR #106）を
   v1.4.6でリリースした（2026-11-08）。分析の判定・数値は変わらない。
   メンバー一覧のエクスポートの「CSV をエクスポート」表記への対応（PR #103）を
@@ -357,6 +357,30 @@ Step 62 と並行して先に済ませた。Step 63 は保留で、OpenTelemetry
 | 70 | 既定をV2へ切り替える | `完了` | 2026-11-10 |
 
 ## 6. 検証記録
+
+### 2026-11-18 — 設計書 §27.4 の見直し（OpenTelemetry の網羅率）
+
+- §27.4・§18（Step 61）: 網羅率の物差しを、API リクエストの件数の比から出力トークンの比へ
+  変えた。spend のリクエストと`api_request`イベントは1対1に対応しないので、件数の比は、
+  届いている人でも1にならないため。出力トークンの比は、生成された出力の量で重みを付けた
+  割合になる
+- 分母にする spend の product を設定（`otel.coverage_products`。既定は Claude Code と Cowork）に
+  した。OpenTelemetry のイベントは product を区別せず、Claude Code と同じ仕組みで動く product の
+  利用も、同じイベントとして届くことがあるため
+- 人 × 月の状態を5つ（`ok`・`low`・`missing`・`not_judged`・`unknown`）に決めた。判定の下限は、
+  リクエスト数から出力トークン（`otel.coverage_min_output_tokens`）へ変えた。分からない行
+  （product 名が空・対象 product で出力トークンを読めない）を持つ人と、出力トークンの無い
+  キャッシュは、届いていると扱わず`unknown`にする
+- 月の単位で判定しない場合を決めた（その月のキャッシュが無い・対象月の spend が無いか
+  全月と確かめられない・workspace の構成が設定と食い違う）。この場合、doctor は網羅率の
+  issue を出さない
+- §17: doctor が出す issue を`OTEL_COVERAGE_LOW`・`OTEL_USER_MISSING`・
+  `OTEL_COVERAGE_UNAVAILABLE`の3つにした。取得の失敗は issue にせず、取得のコマンドが理由の
+  文で表示する。doctor は BigQuery に接続しない
+- §18（Step 71）: 分析の実行時の通知は、OpenTelemetry の列を書く Step 71 で入れる
+- §27.5: OpenTelemetry 由来の指標は、同じイベントとして届くほかの product の利用を含むことを
+  書いた
+- コードは変えていない
 
 ### 2026-11-18 — Step 60: collect --source otel
 
