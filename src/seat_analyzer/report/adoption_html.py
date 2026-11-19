@@ -32,6 +32,7 @@ from ..adoption import (
     GithubId,
     GroupMonth,
     GroupScope,
+    OtelData,
     PersonMonth,
     group_order,
 )
@@ -51,9 +52,10 @@ _SPEND = "s"
 _GITHUB = "g"
 _BOTH = _SPEND + _GITHUB
 
-# 変化の種類（Metric.kind）。差（人数）・ポイントの差（割合）・比（量）
+# 変化の種類（Metric.kind）。差（人数）・ポイントの差（整数か小数1桁）・比（量）
 _COUNT = "count"
 _SHARE = "share"
+_SHARE1 = "share1"
 _RATIO = "pct"
 
 # 値なしの表記（数値の表・変化・人数）
@@ -61,6 +63,21 @@ _DASH = "—"
 
 # 入力由来の文字列の列（人 × 月の表）。式のエスケープを掛けず、改行の正規化だけを掛けて渡す
 _PERSON_TEXT_COLUMNS = ("email", "seat", "department", "team", "role")
+
+# チーム × 月の表の OpenTelemetry の数値の列
+_OTEL_USERS = "otel_users"
+_OTEL_EXCLUDED_PEOPLE = "otel_excluded_people"
+_OTEL_ACTIVE_DAYS_MEDIAN = "otel_active_days_median"
+_OTEL_PROMPTS_MEDIAN = "otel_prompts_median"
+_OTEL_PROMPTS = "otel_prompts"
+_OTEL_REQUESTS = "otel_requests"
+_OTEL_SUBAGENT_REQUESTS = "otel_subagent_requests"
+_OTEL_INTERACTIVE_DECISIONS = "otel_interactive_decisions"
+_OTEL_INTERACTIVE_DECISIONS_ASKED = "otel_interactive_decisions_asked"
+_OTEL_CUSTOM_SUBAGENT_USERS = "otel_custom_subagent_users"
+_OTEL_SKILL_USERS = "otel_skill_users"
+_OTEL_MCP_USERS = "otel_mcp_users"
+_OTEL_CUSTOM_COMMAND_USERS = "otel_custom_command_users"
 
 
 def _num(value: str) -> float | None:
@@ -71,6 +88,12 @@ def _num(value: str) -> float | None:
 def _div(a: float | None, b: float | None) -> float | None:
     """割り算（分子か分母が無いとき・分母が0のときは None）。"""
     return a / b if a is not None and b else None
+
+
+def _value(row: Row, column: str, denominator: str | None = None) -> float | None:
+    """CSV の1行から出す列の値、または列どうしの割り算。"""
+    value = _num(row[column])
+    return value if denominator is None else _div(value, _num(row[denominator]))
 
 
 def _compact(value: float, prefix: str = "") -> str:
@@ -108,16 +131,23 @@ class ColumnTraits:
     partial は値が途中までになる条件（`_SPEND`・`_GITHUB` の組み合わせ。空は途中に
     ならない）、span は値の材料になる月の数（その月を含めて遡る。3か月続けて使った人の数
     だけ3）、github は GitHub の列か（GitHub 分析の無い組織では、その列から出す指標・図・
-    要約・枠を出さない）。
+    要約・枠を出さない）。otel は OpenTelemetry の列か（設定した組織でだけ、その列から
+    出す指標・図を出す）。
     """
 
     partial: str
     span: int = 1
     github: bool = False
+    otel: bool = False
+
+    def shown(self, has_github: bool, has_otel: bool) -> bool:
+        """列の性質に応じて、この組織に値を載せるか。"""
+        return (has_github or not self.github) and (has_otel or not self.otel)
 
 
 # レポートが読む列 → 性質。指標・図・要約・人ごとの一覧の枠は、自分の列からこの表を引いて
-# 途中の値の条件・材料の月数・GitHub の列かを決める（同じ判定を複数の場所に書かない）。
+# 途中の値の条件・材料の月数・GitHub や OpenTelemetry の列かを決める（同じ判定を複数の
+# 場所に書かない）。
 # チーム × 月の表の列と、人 × 月の表の列（code_demand_usd・loc_with_cc・lines_added_capped）を
 # 1つの表に持つ。同じ名前の列は2つの表で同じ性質
 COLUMNS: dict[str, ColumnTraits] = {
@@ -136,6 +166,19 @@ COLUMNS: dict[str, ColumnTraits] = {
     "lead_time_median_hours": ColumnTraits(_GITHUB, github=True),
     "lead_time_p90_hours": ColumnTraits(_GITHUB, github=True),
     "cost_per_merged_line_usd": ColumnTraits(_BOTH, github=True),
+    _OTEL_USERS: ColumnTraits("", otel=True),
+    _OTEL_EXCLUDED_PEOPLE: ColumnTraits("", otel=True),
+    _OTEL_ACTIVE_DAYS_MEDIAN: ColumnTraits("", otel=True),
+    _OTEL_PROMPTS_MEDIAN: ColumnTraits("", otel=True),
+    _OTEL_PROMPTS: ColumnTraits("", otel=True),
+    _OTEL_REQUESTS: ColumnTraits("", otel=True),
+    _OTEL_SUBAGENT_REQUESTS: ColumnTraits("", otel=True),
+    _OTEL_INTERACTIVE_DECISIONS: ColumnTraits("", otel=True),
+    _OTEL_INTERACTIVE_DECISIONS_ASKED: ColumnTraits("", otel=True),
+    _OTEL_CUSTOM_SUBAGENT_USERS: ColumnTraits("", otel=True),
+    _OTEL_SKILL_USERS: ColumnTraits("", otel=True),
+    _OTEL_MCP_USERS: ColumnTraits("", otel=True),
+    _OTEL_CUSTOM_COMMAND_USERS: ColumnTraits("", otel=True),
 }
 
 
@@ -146,13 +189,14 @@ def _union_partial(kinds: Iterable[str]) -> str:
 
 
 def _traits(columns: Iterable[str]) -> ColumnTraits:
-    """いくつかの列から出す値の性質（途中の値の条件は和、材料の月数は大きい方、GitHub の
-    列が1つでもあれば GitHub の値）。列の表に無い列は KeyError。"""
+    """いくつかの列から出す値の性質（途中の値の条件は和、材料の月数は大きい方、GitHub や
+    OpenTelemetry の列が1つでもあれば該当する指標の値）。列の表に無い列は KeyError。"""
     found = [COLUMNS[name] for name in columns]
     return ColumnTraits(
         partial=_union_partial(traits.partial for traits in found),
         span=max(traits.span for traits in found),
         github=any(traits.github for traits in found),
+        otel=any(traits.otel for traits in found),
     )
 
 
@@ -161,17 +205,17 @@ def _traits(columns: Iterable[str]) -> ColumnTraits:
 
 @dataclass(frozen=True)
 class Metric:
-    """数値の表と集まりの一覧に出す指標1つ（設計書 §27.8 の14指標の表の1行）。
+    """数値の表と集まりの一覧に出す指標1つ（設計書 §27.8 の指標の表の1行）。
 
     columns はチーム × 月の表の列で、1つならその列の値、2つなら分子 ÷ 分母（値なしは
-    None）。fmt は値の表記、kind は変化の種類（`_COUNT`＝差・`_SHARE`＝ポイントの差・
-    `_RATIO`＝比）、sep は数値の表でこの行の上に区切りの線を引くか、overview は集まりの
-    一覧に出すか。
+    None）。fmt は値の表記、kind は変化の種類（`_COUNT`＝差・`_SHARE` と `_SHARE1`＝
+    ポイントの差の整数と小数1桁・`_RATIO`＝比）、sep は数値の表でこの行の上に区切りの線を
+    引くか、overview は集まりの一覧に出すか。
 
     見出し・書式・変化の種類・一覧に出すか・区切りの線は、この指標の表（`METRICS`）が持つ。
-    途中の値になる条件（partial）・材料の月数（span）・GitHub の指標か（github）は列の性質
-    なので持たず、columns から列の表（`COLUMNS`）を引いて決める（割り算の指標は分子と分母の
-    列の和）。
+    途中の値になる条件（partial）・材料の月数（span）・GitHub や OpenTelemetry の指標か
+    （github・otel）は、columns から列の表（`COLUMNS`）を引いて決める（割り算の指標は
+    分子と分母の列の和）。
     """
 
     key: str
@@ -189,30 +233,42 @@ class Metric:
 
     def value(self, row: Row) -> float | None:
         """チーム × 月の表の1行から出す値（列の値か、列どうしの割り算）。"""
-        if len(self.columns) == 1:
-            return _num(row[self.columns[0]])
-        numerator, denominator = self.columns
-        return _div(_num(row[numerator]), _num(row[denominator]))
+        return _value(row, *self.columns)
+
+    @property
+    def traits(self) -> ColumnTraits:
+        """指標を作る列の性質。"""
+        return _traits(self.columns)
 
     @property
     def partial(self) -> str:
         """値が途中までになる条件（列の性質の和）。"""
-        return _traits(self.columns).partial
+        return self.traits.partial
 
     @property
     def span(self) -> int:
         """値の材料になる月の数（列の性質の大きい方）。"""
-        return _traits(self.columns).span
+        return self.traits.span
 
     @property
     def github(self) -> bool:
         """GitHub の指標か（GitHub 分析の無い組織では出さない）。"""
-        return _traits(self.columns).github
+        return self.traits.github
+
+    @property
+    def otel(self) -> bool:
+        """OpenTelemetry の指標か（設定した組織でだけ出す）。"""
+        return self.traits.otel
 
 
 def _column(name: str) -> Callable[[Row], float | None]:
     """チーム × 月の表の列の値。"""
     return lambda row: _num(row[name])
+
+
+def _percent(value: float) -> str:
+    """割合の表記（整数の百分率）。"""
+    return f"{value:.0%}"
 
 
 METRICS = (
@@ -243,12 +299,29 @@ METRICS = (
            lambda v: f"{v:.1f}", _RATIO),
     Metric("cost_per_line", "費用 / マージ行（USD）", ("cost_per_merged_line_usd",),
            _usd_per_line, _RATIO, overview=True),
+    Metric("otel_users", "使い方が見える人（OpenTelemetry）", (_OTEL_USERS,),
+           lambda v: f"{v:.0f} 人", _COUNT, sep=True),
+    Metric("otel_excluded", "届きが悪く除いた人", (_OTEL_EXCLUDED_PEOPLE,),
+           lambda v: f"{v:.0f} 人", _COUNT),
+    Metric("otel_days", "使った日数（中央値）", (_OTEL_ACTIVE_DAYS_MEDIAN,),
+           lambda v: f"{v:.1f}".removesuffix(".0") + " 日", _RATIO),
+    Metric("otel_prompts", "指示の回数（中央値）", (_OTEL_PROMPTS_MEDIAN,),
+           lambda v: f"{v:,.0f}", _RATIO),
+    Metric("otel_rpp", "1 回の指示あたりのリクエスト", (_OTEL_REQUESTS, _OTEL_PROMPTS),
+           lambda v: f"{v:.1f}", _RATIO),
+    Metric("otel_asked", "その場で確認した割合",
+           (_OTEL_INTERACTIVE_DECISIONS_ASKED, _OTEL_INTERACTIVE_DECISIONS),
+           lambda v: f"{v:.1%}", _SHARE1),
+    Metric("otel_sub", "サブエージェント経由の割合", (_OTEL_SUBAGENT_REQUESTS, _OTEL_REQUESTS),
+           _percent, _SHARE),
+    Metric("otel_custom_sub", "自作のサブエージェントを使った人の割合",
+           (_OTEL_CUSTOM_SUBAGENT_USERS, _OTEL_USERS), _percent, _SHARE),
+    Metric("otel_skill", "スキルを使った人の割合", (_OTEL_SKILL_USERS, _OTEL_USERS),
+           _percent, _SHARE),
+    Metric("otel_mcp", "MCP を使った人の割合", (_OTEL_MCP_USERS, _OTEL_USERS), _percent, _SHARE),
+    Metric("otel_command", "自作のコマンドを使った人の割合",
+           (_OTEL_CUSTOM_COMMAND_USERS, _OTEL_USERS), _percent, _SHARE),
 )
-
-
-def _shown(metrics: Iterable[Metric], has_github: bool) -> list[Metric]:
-    """出す指標（GitHub 分析の無い組織では GitHub の指標を除く）。"""
-    return [metric for metric in metrics if has_github or not metric.github]
 
 
 def _series(
@@ -288,15 +361,17 @@ class Partial:
 
 
 def _change(latest: float, previous: float, kind: str) -> str:
-    """変化の表記。差は引き算（人数は小数1桁まで・割合はポイント）、比は新 ÷ 旧 − 1。
+    """変化の表記。差は引き算（人数は小数1桁まで・割合はポイントの整数か小数1桁）、
+    比は新 ÷ 旧 − 1。
 
     比で古い方が0のときは値なし。負号は「−」（U+2212）で書く。増減の良し悪しを表す
     色は付けない（参考値で、良し悪しを断定しないため）。
     """
     if kind == _COUNT:
         text = f"{latest - previous:+.1f}".replace(".0", "")
-    elif kind == _SHARE:
-        text = f"{(latest - previous) * 100:+.0f} pt"
+    elif kind in (_SHARE, _SHARE1):
+        digits = 1 if kind == _SHARE1 else 0
+        text = f"{(latest - previous) * 100:+.{digits}f} pt"
     elif previous == 0:
         return _DASH
     else:
@@ -546,13 +621,12 @@ def _scatter(
 
 
 def _metric_table(
-    months: Sequence[str], by_month: Mapping[str, Row], has_github: bool, partial: Partial
+    months: Sequence[str], by_month: Mapping[str, Row], metrics: Sequence[Metric], partial: Partial,
 ) -> dict:
     """1つの集まりの、指標 × 月の数値の表（前月比・3か月比・推移の小さな線を添える）。
 
     月の見出しの印の条件は、表に出す指標の途中の値の条件の和。
     """
-    metrics = _shown(METRICS, has_github)
     rows = []
     for metric in metrics:
         values = _series(metric.value, months, by_month)
@@ -571,7 +645,7 @@ def _metric_table(
 
 def _overview_table(
     head: str, months: Sequence[str], groups: Sequence[tuple[str, str, Mapping[str, Row]]],
-    has_github: bool, with_trend3: bool, partial: Partial,
+    metrics: Sequence[Metric], with_trend3: bool, partial: Partial,
 ) -> dict:
     """集まりの一覧（1行が1つの集まり。groups は（リンク先の id・名前・月ごとの行）で、
     先頭は組織全体）。
@@ -579,7 +653,7 @@ def _overview_table(
     名前に添える人数は最新の月の値で、最新の月に行の無い集まりは値なし。with_trend3 が
     偽なら3か月比を書かない（月の軸が6か月に満たない組織）。
     """
-    metrics = [metric for metric in _shown(METRICS, has_github) if metric.overview]
+    metrics = [metric for metric in metrics if metric.overview]
     rows = []
     for index, (anchor, name, by_month) in enumerate(groups):
         last = by_month.get(months[-1])
@@ -771,9 +845,11 @@ class _Tile:
 
 @dataclass(frozen=True)
 class _Chart:
-    """組織全体の推移の図1つ（組織全体の行の列の折れ線）。
+    """組織全体の推移の図1つ（組織全体の行の折れ線）。
 
-    途中の値の条件・GitHub の図かは、column から列の表（`COLUMNS`）を引いて決める。
+    column は値の列。割合の図は denominator に分母の列を持ち、割り算した値を百分率にして
+    描く。途中の値の条件・GitHub や OpenTelemetry の図かは、図が使う列から列の表
+    （`COLUMNS`）を引いて決める。
     """
 
     title: str
@@ -782,11 +858,22 @@ class _Chart:
     fmt: Callable[[float], str]
     prefix: str
     whole: bool
+    denominator: str | None = None
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        """値を出す列（割合の図は分子と分母）。"""
+        return (self.column,) if self.denominator is None else (self.column, self.denominator)
 
     @property
     def traits(self) -> ColumnTraits:
         """列の性質。"""
-        return COLUMNS[self.column]
+        return _traits(self.columns)
+
+    def value(self, row: Row) -> float | None:
+        """チーム × 月の表の1行から出す値（割合の図は分子 ÷ 分母 × 100）。"""
+        value = _value(row, self.column, self.denominator)
+        return value * 100 if self.denominator is not None and value is not None else value
 
 
 _CHARTS = (
@@ -802,6 +889,16 @@ _CHARTS = (
            lambda v: f"{v:,.0f} 件", "", True),
     _Chart("マージ行あたりの費用", "GitHub の対象の人の需要 ÷ その人たちのマージ行（USD）",
            "cost_per_merged_line_usd", _usd_per_line, "$", False),
+    _Chart("その場で確認した割合（%）",
+           "端末の対話で、編集・コマンド・MCP を実行してよいかの判断のうち",
+           _OTEL_INTERACTIVE_DECISIONS_ASKED, lambda v: f"{v:.1f}%", "", False,
+           denominator=_OTEL_INTERACTIVE_DECISIONS),
+    _Chart("サブエージェント経由の割合（%）", "リクエストのうちサブエージェントが出した分",
+           _OTEL_SUBAGENT_REQUESTS, lambda v: f"{v:.0f}%", "", False,
+           denominator=_OTEL_REQUESTS),
+    _Chart("自作のサブエージェントを使った人（%）", "使い方が見える人のうち",
+           _OTEL_CUSTOM_SUBAGENT_USERS, lambda v: f"{v:.0f}%", "", False,
+           denominator=_OTEL_USERS),
 )
 
 _TILES = (
@@ -894,6 +991,8 @@ def _report_view(people: Iterable[PersonMonth], teams: Iterable[GroupMonth], org
     missing = [m for m in months if m not in org_rows]
     latest = months[-1]
     has_github = any(row.github_data is not GithubData.NOT_CONFIGURED for row in team_rows)
+    has_otel = any(row.otel_data is not OtelData.NOT_CONFIGURED for row in team_rows)
+    metrics = [metric for metric in METRICS if metric.traits.shown(has_github, has_otel)]
     partial = Partial(
         spend=frozenset(m for m, row in org_rows.items() if not row.spend_complete),
         github=frozenset(m for m, row in org_rows.items() if row.github_cache_complete is False),
@@ -925,12 +1024,12 @@ def _report_view(people: Iterable[PersonMonth], teams: Iterable[GroupMonth], org
                 "anchor": f"g-{scope.value}-{i}",
                 "name": name,
                 "sub": f"{last_month} 時点 {by_month[last_month]['seat_holders']} 人",
-                "table": _metric_table(months, by_month, has_github, partial),
+                "table": _metric_table(months, by_month, metrics, partial),
             })
         sections.append({
             "id": scope.value,
             "title": title,
-            "overview": _overview_table(title, months, overview, has_github,
+            "overview": _overview_table(title, months, overview, metrics,
                                         len(months) >= _TREND3_MONTHS, partial),
             "cards": cards,
         })
@@ -951,11 +1050,16 @@ def _report_view(people: Iterable[PersonMonth], teams: Iterable[GroupMonth], org
             "sub": f"{latest}{tile.sub}",
         })
 
-    charts = [{
-        "title": chart.title, "sub": chart.sub,
-        "chart": _line_chart(months, org_values(chart.column), chart.fmt, chart.prefix,
-                             chart.whole, [partial.mark(m, chart.traits.partial) for m in months]),
-    } for chart in _CHARTS if has_github or not chart.traits.github]
+    charts = []
+    for chart in _CHARTS:
+        traits = chart.traits
+        if traits.shown(has_github, has_otel):
+            values = _series(chart.value, months, org_series)
+            marks = [partial.mark(m, traits.partial) for m in months]
+            charts.append({
+                "title": chart.title, "sub": chart.sub,
+                "chart": _line_chart(months, values, chart.fmt, chart.prefix, chart.whole, marks),
+            })
 
     people_by_email: dict[str, dict[str, Row]] = {}
     for row in person_rows:
@@ -995,6 +1099,7 @@ def _report_view(people: Iterable[PersonMonth], teams: Iterable[GroupMonth], org
         "first": months[0],
         "latest": latest,
         "has_github": has_github,
+        "has_otel": has_otel,
         "missing": "・".join(missing),
         "partial_spend": bool(partial.spend),
         "partial_github": bool(partial.github),
@@ -1002,7 +1107,7 @@ def _report_view(people: Iterable[PersonMonth], teams: Iterable[GroupMonth], org
         "tiles": tile_views,
         "charts": charts,
         "org_anchor": _ORG_ANCHOR,
-        "org_table": _metric_table(months, org_series, has_github, partial),
+        "org_table": _metric_table(months, org_series, metrics, partial),
         "sections": sections,
         "people": _people_table(people_by_email, months, frozenset(org_rows), has_github,
                                 partial),

@@ -9,6 +9,7 @@
 - `doctor` に OpenTelemetry に届いている割合の検査を追加した
 - 設定 `otel.coverage_products`・`otel.coverage_warning_ratio`・`otel.coverage_min_output_tokens` を追加した
 - 人 × 月の表とチーム × 月の表に、OpenTelemetry から数えた使い方の列を追加した
+- レポートに、OpenTelemetry から数えた使い方の指標の行と図を追加した
 
 ## [1.6.1] - 2026-11-18
 
