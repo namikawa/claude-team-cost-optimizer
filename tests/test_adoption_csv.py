@@ -13,9 +13,12 @@ from seat_analyzer.adoption import (
     GroupMonth,
     GroupScope,
     MonthInputs,
+    OtelData,
     PersonMonth,
     group_rows,
 )
+from seat_analyzer.data_quality import OtelCoverageStatus
+from seat_analyzer.otel_metrics import OtelUsage
 from seat_analyzer.report import (
     ADOPTION_PEOPLE_COLUMNS,
     ADOPTION_TEAMS_COLUMNS,
@@ -36,6 +39,7 @@ def _row(**changes) -> PersonMonth:
         github_cache_complete=False, merged_pr_count=4, lead_time_median_hours=2.25,
         commit_count=6, lines_added_capped=300, large_commits=1,
         outside_org=None, outside_org_months=None,
+        otel_data=OtelData.NOT_CONFIGURED, otel_coverage=None, otel_usage=None,
     )
     return dataclasses.replace(base, **changes)
 
@@ -73,6 +77,10 @@ def test_columns_follow_the_design_order(tmp_path):
         "github_id", "github_data", "github_cache_complete", "merged_pr_count",
         "lead_time_median_hours", "commit_count", "lines_added_capped", "large_commits",
         "cost_per_merged_line_usd", "outside_org", "outside_org_months",
+        "otel_data", "otel_coverage", "otel_active_days", "otel_prompts",
+        "otel_custom_command_prompts", "otel_requests", "otel_subagent_requests",
+        "otel_custom_subagent_requests", "otel_skill_requests", "otel_interactive_decisions",
+        "otel_interactive_decisions_asked", "otel_mcp_decisions",
     )
 
 
@@ -88,6 +96,11 @@ def test_cells_use_the_shared_formats(tmp_path):
         "lead_time_median_hours": "2.2", "commit_count": "6", "lines_added_capped": "300",
         "large_commits": "1", "cost_per_merged_line_usd": "0.3333",
         "outside_org": "", "outside_org_months": "",
+        "otel_data": "not_configured", "otel_coverage": "", "otel_active_days": "",
+        "otel_prompts": "", "otel_custom_command_prompts": "", "otel_requests": "",
+        "otel_subagent_requests": "", "otel_custom_subagent_requests": "",
+        "otel_skill_requests": "", "otel_interactive_decisions": "",
+        "otel_interactive_decisions_asked": "", "otel_mcp_decisions": "",
     }
 
 
@@ -162,6 +175,11 @@ def _team(**changes) -> GroupMonth:
         pr_additions_median=42.25, lead_time_median_hours=2.25, lead_time_p90_hours=10.0,
         lines_added_capped=300, code_demand_usd_of_github_people=100.0,
         outside_org_people=None,
+        otel_data=OtelData.NOT_CONFIGURED, otel_users=None, otel_excluded_people=None,
+        otel_active_days_median=None, otel_prompts_median=None, otel_prompts=None,
+        otel_requests=None, otel_subagent_requests=None, otel_interactive_decisions=None,
+        otel_interactive_decisions_asked=None, otel_custom_subagent_users=None,
+        otel_skill_users=None, otel_mcp_users=None, otel_custom_command_users=None,
     )
     return dataclasses.replace(base, **changes)
 
@@ -196,6 +214,11 @@ def test_team_columns_follow_the_design_order(tmp_path):
         "pr_additions_median", "lead_time_median_hours", "lead_time_p90_hours",
         "lines_added_capped", "code_demand_usd_of_github_people", "cost_per_merged_line_usd",
         "outside_org_people",
+        "otel_data", "otel_users", "otel_excluded_people", "otel_active_days_median",
+        "otel_prompts_median", "otel_prompts", "otel_requests", "otel_subagent_requests",
+        "otel_interactive_decisions", "otel_interactive_decisions_asked",
+        "otel_custom_subagent_users", "otel_skill_users", "otel_mcp_users",
+        "otel_custom_command_users",
     )
 
 
@@ -212,6 +235,11 @@ def test_team_cells_use_the_shared_formats(tmp_path):
         "lead_time_p90_hours": "10.0", "lines_added_capped": "300",
         "code_demand_usd_of_github_people": "100.00", "cost_per_merged_line_usd": "0.3333",
         "outside_org_people": "",
+        "otel_data": "not_configured", "otel_users": "", "otel_excluded_people": "",
+        "otel_active_days_median": "", "otel_prompts_median": "", "otel_prompts": "",
+        "otel_requests": "", "otel_subagent_requests": "", "otel_interactive_decisions": "",
+        "otel_interactive_decisions_asked": "", "otel_custom_subagent_users": "",
+        "otel_skill_users": "", "otel_mcp_users": "", "otel_custom_command_users": "",
     }
 
 
@@ -286,6 +314,7 @@ def test_team_sums_are_rounded_after_adding(tmp_path):
     material = MonthInputs(
         month=MONTH, spend_complete=True, github_data=GithubData.NOT_CONFIGURED,
         github_cache_complete=None, rows=tuple(people), prs=None,
+        otel_data=OtelData.NOT_CONFIGURED,
     )
     team_rows = _read(_write_teams(tmp_path, group_rows([material])))
     people_rows = _read(_write(tmp_path, people))
@@ -294,7 +323,7 @@ def test_team_sums_are_rounded_after_adding(tmp_path):
 
 
 def test_outside_org_people_and_streak_lexemes(tmp_path):
-    """末尾の2列は True・False・空欄と整数の月数で、それまでのセルを変えない。"""
+    """管轄外の2列は True・False・空欄と整数の月数で、それまでのセルを変えない。"""
     base = _row(github_cache_complete=True, merged_pr_count=0, lead_time_median_hours=None,
                 commit_count=0, lines_added_capped=0, large_commits=0,
                 outside_org=False, outside_org_months=0)
@@ -302,7 +331,8 @@ def test_outside_org_people_and_streak_lexemes(tmp_path):
     plain = _read(_write(tmp_path, [base]))[0]
     marked = _read(_write(tmp_path, [flagged]))[0]
     old_columns = tuple(name for name in ADOPTION_PEOPLE_COLUMNS
-                        if name not in ("outside_org", "outside_org_months"))
+                        if name not in ("outside_org", "outside_org_months")
+                        and not name.startswith("otel_"))
     assert {name: plain[name] for name in old_columns} == {
         name: marked[name] for name in old_columns
     }
@@ -314,10 +344,55 @@ def test_outside_org_people_and_streak_lexemes(tmp_path):
 
 @pytest.mark.parametrize("value", [None, 0, 2])
 def test_outside_org_group_count_lexeme(tmp_path, value):
-    """末尾の人数の列は整数か空欄で、それまでの列の字句を変えない。"""
+    """管轄外の人数は整数か空欄で、それまでの列の字句を変えない。"""
     plain = _read(_write_teams(tmp_path, [_team(github_cache_complete=True)]))[0]
     changed = _read(_write_teams(tmp_path, [_team(github_cache_complete=True,
                                                 outside_org_people=value)]))[0]
     assert changed.pop("outside_org_people") == ("" if value is None else str(value))
     plain.pop("outside_org_people")
     assert changed == plain
+
+
+def test_otel_people_cells_write_status_and_integer_counts(tmp_path):
+    """網羅率は語彙の値で書き、件数は整数、除いた人の件数は空欄にする。"""
+    usage = OtelUsage(
+        active_days=1, prompts=12, custom_command_prompts=2, requests=20, subagent_requests=10,
+        custom_subagent_requests=5, skill_requests=3, interactive_decisions=13,
+        interactive_decisions_asked=4, mcp_decisions=6,
+    )
+    good = _row(otel_data=OtelData.OK, otel_coverage=OtelCoverageStatus.OK, otel_usage=usage)
+    low = _row(email="carol@example.com", otel_data=OtelData.OK,
+               otel_coverage=OtelCoverageStatus.LOW)
+    first, second = _read(_write(tmp_path, [good, low]))
+    expected = {
+        "otel_data": "ok", "otel_coverage": "ok",
+        "otel_active_days": "1", "otel_prompts": "12", "otel_custom_command_prompts": "2",
+        "otel_requests": "20", "otel_subagent_requests": "10", "otel_custom_subagent_requests": "5",
+        "otel_skill_requests": "3", "otel_interactive_decisions": "13",
+        "otel_interactive_decisions_asked": "4", "otel_mcp_decisions": "6",
+    }
+    assert {name: value for name, value in first.items() if name.startswith("otel_")} == expected
+    assert {name: second[name] for name in expected} == (
+        dict.fromkeys(expected, "") | {"otel_data": "ok", "otel_coverage": "low"}
+    )
+
+
+def test_otel_team_cells_write_integer_counts_and_one_decimal_medians(tmp_path):
+    """集まりの件数と人数は整数、2つの中央値は小数1桁で書く。"""
+    row = _team(
+        otel_data=OtelData.OK, otel_users=2, otel_excluded_people=1,
+        otel_active_days_median=15.5, otel_prompts_median=20.0,
+        otel_prompts=40, otel_requests=50, otel_subagent_requests=15,
+        otel_interactive_decisions=12, otel_interactive_decisions_asked=3,
+        otel_custom_subagent_users=1, otel_skill_users=2, otel_mcp_users=0,
+        otel_custom_command_users=1,
+    )
+    cells, = _read(_write_teams(tmp_path, [row]))
+    assert {name: value for name, value in cells.items() if name.startswith("otel_")} == {
+        "otel_data": "ok", "otel_users": "2", "otel_excluded_people": "1",
+        "otel_active_days_median": "15.5", "otel_prompts_median": "20.0",
+        "otel_prompts": "40", "otel_requests": "50", "otel_subagent_requests": "15",
+        "otel_interactive_decisions": "12", "otel_interactive_decisions_asked": "3",
+        "otel_custom_subagent_users": "1", "otel_skill_users": "2", "otel_mcp_users": "0",
+        "otel_custom_command_users": "1",
+    }

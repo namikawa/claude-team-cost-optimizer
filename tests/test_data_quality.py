@@ -20,6 +20,7 @@ from seat_analyzer.data_quality import (
     issues_to_json,
     members_info_issues,
     otel_coverage,
+    otel_month_check,
     person_issues,
     sort_issues,
     workspace_config_issues,
@@ -1663,6 +1664,76 @@ def test_inspect_otel_has_no_issue_without_cache(make_input, inspect_otel_month)
     """spend が全月でも、キャッシュが無ければ issue を出さない。"""
     root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
     assert inspect_otel_month(root) == []
+
+
+@pytest.mark.parametrize(("filename", "workspace_selection"), [
+    ("spend-2026-10-01-to-2026-10-15.csv", "single"),
+    ("spend-2026-10-15.csv", "single"),
+    ("spend_2026-10.csv", "missing"),
+    ("spend_2026-10.csv", "empty"),
+])
+def test_otel_month_check_requires_full_spend_before_reading_cache(
+    cfg, make_snapshots, monkeypatch, filename, workspace_selection,
+):
+    """全月を確かめられないときは、壊れたキャッシュがあっても読まない。"""
+    root = make_snapshots(
+        OTEL_MONTH, {}, extra_files={filename: [_coverage_spend_row(_ALICE, 200000)]},
+    )
+    _write_coverage_cache(root).write_text("{", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(otel_collect, "load_otel_cache", _unexpected_otel_call)
+    dirs = {
+        "single": [root],
+        "missing": [root, root / "second"],
+        "empty": [],
+    }[workspace_selection]
+    checked = otel_month_check(root, OTEL_MONTH, cfg, "org-a", TARGET, dirs)
+    assert checked.spend_confirmed is False
+    assert checked.unreadable is checked.cache is checked.coverage is None
+
+
+def test_otel_month_check_with_and_without_cache(cfg, make_input):
+    """全月の spend があり、キャッシュを読めた場合だけ網羅率を持つ。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
+    checked = otel_month_check(root, OTEL_MONTH, cfg, "org-a", TARGET, [root])
+    assert checked.spend_confirmed is True
+    assert checked.unreadable is checked.cache is checked.coverage is None
+
+    event = _api_request(_ALICE, 180000)
+    _write_coverage_cache(root, event)
+    checked = otel_month_check(root, OTEL_MONTH, cfg, "org-a", TARGET, [root])
+    assert checked.spend_confirmed is True and checked.unreadable is None
+    assert checked.cache == _coverage_cache(event)
+    settings = cfg["otel"]
+    expected = otel_coverage(
+        [ingest.load_spend(root, OTEL_MONTH, cfg).df], checked.cache, settings["coverage_products"],
+        settings["coverage_warning_ratio"], settings["coverage_min_output_tokens"],
+    )
+    assert checked.coverage == expected
+
+
+@pytest.mark.parametrize("damage", ["json", "permission"])
+def test_otel_month_check_unreadable_reason_matches_doctor(
+    cfg, make_input, inspect_otel_month, monkeypatch, damage,
+):
+    """JSON の不正と権限エラーのどちらも、doctor と同じ理由を返す。"""
+    root = make_input({OTEL_MONTH: [_coverage_spend_row(_ALICE, 200000)]})
+    path = _write_coverage_cache(root)
+    if damage == "json":
+        path.write_text("{", encoding="utf-8", newline="\n")
+    else:
+        def permission_error(*_args):
+            raise PermissionError(13, "Permission denied", str(path))
+
+        monkeypatch.setattr(otel_collect, "load_otel_cache", permission_error)
+    checked = otel_month_check(root, OTEL_MONTH, cfg, "org-a", TARGET, [root])
+    issue, = inspect_otel_month(root)
+    assert issue.code is IssueCode.OTEL_COVERAGE_UNAVAILABLE
+    prefix = "OpenTelemetry のキャッシュを読めないため、届いている割合を確かめられません: "
+    assert issue.message.startswith(prefix)
+    assert checked.unreadable == issue.message.removeprefix(prefix)
+    assert checked.spend_confirmed is True
+    assert checked.cache is checked.coverage is None
+    assert str(root) not in checked.unreadable
 
 
 @pytest.mark.parametrize(("filename", "judged"), [

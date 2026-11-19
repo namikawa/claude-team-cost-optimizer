@@ -15,6 +15,7 @@ from seat_analyzer.adoption import (
     GithubId,
     GroupMonth,
     GroupScope,
+    OtelData,
     PersonMonth,
 )
 from seat_analyzer.report import (
@@ -62,6 +63,7 @@ def _person(**changes) -> PersonMonth:
         github_data=GithubData.OK, github_cache_complete=True, merged_pr_count=2,
         lead_time_median_hours=1.5, commit_count=3, lines_added_capped=120, large_commits=0,
         outside_org=False, outside_org_months=0,
+        otel_data=OtelData.NOT_CONFIGURED, otel_coverage=None, otel_usage=None,
     )
     values = {field.name: getattr(base, field.name) for field in dataclasses.fields(base)}
     values.update(changes)
@@ -94,6 +96,11 @@ def _group(**changes) -> GroupMonth:
         pr_additions_median=40.0, lead_time_median_hours=3.0, lead_time_p90_hours=9.0,
         lines_added_capped=800, code_demand_usd_of_github_people=200.0,
         outside_org_people=None,
+        otel_data=OtelData.NOT_CONFIGURED, otel_users=None, otel_excluded_people=None,
+        otel_active_days_median=None, otel_prompts_median=None, otel_prompts=None,
+        otel_requests=None, otel_subagent_requests=None, otel_interactive_decisions=None,
+        otel_interactive_decisions_asked=None, otel_custom_subagent_users=None,
+        otel_skill_users=None, otel_mcp_users=None, otel_custom_command_users=None,
     )
     return dataclasses.replace(base, **changes)
 

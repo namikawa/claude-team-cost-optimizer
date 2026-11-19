@@ -336,6 +336,9 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    [adoption-teams の列](./reference.md#adoption-teams-の列チーム--月の表)・
    [adoption-report](./reference.md#adoption-reportレポート)）
 
+   OpenTelemetry を設定した組織では、人 × 月の表とチーム × 月の表に、OpenTelemetry の
+   月の状態と、キャッシュから数えた使い方の値が入る。
+
    人 × 月の表の `outside_org` とレポートの「!」は、Claude Code が加えた行が一定以上あるのに
    対象の GitHub Organization にコミットもマージ PR も無い月を、本人に確かめるきっかけとして
    示す参考値。確かめて別の Organization の業務と分かった人は members-info の GitHub ID を
@@ -556,6 +559,10 @@ seat-analyzer collect --source otel --org org-a --month 2026-10
 保存先は `input/org-a/otel-cache/otel-2026-10.json`。同じ月を再取得すると置き換える。
 複数スペースの組織でも組織直下に置く。キャッシュは手で編集しない。
 
+月次の正式分析の前に対象月の集計を取得しておく。取得していない月の OpenTelemetry の値は
+空欄になり、`adoption.enabled` を有効にした正式分析で、対象月の spend が全月と確かめ
+られる場合は、対象月の取得を案内する通知が出る。
+
 表示の例（組織名・件数・読み取り量は合成値）:
 
 ```text
@@ -575,7 +582,9 @@ org-a 2026-10: 2 人・イベントの行 10 件・セッションの行 2 件 �
 入れず、人が都度実行する。失敗時や行数・件数が合わない場合は、既存キャッシュを変更しない。
 
 取得した月は `seat-analyzer doctor --org org-a --month 2026-10` で OpenTelemetry に
-届いている割合を確かめられる。取得しても、分析の成果物（表・レポート・判定）は変わらない。
+届いている割合を確かめられる。取得しても、シートの判定と、組織の担当者へ共有する成果物は
+変わらない。`adoption.enabled` を有効にした正式分析では、人 × 月の表とチーム × 月の表の
+OpenTelemetry の列に値が入る。
 
 ## 速報モード（部分月データでの一次判断）
 

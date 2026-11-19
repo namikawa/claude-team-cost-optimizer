@@ -23,6 +23,15 @@ from ..adoption import GroupMonth, PersonMonth, group_order
 from .github_csv import _flag, _hours, _text
 from .usage_csv import _count, _share, _usd
 
+# 人 × 月の件数の列名と OtelUsage の項目の対応（設計書 §27.8 の順）
+_OTEL_USAGE_FIELDS = {
+    f"otel_{name}": name for name in (
+        "active_days", "prompts", "custom_command_prompts", "requests", "subagent_requests",
+        "custom_subagent_requests", "skill_requests", "interactive_decisions",
+        "interactive_decisions_asked", "mcp_decisions",
+    )
+}
+
 # 列の順序（この並びで書く。設計書 §27.8 の表の順）
 ADOPTION_PEOPLE_COLUMNS = (
     "email",
@@ -47,6 +56,9 @@ ADOPTION_PEOPLE_COLUMNS = (
     "cost_per_merged_line_usd",
     "outside_org",
     "outside_org_months",
+    "otel_data",
+    "otel_coverage",
+    *_OTEL_USAGE_FIELDS,
 )
 
 
@@ -86,6 +98,9 @@ _FORMATTERS = {
     "cost_per_merged_line_usd": _share,
     "outside_org": _flag,
     "outside_org_months": _whole,
+    "otel_data": _label,
+    "otel_coverage": _label,
+    **dict.fromkeys(_OTEL_USAGE_FIELDS, _whole),
 }
 
 
@@ -97,7 +112,12 @@ def _cells(row: PersonMonth) -> dict[str, str]:
     """
     cells = {}
     for name in ADOPTION_PEOPLE_COLUMNS:
-        value = getattr(row, name)
+        if name in _OTEL_USAGE_FIELDS:
+            value = None if row.otel_usage is None else getattr(
+                row.otel_usage, _OTEL_USAGE_FIELDS[name],
+            )
+        else:
+            value = getattr(row, name)
         cells[name] = "" if value is None else _FORMATTERS[name](value)
     return cells
 
@@ -146,6 +166,20 @@ ADOPTION_TEAMS_COLUMNS = (
     "code_demand_usd_of_github_people",
     "cost_per_merged_line_usd",
     "outside_org_people",
+    "otel_data",
+    "otel_users",
+    "otel_excluded_people",
+    "otel_active_days_median",
+    "otel_prompts_median",
+    "otel_prompts",
+    "otel_requests",
+    "otel_subagent_requests",
+    "otel_interactive_decisions",
+    "otel_interactive_decisions_asked",
+    "otel_custom_subagent_users",
+    "otel_skill_users",
+    "otel_mcp_users",
+    "otel_custom_command_users",
 )
 
 # チーム × 月の表の列ごとの書式。入力由来のテキスト（集まりの名前）には人 × 月の表の部署・
@@ -174,6 +208,20 @@ _TEAM_FORMATTERS = {
     "code_demand_usd_of_github_people": _usd,
     "cost_per_merged_line_usd": _share,
     "outside_org_people": _whole,
+    "otel_data": _label,
+    "otel_users": _whole,
+    "otel_excluded_people": _whole,
+    "otel_active_days_median": _hours,
+    "otel_prompts_median": _hours,
+    "otel_prompts": _whole,
+    "otel_requests": _whole,
+    "otel_subagent_requests": _whole,
+    "otel_interactive_decisions": _whole,
+    "otel_interactive_decisions_asked": _whole,
+    "otel_custom_subagent_users": _whole,
+    "otel_skill_users": _whole,
+    "otel_mcp_users": _whole,
+    "otel_custom_command_users": _whole,
 }
 
 
