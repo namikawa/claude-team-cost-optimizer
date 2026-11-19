@@ -5787,6 +5787,99 @@ def test_adoption_otel_not_configured_ignores_cache(
             _assert_otel_blank(row, "not_configured")
 
 
+def test_adoption_report_without_otel_is_independent_of_the_cache(
+    make_input, tmp_path, adoption_otel_config,
+):
+    """未設定の組織は、同じ月のキャッシュを置いてもレポートがバイト一致する。"""
+    input_dir = _otel_doctor_input(make_input)
+    config = adoption_otel_config(enabled=False)
+    before, after = tmp_path / "before", tmp_path / "after"
+    assert _run_adoption_otel(input_dir, before, config) == 0
+    _adoption_otel_cache(input_dir)
+    assert _run_adoption_otel(input_dir, after, config) == 0
+    expected = _report_path(before, "2026-10").read_bytes()
+    assert _report_path(after, "2026-10").read_bytes() == expected
+
+
+def test_adoption_report_otel_values_can_be_checked_from_the_two_tables(
+    make_input, tmp_path, adoption_otel_config,
+):
+    """正式分析の11行と3つの図を2つの表で検算でき、区分の外の名前は載らない。"""
+    input_dir = _otel_doctor_input(make_input)
+    email = "alice@example.com"
+    request = _api_request(email, 200000)
+    custom = replace(
+        request, date="2026-10-02", output_tokens=0,
+        attrs=tuple(sorted(dict(request.attrs, origin="subagent_custom", skill=True).items())),
+    )
+    terminal = (("terminal", "interactive"),)
+    prompt = otel_collect.EventRow(
+        email, request.date, "user_prompt", (("command_source", "custom"), *terminal), 4,
+    )
+    decision = otel_collect.EventRow(
+        email, request.date, "tool_decision",
+        (("decision", "accept"), ("permission_mode", "default"), ("source", "config"),
+         *terminal, ("tool", "mcp")), 3,
+    )
+    asked = replace(
+        decision, attrs=tuple(sorted(dict(decision.attrs, source="user_temporary").items())),
+        count=1,
+    )
+    event_names = ("synthetic_skill_name", "synthetic_agent_name",
+                   "synthetic_mcp_name", "synthetic_command_name")
+    extra_events = [
+        otel_collect.EventRow(email, request.date, name, terminal, 1) for name in event_names
+    ]
+    _write_coverage_cache(input_dir / "org-a", request, custom, prompt, decision, asked,
+                          *extra_events)
+    out = tmp_path / "reports"
+    assert _run_adoption_otel(input_dir, out, adoption_otel_config()) == 0
+    (person,), (team,) = _adoption_otel_rows(out)
+    assert person["otel_coverage"] == "ok"
+    assert int(person["code_requests"]) > 0
+    html = _report_path(out, "2026-10").read_text(encoding="utf-8")
+
+    for label, value in (
+        ("使い方が見える人（OpenTelemetry）", "1 人"),
+        ("届きが悪く除いた人", "0 人"),
+        ("使った日数（中央値）", "2 日"),
+        ("指示の回数（中央値）", "4"),
+    ):
+        assert f'<td class="m">{label}</td><td>{value}</td>' in html
+
+    for label, numerator, denominator, fmt in (
+        ("1 回の指示あたりのリクエスト", "requests", "prompts", ".1f"),
+        ("その場で確認した割合", "interactive_decisions_asked", "interactive_decisions", ".1%"),
+        ("サブエージェント経由の割合", "subagent_requests", "requests", ".0%"),
+    ):
+        numerator, denominator = f"otel_{numerator}", f"otel_{denominator}"
+        assert (team[numerator], team[denominator]) == (person[numerator], person[denominator])
+        ratio = int(team[numerator]) / int(team[denominator])
+        assert f'<td class="m">{label}</td><td>{ratio:{fmt}}</td>' in html
+
+    assert team["otel_users"] == "1"
+    for label, feature, count in (
+        ("自作のサブエージェントを使った人の割合", "custom_subagent", "custom_subagent_requests"),
+        ("スキルを使った人の割合", "skill", "skill_requests"),
+        ("MCP を使った人の割合", "mcp", "mcp_decisions"),
+        ("自作のコマンドを使った人の割合", "custom_command", "custom_command_prompts"),
+    ):
+        users = int(team[f"otel_{feature}_users"])
+        assert users == (1 if int(person[f"otel_{count}"]) > 0 else 0)
+        ratio = users / int(team["otel_users"])
+        assert f'<td class="m">{label}</td><td>{ratio:.0%}</td>' in html
+
+    for title, value in (
+        ("その場で確認した割合（%）", "25.0%"),
+        ("サブエージェント経由の割合（%）", "50%"),
+        ("自作のサブエージェントを使った人（%）", "100%"),
+    ):
+        chart = html.split(f"<h3>{title}</h3>", 1)[1].split("</svg>", 1)[0]
+        assert f"<title>2026-10: {value}</title>" in chart
+    assert '<p class="note">OpenTelemetry の行。' in html
+    assert all(name not in html for name in event_names)
+
+
 @pytest.mark.parametrize(("state", "notice"), [
     ("no_cache", _missing_otel_notice("2026-10")),
     ("unreadable", _unreadable_otel_notice("2026-10")),
@@ -6005,7 +6098,7 @@ def test_adoption_otel_does_not_read_cache_without_formal_adoption_output(
 def test_adoption_otel_preserves_other_artifacts_and_existing_columns(
     make_input, tmp_path, adoption_otel_config,
 ):
-    """設定とキャッシュの有無にかかわらず、既存列とレポートを含む既存成果物を保つ。"""
+    """既存列と他の成果物の一致、および未設定時のレポートの一致を確かめる。"""
     input_dir = _otel_doctor_input(make_input)
     _mapping(input_dir, "org-a", ("alice@example.com,alice-dev",))
     _write_pr_cache(input_dir, month="2026-10", entries=[
@@ -6016,7 +6109,7 @@ def test_adoption_otel_preserves_other_artifacts_and_existing_columns(
 
     def contents(out):
         paths = [out_file(out, kind, month="2026-10") for kind in kinds]
-        return [path.read_bytes() for path in (*paths, _report_path(out, "2026-10"))]
+        return [path.read_bytes() for path in paths]
 
     def existing_columns(out):
         return [
@@ -6030,6 +6123,7 @@ def test_adoption_otel_preserves_other_artifacts_and_existing_columns(
         input_dir, before, adoption_otel_config(enabled=False, github=True),
     ) == 0
     expected_bytes, expected_columns = contents(before), existing_columns(before)
+    expected_report = _report_path(before, "2026-10").read_bytes()
     for has_cache in (False, True):
         if has_cache:
             _adoption_otel_cache(input_dir, output=100000)
@@ -6040,3 +6134,5 @@ def test_adoption_otel_preserves_other_artifacts_and_existing_columns(
             ) == 0
             assert contents(out) == expected_bytes
             assert existing_columns(out) == expected_columns
+            if not enabled:
+                assert _report_path(out, "2026-10").read_bytes() == expected_report

@@ -31,6 +31,7 @@ from seat_analyzer.report.adoption_html import (
     _SCATTER_Y_COLUMN,
     _SCATTERS,
     _SHARE,
+    _SHARE1,
     _TILES,
     BLOCKS,
     COLUMNS,
@@ -52,6 +53,27 @@ DOMAIN = "corp.example"
 LATEST = "2026-06"
 SIX = ("2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06")
 THREE = ("2026-04", "2026-05", "2026-06")
+
+OTEL_METRICS = (
+    ("使い方が見える人（OpenTelemetry）", ("otel_users",), _COUNT),
+    ("届きが悪く除いた人", ("otel_excluded_people",), _COUNT),
+    ("使った日数（中央値）", ("otel_active_days_median",), _RATIO),
+    ("指示の回数（中央値）", ("otel_prompts_median",), _RATIO),
+    ("1 回の指示あたりのリクエスト", ("otel_requests", "otel_prompts"), _RATIO),
+    ("その場で確認した割合",
+     ("otel_interactive_decisions_asked", "otel_interactive_decisions"), _SHARE1),
+    ("サブエージェント経由の割合", ("otel_subagent_requests", "otel_requests"), _SHARE),
+    ("自作のサブエージェントを使った人の割合", ("otel_custom_subagent_users", "otel_users"), _SHARE),
+    ("スキルを使った人の割合", ("otel_skill_users", "otel_users"), _SHARE),
+    ("MCP を使った人の割合", ("otel_mcp_users", "otel_users"), _SHARE),
+    ("自作のコマンドを使った人の割合", ("otel_custom_command_users", "otel_users"), _SHARE),
+)
+OTEL_LABELS = tuple(label for label, _, _ in OTEL_METRICS)
+OTEL_CHARTS = (
+    ("その場で確認した割合（%）", "端末の対話で、編集・コマンド・MCP を実行してよいかの判断のうち"),
+    ("サブエージェント経由の割合（%）", "リクエストのうちサブエージェントが出した分"),
+    ("自作のサブエージェントを使った人（%）", "使い方が見える人のうち"),
+)
 
 
 def _person(**changes) -> PersonMonth:
@@ -118,6 +140,19 @@ def _no_github_group(**changes) -> GroupMonth:
 def _org(months, **changes) -> list[GroupMonth]:
     """月ごとの組織全体の行。"""
     return [_group(month=month, **changes) for month in months]
+
+
+def _otel_group(**changes) -> GroupMonth:
+    """OpenTelemetry の13列に値がある集まりの1行。"""
+    return _group(**{
+        "seat_holders": 40, "code_users": 35, "otel_data": OtelData.OK,
+        "otel_users": 30, "otel_excluded_people": 4, "otel_active_days_median": 19.5,
+        "otel_prompts_median": 1086.0, "otel_prompts": 33000, "otel_requests": 290400,
+        "otel_subagent_requests": 124872, "otel_interactive_decisions": 1000,
+        "otel_interactive_decisions_asked": 3, "otel_custom_subagent_users": 17,
+        "otel_skill_users": 24, "otel_mcp_users": 22, "otel_custom_command_users": 16,
+        **changes,
+    })
 
 
 def _row_of(table: dict, label: str) -> dict:
@@ -347,7 +382,7 @@ def test_without_github_there_are_no_github_metrics(tmp_path):
     assert [item["title"] for item in view["charts"]] == [
         "Claude Code を使った人", "Claude Code の需要", "Claude Code が加えた行（中央値）"]
     assert [row["label"] for row in view["org_table"]["rows"]] == [
-        metric.label for metric in METRICS if not metric.github]
+        metric.label for metric in METRICS if not metric.github and not metric.otel]
     assert view["sections"][0]["overview"]["labels"] == [
         "使った人の割合", "需要 / 人（USD）", "加えた行（中央値）"]
     assert [block["title"] for block in view["people"]["blocks"]] == [
@@ -587,7 +622,8 @@ def test_wrong_row_types_and_missing_organization_rows():
 
 def test_metric_definitions_match_the_design_table():
     """14指標の変化の種類・一覧・途中の値になる条件は設計書 §27.8 の表のとおり。"""
-    table = {metric.key: (metric.kind, metric.overview, metric.partial) for metric in METRICS}
+    metrics = [metric for metric in METRICS if not metric.otel]
+    table = {metric.key: (metric.kind, metric.overview, metric.partial) for metric in metrics}
     assert table == {
         "holders": (_COUNT, False, ""),
         "share": (_SHARE, True, "s"),
@@ -606,8 +642,8 @@ def test_metric_definitions_match_the_design_table():
     }
     assert _metric("share3").span == 3
     # GitHub の指標は表の「GitHub の対象」以下
-    start = [metric.key for metric in METRICS].index("gh_people")
-    assert [metric.github for metric in METRICS] == [i >= start for i in range(len(METRICS))]
+    start = [metric.key for metric in metrics].index("gh_people")
+    assert [metric.github for metric in metrics] == [i >= start for i in range(len(metrics))]
 
 
 @pytest.mark.parametrize(("value", "expected"), [
@@ -641,12 +677,165 @@ def test_sub_cent_cost_reads_the_same_in_table_chart_and_tile():
 def test_every_column_the_report_reads_is_in_the_column_table():
     """指標・図・要約・人ごとの一覧の枠・散布図が読む列は、すべて列の表にあり、表の列名。"""
     read = {name for metric in METRICS for name in metric.columns}
-    read |= {chart.column for chart in _CHARTS}
+    read |= {name for chart in _CHARTS for name in chart.columns}
     read |= {tile.column for tile in _TILES}
     read |= {block.column for block in BLOCKS}
     read |= {_SCATTER_Y_COLUMN} | {column for _, _, column, _, _ in _SCATTERS}
     assert read <= set(COLUMNS)
     assert set(COLUMNS) <= set(ADOPTION_TEAMS_COLUMNS) | set(ADOPTION_PEOPLE_COLUMNS)
+
+
+# ---------------------------------------------------------------- OpenTelemetry
+
+
+def test_otel_metric_definitions_match_the_design_table():
+    """OpenTelemetry の列・変化の種類・一覧・途中の値になる条件を確かめる。"""
+    metrics = [metric for metric in METRICS if metric.otel]
+    assert [(m.label, m.columns, m.kind) for m in metrics] == list(OTEL_METRICS)
+    assert [(m.partial, m.span, m.overview, m.github) for m in metrics] == [
+        ("", 1, False, False)] * 11
+    assert {name for name, traits in COLUMNS.items() if traits.otel} == {
+        name for _, columns, _ in OTEL_METRICS for name in columns}
+
+
+def test_otel_rows_follow_github_and_format_values(tmp_path):
+    """組織・チーム・部署の表で、GitHub の次に区切りと11行を出し、空欄は「—」にする。"""
+    org = [
+        _otel_group(month=THREE[0], otel_users=25, otel_active_days_median=20.0),
+        _group(month=THREE[1], otel_data=OtelData.NO_CACHE),
+        _otel_group(),
+    ]
+    teams = org + [
+        dataclasses.replace(row, scope=scope, name=name) for row in org
+        for scope, name in ((GroupScope.TEAM, "Orion-Team"), (GroupScope.DEPARTMENT, "架空開発部"))
+    ]
+    view = _report_view([], teams, "org-z")
+    tables = [view["org_table"], *(s["cards"][0]["table"] for s in view["sections"])]
+    assert len(tables) == 3
+    for table in tables:
+        rows = table["rows"]
+        assert rows[13]["label"] == "費用 / マージ行（USD）"
+        assert tuple(row["label"] for row in rows[14:]) == OTEL_LABELS
+        assert [row["sep"] for row in rows[14:]] == [True] + [False] * 10
+        assert [row["cells"][-1] for row in rows[14:]] == [
+            "30 人", "4 人", "19.5 日", "1,086", "8.8", "0.3%", "43%", "57%", "80%", "73%", "53%",
+        ]
+        assert [row["cells"][1] for row in rows[14:]] == ["—"] * 11
+        assert rows[14]["cells"][0] == "25 人"
+        assert rows[16]["cells"][0] == "20 日"
+    html = _write(tmp_path, [], teams).decode("utf-8")
+    assert html.count(f'<tr class="sep"><td class="m">{OTEL_LABELS[0]}</td>') == 3
+    assert 'class="note">OpenTelemetry の行。' in html
+    assert html.index("OpenTelemetry の行。") < html.index('<p class="note">過去の月の所属')
+    assert "no_cache" not in html
+
+
+def test_otel_rows_show_differences_ratios_and_percentage_points():
+    """前月比と3か月比は、人数が差、量が比、割合がポイントの差になる。"""
+    before = [
+        _otel_group(
+            month=month, otel_users=25, otel_excluded_people=5, otel_active_days_median=15.0,
+            otel_prompts_median=1000.0, otel_requests=264000, otel_subagent_requests=105600,
+            otel_interactive_decisions_asked=4, otel_custom_subagent_users=12,
+            otel_skill_users=15, otel_mcp_users=15, otel_custom_command_users=10,
+        )
+        for month in SIX
+    ]
+    after = [_otel_group(month=month) for month in SIX]
+    expected = ["+5", "−1", "+30%", "+9%", "+10%", "−0.1 pt", "+3 pt",
+                "+9 pt", "+20 pt", "+13 pt", "+13 pt"]
+    delta_rows = _report_view([], before[:-1] + after[-1:], "org-z")["org_table"]["rows"]
+    trend_rows = _report_view([], before[:3] + after[3:], "org-z")["org_table"]["rows"]
+    assert [row["delta"] for row in delta_rows if row["label"] in OTEL_LABELS] == expected
+    assert [row["trend3"] for row in trend_rows if row["label"] in OTEL_LABELS] == expected
+
+
+def test_otel_zero_denominator_blanks_the_value_and_changes():
+    """指示・判断の分母が0なら、その月の値と点、値を使う前月比・3か月比を出さない。"""
+    teams = [_otel_group(month=month) for month in SIX[:-2]]
+    teams += [_otel_group(month=SIX[-2], otel_prompts=0,
+                          otel_interactive_decisions=0, otel_interactive_decisions_asked=0),
+              _otel_group()]
+    view = _report_view([], teams, "org-z")
+    for label in ("1 回の指示あたりのリクエスト", "その場で確認した割合"):
+        row = _row_of(view["org_table"], label)
+        assert row["cells"][-2] == row["delta"] == row["trend3"] == "—"
+    chart = next(item["chart"] for item in view["charts"] if item["title"] == OTEL_CHARTS[0][0])
+    assert [dot["tip"] for dot in chart["dots"]] == [
+        f"{month}: 0.3%" for month in (*SIX[:-2], SIX[-1])
+    ]
+
+
+def test_otel_charts_draw_unrounded_percentages_and_leave_gaps():
+    """既存の図の後に3つ並び、分子 ÷ 分母 × 100 で描いて値なしの月で線を切る。"""
+    org = _org(SIX, seat_holders=40, code_users=35)
+    rows = [_otel_group(month=month) for month in SIX]
+    rows[0] = dataclasses.replace(
+        rows[0], otel_interactive_decisions_asked=4, otel_subagent_requests=132000,
+        otel_custom_subagent_users=15,
+    )
+    rows[2] = dataclasses.replace(org[2], otel_data=OtelData.NO_CACHE)
+    charts = _report_view([], rows, "org-z")["charts"]
+    assert charts[:6] == _report_view([], org, "org-z")["charts"]
+    assert tuple((item["title"], item["sub"]) for item in charts[6:]) == OTEL_CHARTS
+    for item, first, rest, digits in zip(
+        charts[6:],
+        (4 / 1000, 132000 / 290400, 15 / 30),
+        (3 / 1000, 124872 / 290400, 17 / 30),
+        (1, 0, 0),
+        strict=True,
+    ):
+        chart = item["chart"]
+        values = [first * 100, rest * 100, None] + [rest * 100] * 3
+        assert chart == _line_chart(SIX, values, lambda v, d=digits: f"{v:.{d}f}%")
+        assert len(chart["dots"]) == 5
+        assert [len(segment.split()) for segment in chart["segments"]] == [2, 3]
+
+
+def test_without_otel_there_are_no_otel_rows_charts_or_about(tmp_path):
+    """未設定なら指標の行・図・読み方の段落を描画しない。"""
+    html = _write(tmp_path, [], _org(THREE)).decode("utf-8")
+    assert all(f'<td class="m">{label}</td>' not in html for label in OTEL_LABELS)
+    assert all(f"<h3>{title}</h3>" not in html for title, _ in OTEL_CHARTS)
+    assert 'class="note">OpenTelemetry の行。' not in html
+
+
+def test_otel_without_github_shows_otel_rows_and_charts_even_without_cache(tmp_path):
+    """GitHub がなくても、設定済みなら全月が空欄でも区切り付きの行・図・読み方を出す。"""
+    teams = [_no_github_group(month=m, otel_data=OtelData.NO_CACHE) for m in THREE]
+    view = _report_view([], teams, "org-z")
+    rows = view["org_table"]["rows"]
+    assert [row["label"] for row in rows[:6]] == [
+        "シートを持つ人", "使った人の割合", "3 か月続けて使った人の割合", "需要 / 人（USD）",
+        "需要の中央値（USD）", "加えた行（中央値）",
+    ]
+    assert tuple(row["label"] for row in rows[6:]) == OTEL_LABELS
+    assert rows[6]["sep"]
+    assert all(row["cells"] == ["—"] * 3 for row in rows[6:])
+    assert [item["title"] for item in view["charts"]] == [
+        "Claude Code を使った人", "Claude Code の需要", "Claude Code が加えた行（中央値）",
+        *(title for title, _ in OTEL_CHARTS),
+    ]
+    assert all(not item["chart"]["dots"] for item in view["charts"][3:])
+    assert 'class="note">OpenTelemetry の行。' in _write(tmp_path, [], teams).decode("utf-8")
+
+
+def test_otel_preserves_overviews_tiles_people_and_scatter(tmp_path):
+    """集まりの一覧・要約・人ごとの一覧・散布図を保ち、入力順で出力が変わらない。"""
+    org = [_otel_group(month=month) for month in SIX]
+    teams = org + [
+        dataclasses.replace(row, scope=GroupScope.TEAM, name="Orion-Team") for row in org
+    ]
+    people = [_person(month=m) for m in SIX]
+    baseline = _org(SIX, seat_holders=40, code_users=35)
+    baseline += [dataclasses.replace(row, scope=GroupScope.TEAM, name="Orion-Team")
+                 for row in baseline]
+    before = _report_view(people, baseline, "org-z")
+    after = _report_view(people, teams, "org-z")
+    for key in ("tiles", "people", "scatter", "nav"):
+        assert after[key] == before[key]
+    assert after["sections"][0]["overview"] == before["sections"][0]["overview"]
+    assert _write(tmp_path, people, teams) == _write(tmp_path, reversed(people), reversed(teams))
 
 
 def test_outside_org_mark_tooltip_and_unchanged_cells(tmp_path):

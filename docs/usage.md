@@ -337,7 +337,8 @@ members-info の未登録・読み取り失敗を検査する。`doctor` も未�
    [adoption-report](./reference.md#adoption-reportレポート)）
 
    OpenTelemetry を設定した組織では、人 × 月の表とチーム × 月の表に、OpenTelemetry の
-   月の状態と、キャッシュから数えた使い方の値が入る。
+   月の状態と、キャッシュから数えた使い方の値が入る。レポートにも OpenTelemetry の
+   使い方の指標の行と図が入る。
 
    人 × 月の表の `outside_org` とレポートの「!」は、Claude Code が加えた行が一定以上あるのに
    対象の GitHub Organization にコミットもマージ PR も無い月を、本人に確かめるきっかけとして
@@ -583,8 +584,8 @@ org-a 2026-10: 2 人・イベントの行 10 件・セッションの行 2 件 �
 
 取得した月は `seat-analyzer doctor --org org-a --month 2026-10` で OpenTelemetry に
 届いている割合を確かめられる。取得しても、シートの判定と、組織の担当者へ共有する成果物は
-変わらない。`adoption.enabled` を有効にした正式分析では、人 × 月の表とチーム × 月の表の
-OpenTelemetry の列に値が入る。
+変わらない。`adoption.enabled` を有効にした正式分析では、人 × 月の表・チーム × 月の表の
+OpenTelemetry の列と、レポートの OpenTelemetry の指標に値が入る。
 
 ## 速報モード（部分月データでの一次判断）
 
