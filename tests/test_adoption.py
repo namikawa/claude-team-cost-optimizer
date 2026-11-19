@@ -15,12 +15,15 @@ import yaml
 from seat_analyzer import adoption, cli
 from seat_analyzer.adoption import (
     GITHUB_NOT_CONFIGURED,
+    OTEL_NOT_CONFIGURED,
     GithubData,
     GithubId,
     GithubMonth,
     GroupMonth,
     GroupScope,
     MonthInputs,
+    OtelData,
+    OtelMonth,
     PersonMonth,
     github_data_state,
     group_rows,
@@ -30,6 +33,7 @@ from seat_analyzer.adoption import (
 )
 from seat_analyzer.analyze import analyze_org
 from seat_analyzer.config import load_config
+from seat_analyzer.data_quality import OtelCoverageStatus
 from seat_analyzer.github_collect import GithubMemberLink, GithubMembers
 from seat_analyzer.github_metrics import (
     CommitMetrics,
@@ -41,6 +45,7 @@ from seat_analyzer.github_metrics import (
     UserPrMetrics,
     summarize_lead_times,
 )
+from seat_analyzer.otel_metrics import OtelUsage
 
 from .conftest import CONFIG, SPEND_HEADER, spend_row
 
@@ -120,7 +125,8 @@ def _by_email(rows) -> dict[str, PersonMonth]:
 def test_rows_are_seat_holders_in_email_order(make_input):
     """行はシートを持つ人だけで、メール昇順（未割当・members に居ない人は行にしない）。"""
     rows = person_rows(
-        _analyze(_single(make_input)), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(_single(make_input)), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     )
     assert [(row.email, row.seat) for row in rows] == [
         ("bea@x.jp", "premium"), ("cai@x.jp", "standard"), ("dan@x.jp", "standard"),
@@ -136,7 +142,9 @@ def test_demand_and_loc_match_the_features_and_users(make_input):
     workspace = result.workspaces[ORG]
     features = workspace.product_usage.features
     users = workspace.users.set_index("email")
-    rows = _by_email(person_rows(result, GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000))
+    rows = _by_email(person_rows(
+        result, GITHUB_NOT_CONFIGURED, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))
     for email in ("bea@x.jp", "cai@x.jp"):
         row = rows[email]
         for name in ("total_demand_usd", "code_demand_usd", "code_requests"):
@@ -149,7 +157,8 @@ def test_demand_and_loc_match_the_features_and_users(make_input):
 def test_a_seat_holder_without_spend_has_zero_demand(make_input):
     """spend に行の無いシート保有者は、需要0・リクエスト数0（空欄にしない）。"""
     row = _by_email(person_rows(
-        _analyze(_single(make_input)), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(_single(make_input)), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))["dan@x.jp"]
     assert (row.total_demand_usd, row.code_demand_usd, row.code_requests) == (0.0, 0.0, 0.0)
 
@@ -165,7 +174,8 @@ def test_spend_without_product_column_leaves_code_values_blank(make_input):
         encoding="utf-8", newline="\n",
     )
     row = _by_email(person_rows(
-        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))["bea@x.jp"]
     assert row.total_demand_usd == pytest.approx(40.0)
     assert row.code_demand_usd is None
@@ -175,11 +185,15 @@ def test_spend_without_product_column_leaves_code_values_blank(make_input):
 def test_loc_is_none_without_code_analytics_and_zero_without_a_row(make_input):
     """code-analytics の無い月は LoC が None、ファイルがあって行の無い人は0。"""
     input_dir = _single(make_input)
-    rows = person_rows(_analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000)
+    rows = person_rows(
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED, otel=OTEL_NOT_CONFIGURED,
+        outside_org_min_lines=1000,
+    )
     assert all(row.loc_with_cc is None for row in rows)
     _write_code(input_dir / ORG, [("bea@x.jp", 120)])
     rows = _by_email(person_rows(
-        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))
     assert rows["bea@x.jp"].loc_with_cc == 120
     assert rows["dan@x.jp"].loc_with_cc == 0
@@ -195,7 +209,9 @@ def test_nested_org_sums_accounts_in_one_row(make_input, tmp_path):
     cfg = _nested_cfg(tmp_path)
     _write_code(input_dir / NESTED / "main", [("amy@x.jp", 30), ("bo@x.jp", 5)])
     result = _analyze(input_dir, cfg, NESTED)
-    rows = _by_email(person_rows(result, GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000))
+    rows = _by_email(person_rows(
+        result, GITHUB_NOT_CONFIGURED, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))
     assert [(row.email, row.seat) for row in rows.values()] == [
         ("amy@x.jp", "standard+premium"), ("bo@x.jp", "premium"), ("cy@x.jp", "premium"),
     ]
@@ -217,7 +233,8 @@ def test_nested_org_sums_accounts_in_one_row(make_input, tmp_path):
 
     _write_code(input_dir / NESTED / "second", [("amy@x.jp", 12), ("cy@x.jp", 4)])
     rows = _by_email(person_rows(
-        _analyze(input_dir, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(input_dir, cfg, NESTED), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))
     assert (rows["amy@x.jp"].loc_with_cc, rows["cy@x.jp"].loc_with_cc) == (42, 4)
 
@@ -298,7 +315,9 @@ _STATE_COLUMNS = {
 def test_each_github_state_blanks_the_specified_columns(make_input, state):
     """github_data の6つの状態のそれぞれで、設計書の表のとおりの列だけが None になる。"""
     result = _analyze(_single(make_input))
-    bea = _by_email(person_rows(result, _github(state), outside_org_min_lines=1000))["bea@x.jp"]
+    bea = _by_email(person_rows(
+        result, _github(state), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+    ))["bea@x.jp"]
     pr, commit, cache = _STATE_COLUMNS[state]
     assert bea.github_data is state
     assert all((getattr(bea, name) is not None) is pr for name in _PR_COLUMNS)
@@ -338,11 +357,12 @@ def test_incomplete_cache_month_keeps_its_state(make_input):
     result = _analyze(_single(make_input))
     for state in (GithubData.OK, GithubData.NO_PREVIOUS_MONTH, GithubData.NO_REPOSITORY_LIST):
         bea = _by_email(person_rows(
-            result, _github(state, complete=False), outside_org_min_lines=1000,
+            result, _github(state, complete=False),
+            otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
         ))["bea@x.jp"]
         assert (bea.github_data, bea.github_cache_complete) == (state, False)
     bea = _by_email(person_rows(
-        result, _github(GithubData.NO_CACHE), outside_org_min_lines=1000,
+        result, _github(GithubData.NO_CACHE), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))["bea@x.jp"]
     assert bea.github_cache_complete is None
 
@@ -350,7 +370,8 @@ def test_incomplete_cache_month_keeps_its_state(make_input):
 def test_github_columns_are_only_for_login_people(make_input):
     """github_id は login・none・unset。login でない人は状態が ok でも GitHub の列が None。"""
     rows = _by_email(person_rows(
-        _analyze(_single(make_input)), _github(GithubData.OK), outside_org_min_lines=1000,
+        _analyze(_single(make_input)), _github(GithubData.OK),
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))
     assert [rows[email].github_id for email in rows] == [
         GithubId.LOGIN, GithubId.NONE, GithubId.UNSET]
@@ -367,7 +388,7 @@ def test_a_login_person_without_prs_has_no_lead_time(make_input):
         commits=None, cache_complete=True,
     )
     bea = _by_email(person_rows(
-        _analyze(_single(make_input)), github, outside_org_min_lines=1000,
+        _analyze(_single(make_input)), github, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))["bea@x.jp"]
     assert (bea.merged_pr_count, bea.lead_time_median_hours) == (0, None)
 
@@ -384,6 +405,7 @@ def _row(**changes) -> PersonMonth:
         github_data=GithubData.OK, github_cache_complete=True, merged_pr_count=2,
         lead_time_median_hours=1.5, commit_count=3, lines_added_capped=20, large_commits=1,
         outside_org=None, outside_org_months=None,
+        otel_data=OtelData.NOT_CONFIGURED, otel_coverage=None, otel_usage=None,
     )
     return dataclasses.replace(base, **changes)
 
@@ -413,21 +435,25 @@ def test_spend_complete_is_false_for_a_partial_month(make_input, tmp_path):
     """部分月は False。複数スペースで片方だけ部分月でも False。"""
     input_dir = _single(make_input)
     assert all(row.spend_complete for row in person_rows(
-        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))
     _write_partial(input_dir / ORG, [spend_row("bea@x.jp", 20.0)])
     assert not any(row.spend_complete for row in person_rows(
-        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))
 
     nested = _nested(make_input)
     cfg = _nested_cfg(tmp_path)
     assert all(row.spend_complete for row in person_rows(
-        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))
     _write_partial(nested / NESTED / "second", [spend_row("amy@x.jp", 25.0)])
     assert not any(row.spend_complete for row in person_rows(
-        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ))
 
 
@@ -513,21 +539,29 @@ def test_rows_reject_metrics_of_another_month(make_input):
     github = GithubMonth(state=GithubData.NO_COMMITS, members=_members(), metrics=other,
                          commits=None, cache_complete=True)
     with pytest.raises(ValueError):
-        person_rows(result, github, outside_org_min_lines=1000)
+        person_rows(result, github, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000)
 
 
 def test_same_input_gives_the_same_rows(make_input, tmp_path):
     """同じ入力からは同じ行・同じ並びになる。"""
     input_dir = _single(make_input)
-    first = person_rows(_analyze(input_dir), _github(GithubData.OK), outside_org_min_lines=1000)
-    second = person_rows(_analyze(input_dir), _github(GithubData.OK), outside_org_min_lines=1000)
+    first = person_rows(
+        _analyze(input_dir), _github(GithubData.OK), otel=OTEL_NOT_CONFIGURED,
+        outside_org_min_lines=1000,
+    )
+    second = person_rows(
+        _analyze(input_dir), _github(GithubData.OK), otel=OTEL_NOT_CONFIGURED,
+        outside_org_min_lines=1000,
+    )
     assert first == second
     nested = _nested(make_input)
     cfg = _nested_cfg(tmp_path)
     assert person_rows(
-        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     ) == person_rows(
-        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(nested, cfg, NESTED), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     )
 
 
@@ -569,6 +603,7 @@ def _person(email: str, *, month: str = MONTH, department: str = "", team: str =
         large_commits=0 if commit_on else None,
         outside_org=False if commit_on and loc is not None else None,
         outside_org_months=0 if commit_on and loc is not None else None,
+        otel_data=OtelData.NOT_CONFIGURED, otel_coverage=None, otel_usage=None,
     )
 
 
@@ -582,6 +617,7 @@ def _auto_prs(rows: list[PersonMonth]) -> list[SubjectPr]:
 
 def _inputs(rows: list[PersonMonth], *, month: str = MONTH,
             state: GithubData = GithubData.OK,
+            otel_data: OtelData = OtelData.NOT_CONFIGURED,
             prs: list[SubjectPr] | None = None) -> MonthInputs:
     """1か月分の材料（行は email の昇順へ並べ、PR ごとの値は省くと行の件数から作る）。"""
     ordered = sorted(rows, key=lambda row: row.email)
@@ -591,6 +627,7 @@ def _inputs(rows: list[PersonMonth], *, month: str = MONTH,
         rows=tuple(ordered),
         prs=(tuple(_auto_prs(ordered) if prs is None else prs)
              if state in _PR_STATES else None),
+        otel_data=otel_data,
     )
 
 
@@ -641,7 +678,9 @@ def test_counts_and_sums_match_the_person_rows(make_input):
     _write_info(input_dir / ORG, [f"bea@x.jp,{DEPT_1},{TEAM_1}", f"cai@x.jp,{DEPT_1},",
                                   f"dan@x.jp,{DEPT_2},{TEAM_1}"])
     github = dataclasses.replace(_github(GithubData.OK), prs=_bea_prs())
-    material = month_inputs(_analyze(input_dir), github, outside_org_min_lines=1000)
+    material = month_inputs(
+        _analyze(input_dir), github, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+    )
     rows = _keyed(group_rows([material]))
     groups = {
         (GroupScope.ORGANIZATION, ""): material.rows,
@@ -733,7 +772,8 @@ def test_blank_materials_blank_the_group_values(make_input):
     """材料の人の値が1人でも空欄なら、その集まりの列は空欄（人数は値を持つ）。"""
     input_dir = _single(make_input)
     org = _org(group_rows([month_inputs(
-        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     )]))
     assert org.code_users == 2
     assert org.loc_median_of_users is None   # code-analytics の無い月
@@ -741,7 +781,8 @@ def test_blank_materials_blank_the_group_values(make_input):
     _drop_product_column(input_dir / ORG,
                          [spend_row("bea@x.jp", 40.0), spend_row("cai@x.jp", 5.0)])
     org = _org(group_rows([month_inputs(
-        _analyze(input_dir), GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000,
+        _analyze(input_dir), GITHUB_NOT_CONFIGURED,
+        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
     )]))
     assert org.seat_holders == 3
     assert (org.code_users, org.code_users_3m, org.code_demand_usd,
@@ -878,6 +919,11 @@ def _group(**changes) -> GroupMonth:
         pr_additions_median=20.0, lead_time_median_hours=2.0, lead_time_p90_hours=5.0,
         lines_added_capped=60, code_demand_usd_of_github_people=30.0,
         outside_org_people=None,
+        otel_data=OtelData.NOT_CONFIGURED, otel_users=None, otel_excluded_people=None,
+        otel_active_days_median=None, otel_prompts_median=None, otel_prompts=None,
+        otel_requests=None, otel_subagent_requests=None, otel_interactive_decisions=None,
+        otel_interactive_decisions_asked=None, otel_custom_subagent_users=None,
+        otel_skill_users=None, otel_mcp_users=None, otel_custom_command_users=None,
     )
     return dataclasses.replace(base, **changes)
 
@@ -939,7 +985,7 @@ def test_month_inputs_rejects_inconsistent_materials():
     with pytest.raises(ValueError):
         MonthInputs(month=MONTH, spend_complete=True, github_data=GithubData.OK,
                     github_cache_complete=True, rows=(_person("b@x.jp"), _person("a@x.jp")),
-                    prs=())
+                    prs=(), otel_data=OtelData.NOT_CONFIGURED)
     with pytest.raises(ValueError):
         _inputs([row, _person("a@x.jp")])   # 同じ人が2行
     with pytest.raises(ValueError):
@@ -970,11 +1016,15 @@ def test_month_inputs_requires_the_pr_values(make_input):
     """PR の集計を持つ GitHub の材料に PR ごとの値が無ければ、1か月分の材料を作れない。"""
     result = _analyze(_single(make_input))
     with pytest.raises(ValueError):
-        month_inputs(result, _github(GithubData.OK), outside_org_min_lines=1000)
-    material = month_inputs(result, dataclasses.replace(_github(GithubData.OK),
-                                                        prs=_bea_prs()), outside_org_min_lines=1000)
+        month_inputs(
+            result, _github(GithubData.OK), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+        )
+    github = dataclasses.replace(_github(GithubData.OK), prs=_bea_prs())
+    material = month_inputs(result, github, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000)
     assert material.prs == _bea_prs()
-    assert material.rows == person_rows(result, _github(GithubData.OK), outside_org_min_lines=1000)
+    assert material.rows == person_rows(
+        result, _github(GithubData.OK), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+    )
 
 
 @pytest.mark.parametrize(("state", "prs"), [
@@ -1055,7 +1105,7 @@ def test_outside_org_judges_threshold_and_either_output(make_input, loc, commits
     """下限ちょうどで該当し、行不足・コミットか PR のある月は該当しない。"""
     result = _outside_results(make_input, (MONTH,), loc)[0]
     row = person_rows(result, _outside_github(commits=commits, prs=prs),
-                      outside_org_min_lines=1000)[0]
+                      otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000)[0]
     assert row.outside_org is expected
     assert row.outside_org_months == (1 if expected else 0)
 
@@ -1064,7 +1114,9 @@ def test_outside_org_judges_threshold_and_either_output(make_input, loc, commits
 def test_outside_org_requires_ok_state(make_input, state):
     """ok 以外のすべての材料の状態は False ではなく空欄。"""
     result = _outside_results(make_input, (MONTH,))[0]
-    row = person_rows(result, _outside_github(state=state), outside_org_min_lines=1000)[0]
+    row = person_rows(
+        result, _outside_github(state=state), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+    )[0]
     assert row.outside_org is (True if state is GithubData.OK else None)
     assert row.outside_org_months == (1 if state is GithubData.OK else None)
 
@@ -1073,7 +1125,10 @@ def test_outside_org_requires_ok_state(make_input, state):
 def test_outside_org_does_not_judge_declared_or_unset_people(make_input, github_id):
     """なし・未記入の人は、加えた行が下限以上でも判定しない。"""
     result = _outside_results(make_input, (MONTH,))[0]
-    row = person_rows(result, _outside_github(github_id=github_id), outside_org_min_lines=1000)[0]
+    row = person_rows(
+        result, _outside_github(github_id=github_id), otel=OTEL_NOT_CONFIGURED,
+        outside_org_min_lines=1000,
+    )[0]
     assert row.outside_org is None and row.outside_org_months is None
 
 
@@ -1084,7 +1139,7 @@ def test_outside_org_requires_complete_collection_and_known_loc(make_input):
     for material, github in [
         (result, _outside_github(complete=False)), (unknown, _outside_github()),
     ]:
-        row = person_rows(material, github, outside_org_min_lines=1000)[0]
+        row = person_rows(material, github, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000)[0]
         assert row.outside_org is None and row.outside_org_months is None
 
 
@@ -1092,14 +1147,20 @@ def test_outside_org_requires_complete_collection_and_known_loc(make_input):
 def test_outside_org_streak_breaks_and_restarts(make_input, break_kind):
     """非該当・不明・行なし・申告済み・前月なしで連続が途切れる。"""
     results = _outside_results(make_input)
-    first = person_rows(results[0], _outside_github(results[0].month), outside_org_min_lines=1000)
+    first = person_rows(
+        results[0], _outside_github(results[0].month), otel=OTEL_NOT_CONFIGURED,
+        outside_org_min_lines=1000,
+    )
     assert first[0].outside_org_months == 1
     middle_github = _outside_github(
         results[1].month, commits=1 if break_kind == "false" else 0,
         complete=break_kind != "unknown",
         github_id=GithubId.NONE if break_kind == "declared" else GithubId.LOGIN,
     )
-    second = person_rows(results[1], middle_github, outside_org_min_lines=1000, previous_rows=first)
+    second = person_rows(
+        results[1], middle_github, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+        previous_rows=first,
+    )
     expected = 0 if break_kind == "false" else None if break_kind in ("unknown", "declared") else 2
     assert second[0].outside_org_months == expected
     previous_rows = (
@@ -1108,8 +1169,10 @@ def test_outside_org_streak_breaks_and_restarts(make_input, break_kind):
     )
     if break_kind == "no_previous":
         previous_rows = ()
-    third = person_rows(results[2], _outside_github(), outside_org_min_lines=1000,
-                        previous_rows=previous_rows)
+    third = person_rows(
+        results[2], _outside_github(), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+        previous_rows=previous_rows,
+    )
     assert third[0].outside_org is True and third[0].outside_org_months == 1
 
 
@@ -1120,7 +1183,10 @@ def test_outside_org_streak_uses_person_rows_without_pr_details_across_year(make
     for expected, result in enumerate(results, 1):
         github = _outside_github(result.month)
         assert github.prs is None
-        previous = person_rows(result, github, outside_org_min_lines=1000, previous_rows=previous)
+        previous = person_rows(
+            result, github, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+            previous_rows=previous,
+        )
         assert previous[0].outside_org_months == expected
 
 
@@ -1130,19 +1196,24 @@ def test_outside_org_month_inputs_and_previous_validation(make_input):
     materials = []
     for result in results:
         github = dataclasses.replace(_outside_github(result.month), prs=())
-        materials.append(month_inputs(result, github, outside_org_min_lines=1000,
-                                      previous=materials[-1] if materials else None))
+        materials.append(month_inputs(
+            result, github, otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+            previous=materials[-1] if materials else None,
+        ))
     assert [m.rows[0].outside_org_months for m in materials] == [1, 2, 3]
     for rows in (materials[0].rows, materials[1].rows * 2):
         with pytest.raises(ValueError):
             person_rows(results[2], _outside_github(),
-                        outside_org_min_lines=1000, previous_rows=rows)
+                        otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000, previous_rows=rows)
     empty = dataclasses.replace(materials[0], rows=())
     with pytest.raises(ValueError):
-        month_inputs(results[2], _outside_github(), outside_org_min_lines=1000, previous=empty)
+        month_inputs(
+            results[2], _outside_github(), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+            previous=empty,
+        )
     with pytest.raises(ValueError):
         month_inputs(results[2], _outside_github(),
-                     outside_org_min_lines=1000, previous=materials[0])
+                     otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000, previous=materials[0])
 
 
 @pytest.mark.parametrize(("minimum", "error"), [(0, ValueError), (-1, ValueError),
@@ -1152,7 +1223,9 @@ def test_outside_org_minimum_argument_is_positive_integer(make_input, minimum, e
     result = _outside_results(make_input, (MONTH,))[0]
     for build in (person_rows, month_inputs):
         with pytest.raises(error):
-            build(result, _outside_github(), outside_org_min_lines=minimum)
+            build(
+                result, _outside_github(), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=minimum,
+            )
 
 
 @pytest.mark.parametrize(("changes", "error"), [
@@ -1268,8 +1341,279 @@ def test_outside_org_previous_inputs_reject_wrong_types(make_input):
     result = _outside_results(make_input, (MONTH,))[0]
     previous = _inputs([], month="2026-05")
     with pytest.raises(TypeError):
-        month_inputs(None, _outside_github(), outside_org_min_lines=1000, previous=previous)
+        month_inputs(
+            None, _outside_github(), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+            previous=previous,
+        )
     with pytest.raises(TypeError):
-        month_inputs(result, _outside_github(), outside_org_min_lines=1000, previous=())
+        month_inputs(
+            result, _outside_github(), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+            previous=(),
+        )
     with pytest.raises(TypeError):
-        person_rows(result, _outside_github(), outside_org_min_lines=1000, previous_rows=(None,))
+        person_rows(
+            result, _outside_github(), otel=OTEL_NOT_CONFIGURED, outside_org_min_lines=1000,
+            previous_rows=(None,),
+        )
+
+
+# ------------------------------------------------------------ OpenTelemetry
+
+
+@pytest.mark.parametrize("state", [state for state in OtelData if state is not OtelData.OK])
+def test_otel_person_blanks_coverage_and_usage_when_month_is_not_ok(make_input, state):
+    """材料がそろわない4つの状態では、網羅率と件数を空欄にする。"""
+    result = _analyze(_single(make_input))
+    rows = person_rows(
+        result, GITHUB_NOT_CONFIGURED, otel=OtelMonth(state, None, None),
+        outside_org_min_lines=1000,
+    )
+    assert rows
+    for row in rows:
+        assert row.otel_data is state
+        assert row.otel_coverage is row.otel_usage is None
+
+
+@pytest.mark.parametrize(("status", "expected_usage"), [
+    (OtelCoverageStatus.OK, OtelUsage(requests=7, active_days=2)),
+    (OtelCoverageStatus.NOT_JUDGED, OtelUsage(requests=7, active_days=2)),
+    (OtelCoverageStatus.LOW, None),
+    (OtelCoverageStatus.MISSING, None),
+    (OtelCoverageStatus.UNKNOWN, None),
+])
+def test_otel_person_uses_coverage_to_choose_whether_to_write_counts(
+    make_input, status, expected_usage,
+):
+    """網羅率が悪い人の件数だけを隠し、材料に居ない人は判定対象外の0件にする。"""
+    result = _analyze(_single(make_input))
+    coverage = {"bea@x.jp": status, "cai@x.jp": OtelCoverageStatus.NOT_JUDGED}
+    usage = {"bea@x.jp": OtelUsage(requests=7, active_days=2)}
+    material = month_inputs(
+        result, GITHUB_NOT_CONFIGURED, otel=OtelMonth(OtelData.OK, usage, coverage),
+        outside_org_min_lines=1000,
+    )
+    assert material.otel_data is OtelData.OK
+    rows = _by_email(material.rows)
+    assert rows["bea@x.jp"].otel_coverage is status
+    assert rows["bea@x.jp"].otel_usage == expected_usage
+    for email in ("cai@x.jp", "dan@x.jp"):
+        assert rows[email].otel_coverage is OtelCoverageStatus.NOT_JUDGED
+        assert rows[email].otel_usage == OtelUsage()
+
+
+@pytest.mark.parametrize(("changes", "error"), [
+    ({"state": "ok"}, TypeError),
+    ({"usage": []}, TypeError),
+    ({"coverage": [(1, OtelCoverageStatus.OK)]}, TypeError),
+    ({"usage": {1: OtelUsage()}}, TypeError),
+    ({"usage": {"alice@example.com": 1}}, TypeError),
+    ({"coverage": {"alice@example.com": "ok"}}, TypeError),
+    ({"usage": None}, ValueError),
+    ({"coverage": None}, ValueError),
+    ({"state": OtelData.NO_CACHE, "coverage": None}, ValueError),
+    ({"state": OtelData.NO_CACHE, "usage": None}, ValueError),
+])
+def test_otel_month_invariants(changes, error):
+    """月の状態を検査し、ok と人ごとの対応表の有無を一致させる。"""
+    with pytest.raises(error):
+        OtelMonth(**({"state": OtelData.OK, "usage": {}, "coverage": {}} | changes))
+
+
+@pytest.mark.parametrize(("changes", "error"), [
+    ({"otel_data": "ok"}, TypeError),
+    ({"otel_coverage": "ok"}, TypeError),
+    ({"otel_usage": {}}, TypeError),
+    ({"otel_data": OtelData.NO_CACHE, "otel_usage": None}, ValueError),
+    ({"otel_coverage": None, "otel_usage": None}, ValueError),
+    ({"otel_coverage": OtelCoverageStatus.LOW}, ValueError),
+    ({"otel_coverage": OtelCoverageStatus.MISSING}, ValueError),
+    ({"otel_coverage": OtelCoverageStatus.UNKNOWN}, ValueError),
+    ({"otel_coverage": OtelCoverageStatus.NOT_JUDGED, "otel_usage": None}, ValueError),
+    ({"otel_usage": None}, ValueError),
+])
+def test_otel_person_invariants(changes, error):
+    """月の状態で網羅率を、網羅率の状態で件数の有無を決める。"""
+    values = {
+        "otel_data": OtelData.OK, "otel_coverage": OtelCoverageStatus.OK, "otel_usage": OtelUsage(),
+    }
+    with pytest.raises(error):
+        _row(**(values | changes))
+
+
+def test_otel_month_inputs_requires_a_matching_state():
+    """材料の状態は OtelData で、行の状態と同じ値を要求する。"""
+    material = _inputs([_person("alice@example.com")])
+    with pytest.raises(TypeError, match="otel_data"):
+        dataclasses.replace(material, otel_data="not_configured")
+    with pytest.raises(ValueError, match="月の値"):
+        dataclasses.replace(material, otel_data=OtelData.NO_CACHE)
+
+
+_OTEL_GROUP_VALUES = {
+    "otel_users": 2, "otel_excluded_people": 1,
+    "otel_active_days_median": 15.5, "otel_prompts_median": 25.5,
+    "otel_prompts": 51, "otel_requests": 400, "otel_subagent_requests": 100,
+    "otel_interactive_decisions": 50, "otel_interactive_decisions_asked": 5,
+    "otel_custom_subagent_users": 1, "otel_skill_users": 1,
+    "otel_mcp_users": 1, "otel_custom_command_users": 1,
+}
+
+
+def _otel_group_values(group):
+    """集まりの OTel の件数列を取り出す。"""
+    return {name: getattr(group, name) for name in _OTEL_GROUP_VALUES}
+
+
+def _otel_people():
+    """同じ部署で、網羅率・支出レポート・OTel のリクエストが異なる人の行。"""
+    examples = (
+        ("alice", OtelCoverageStatus.OK, 10.0, OtelUsage(
+            requests=100, subagent_requests=40, active_days=10, prompts=20,
+            interactive_decisions=50, interactive_decisions_asked=5, skill_requests=3,
+        )),
+        ("bob", OtelCoverageStatus.NOT_JUDGED, 5.0, OtelUsage(
+            requests=300, subagent_requests=60, custom_subagent_requests=60, active_days=21,
+            prompts=31, mcp_decisions=2, custom_command_prompts=1,
+        )),
+        ("carol", OtelCoverageStatus.LOW, 50.0, None),
+        ("dan", OtelCoverageStatus.OK, 0.0, OtelUsage(requests=500, active_days=1, prompts=90)),
+        ("eve", OtelCoverageStatus.NOT_JUDGED, 7.0, OtelUsage()),
+    )
+    return [
+        dataclasses.replace(
+            _person(f"{name}@example.com", requests=requests, department=DEPT_1, team=TEAM_1),
+            otel_data=OtelData.OK, otel_coverage=coverage, otel_usage=usage,
+        )
+        for name, coverage, requests, usage in examples
+    ]
+
+
+def test_otel_group_totals_medians_and_feature_users():
+    """3条件を満たす人の件数・中央値・機能別の人数を集まりごとに数える。"""
+    people = _otel_people()
+    material = _inputs(people, otel_data=OtelData.OK)
+    groups = group_rows([material])
+    assert [(row.scope, row.name) for row in groups] == [
+        (GroupScope.ORGANIZATION, ""), (GroupScope.DEPARTMENT, DEPT_1), (GroupScope.TEAM, TEAM_1),
+    ]
+    for row in groups:
+        assert row.otel_data is OtelData.OK
+        assert _otel_group_values(row) == _OTEL_GROUP_VALUES
+
+    # 網羅率で除いた人の code_requests は、見える人を決めるときに使わない。
+    excluded_unknown = dataclasses.replace(people[2], code_requests=None)
+    material = _inputs([*people[:2], excluded_unknown, *people[3:]], otel_data=OtelData.OK)
+    assert _otel_group_values(_org(group_rows([material]))) == _OTEL_GROUP_VALUES
+
+    # 網羅率で除くのは OpenTelemetry の値からだけ。
+    plain = [
+        dataclasses.replace(
+            p, otel_data=OtelData.NOT_CONFIGURED, otel_coverage=None, otel_usage=None,
+        )
+        for p in people
+    ]
+    for row, old in zip(groups, group_rows([_inputs(plain)]), strict=True):
+        assert dataclasses.replace(
+            row, otel_data=OtelData.NOT_CONFIGURED, **dict.fromkeys(_OTEL_GROUP_VALUES),
+        ) == old
+
+
+def test_otel_group_with_unknown_code_requests_or_zero_users():
+    """見える人を決められない場合と0人の場合は、除いた人数と空欄の規則を保つ。"""
+    people = _otel_people()
+    expected = dict.fromkeys(_OTEL_GROUP_VALUES)
+    expected["otel_excluded_people"] = 1
+    material = _inputs(
+        [*people[:3], dataclasses.replace(people[3], code_requests=None), people[4]],
+        otel_data=OtelData.OK,
+    )
+    assert _otel_group_values(_org(group_rows([material]))) == expected
+    material = _inputs(people[2:], otel_data=OtelData.OK)
+    assert _otel_group_values(_org(group_rows([material]))) == (expected | {"otel_users": 0})
+
+
+def test_otel_group_not_configured_can_have_code_users():
+    """OTel が未設定でも Claude Code の利用人数を保ち、OTel の件数は空欄にする。"""
+    row = _group()
+    assert row.code_users == 2
+    assert row.otel_data is OtelData.NOT_CONFIGURED
+    assert _otel_group_values(row) == dict.fromkeys(_OTEL_GROUP_VALUES)
+
+
+@pytest.mark.parametrize("state", [state for state in OtelData if state is not OtelData.OK])
+def test_otel_group_metrics_are_blank_when_month_is_not_ok(state):
+    """月の材料がそろわない4つの状態では、人数を含む13列を空欄にする。"""
+    person = dataclasses.replace(_person("alice@example.com"), otel_data=state)
+    row = _org(group_rows([_inputs([person], otel_data=state)]))
+    assert row.otel_data is state
+    assert _otel_group_values(row) == dict.fromkeys(_OTEL_GROUP_VALUES)
+
+
+def test_otel_group_counts_a_person_in_each_department():
+    """兼務者は所属部署のそれぞれとチームで数え、組織全体では1人として数える。"""
+    person = dataclasses.replace(_otel_people()[0], department=f"{DEPT_1}; {DEPT_2}")
+    rows = group_rows([_inputs([person], otel_data=OtelData.OK)])
+    assert {row.name for row in rows if row.scope is GroupScope.DEPARTMENT} == {DEPT_1, DEPT_2}
+    assert len(rows) == 4
+    assert all((row.otel_users, row.otel_requests) == (1, 100) for row in rows)
+
+
+def test_otel_group_without_seat_holders_keeps_the_month_state():
+    """シートを持つ人が0人でも組織全体の状態を書き、人数を0にする。"""
+    row, = group_rows([_inputs([], otel_data=OtelData.OK)])
+    assert row.scope is GroupScope.ORGANIZATION
+    assert row.otel_data is OtelData.OK
+    assert _otel_group_values(row) == (
+        dict.fromkeys(_OTEL_GROUP_VALUES) | {"otel_users": 0, "otel_excluded_people": 0}
+    )
+
+
+@pytest.mark.parametrize(("changes", "error"), [
+    ({"otel_data": "ok"}, TypeError),
+    ({"otel_users": True}, TypeError),
+    ({"otel_excluded_people": 1.5}, TypeError),
+    ({"otel_prompts": 1.0}, TypeError),
+    ({"otel_prompts_median": "1.0"}, TypeError),
+    ({"otel_active_days_median": True}, TypeError),
+    ({"otel_active_days_median": 1}, TypeError),
+    ({"otel_prompts_median": float("nan")}, ValueError),
+    ({"otel_active_days_median": -1.0}, ValueError),
+    ({"otel_prompts": -1}, ValueError),
+    ({"otel_data": OtelData.UNREADABLE}, ValueError),
+    ({"otel_excluded_people": None}, ValueError),
+    ({"otel_excluded_people": -1}, ValueError),
+    ({"otel_excluded_people": 4}, ValueError),
+    ({"otel_excluded_people": 2}, ValueError),
+    ({"code_users": 1}, ValueError),
+    ({"otel_users": None}, ValueError),
+    ({"otel_users": 0}, ValueError),
+    ({"otel_subagent_requests": 401}, ValueError),
+    ({"otel_interactive_decisions_asked": 51}, ValueError),
+    ({"otel_custom_subagent_users": 3}, ValueError),
+    ({"otel_skill_users": 3}, ValueError),
+    ({"otel_mcp_users": 3}, ValueError),
+    ({"otel_custom_command_users": 3}, ValueError),
+    ({"otel_requests": 1, "otel_subagent_requests": 0}, ValueError),
+])
+def test_otel_group_invariants(changes, error):
+    """集まりの状態・人数・件数の型と、空欄および大小関係を検査する。"""
+    values = {"otel_data": OtelData.OK, **_OTEL_GROUP_VALUES}
+    with pytest.raises(error):
+        _group(**(values | changes))
+
+
+@pytest.mark.parametrize("name", [
+    name for name in _OTEL_GROUP_VALUES if name not in ("otel_users", "otel_excluded_people")
+])
+def test_otel_group_with_users_requires_each_metric(name):
+    """使い方が見える人が1人以上なら、その人たちの11項目すべてが値を持つ。"""
+    values = {"otel_data": OtelData.OK, **_OTEL_GROUP_VALUES}
+    with pytest.raises(ValueError, match=name):
+        _group(**(values | {name: None}))
+
+
+@pytest.mark.parametrize("name", _OTEL_GROUP_VALUES)
+def test_otel_group_without_ok_state_forbids_each_metric(name):
+    """月の状態が ok 以外の行は、13項目のどれも値を持たない。"""
+    with pytest.raises(ValueError, match=name):
+        _group(**{name: _OTEL_GROUP_VALUES[name]})

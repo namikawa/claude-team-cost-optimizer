@@ -15,8 +15,10 @@ PR の集合（`github_metrics.subject_prs`）から出す。前月比などの�
 
 値の出どころは成果物と同じものに限る。需要とリクエスト数は usage-summary と同じ
 `product_usage.features`、Claude Code が加えた行は report と同じ users の `loc_with_cc`、
-PR とコミットの値は github-summary と同じ `pr_metrics`・`commit_metrics` の結果。ここで
-新しい集計の規則を作らない（成果物と表の値が食い違わないようにするため）。
+PR とコミットの値は github-summary と同じ `pr_metrics`・`commit_metrics` の結果。
+OpenTelemetry の件数は `otel_metrics.person_usage`、網羅率の状態は doctor と同じ判定
+（`data_quality.otel_month_check`）の結果で、呼び出し側が月の材料（`OtelMonth`）にして渡す。
+ここで新しい集計の規則を作らない（成果物と表の値が食い違わないようにするため）。
 
 複数スペースの組織は人（email）で1行にまとめ、需要・リクエスト数・LoC はアカウントの値の
 和にする。主の users の `api_cost_usd` は、2 アカウントの人では全 workspace の合算値に
@@ -47,6 +49,7 @@ import pandas as pd
 from . import ingest
 from .analyze import AnalysisResult, OrgAnalysisResult
 from .calendar_months import previous_month
+from .data_quality import OtelCoverageStatus
 from .github_collect import GithubMemberLink, GithubMembers, month_windows
 from .github_metrics import (
     CommitMetrics,
@@ -54,6 +57,7 @@ from .github_metrics import (
     SubjectPr,
     summarize_lead_times,
 )
+from .otel_metrics import OtelUsage
 
 # 複数スペースの人のシート種別をつなぐ記号（主を先頭に並べる）
 SEAT_SEPARATOR = "+"
@@ -302,6 +306,70 @@ GITHUB_NOT_CONFIGURED = GithubMonth(
 )
 
 
+@enum.unique
+class OtelData(enum.StrEnum):
+    """その月の OpenTelemetry の材料の状態（`otel_data` の列の値）。
+
+    月ごとに全員同じ値。全月の spend を確かめた月だけ、キャッシュの有無と読み取りを調べる。
+    """
+
+    # OpenTelemetry を設定していない組織
+    NOT_CONFIGURED = "not_configured"
+    # 分析した workspace の spend がすべて全月とは確かめられない
+    SPEND_UNCONFIRMED = "spend_unconfirmed"
+    # spend は全月で、その月のキャッシュのファイルが無い
+    NO_CACHE = "no_cache"
+    # spend は全月で、その月のキャッシュのファイルを読めない
+    UNREADABLE = "unreadable"
+    # spend は全月で、キャッシュを読めた
+    OK = "ok"
+
+
+@dataclass(frozen=True)
+class OtelMonth:
+    """1か月の OpenTelemetry の材料（状態と、正規化したメールで引く人ごとの値）。
+
+    usage はキャッシュから数えた件数、coverage は doctor と同じ網羅率の状態。全月の
+    spend とキャッシュを読めた ok の月だけ両方を持つ。どちらも空の対応表になりうる。
+    """
+
+    state: OtelData
+    usage: Mapping[str, OtelUsage] | None
+    coverage: Mapping[str, OtelCoverageStatus] | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, OtelData):
+            raise TypeError("state には OtelData が必要です")
+        for name, value_type in (("usage", OtelUsage), ("coverage", OtelCoverageStatus)):
+            values = getattr(self, name)
+            if values is not None and (
+                not isinstance(values, Mapping) or not all(
+                    isinstance(key, str) and isinstance(value, value_type)
+                    for key, value in values.items()
+                )
+            ):
+                raise TypeError(f"{name} にはメールと {value_type.__name__} の対応表が必要です")
+            if (values is not None) != (self.state is OtelData.OK):
+                raise ValueError(f"{name} は OpenTelemetry の状態が ok の月だけ持ちます")
+
+
+OTEL_NOT_CONFIGURED = OtelMonth(state=OtelData.NOT_CONFIGURED, usage=None, coverage=None)
+_OTEL_VALUED_COVERAGE = frozenset({OtelCoverageStatus.OK, OtelCoverageStatus.NOT_JUDGED})
+_OTEL_ZERO_USAGE = OtelUsage()
+
+
+def _person_otel(
+    otel: OtelMonth, email: str,
+) -> tuple[OtelCoverageStatus | None, OtelUsage | None]:
+    """人の網羅率の状態と件数。届きが悪い人の件数は空欄にする。"""
+    if otel.state is not OtelData.OK:
+        return None, None
+    key = email.strip().lower()
+    coverage = otel.coverage.get(key, OtelCoverageStatus.NOT_JUDGED)
+    usage = otel.usage.get(key, _OTEL_ZERO_USAGE) if coverage in _OTEL_VALUED_COVERAGE else None
+    return coverage, usage
+
+
 def _outside_org_eligible(
     github_id: GithubId | None, github_data: GithubData,
     github_cache_complete: bool | None, loc_with_cc: int | None,
@@ -347,6 +415,10 @@ class PersonMonth:
     コミットと PR は0件。outside_org_months は暦で連続して該当した月数で、True なら1以上、
     False なら0、None なら None。下限は行に保存せず、行だけでは行数との大小を検査しない。
 
+    otel_data は月の OpenTelemetry の材料の状態。otel_coverage はその人の網羅率の状態で、
+    判定に使う材料がそろった月だけ書く。otel_usage はその人の件数で、網羅率の状態が ok か
+    not_judged のときだけ書く。届きが悪い人の値を実際の利用が少ないように見せないため。
+
     比率（`cost_per_merged_line_usd`）は保存せず、分子と分母から出す（元の値を失わない
     ため）。不変条件は __post_init__ で検査する。型の誤りは TypeError、値の誤りは
     ValueError。空欄は NaN ではなく None で表すので、行どうしは == で比べられる。
@@ -373,6 +445,9 @@ class PersonMonth:
     large_commits: int | None
     outside_org: bool | None
     outside_org_months: int | None
+    otel_data: OtelData
+    otel_coverage: OtelCoverageStatus | None
+    otel_usage: OtelUsage | None
 
     def __post_init__(self) -> None:
         for name in ("email", "month", "seat", *_AFFILIATION_FIELDS):
@@ -413,6 +488,23 @@ class PersonMonth:
             or (self.outside_org is True and not self.outside_org_months)
         ):
             raise ValueError("outside_org_months は None なら空欄、False なら0、True なら1以上です")
+        self._check_otel()
+
+    def _check_otel(self) -> None:
+        """月と人の状態に応じて、網羅率と件数が値を持つか。"""
+        if not isinstance(self.otel_data, OtelData):
+            raise TypeError("otel_data には OtelData が必要です")
+        if self.otel_coverage is not None and not isinstance(
+            self.otel_coverage, OtelCoverageStatus
+        ):
+            raise TypeError("otel_coverage には OtelCoverageStatus か None が必要です")
+        if self.otel_usage is not None and not isinstance(self.otel_usage, OtelUsage):
+            raise TypeError("otel_usage には OtelUsage か None が必要です")
+        ok = self.otel_data is OtelData.OK
+        if (self.otel_coverage is not None) != ok:
+            raise ValueError("otel_coverage は OpenTelemetry の状態が ok の月だけ持ちます")
+        if (self.otel_usage is not None) != (ok and self.otel_coverage in _OTEL_VALUED_COVERAGE):
+            raise ValueError("otel_usage は網羅率の状態が ok か not_judged の人だけ持ちます")
 
     def _check_github(self) -> None:
         """GitHub の列が、状態と対応表の状態から決まる顔ぶれに収まっているか。"""
@@ -599,14 +691,14 @@ def _spend_complete(result: OrgAnalysisResult) -> bool:
 
 
 def person_rows(
-    result: OrgAnalysisResult, github: GithubMonth, *,
+    result: OrgAnalysisResult, github: GithubMonth, *, otel: OtelMonth,
     outside_org_min_lines: int, previous_rows: Iterable[PersonMonth] = (),
 ) -> tuple[PersonMonth, ...]:
     """1 か月分の人 × 月の行（シートを持つ人だけ・email の昇順）。
 
     result はその月を対象月として分析した結果、github はその月の GitHub の材料で、PR と
     コミットの集計は同じ月の同じ対象者（`seat_holders` の email）で作ったもの。集計の月が
-    result の月と違えば ValueError。型の誤りは TypeError。
+    result の月と違えば ValueError。otel はその月の OpenTelemetry の材料。型の誤りは TypeError。
 
     outside_org_min_lines は管轄外の検知の行数の下限（1以上の整数、真偽値は不可）。
     previous_rows は暦で1つ前の月の人の行だけ（無ければ空）。該当する月は前の同じ人の
@@ -620,6 +712,8 @@ def person_rows(
         )
     if not isinstance(github, GithubMonth):
         raise TypeError(f"github には GithubMonth が必要です: {type(github).__name__}")
+    if not isinstance(otel, OtelMonth):
+        raise TypeError(f"otel には OtelMonth が必要です: {type(otel).__name__}")
     for metrics in (github.metrics, github.commits):
         if metrics is not None and metrics.month != result.month:
             raise ValueError(
@@ -652,6 +746,7 @@ def person_rows(
             previous = prior.get(email)
             before = None if previous is None else previous.outside_org_months
             months = 1 + (before or 0) if outside else 0
+        coverage, usage = _person_otel(otel, email)
         rows.append(PersonMonth(
             email=email,
             month=result.month,
@@ -666,6 +761,9 @@ def person_rows(
             **github_values,
             outside_org=outside,
             outside_org_months=months,
+            otel_data=otel.state,
+            otel_coverage=coverage,
+            otel_usage=usage,
         ))
     return tuple(rows)
 
@@ -700,10 +798,11 @@ _AFFILIATION_SCOPES = ((GroupScope.DEPARTMENT, "department"), (GroupScope.TEAM, 
 class MonthInputs:
     """チーム × 月の表の1か月分の材料（その月の値と、人 × 月の行と、PR ごとの値）。
 
-    month は対象月（YYYY-MM）。spend_complete・github_data・github_cache_complete はその月の
-    値で、人 × 月の行の同じ列と同じ意味。rows はその月の人 × 月の行（`person_rows` の結果。
-    email の昇順で重複しない）。prs は対象者の PR ごとの値（`GithubMonth.prs`）で、PR の列を
-    書く状態（no_commits・no_previous_month・ok）でだけ持ち、それ以外は None。
+    month は対象月（YYYY-MM）。spend_complete・github_data・github_cache_complete・otel_data
+    はその月の値で、人 × 月の行の同じ列と同じ意味。rows はその月の人 × 月の行
+    （`person_rows` の結果。email の昇順で重複しない）。prs は対象者の PR ごとの値
+    （`GithubMonth.prs`）で、PR の列を書く状態（no_commits・no_previous_month・ok）でだけ
+    持ち、それ以外は None。
 
     rows の管轄外の検知と連続月数は組み立て済みで、次の月の `month_inputs` にこの材料を
     渡すと、その人の前月の連続月数を使える（暦で1つ前の月だけ受け付ける）。
@@ -712,10 +811,10 @@ class MonthInputs:
     月の値を読むと、行の無い月の値が決まらない）。
 
     不変条件は __post_init__ で検査する: 行の month・spend_complete・github_data・
-    github_cache_complete が月の値と一致する／行は email の昇順で重複しない／PR ごとの値の
-    email は、その月の行のうち github_id が login の人のもので、人ごとの件数がその人の
-    merged_pr_count と一致する。行と PR ごとの値が別の月・別の集計から来ると、集まりの
-    PR の値が人ごとの件数と食い違うため。型の誤りは TypeError、値の誤りは ValueError。
+    github_cache_complete・otel_data が月の値と一致する／行は email の昇順で重複しない／
+    PR ごとの値の email は、その月の行のうち github_id が login の人のもので、人ごとの件数
+    がその人の merged_pr_count と一致する。行と PR ごとの値が別の月・別の集計から来ると、
+    集まりの PR の値が人ごとの件数と食い違うため。型の誤りは TypeError、値の誤りは ValueError。
     """
 
     month: str
@@ -724,6 +823,7 @@ class MonthInputs:
     github_cache_complete: bool | None
     rows: tuple[PersonMonth, ...]
     prs: tuple[SubjectPr, ...] | None
+    otel_data: OtelData
 
     def __post_init__(self) -> None:
         if not isinstance(self.month, str):
@@ -736,6 +836,8 @@ class MonthInputs:
             )
         if self.github_cache_complete is not None:
             _check_flag("github_cache_complete", self.github_cache_complete)
+        if not isinstance(self.otel_data, OtelData):
+            raise TypeError("otel_data には OtelData が必要です")
         if not isinstance(self.rows, tuple) or not all(
             isinstance(row, PersonMonth) for row in self.rows
         ):
@@ -757,6 +859,7 @@ class MonthInputs:
                 or row.spend_complete != self.spend_complete
                 or row.github_data is not self.github_data
                 or row.github_cache_complete != self.github_cache_complete
+                or row.otel_data is not self.otel_data
             ):
                 raise ValueError(f"行の月の値が材料の月の値と一致しません: {row.email}")
         emails = [row.email for row in self.rows]
@@ -779,14 +882,14 @@ class MonthInputs:
 
 
 def month_inputs(
-    result: OrgAnalysisResult, github: GithubMonth, *, outside_org_min_lines: int,
+    result: OrgAnalysisResult, github: GithubMonth, *, otel: OtelMonth, outside_org_min_lines: int,
     previous: MonthInputs | None = None,
 ) -> MonthInputs:
     """1か月分の材料を作る（人 × 月の行は `person_rows` で作る）。
 
     result はその月を対象月として分析した結果、github はその月の GitHub の材料で、PR の
-    集計を持つ状態では PR ごとの値（`GithubMonth.prs`）も持つもの。型の誤りは TypeError、
-    PR ごとの値が欠けているなど材料の不整合は ValueError。
+    集計を持つ状態では PR ごとの値（`GithubMonth.prs`）も持つもの。otel はその月の
+    OpenTelemetry の材料。型の誤りは TypeError、PR ごとの値の欠けなどの不整合は ValueError。
 
     outside_org_min_lines は1以上の整数の行数の下限（真偽値は不可）。previous は暦で1つ前の
     月の材料（無ければ None）で、その人の行だけを person_rows に渡し、連続月数を決める。
@@ -795,7 +898,7 @@ def month_inputs(
     if previous is not None and not isinstance(previous, MonthInputs):
         raise TypeError("previous には MonthInputs か None が必要です")
     rows = person_rows(
-        result, github, outside_org_min_lines=outside_org_min_lines,
+        result, github, otel=otel, outside_org_min_lines=outside_org_min_lines,
         previous_rows=() if previous is None else previous.rows,
     )  # 型と下限の検査もここで行う
     # 行が無い材料も month で検査し、前月の取り違えを止める。
@@ -808,6 +911,7 @@ def month_inputs(
         github_cache_complete=github.cache_complete,
         rows=rows,
         prs=github.prs,
+        otel_data=otel.state,
     )
 
 
@@ -816,6 +920,17 @@ def _check_optional_nonnegative(name: str, value: object) -> None:
     _check_optional_number(name, value)
     if value is not None and value < 0:
         raise ValueError(f"{name} には0以上の値が必要です: {value!r}")
+
+
+_OTEL_GROUP_MEDIANS = ("otel_active_days_median", "otel_prompts_median")
+_OTEL_GROUP_TOTALS = (
+    "otel_prompts", "otel_requests", "otel_subagent_requests",
+    "otel_interactive_decisions", "otel_interactive_decisions_asked",
+)
+_OTEL_GROUP_FEATURE_USERS = (
+    "otel_custom_subagent_users", "otel_skill_users", "otel_mcp_users", "otel_custom_command_users",
+)
+_OTEL_GROUP_USER_METRICS = (*_OTEL_GROUP_MEDIANS, *_OTEL_GROUP_TOTALS, *_OTEL_GROUP_FEATURE_USERS)
 
 
 @dataclass(frozen=True)
@@ -842,11 +957,17 @@ class GroupMonth:
     login が1人以上・ok・収集完了の月だけで、github_people 以下。逆は成り立たない
     （加えた行が空欄の人がいると None）。該当した人も、ほかの集計の材料から外さない。
 
-    合計と中央値は丸める前の値から出す。材料の人の値が1人でも確定できなければ、その列は
-    None（分からない値を0として数えない）。GitHub の値の列は、PR の列（件数・大きさ・
-    lead time）が PR の列を書く状態、行数と需要の和が ok の状態でだけ値を持ち、login の
-    人が0人の集まりではすべて None（対象の人がいないことと、成果が0件だったことを区別する
-    ため）。PR の大きさと lead time は PR が1件以上のときだけ値を持つ。
+    合計と中央値は丸める前の値から出す。OpenTelemetry 以外では、材料の人の値が1人でも
+    確定できなければ、その列は None（分からない値を0として数えない）。GitHub の値の列は、
+    PR の列（件数・大きさ・lead time）が PR の列を書く状態、行数と需要の和が ok の状態で
+    だけ値を持ち、login の人が0人の集まりではすべて None（対象の人がいないことと、成果が
+    0件だったことを区別するため）。PR の大きさと lead time は PR が1件以上のときだけ値を持つ。
+
+    otel_data は月の OpenTelemetry の材料の状態で、ほかの OpenTelemetry の列は ok の
+    月だけが値を持つ。otel_excluded_people は網羅率で除いた人数。otel_users は残りの人の
+    うち支出レポートと OpenTelemetry の両方にリクエストがある人数で、残りの人に
+    code_requests が空欄の人がいれば None。使い方の中央値・合計・機能を使った人数は、
+    使い方が見える人が1人以上のとき、その人たちの件数から数える。
 
     比率（`cost_per_merged_line_usd`）は保存せず、分子と分母から出す（元の値を失わない
     ため）。不変条件は __post_init__ で検査する。型の誤りは TypeError、値の誤りは
@@ -873,6 +994,20 @@ class GroupMonth:
     lines_added_capped: int | None
     code_demand_usd_of_github_people: float | None
     outside_org_people: int | None
+    otel_data: OtelData
+    otel_users: int | None
+    otel_excluded_people: int | None
+    otel_active_days_median: float | None
+    otel_prompts_median: float | None
+    otel_prompts: int | None
+    otel_requests: int | None
+    otel_subagent_requests: int | None
+    otel_interactive_decisions: int | None
+    otel_interactive_decisions_asked: int | None
+    otel_custom_subagent_users: int | None
+    otel_skill_users: int | None
+    otel_mcp_users: int | None
+    otel_custom_command_users: int | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.scope, GroupScope):
@@ -912,6 +1047,45 @@ class GroupMonth:
             )
         self._check_people()
         self._check_github()
+        self._check_otel()
+
+    def _check_otel(self) -> None:
+        """月の状態と使い方が見える人数で決まる空欄、人数・件数の大小関係。"""
+        if not isinstance(self.otel_data, OtelData):
+            raise TypeError("otel_data には OtelData が必要です")
+        for name in _OTEL_GROUP_MEDIANS:
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, float):
+                raise TypeError(f"{name} には float か None が必要です")
+            _check_optional_nonnegative(name, value)
+        for name in ("otel_users", "otel_excluded_people",
+                     *_OTEL_GROUP_TOTALS, *_OTEL_GROUP_FEATURE_USERS):
+            _check_optional_count(name, getattr(self, name))
+        ok = self.otel_data is OtelData.OK
+        users, excluded = self.otel_users, self.otel_excluded_people
+        if (excluded is not None) != ok:
+            raise ValueError("otel_excluded_people は OpenTelemetry の状態が ok の月だけ持ちます")
+        if users is not None and not ok:
+            raise ValueError("otel_users は OpenTelemetry の状態が ok の月だけ持ちます")
+        if excluded is not None and excluded > self.seat_holders:
+            raise ValueError("otel_excluded_people は seat_holders 以下にしてください")
+        if users is not None:
+            if users + excluded > self.seat_holders:
+                raise ValueError("otel_users と otel_excluded_people の和は seat_holders 以下です")
+            if self.code_users is not None and users > self.code_users:
+                raise ValueError("otel_users は code_users 以下にしてください")
+        for name in _OTEL_GROUP_USER_METRICS:
+            if (getattr(self, name) is not None) != bool(users):
+                raise ValueError(f"{name} は使い方が見える人が1人以上のときだけ持ちます")
+        if users:
+            for part, whole in (
+                ("otel_subagent_requests", "otel_requests"),
+                ("otel_interactive_decisions_asked", "otel_interactive_decisions"),
+                ("otel_users", "otel_requests"),
+                *((name, "otel_users") for name in _OTEL_GROUP_FEATURE_USERS),
+            ):
+                if getattr(self, part) > getattr(self, whole):
+                    raise ValueError(f"{part} は {whole} 以下にしてください")
 
     def _check_people(self) -> None:
         """人数の大小関係と、人数で決まる空欄。"""
@@ -1066,6 +1240,40 @@ def _code_users_3m(
     return count
 
 
+def _group_otel(
+    state: OtelData, people: tuple[PersonMonth, ...],
+) -> dict[str, int | float | None]:
+    """人 × 月の行から、使い方が見える人の件数と網羅率で除いた人数を数える。"""
+    values: dict[str, int | float | None] = dict.fromkeys(
+        ("otel_users", "otel_excluded_people", *_OTEL_GROUP_USER_METRICS),
+    )
+    if state is not OtelData.OK:
+        return values
+
+    # ok の月に件数が空欄の人は、網羅率で除いた人。
+    valued = [(person, person.otel_usage) for person in people if person.otel_usage is not None]
+    values["otel_excluded_people"] = len(people) - len(valued)
+    if any(person.code_requests is None for person, _ in valued):
+        return values
+    users = [usage for person, usage in valued if person.code_requests > 0 and usage.requests > 0]
+    values["otel_users"] = len(users)
+    if users:
+        values.update(
+            otel_active_days_median=float(statistics.median(u.active_days for u in users)),
+            otel_prompts_median=float(statistics.median(u.prompts for u in users)),
+            otel_prompts=sum(u.prompts for u in users),
+            otel_requests=sum(u.requests for u in users),
+            otel_subagent_requests=sum(u.subagent_requests for u in users),
+            otel_interactive_decisions=sum(u.interactive_decisions for u in users),
+            otel_interactive_decisions_asked=sum(u.interactive_decisions_asked for u in users),
+            otel_custom_subagent_users=sum(u.custom_subagent_requests > 0 for u in users),
+            otel_skill_users=sum(u.skill_requests > 0 for u in users),
+            otel_mcp_users=sum(u.mcp_decisions > 0 for u in users),
+            otel_custom_command_users=sum(u.custom_command_prompts > 0 for u in users),
+        )
+    return values
+
+
 def _group_month(
     scope: GroupScope,
     name: str,
@@ -1127,6 +1335,8 @@ def _group_month(
             if linked and all(person.outside_org is not None for person in linked)
             else None
         ),
+        otel_data=material.otel_data,
+        **_group_otel(material.otel_data, people),
     )
 
 

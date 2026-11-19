@@ -26,6 +26,7 @@ from . import (
     github_metrics,
     ingest,
     otel_collect,
+    otel_metrics,
     public_text,
     report,
     seat_changes,
@@ -2764,6 +2765,29 @@ def _adoption_github(
     )
 
 
+def _adoption_otel(
+    org_input: Path, result: analyze.OrgAnalysisResult, cfg: dict,
+    target: otel_collect.OtelTarget | None,
+) -> tuple[adoption.OtelMonth, str | None]:
+    """doctor と同じ判定から月の材料と、キャッシュを読めない場合の理由を返す。"""
+    if target is None:
+        return adoption.OTEL_NOT_CONFIGURED, None
+    workspaces = [org_input / name for name in result.workspaces] if result.nested else [org_input]
+    checked = data_quality.otel_month_check(
+        org_input, result.month, cfg, result.org, target, workspaces,
+    )
+    if not checked.spend_confirmed:
+        return adoption.OtelMonth(adoption.OtelData.SPEND_UNCONFIRMED, None, None), None
+    if checked.unreadable is not None:
+        return adoption.OtelMonth(adoption.OtelData.UNREADABLE, None, None), checked.unreadable
+    if checked.cache is None:
+        return adoption.OtelMonth(adoption.OtelData.NO_CACHE, None, None), None
+    return adoption.OtelMonth(
+        adoption.OtelData.OK, otel_metrics.person_usage(checked.cache),
+        {user.email: user.status for user in checked.coverage.users},
+    ), None
+
+
 def _write_adoption_outputs(
     org: str,
     org_input: Path,
@@ -2795,6 +2819,9 @@ def _write_adoption_outputs(
     )
     materials: list[adoption.MonthInputs] = []
     notices: list[str] = []
+    otel_target = otel_collect.gated_orgs(cfg).get(org)
+    otel_no_cache: list[str] = []
+    otel_unreadable: list[str] = []
     for month in months:
         if month == result.month:
             month_result, loaded = result, target
@@ -2813,13 +2840,27 @@ def _write_adoption_outputs(
                 org_input, month, cfg, caches, subjects
             )
         github = _adoption_github(org_input, month, cfg, loaded, subjects)
+        otel, unreadable = _adoption_otel(org_input, month_result, cfg, otel_target)
+        if otel.state is adoption.OtelData.NO_CACHE and month == result.month:
+            otel_no_cache.append(
+                f"{month} の OpenTelemetry のキャッシュが無いため、"
+                "adoption-people・adoption-teams の OpenTelemetry の値は空欄です"
+                f"（`collect --org {org} --source otel --month {month}` で取得してから"
+                "分析し直すと入ります）"
+            )
+        if otel.state is adoption.OtelData.UNREADABLE:
+            otel_unreadable.append(
+                f"{month} の OpenTelemetry のキャッシュを読めないため、"
+                "adoption-people・adoption-teams の OpenTelemetry の値は空欄です: "
+                f"{unreadable}"
+            )
         previous = (
             materials[-1]
             if materials and materials[-1].month == calendar_months.previous_month(month)
             else None
         )
         materials.append(adoption.month_inputs(
-            month_result, github,
+            month_result, github, otel=otel,
             outside_org_min_lines=cfg["adoption"]["outside_org_min_lines"], previous=previous,
         ))
 
@@ -2827,6 +2868,20 @@ def _write_adoption_outputs(
     span = covered[0] if len(covered) == 1 else f"{covered[0]}〜{covered[-1]}"
     people_rows = [row for material in materials for row in material.rows]
     team_rows = adoption.group_rows(materials)
+
+    notices.extend(otel_no_cache)
+    notices.extend(otel_unreadable)
+    excluded = [
+        f"{row.month}: {row.otel_excluded_people} 名" for row in team_rows
+        if row.scope is adoption.GroupScope.ORGANIZATION and row.otel_excluded_people
+    ]
+    if excluded:
+        notices.append(
+            "OpenTelemetry に届いている割合が低い・届いていない・確かめられない人の、"
+            f"OpenTelemetry の件数の列を空欄にしました（{'・'.join(excluded)}）。"
+            "誰かは adoption-people の otel_coverage の列で読めます。"
+            f"理由と割合の例は `doctor --org {org} --month <月>` で確かめられます"
+        )
 
     people_path = report.ADOPTION_PEOPLE.summary_path(output_dir, result.month, org)
     people_path.parent.mkdir(parents=True, exist_ok=True)

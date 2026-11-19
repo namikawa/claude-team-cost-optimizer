@@ -457,15 +457,16 @@ PR の作成者が対象者ならその人へ帰属させるため、別の人�
 
 ## adoption-people の列（人 × 月の表）
 
-Claude Code の活用（需要・リクエスト数・Claude Code が加えた行）と GitHub の成果（PR と
-コミット単位の行数）を、1人の1か月を1行にして並べた CSV。月ごとの変化を読むための材料で、
-人ごとの値は参考値として扱う。
+Claude Code の活用（需要・リクエスト数・Claude Code が加えた行）、GitHub の成果（PR と
+コミット単位の行数）、OpenTelemetry から数えた使い方を、1人の1か月を1行にして並べた CSV。
+月ごとの変化を読むための材料で、人ごとの値は参考値として扱う。
 
 既定では書かない。`config.yaml` に次を書くと、正式分析のたびに、分析した組織ごとに
 `reports/summary/adoption-people-<YYYYMM>-<組織名>.csv` を書く（1組織だけの実行でも書く）。
 同じ設定・同じ実行で、チーム × 月の表（adoption-teams）とレポート（adoption-report）も書く。
 速報モード（`--preview`）ではどれも書かず、そのことを実行時に1行知らせる。GitHub 分析を
-有効にしていない組織でも書ける（GitHub の列が空欄になる）。
+有効にしていない組織や OpenTelemetry を設定していない組織でも書ける。未設定の入力の状態は
+`github_data`・`otel_data` に `not_configured` と書き、その入力に由来する値の列は空欄にする。
 
 ```yaml
 adoption:
@@ -530,6 +531,20 @@ dashboard・recommendations・usage-summary・preview・preview-dashboard と、
 - `outside_org_months` — その月を含め、暦で連続して該当した月数（整数）。True なら1以上、
   False なら0、空欄なら空欄。非該当・判定できない月・その人の行が無い月（シートなし・
   分析できずに飛ばした月）で途切れ、次の該当月から1に戻る。表の最初の該当月も1
+- `otel_data` — その月の OpenTelemetry の材料の状態（下の表）。月ごとに全員同じ値
+- `otel_coverage` — その人の網羅率の状態（`ok`・`not_judged`・`low`・`missing`・`unknown`）。
+  判定の規則は [届いている割合の検査（doctor）](#届いている割合の検査doctor) を参照
+- `otel_active_days` — OpenTelemetry のリクエストがあった UTC 日の日数
+- `otel_prompts` / `otel_custom_command_prompts` — 指示の回数と、そのうち自作のコマンドを使った
+  回数（プラグインのコマンドを含む）
+- `otel_requests` — OpenTelemetry のリクエスト数（`api_request` のうち `origin` が `main`・
+  `sdk`・`subagent_builtin`・`subagent_custom` のもの。要約や題名の生成などの補助の呼び出しを除く）
+- `otel_subagent_requests` / `otel_custom_subagent_requests` — サブエージェント経由のリクエスト数と、
+  そのうち自作のサブエージェント経由のリクエスト数
+- `otel_skill_requests` — スキルを使ったリクエスト数（組み込みと自作を含む）
+- `otel_interactive_decisions` / `otel_interactive_decisions_asked` — 端末の対話で編集・コマンド・
+  MCP の実行を許可・却下した判断の件数と、そのうち確認の画面で人が答えた件数
+- `otel_mcp_decisions` — MCP の実行を許可・却下した判断の件数（端末の種類を問わない）
 
 需要とリクエスト数は usage-summary の同名の列と、GitHub の列は github-summary の同名の列と
 同じ値・同じ書式で書く。`loc_with_cc` は report・details の LoC と同じ値。その月の spend に
@@ -577,6 +592,30 @@ members-info が採用される月では印が付かず、GitHub の対象の人
 では、`なし` にする前のファイルが採用される月の印は残る。固定名の members-info だけの組織
 では、次の分析ですべての月から消える。
 
+`otel_data` は上から順に最初に当てはまる状態にする。`ok` 以外の月は、`otel_coverage` と
+OpenTelemetry の件数の列をすべて空欄にする。
+
+| 値 | 意味 |
+|---|---|
+| `not_configured` | OpenTelemetry を設定していない組織 |
+| `spend_unconfirmed` | 始まっているスペースのどれかで、その月の spend が無いか、全月と確かめられない。キャッシュは読まない |
+| `no_cache` | その月のキャッシュのファイルが無い |
+| `unreadable` | キャッシュのファイルがあるが、読めない（形や語彙の不正、取得元の表や組織 UUID の設定との不一致など） |
+| `ok` | 全月の spend を確かめられ、キャッシュを読めた |
+
+`spend_complete` が True でも、単日の日付の命名の spend は期間を確かめられないため
+`spend_unconfirmed` になる。`--allow-missing-workspace` で spend の無いスペースを需要 0 として
+正式分析した月も `spend_unconfirmed` になる。
+
+件数の列は、`otel_data` が `ok` で、`otel_coverage` が `ok` か `not_judged` の人だけが値を
+持つ。spend にもキャッシュにも行が無い人の状態は `not_judged`。件数の列に値を持つ人のうち、
+キャッシュにイベントが無い人の件数は 0 になる。
+
+OpenTelemetry のイベントは product を区別しないため、Claude Code と同じ仕組みで動くほかの
+product の利用が同じイベントとして届く場合、その分も値に含む。件数はキャッシュが区分に
+分けたイベントの数で、区分に使う属性が付いていないイベントは `other` や既定の側に入るため、
+属性が届いていない月の 0 は、利用が無かったことを意味しない。
+
 ## adoption-teams の列（チーム × 月の表）
 
 人 × 月の表の行を、集まり（組織全体・部署・チーム）× 月へ畳んだ CSV。チーム・部署と組織
@@ -587,8 +626,8 @@ members-info が採用される月では印が付かず、GitHub の対象の人
 分析した組織ごとに、人 × 月の表とレポート（adoption-report）と一緒に
 `reports/summary/adoption-teams-<YYYYMM>-<組織名>.csv` を書く（1組織だけの実行でも書き、
 速報モードでは書かない）。月の範囲・各月の値の作り方・分析できない過去の月の扱いも人 × 月の
-表と同じで、2つの表は同じ月の集合・同じ人 × 月の行から作る。GitHub 分析を有効にしていない
-組織でも書ける（GitHub の列が空欄になる）。
+表と同じで、2つの表は同じ月の集合・同じ人 × 月の行から作る。GitHub 分析を有効にして
+いない組織や OpenTelemetry を設定していない組織でも書ける。
 
 読者は CTO と開発責任者を想定している。人 × 月の表と同じく、組織の担当者へ共有する成果物
 の集合には含めず、考察の執筆（`discuss`）の資料にもならない。シートの判定には使わない
@@ -641,6 +680,17 @@ login は書かない。
   login が0人か、login の人に判定が空欄の人が1人でもいれば空欄。`なし`・未記入の人は数えず、
   その人がいても空欄にはならない。該当した人を需要・マージ行・マージ行あたりの費用などの
   集まりの値から外さない
+- `otel_data` — その月の OpenTelemetry の材料の状態（人 × 月の表と同じ）
+- `otel_users` / `otel_excluded_people` — 使い方が見える人の数と、網羅率で除いた人の数
+- `otel_active_days_median` / `otel_prompts_median` — 使い方が見える人の、使った日数と指示の
+  回数の中央値（小数1桁）
+- `otel_prompts` / `otel_requests` / `otel_subagent_requests` — 使い方が見える人の、指示の回数・
+  リクエスト数・サブエージェント経由のリクエスト数の合計
+- `otel_interactive_decisions` / `otel_interactive_decisions_asked` — 使い方が見える人の、確認の
+  対象の判断の件数と、そのうち人が答えた件数の合計
+- `otel_custom_subagent_users` / `otel_skill_users` / `otel_mcp_users` /
+  `otel_custom_command_users` — 使い方が見える人のうち、自作のサブエージェントのリクエスト・
+  スキルのリクエスト・MCP の判断・自作のコマンドの指示が、その月に1件以上ある人の数
 
 合計と中央値は丸める前の値から出す（1人ずつ丸めて書いた人 × 月の表・usage-summary の値の
 和とは、末尾の桁が違うことがある）。lead time と PR の大きさは、人ごとの中央値を平均せず、
@@ -650,10 +700,11 @@ login は書かない。
 
 空欄になるのは次のとき。
 
-- 材料になる人の値が1人でも空欄なら、その集まりのその列は空欄にする（分からない値を 0 と
-  して数えない）。たとえば product の列が無い spend の月は Claude Code の列が、LoC の列を持つ
-  code-analytics が無い月は `loc_median_of_users` が空欄になる。login の人の誰かの需要が
-  空欄なら `code_demand_usd_of_github_people` と比率が空欄になる
+- Claude Code の需要や行数、GitHub の値は、材料になる人の値が1人でも空欄なら、その集まりの
+  その列は空欄にする（分からない値を 0 として数えない）。たとえば product の列が無い spend
+  の月は Claude Code の列が、LoC の列を持つ code-analytics が無い月は
+  `loc_median_of_users` が空欄になる。login の人の誰かの需要が空欄なら
+  `code_demand_usd_of_github_people` と比率が空欄になる
 - 中央値は、材料の人が 0 人なら空欄（使った人が 0 人の集まりの `loc_median_of_users` など）
 - GitHub の列は、人 × 月の表と同じ状態の月だけ値を持つ。PR の列（`merged_pr_count` から
   `lead_time_p90_hours` まで）は `github_data` が `no_commits`・`no_previous_month`・`ok` の
@@ -666,6 +717,23 @@ login は書かない。
 
 GitHub の対象の人が1人以上いる月の、対象月の組織全体の行の PR 数・lead time の中央値と
 P90 は、同じ実行の github-summary の組織全体の行と一致する。
+
+OpenTelemetry の人数と件数は、`otel_data` が `ok` の月だけ値を持つ。使い方が見える人は、
+その月の集まりの人のうち、次の3つをすべて満たす人。
+
+- 人 × 月の表の OpenTelemetry の件数の列に値がある（`otel_coverage` が `ok` か `not_judged`）
+- spend に Claude Code のリクエストがある（`code_requests` が 0 より大きい）
+- OpenTelemetry のリクエストが1件以上ある（`otel_requests` が 0 より大きい）
+
+`otel_coverage` が `low`・`missing`・`unknown` の人は、Claude Code の利用の有無を問わず、
+網羅率で除いた人に数える。除いた人がいても、集まりの値は残りの人で出す。
+OpenTelemetry の件数の列に値がある人の `code_requests` が1人でも空欄なら、
+`otel_excluded_people` だけを書き、`otel_users` と残りの11列は空欄にする。使い方が
+見える人が0人と決まった場合は、`otel_users` を 0 と書き、`otel_excluded_people` と合わせた
+2つの人数以外は空欄にする。
+
+1回の指示あたりのリクエストなどの量の比は列に持たず、集まりの件数の合計を分子と分母に
+使って計算する。
 
 人数の少ない集まりは、1人の動きで値が大きく振れる。閾値で隠さず人数（`seat_holders`・
 `code_users`・`github_people`）を並べて出すので、値は人数と合わせて読む。値の大小から因果
@@ -1350,7 +1418,9 @@ UUID は8-4-4-4-12桁の16進数で、大小文字を区別せず小文字にそ
 
 読み戻しでは schema・形・語彙・件数を検査し、`source` と `organization_ids` の集合が
 現在の設定と違えば取り直しを案内する。UUID の並びだけの違いでは取り直さない。
-取得しても、分析の成果物（表・レポート・判定）は変わらない。
+取得しても、シートの判定と、組織の担当者へ共有する成果物は変わらない。
+`adoption.enabled` を有効にした正式分析では、人 × 月の表とチーム × 月の表の
+OpenTelemetry の列に値が入る。
 
 ### 届いている割合の検査（doctor）
 
@@ -1394,6 +1464,18 @@ UUID は8-4-4-4-12桁の16進数で、大小文字を区別せず小文字にそ
 組織全体の比は、`unknown` を除き、spend に対象 product の出力トークンがある同じ人の集合で
 分子と分母をそれぞれ合計して求める。比が 1 を超える側は検査しない。検査はローカルの
 キャッシュと spend を使い、`doctor` は BigQuery に接続しない。
+
+`adoption.enabled` を有効にした正式分析も `doctor` と同じ判定を使い、`low`・`missing`・
+`unknown` の人の OpenTelemetry の件数の列を空欄にする。空欄にした人の全員は
+adoption-people の `otel_coverage` で読める。`doctor` が名前を挙げるのは例だけ。
+
+2つの表を書く実行では、OpenTelemetry を設定した組織について次の場合に通知する。
+
+- 対象月の spend が全月と確かめられ、対象月のキャッシュが無いときは、取得のコマンドを案内する
+- キャッシュを読めない月は、OpenTelemetry の値を空欄にして残りの分析を続け、月ごとに理由を
+  伝える。理由の文に、キャッシュの取り直しかファイルの状態の確認の案内が入る
+- 網羅率で人の件数の列を空欄にしたときは、該当する月と人数を1件にまとめる。
+  `otel_coverage` の列で該当者を、`doctor` で理由と割合の例を確認できる
 
 | 設定 | 意味と値の範囲 | 既定 |
 |---|---|---|

@@ -1277,30 +1277,46 @@ def _otel_coverage_issues(
     return sort_issues(issues)
 
 
-def inspect_otel(
-    input_dir: Path | str, month: str | None, cfg: dict, org: str,
+@dataclasses.dataclass(frozen=True)
+class OtelMonthCheck:
+    """doctor と分析が共用する、1組織・1か月の網羅率の判定材料。
+
+    spend_confirmed はすべての workspace で全月の spend がそろったか。そろった月だけ
+    キャッシュを読み、読めれば cache と coverage を持つ。unreadable は読み取りに失敗した
+    理由で、キャッシュが無い月と spend を確かめられない月では None。
+    """
+
+    spend_confirmed: bool
+    unreadable: str | None
+    cache: otel_collect.OtelCache | None
+    coverage: OtelCoverage | None
+
+
+def otel_month_check(
+    input_dir: Path | str, month: str, cfg: dict, org: str,
     target: otel_collect.OtelTarget, workspace_dirs: Iterable[Path | str],
-) -> list[QualityIssue]:
-    """OpenTelemetry を有効にした1組織分の網羅率の検査（整列済み）。
+) -> OtelMonthCheck:
+    """全月の spend がそろっているかを確かめ、月のキャッシュと網羅率を返す。
 
     input_dir は組織のキャッシュがある場所。workspace_dirs には単一レイアウトの
     組織直下か、入れ子レイアウトの未開始を除いた全 workspace を渡す。
     全月の spend がそろった月だけキャッシュを読み、BigQuery には接続しない。
+    workspace が0個の場合も、spend を確かめられなかった結果を返す。
     """
-    if month is None:
-        return []
+    if not isinstance(month, str):
+        raise TypeError("month には文字列が必要です")
     spends = []
     for directory in workspace_dirs:
         try:
             result = ingest.load_spend(Path(directory), month, cfg)
             period = ingest.file_period(result.source)
         except (OSError, ValueError):
-            return []
+            return OtelMonthCheck(False, None, None, None)
         if period is None or _month_coverage(period, month) is not _MonthCoverage.FULL:
-            return []
+            return OtelMonthCheck(False, None, None, None)
         spends.append(result.df)
     if not spends:
-        return []
+        return OtelMonthCheck(False, None, None, None)
 
     input_dir = Path(input_dir)
     cache_dir = input_dir / otel_collect.OTEL_CACHE_DIRNAME
@@ -1313,19 +1329,41 @@ def inspect_otel(
             filename = otel_collect.otel_cache_path(cache_dir, month).name
             reason = (f"{otel_collect.OTEL_CACHE_DIRNAME}/{filename} を開けません"
                       "（権限とファイルの状態を確かめてください）")
+        return OtelMonthCheck(True, reason, None, None)
+    if cache is None:
+        return OtelMonthCheck(True, None, None, None)
+    settings = cfg["otel"]
+    coverage = otel_coverage(
+        spends, cache, settings["coverage_products"], settings["coverage_warning_ratio"],
+        settings["coverage_min_output_tokens"],
+    )
+    return OtelMonthCheck(True, None, cache, coverage)
+
+
+def inspect_otel(
+    input_dir: Path | str, month: str | None, cfg: dict, org: str,
+    target: otel_collect.OtelTarget, workspace_dirs: Iterable[Path | str],
+) -> list[QualityIssue]:
+    """OpenTelemetry を有効にした1組織分の網羅率の検査（整列済み）。
+
+    spend とキャッシュは `otel_month_check` で確かめ、その結果を issue にする。
+    """
+    if month is None:
+        return []
+    checked = otel_month_check(input_dir, month, cfg, org, target, workspace_dirs)
+    if checked.unreadable is not None:
         return [_issue(
             Severity.WARNING, IssueCode.OTEL_COVERAGE_UNAVAILABLE,
-            f"OpenTelemetry のキャッシュを読めないため、届いている割合を確かめられません: {reason}",
+            "OpenTelemetry のキャッシュを読めないため、届いている割合を確かめられません: "
+            f"{checked.unreadable}",
             org, month, reason="cache_unreadable",
         )]
-    if cache is None:
+    if checked.coverage is None:
         return []
     settings = cfg["otel"]
-    products = settings["coverage_products"]
-    warning_ratio = settings["coverage_warning_ratio"]
-    coverage = otel_coverage(spends, cache, products, warning_ratio,
-                             settings["coverage_min_output_tokens"])
-    return _otel_coverage_issues(coverage, org, products, warning_ratio)
+    return _otel_coverage_issues(
+        checked.coverage, org, settings["coverage_products"], settings["coverage_warning_ratio"],
+    )
 
 
 def workspace_config_issues(cfg: dict, orgs: Iterable[str]) -> list[QualityIssue]:

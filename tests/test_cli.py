@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import urllib.parse
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -5143,7 +5144,10 @@ def test_adoption_teams_demand_is_rounded_after_adding(make_input, tmp_path):
     config = _adoption_config(tmp_path)
     assert _run_with(input_dir, out, config, "--org", "org-a") == 0
     result = analyze.analyze_org(input_dir / "org-a", "2026-06", load_config(config), "org-a")
-    rows = adoption.person_rows(result, adoption.GITHUB_NOT_CONFIGURED, outside_org_min_lines=1000)
+    rows = adoption.person_rows(
+        result, adoption.GITHUB_NOT_CONFIGURED, otel=adoption.OTEL_NOT_CONFIGURED,
+        outside_org_min_lines=1000,
+    )
     expected = sum(row.code_demand_usd for row in rows)
     assert _teams_org(out)["code_demand_usd"] == f"{expected:.2f}"
 
@@ -5304,7 +5308,7 @@ def _outside_cli_setup(make_input, tmp_path: Path, minimum: int = 1000) -> tuple
 
 
 def test_outside_org_cli_columns_streaks_and_threshold(make_input, tmp_path):
-    """正式分析で末尾3列と連続月数を書き、設定の下限を変えると判定が変わる。"""
+    """正式分析で管轄外の3列と連続月数を書き、設定の下限を変えると判定が変わる。"""
     input_dir, config = _outside_cli_setup(make_input, tmp_path)
     out = tmp_path / "reports"
     assert _run_with(input_dir, out, config, "--org", "org-a") == 0
@@ -5315,8 +5319,12 @@ def test_outside_org_cli_columns_streaks_and_threshold(make_input, tmp_path):
     assert all(r["outside_org"] == r["outside_org_months"] == ""
                for r in rows if r["email"] == "ben@x.jp")
     assert _teams_org(out)["outside_org_people"] == "1"
-    assert list(rows[0])[-2:] == ["outside_org", "outside_org_months"]
-    assert list(_teams_org(out))[-1] == "outside_org_people"
+    assert [name for name in rows[0] if not name.startswith("otel_")][-2:] == [
+        "outside_org", "outside_org_months",
+    ]
+    assert [name for name in _teams_org(out) if not name.startswith("otel_")][-1] == (
+        "outside_org_people"
+    )
     assert 'class="c z fl"' in _report_path(out).read_text(encoding="utf-8")
     config_path = Path(config)
     config_path.write_text(
@@ -5654,3 +5662,381 @@ def test_doctor_otel_passes_workspace_with_uncertain_start(
     codes = {issue["code"] for issue in json.loads(capsys.readouterr().out)}
     assert "MISSING_SPEND" in codes
     assert not any(code.startswith("OTEL_") for code in codes)
+
+
+# --- 正式分析での OpenTelemetry の列と通知 ---
+
+
+@pytest.fixture
+def adoption_otel_config(tmp_path, monkeypatch):
+    """合成の取得元と adoption の設定を作り、分析や検査で bq を呼ばないことも確かめる。"""
+    monkeypatch.setattr(otel_collect, "run_bq", _unexpected_otel_call)
+
+    def config(*, enabled=True, nested=False, github=False, adoption_enabled=True):
+        path = Path(_otel_cli_config(tmp_path, enabled=enabled, nested=nested))
+        settings = yaml.safe_load(path.read_text(encoding="utf-8"))
+        entry = settings["organizations"]["org-a"]
+        if nested:
+            entry["workspaces"]["second"] = {"fixed_seat": "premium"}
+        if github:
+            entry["github_org"] = GH_ORG
+        settings["adoption"] = {"enabled": adoption_enabled}
+        path.write_text(yaml.safe_dump(settings), encoding="utf-8", newline="\n")
+        return str(path)
+
+    return config
+
+
+def _adoption_otel_cache(input_dir, month="2026-10", *, output=200000, damaged=False):
+    """月を指定し、実際の書き込み経路で合成キャッシュを置く。"""
+    org = input_dir / "org-a"
+    row = replace(_api_request("alice@example.com", output), date=f"{month}-01")
+    cache = otel_collect.OtelCache(
+        "org-a", month, otel_collect.TableLocation("example-project", "claude_code_otel", "logs"),
+        ("00000000-0000-4000-8000-000000000001",), row.count,
+        tuple((key, 0) for key in otel_collect.EXCLUDED_KINDS), (), 100,
+        NOW.strftime("%Y-%m-%dT%H:%M:%SZ"), (row,), (),
+    )
+    path = otel_collect.otel_cache_path(org / otel_collect.OTEL_CACHE_DIRNAME, month)
+    otel_collect._write_cache(path, cache)
+    if damaged:
+        path.write_text("{", encoding="utf-8", newline="\n")
+    return path
+
+
+def _run_adoption_otel(input_dir, out, config, *extra):
+    """org-a の 2026-10 の分析を実行する。"""
+    return _run_with(input_dir, out, config, "--org", "org-a", "--month", "2026-10", *extra)
+
+
+def _adoption_otel_rows(out):
+    """人 × 月とチーム × 月の表を読み戻す。"""
+    return (
+        _summary_rows(_adoption_path(out, "2026-10")),
+        _summary_rows(_teams_path(out, "2026-10")),
+    )
+
+
+def _adoption_otel_notices(printed):
+    """表についての通知を表示順で読む。"""
+    return [
+        line.removeprefix("  ! ") for line in printed.splitlines()
+        if line.startswith("  ! ") and (
+            "adoption-people・adoption-teams" in line
+            or line.startswith("  ! OpenTelemetry に届いている割合")
+        )
+    ]
+
+
+def _assert_otel_blank(row, state):
+    """月の状態のほかの OpenTelemetry の列が全部空欄かを確かめる。"""
+    assert row["otel_data"] == state
+    assert all(value == "" for name, value in row.items()
+               if name.startswith("otel_") and name != "otel_data")
+
+
+def _missing_otel_notice(month):
+    """対象月のキャッシュが無い場合の通知の期待値。"""
+    return (
+        f"{month} の OpenTelemetry のキャッシュが無いため、"
+        "adoption-people・adoption-teams の OpenTelemetry の値は空欄です"
+        f"（`collect --org org-a --source otel --month {month}` で取得してから分析し直すと入ります）"
+    )
+
+
+def _unreadable_otel_notice(month):
+    """壊れた JSON を読めない場合の通知の期待値。"""
+    cache_path = str(Path(otel_collect.OTEL_CACHE_DIRNAME, f"otel-{month}.json"))
+    return (
+        f"{month} の OpenTelemetry のキャッシュを読めないため、"
+        "adoption-people・adoption-teams の OpenTelemetry の値は空欄です: "
+        f"{cache_path}: キャッシュを読めません"
+        "（Expecting property name enclosed in double quotes: line 1 column 2 (char 1)）。"
+        "collect --source otel で取り直してください"
+    )
+
+
+def _excluded_otel_notice(months):
+    """網羅率で空欄にした人がいる場合の通知の期待値。"""
+    return (
+        "OpenTelemetry に届いている割合が低い・届いていない・確かめられない人の、"
+        f"OpenTelemetry の件数の列を空欄にしました（{months}）。"
+        "誰かは adoption-people の otel_coverage の列で読めます。"
+        "理由と割合の例は `doctor --org org-a --month <月>` で確かめられます"
+    )
+
+
+def test_adoption_otel_not_configured_ignores_cache(
+    make_input, tmp_path, adoption_otel_config, monkeypatch, capsys,
+):
+    """OTel が未設定ならキャッシュを読まず、両表に状態と空欄を書き、通知を出さない。"""
+    input_dir = _otel_doctor_input(make_input)
+    config = adoption_otel_config(enabled=False)
+    monkeypatch.setattr(data_quality, "otel_month_check", _unexpected_otel_call)
+    before, after = tmp_path / "before", tmp_path / "after"
+    assert _run_adoption_otel(input_dir, before, config) == 0
+    assert _adoption_otel_notices(capsys.readouterr().out) == []
+    _adoption_otel_cache(input_dir, damaged=True)
+    assert _run_adoption_otel(input_dir, after, config) == 0
+    assert _adoption_otel_notices(capsys.readouterr().out) == []
+    for kind in (_adoption_path, _teams_path):
+        assert kind(before, "2026-10").read_bytes() == kind(after, "2026-10").read_bytes()
+    for rows in _adoption_otel_rows(after):
+        assert rows
+        for row in rows:
+            _assert_otel_blank(row, "not_configured")
+
+
+@pytest.mark.parametrize(("state", "notice"), [
+    ("no_cache", _missing_otel_notice("2026-10")),
+    ("unreadable", _unreadable_otel_notice("2026-10")),
+])
+def test_adoption_otel_target_month_cache_status_and_notice(
+    make_input, tmp_path, adoption_otel_config, capsys, state, notice,
+):
+    """全月の対象月は、キャッシュの不在と読み取り失敗を区別して通知し、分析を完了する。"""
+    input_dir = _otel_doctor_input(make_input, month="2026-09")
+    _otel_doctor_input(make_input)
+    _adoption_otel_cache(input_dir, "2026-09")
+    if state == "unreadable":
+        _adoption_otel_cache(input_dir, damaged=True)
+    out = tmp_path / "reports"
+    assert _run_adoption_otel(input_dir, out, adoption_otel_config()) == 0
+    assert out_file(out, REPORT, month="2026-10").is_file()
+    assert _report_path(out, "2026-10").is_file()
+    for rows in _adoption_otel_rows(out):
+        assert [(row["month"], row["otel_data"]) for row in rows] == [
+            ("2026-09", "ok"), ("2026-10", state),
+        ]
+        assert rows[0]["otel_requests"] == "3"
+        _assert_otel_blank(rows[1], state)
+    assert _adoption_otel_notices(capsys.readouterr().out) == [notice]
+
+
+def test_adoption_otel_missing_past_cache_has_no_notice(
+    make_input, tmp_path, adoption_otel_config, capsys,
+):
+    """過去月のキャッシュが無い場合は、空欄を書くが取得の案内は出さない。"""
+    input_dir = _otel_doctor_input(make_input, month="2026-09")
+    _otel_doctor_input(make_input)
+    _adoption_otel_cache(input_dir)
+    out = tmp_path / "reports"
+    assert _run_adoption_otel(input_dir, out, adoption_otel_config()) == 0
+    for rows in _adoption_otel_rows(out):
+        assert [(row["month"], row["otel_data"]) for row in rows] == [
+            ("2026-09", "no_cache"), ("2026-10", "ok"),
+        ]
+        _assert_otel_blank(rows[0], "no_cache")
+        assert rows[1]["otel_requests"] == "3"
+    assert _adoption_otel_notices(capsys.readouterr().out) == []
+
+
+@pytest.mark.parametrize(("name", "spend_complete"), [
+    ("spend-2026-10-01-to-2026-10-15.csv", "False"),
+    ("spend-2026-10-15.csv", "True"),
+])
+def test_adoption_otel_unconfirmed_spend_precedes_cache(
+    make_input, tmp_path, adoption_otel_config, monkeypatch, capsys, name, spend_complete,
+):
+    """部分月と単日の日付の命名では、壊れたキャッシュに触れず、OTel の通知も出さない。"""
+    input_dir = _otel_doctor_input(make_input)
+    spend = input_dir / "org-a" / "spend" / "spend_2026-10.csv"
+    spend.rename(spend.with_name(name))
+    _adoption_otel_cache(input_dir, damaged=True)
+    monkeypatch.setattr(otel_collect, "load_otel_cache", _unexpected_otel_call)
+    out = tmp_path / "reports"
+    assert _run_adoption_otel(input_dir, out, adoption_otel_config()) == 0
+    for rows in _adoption_otel_rows(out):
+        row, = rows
+        assert row["spend_complete"] == spend_complete
+        _assert_otel_blank(row, "spend_unconfirmed")
+    assert _adoption_otel_notices(capsys.readouterr().out) == []
+
+
+def test_adoption_otel_notices_follow_skipped_month_in_design_order(
+    make_input, tmp_path, adoption_otel_config, monkeypatch, capsys,
+):
+    """飛ばした月の後に、対象月の不在、破損の月、除いた人数の順で通知する。"""
+    months = ("2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10")
+    for month in months:
+        input_dir = _otel_doctor_input(make_input, month=month)
+    for month in ("2026-05", "2026-07", "2026-09"):
+        _adoption_otel_cache(input_dir, month, damaged=True)
+    for month in ("2026-06", "2026-08"):
+        _adoption_otel_cache(input_dir, month, output=100000)
+    original = analyze.analyze_org
+    read_cache = otel_collect.load_otel_cache
+
+    def skip_one_month(directory, month, *args, **kwargs):
+        if month == "2026-05":
+            raise FileNotFoundError("spend がありません")
+        return original(directory, month, *args, **kwargs)
+
+    def read_analyzed_months_only(directory, month, *args):
+        assert month != "2026-05"
+        return read_cache(directory, month, *args)
+
+    monkeypatch.setattr(analyze, "analyze_org", skip_one_month)
+    monkeypatch.setattr(otel_collect, "load_otel_cache", read_analyzed_months_only)
+    out = tmp_path / "reports"
+    assert _run_adoption_otel(input_dir, out, adoption_otel_config()) == 0
+    for rows in _adoption_otel_rows(out):
+        assert sorted({row["month"] for row in rows}) == list(months[1:])
+    assert _adoption_otel_notices(capsys.readouterr().out) == [
+        ("adoption-people・adoption-teams は 2026-05 の行を書きません"
+         "（2026-05 を対象月として分析できないため: spend がありません）"),
+        _missing_otel_notice("2026-10"),
+        _unreadable_otel_notice("2026-07"),
+        _unreadable_otel_notice("2026-09"),
+        _excluded_otel_notice("2026-06: 1 名・2026-08: 1 名"),
+    ]
+
+
+@pytest.mark.parametrize("absent", [(), ("output_tokens",)], ids=["mixed", "unknown"])
+def test_adoption_otel_coverage_agrees_with_doctor(
+    make_input, tmp_path, adoption_otel_config, capsys, absent,
+):
+    """doctor と同じ網羅率を列に残し、届きが悪い人を件数と集まりから除く。"""
+    alice, bob, carol, dan, eve = (f"{name}@example.com"
+                                  for name in ("alice", "bob", "carol", "dan", "eve"))
+    input_dir = make_input(
+        {"2026-10": [_coverage_spend_row(email, output) for email, output in (
+            (alice, 200000), (bob, 200000), (carol, 200000), (dan, 1000),
+        )]},
+        members=[f"{email},Premium" for email in (alice, bob, carol, dan, eve)],
+        members_month="2026-10", org="org-a",
+    )
+    org = input_dir / "org-a"
+    _write_coverage_cache(org, _api_request(alice, 100000), _api_request(carol, 200000),
+                          absent=absent)
+    out = tmp_path / "reports"
+    config = adoption_otel_config()
+    assert _run_adoption_otel(input_dir, out, config) == 0
+    people, (team,) = _adoption_otel_rows(out)
+    printed = capsys.readouterr().out
+
+    assert team["otel_users"] == ("0" if absent else "1")
+    assert team["otel_requests"] == ("" if absent else "3")
+    assert team["otel_excluded_people"] == ("4" if absent else "2")
+    cfg = load_config(config)
+    target = otel_collect.gated_orgs(cfg)["org-a"]
+    checked = data_quality.otel_month_check(org, "2026-10", cfg, "org-a", target, [org])
+    known = {user.email: user.status.value for user in checked.coverage.users}
+    expected = (
+        dict.fromkeys((alice, bob, carol, dan), "unknown") if absent else
+        {alice: "low", bob: "missing", carol: "ok", dan: "not_judged"}
+    )
+    expected[eve] = "not_judged"
+    assert {row["email"]: row["otel_coverage"] for row in people} == {
+        email: known.get(email, "not_judged") for email in expected
+    } == expected
+    expected_requests = {
+        alice: "", bob: "", carol: "" if absent else "3", dan: "" if absent else "0", eve: "0",
+    }
+    for row in people:
+        assert row["otel_data"] == "ok"
+        assert row["otel_requests"] == expected_requests[row["email"]]
+        if expected[row["email"]] in ("low", "missing", "unknown"):
+            assert all(value == "" for field, value in row.items() if field.startswith("otel_")
+                       and field not in ("otel_data", "otel_coverage"))
+    assert _adoption_otel_notices(printed) == [
+        _excluded_otel_notice("2026-10: 4 名" if absent else "2026-10: 2 名"),
+    ]
+
+    assert _doctor_with(config, input_dir, "--org", "org-a", "--month", "2026-10",
+                        "--format", "json") == 0
+    issues = json.loads(capsys.readouterr().out)
+    by_code = {issue["code"]: issue for issue in issues if issue["code"].startswith("OTEL_")}
+    if absent:
+        assert set(by_code) == {"OTEL_COVERAGE_UNAVAILABLE"}
+    else:
+        assert set(by_code) == {"OTEL_COVERAGE_LOW", "OTEL_USER_MISSING"}
+        assert alice in by_code["OTEL_COVERAGE_LOW"]["message"]
+        assert bob in by_code["OTEL_USER_MISSING"]["message"]
+
+
+def test_adoption_otel_checks_all_analyzed_workspaces(
+    make_input, tmp_path, adoption_otel_config, capsys,
+):
+    """複数 workspace の spend を合算し、需要0として続けた月は判定を保留する。"""
+    _otel_doctor_input(make_input, 100000, workspace="main", month="2026-09")
+    _otel_doctor_input(make_input, 100000, workspace="second", month="2026-09")
+    input_dir = _otel_doctor_input(make_input, 100000, workspace="main")
+    _otel_doctor_input(make_input, 100000, workspace="second")
+    _adoption_otel_cache(input_dir, output=100000)
+    config = adoption_otel_config(nested=True)
+    out = tmp_path / "reports"
+    assert _run_adoption_otel(input_dir, out, config) == 0
+    people, teams = _adoption_otel_rows(out)
+    assert people[-1]["otel_coverage"] == "low"
+    assert teams[-1]["otel_excluded_people"] == "1"
+    assert _adoption_otel_notices(capsys.readouterr().out) == [
+        _excluded_otel_notice("2026-10: 1 名"),
+    ]
+
+    spend = input_dir / "org-a" / "second" / "spend" / "spend_2026-10.csv"
+    spend.rename(spend.with_suffix(".bak"))
+    out = tmp_path / "demand-zero"
+    assert _run_adoption_otel(input_dir, out, config, "--allow-missing-workspace", "second") == 0
+    for rows in _adoption_otel_rows(out):
+        assert rows[-1]["spend_complete"] == "True"
+        _assert_otel_blank(rows[-1], "spend_unconfirmed")
+    assert _adoption_otel_notices(capsys.readouterr().out) == []
+
+
+@pytest.mark.parametrize("preview", [False, True])
+def test_adoption_otel_does_not_read_cache_without_formal_adoption_output(
+    make_input, tmp_path, adoption_otel_config, monkeypatch, capsys, preview,
+):
+    """速報と adoption 無効の正式分析はキャッシュに触れない。"""
+    input_dir = _otel_doctor_input(make_input)
+    _adoption_otel_cache(input_dir, damaged=True)
+    monkeypatch.setattr(otel_collect, "load_otel_cache", _unexpected_otel_call)
+    out = tmp_path / "reports"
+    extra = ("--preview", "--days", "10") if preview else ()
+    assert _run_adoption_otel(
+        input_dir, out, adoption_otel_config(adoption_enabled=preview), *extra,
+    ) == 0
+    assert not _adoption_path(out, "2026-10").exists()
+    assert not _teams_path(out, "2026-10").exists()
+    assert _adoption_otel_notices(capsys.readouterr().out) == []
+
+
+def test_adoption_otel_preserves_other_artifacts_and_existing_columns(
+    make_input, tmp_path, adoption_otel_config,
+):
+    """設定とキャッシュの有無にかかわらず、既存列とレポートを含む既存成果物を保つ。"""
+    input_dir = _otel_doctor_input(make_input)
+    _mapping(input_dir, "org-a", ("alice@example.com,alice-dev",))
+    _write_pr_cache(input_dir, month="2026-10", entries=[
+        _timed_pr(1, 5, month="2026-10", login="alice-dev"),
+    ])
+    kinds = (REPORT, DETAILS, DASHBOARD, RECOMMENDATIONS, USAGE_SUMMARY, DECISION_EVIDENCE,
+             GITHUB_SUMMARY)
+
+    def contents(out):
+        paths = [out_file(out, kind, month="2026-10") for kind in kinds]
+        return [path.read_bytes() for path in (*paths, _report_path(out, "2026-10"))]
+
+    def existing_columns(out):
+        return [
+            [[(key, value) for key, value in row.items() if not key.startswith("otel_")]
+             for row in rows]
+            for rows in _adoption_otel_rows(out)
+        ]
+
+    before = tmp_path / "before"
+    assert _run_adoption_otel(
+        input_dir, before, adoption_otel_config(enabled=False, github=True),
+    ) == 0
+    expected_bytes, expected_columns = contents(before), existing_columns(before)
+    for has_cache in (False, True):
+        if has_cache:
+            _adoption_otel_cache(input_dir, output=100000)
+        for enabled in (False, True):
+            out = tmp_path / f"enabled-{enabled}-cache-{has_cache}"
+            assert _run_adoption_otel(
+                input_dir, out, adoption_otel_config(enabled=enabled, github=True),
+            ) == 0
+            assert contents(out) == expected_bytes
+            assert existing_columns(out) == expected_columns
