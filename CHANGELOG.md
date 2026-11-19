@@ -1,6 +1,6 @@
 # 変更履歴
 
-## [未リリース]
+## [1.7.0] - 2026-11-19
 
 ### 追加
 
@@ -9,6 +9,7 @@
 - `doctor` に OpenTelemetry に届いている割合の検査を追加した
 - 設定 `otel.coverage_products`・`otel.coverage_warning_ratio`・`otel.coverage_min_output_tokens` を追加した
 - 人 × 月の表とチーム × 月の表に、OpenTelemetry から数えた使い方の列を追加した
+- 正式分析の実行時に、OpenTelemetry のキャッシュが無い・読めない月と、網羅率で件数を空欄にした人を知らせるようにした
 - レポートに、OpenTelemetry から数えた使い方の指標の行と図を追加した
 
 ## [1.6.1] - 2026-11-18
@@ -294,6 +295,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.7.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.7.0
 [1.6.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.6.1
 [1.6.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.6.0
 [1.5.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.5.0
