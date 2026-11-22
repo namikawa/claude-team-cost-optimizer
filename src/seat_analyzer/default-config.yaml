@@ -238,9 +238,11 @@ snapshot_diff:
 
 # product（Claude Code・Chat 等の利用面）の分類。費用比較は全 product の需要で行い、
 # 活用の評価は primary（開発利用の主軸）に絞って見るための設定。
+# product 名は支出レポートの product 列に現れる表記で書く。
 #   primary       活用評価の主軸。ここが空だと「開発利用」を定義できないためエラー
 #   supplementary 補助的な利用面。需要が supplementary_high_usd 以上なら
 #                 supplementary_high とみなす [USD/月]
+#                 特定の product に帰属しない利用を表す Other もここに入れる
 #   prohibited    導入組織のポリシーで使わせない product。既定は空
 #                 （特定組織のセキュリティ方針を配布物に含めない）
 # primary と supplementary は互いに排他で、同じ product 名を両方に書くとどちらとして
@@ -254,10 +256,16 @@ product_policy:
   supplementary:
     - "Chat"
     - "Cowork"
-    - "Design"
+    - "Claude Design"
     - "Research"
     - "Code Review"
+    - "Claude Tag"
+    - "Claude in Chrome"
+    - "Office Agents"
+    - "Other"
+    # 置き換えられた以前の名前（以前の名前で書き出された CSV を、同じ利用面として数える）
     - "Claude in Slack"
+    - "Claude in Slack (legacy)"
   prohibited: []
   supplementary_high_usd: 100.0
 

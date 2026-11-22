@@ -1,5 +1,12 @@
 # 変更履歴
 
+## [未リリース]
+
+### 変更
+
+- `product_policy.supplementary` の既定を、支出レポートの product の名前に合わせた（`Design` を `Claude Design` に改め、`Claude Tag`・`Claude in Chrome`・`Office Agents`・`Other`・`Claude in Slack (legacy)` を足した）。足した product の需要は usage-summary の `supplementary_high` と dashboard の ⚑ に数えられる（`supplementary` を上書きしている設定には、足した名前は入らない）
+- `product_policy.supplementary` を上書きしていない設定で、既定に足した名前を `product_policy.primary` に書いていると、読み込み時にエラーになる（その名前を外した `supplementary` の全体も書く）
+
 ## [1.7.1] - 2026-11-22
 
 ### 変更

@@ -90,7 +90,7 @@
 | fujii@example.co.jp | 副スペース | 40.0M | 4.0M | — | $300.00 | Opus 4.8 100% | Claude Code 100% |
 | kubota@example.co.jp | 副スペース | 40.0M | 4.0M | — | $300.00 | Opus 4.8 100% | Claude Code 100% |
 | ota@example.co.jp | 主スペース | 40.0M | 4.0M | 0 | $180.00 | Sonnet 4.6 100% | Cowork 70% / Claude Code 30% |
-| takagi@example.co.jp | 主スペース | 35.6M | 3.6M | 0 | $160.00 | Sonnet 4.6 100% | Claude Code 50% / Design 50% |
+| takagi@example.co.jp | 主スペース | 35.6M | 3.6M | 0 | $160.00 | Sonnet 4.6 100% | Claude Code 50% / Claude Design 50% |
 | kubota@example.co.jp | 主スペース | 17.8M | 1.8M | 900 | $80.00 | Sonnet 4.6 100% | Claude Code 100% |
 | morita@example.co.jp | 主スペース | 10.0M | 1.0M | 0 | $15.00 | Haiku 4.5 100% | Chat 100% |
 | sakai@example.co.jp | 主スペース | 5.6M | 556K | 300 | $25.00 | Sonnet 4.6 100% | Claude Code 100% |
