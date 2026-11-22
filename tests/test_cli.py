@@ -2486,14 +2486,23 @@ def claude_env(tmp_path, monkeypatch):
     return env
 
 
+def _write_raw_preferences(profile_dir: Path, prefs: dict,
+                           name: str = "Preferences") -> None:
+    path = profile_dir / "Default" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(prefs), encoding="utf-8", newline="\n")
+
+
+def _loaded_extension(path: Path | str, **fields) -> dict:
+    """拡張機能を path から読み込んだプロファイルの設定（Chrome が書く形の一部）。"""
+    return {"extensions": {"settings": {claude_export.EXTENSION_ID: {"path": str(path), **fields}}}}
+
+
 def _write_preferences(profile_dir: Path, staging: Path) -> None:
-    """--setup を済ませたプロファイルの Preferences（ダウンロード先が staging）。"""
-    prefs = profile_dir / "Default" / "Preferences"
-    prefs.parent.mkdir(parents=True, exist_ok=True)
-    prefs.write_text(
-        json.dumps({"download": {"default_directory": str(staging)}, "other": 1}),
-        encoding="utf-8",
-    )
+    """--setup と --finish-setup を済ませたプロファイルの Preferences。"""
+    prefs = _loaded_extension(claude_export.extension_dir().resolve())
+    prefs.update(download={"default_directory": str(staging)}, other=1)
+    _write_raw_preferences(profile_dir, prefs)
 
 
 def _collect_claude(env, *extra: str) -> int:
@@ -2855,8 +2864,46 @@ def test_collect_claude_requires_the_setup(claude_env, capsys, prefs):
 
     assert _collect_claude(env, "--org", "example") == 1
     assert env.ext.commands == []
+    err = capsys.readouterr().err
     assert ("先に collect --source claude --setup corp を実行し、ブラウザの操作の後に "
-            "--finish-setup corp を実行してください") in capsys.readouterr().err
+            "--finish-setup corp を実行してください") in err
+    # ダウンロード先が済んでいなければ、拡張機能の案内は出さない
+    assert "拡張機能" not in err
+
+
+@pytest.mark.parametrize("secure,fragment", [
+    (None, "拡張機能の読み込みを確認できませんでした"),
+    (_loaded_extension("/somewhere/else/browser_extension"),
+     "拡張機能が別の場所から読み込まれています"),
+    (_loaded_extension(claude_export.extension_dir().resolve(), disable_reasons=[16777216]),
+     "拡張機能が無効になっています"),
+])
+def test_collect_claude_requires_the_extension(claude_env, capsys, secure, fragment):
+    """ダウンロード先が設定済みでも拡張機能が使えなければ起動せずに設定を案内する。"""
+    env = claude_env
+    profile_dir = env.profiles / "corp"
+    _write_raw_preferences(profile_dir, {"download": {"default_directory": str(env.staging)}})
+    if secure is not None:
+        _write_raw_preferences(profile_dir, secure, "Secure Preferences")
+
+    assert _collect_claude(env, "--org", "example") == 1
+    assert env.ext.commands == []
+    err = capsys.readouterr().err
+    assert err.startswith(f"  プロファイル corp: {fragment}")
+    assert "--setup corp" in err
+    assert "--finish-setup corp" in err
+
+
+@pytest.mark.parametrize("option", ["--check-login", "--login", "--list-orgs"])
+def test_collect_claude_actions_require_the_extension(claude_env, capsys, option):
+    """ログインの確認・更新と組織一覧も、拡張機能が無ければ Chrome を起動しない。"""
+    env = claude_env
+    _write_raw_preferences(env.profiles / "corp",
+                           {"download": {"default_directory": str(env.staging)}})
+
+    assert _collect_claude(env, option, "corp") == 1
+    assert env.ext.commands == []
+    assert "拡張機能の読み込みを確認できませんでした" in capsys.readouterr().err
 
 
 def test_collect_claude_requires_chrome(claude_env, capsys):
@@ -3188,18 +3235,6 @@ def test_collect_claude_setup_rejects_a_bad_profile_name(claude_env, capsys, nam
     assert claude_env.ext.commands == []
 
 
-def _write_raw_preferences(profile_dir: Path, prefs: dict,
-                           name: str = "Preferences") -> None:
-    path = profile_dir / "Default" / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(prefs), encoding="utf-8")
-
-
-def _loaded_extension(path: Path | str) -> dict:
-    """拡張機能を path から読み込んだプロファイルの設定（Chrome が書く形の一部）。"""
-    return {"extensions": {"settings": {claude_export.EXTENSION_ID: {"path": str(path)}}}}
-
-
 def _prepared_profile(env, name: str = "new") -> Path:
     """--setup の後、人がログインと拡張機能の読み込みを済ませたプロファイル。"""
     profile_dir = env.profiles / name
@@ -3298,8 +3333,11 @@ def test_collect_claude_finish_setup_reads_the_extension_from_preferences(claude
     ("{broken", "拡張機能の読み込みを確認できませんでした"),
     (_loaded_extension("/somewhere/else/browser_extension"),
      "拡張機能が別の場所から読み込まれています"),
+    (_loaded_extension(claude_export.extension_dir().resolve(), disable_reasons=[16777216]),
+     "拡張機能が無効になっています"),
 ])
 def test_collect_claude_finish_setup_requires_the_extension(claude_env, capsys, secure, fragment):
+    """拡張機能が使えなければ再設定を案内し、Preferences は書かない。"""
     env = claude_env
     profile_dir = env.profiles / "new"
     _write_raw_preferences(profile_dir, {"keep": True})
@@ -3311,8 +3349,11 @@ def test_collect_claude_finish_setup_requires_the_extension(claude_env, capsys, 
 
     assert _collect_claude(env, "--finish-setup", "new") == 1
     err = capsys.readouterr().err
-    assert fragment in err
+    assert err.startswith(f"エラー: {fragment}")
     assert str(claude_export.extension_dir().resolve()) in err
+    # 終了させた専用プロファイルの Chrome を --setup で開き直してから、もう一度 --finish-setup する
+    assert "collect --source claude --setup new で Chrome を開き、" in err
+    assert "もう一度 collect --source claude --finish-setup new を実行してください" in err
     # 設定は書かない
     assert json.loads((profile_dir / "Default" / "Preferences")
                       .read_text(encoding="utf-8")) == {"keep": True}

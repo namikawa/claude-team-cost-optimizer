@@ -289,8 +289,8 @@ def main(argv: list[str] | None = None) -> int:
     pcol.add_argument(
         "--finish-setup", metavar="プロファイル名",
         help="claude のみ: --setup の後、ブラウザの操作が終わってから実行する。Chrome を"
-             "終了させ、拡張機能が読み込まれていることを確かめてプロファイルの設定を書く"
-             "（単独で使う）",
+             "終了させ、拡張機能が同梱の場所から読み込まれていて有効であることを確かめて"
+             "プロファイルの設定を書く（単独で使う）",
     )
     pcol.add_argument(
         "--login", metavar="プロファイル名",
@@ -1510,9 +1510,9 @@ def _claude_chrome(settings: dict) -> Path | None:
 
 
 def _claude_profile_ready(profile: str, profiles_dir: Path, staging_dir: Path) -> bool:
-    """プロファイルの準備（--setup と --finish-setup）が済んでいるか（ダウンロード先が staging か）。
+    """ダウンロード先が staging で、同梱の拡張機能が読み込まれ有効になっているか。
 
-    済んでいなければ案内して False。
+    ダウンロード先を先に確かめ、どちらかの確認を通らなければ案内して False。
     """
     path = claude_export.profile_preferences_path(profiles_dir, profile)
     problem = ""
@@ -1529,7 +1529,8 @@ def _claude_profile_ready(profile: str, profiles_dir: Path, staging_dir: Path) -
             f"--finish-setup {profile} を実行してください",
             file=sys.stderr,
         )
-    return ready
+        return False
+    return _claude_extension_ready(profile, profiles_dir, finishing_setup=False)
 
 
 def _claude_launch(chrome: Path, profile_dir: Path, url: str) -> None:
@@ -1871,6 +1872,54 @@ def _claude_read_optional_preferences(path: Path) -> dict | None:
         return None
 
 
+def _claude_extension_ready(profile: str, profiles_dir: Path, *, finishing_setup: bool) -> bool:
+    """読める Preferences 類で拡張機能を確かめ、使えなければ操作を案内して False。
+
+    案内はどちらの呼び出しでも、--setup で専用プロファイルの Chrome を開き、chrome://extensions
+    で直してから --finish-setup を実行する順にする（--finish-setup はその前に Chrome を終了させて
+    いるため、開き直す手順が要る）。finishing_setup は --finish-setup 中の呼び出しかどうかで、
+    真なら「エラー: 」で始めて --finish-setup を「もう一度」実行するよう案内し、偽（起動前の
+    確認）ならプロファイル名を添えて字下げする。
+    """
+    expected = claude_export.extension_dir().resolve()
+    paths = (
+        claude_export.secure_preferences_path(profiles_dir, profile),
+        claude_export.profile_preferences_path(profiles_dir, profile),
+    )
+    loaded = [_claude_read_optional_preferences(path) for path in paths]
+    state = claude_export.extension_install_state(
+        (prefs for prefs in loaded if prefs is not None), expected,
+    )
+    if state == claude_export.EXTENSION_OK:
+        return True
+
+    reason, action = {
+        claude_export.EXTENSION_MISSING: (
+            "拡張機能の読み込みを確認できませんでした。Chrome の更新の後などに外れることがあります。",
+            f"デベロッパーモードをオンにし、同梱のフォルダ {expected} を読み込んでください。",
+        ),
+        claude_export.EXTENSION_OTHER_PATH: (
+            "拡張機能が別の場所から読み込まれています。",
+            f"seat-analyzer export を削除してから、同梱のフォルダ {expected} を読み込み直してください。",
+        ),
+        claude_export.EXTENSION_DISABLED: (
+            "拡張機能が無効になっています。",
+            (
+                "デベロッパーモードと seat-analyzer export をオンにしてください"
+                f"（オンにできなければ拡張機能を削除してから、同梱のフォルダ {expected} を読み込み直す）。"
+            ),
+        ),
+    }[state]
+    prefix, again = ("エラー: ", "もう一度 ") if finishing_setup else (f"  プロファイル {profile}: ", "")
+    print(
+        f"{prefix}{reason}collect --source claude --setup {profile} で Chrome を開き、"
+        f"chrome://extensions で {action}その後、{again}collect --source claude --finish-setup"
+        f" {profile} を実行してください",
+        file=sys.stderr,
+    )
+    return False
+
+
 def _claude_stop(profile_dir: Path, chrome: Path) -> bool:
     """そのプロファイルの Chrome が動いていれば終了させ、消えるまで待つ（最大 _CLAUDE_STOP_SECONDS）。
 
@@ -1897,12 +1946,12 @@ def _claude_stop(profile_dir: Path, chrome: Path) -> bool:
 
 
 def _claude_finish_setup(profile: str, settings: dict) -> int:
-    """--setup の後の締め。Chrome を終了させ、拡張機能の読み込みを確かめて設定を書く。
+    """--setup の後の締め。Chrome を終了させ、拡張機能が使えることを確かめて設定を書く。
 
     設定（Preferences）は Chrome が終了してから書く（Chrome は終了時に Preferences を
-    書き戻すため）。拡張機能が同梱の場所から読み込まれていなければ書かずに止める。何度
-    実行しても同じ設定になるだけで、既存のプロファイルを壊さない。取得と同じプロファイルの
-    ロックを持って行う（取得中の Chrome を終了させない）。
+    書き戻すため）。拡張機能が同梱の場所から読み込まれていないか、無効なら書かずに止める。
+    何度実行しても同じ設定になるだけで、既存のプロファイルを壊さない。取得と同じ
+    プロファイルのロックを持って行う（取得中の Chrome を終了させない）。
     """
     claude_export.validate_profile_name(profile)
     profiles_dir, staging_dir = _claude_dirs(settings)
@@ -1928,30 +1977,7 @@ def _claude_finish_setup_locked(
     profile_dir = claude_export.profile_path(profiles_dir, profile)
     if not _claude_stop(profile_dir, chrome):
         return 1
-    expected = claude_export.extension_dir().resolve()
-    prefs = [
-        loaded for loaded in (
-            _claude_read_optional_preferences(path) for path in (
-                claude_export.secure_preferences_path(profiles_dir, profile),
-                claude_export.profile_preferences_path(profiles_dir, profile),
-            )
-        ) if loaded is not None
-    ]
-    state = claude_export.extension_install_state(prefs, expected)
-    if state == claude_export.EXTENSION_OTHER_PATH:
-        print(
-            "エラー: 拡張機能が別の場所から読み込まれています。chrome://extensions で"
-            f" seat-analyzer export を削除してから {expected} を読み込み直し、もう一度"
-            "実行してください",
-            file=sys.stderr,
-        )
-        return 1
-    if state == claude_export.EXTENSION_MISSING:
-        print(
-            "エラー: 拡張機能の読み込みを確認できませんでした。chrome://extensions で"
-            f" {expected} を読み込んでから再実行してください",
-            file=sys.stderr,
-        )
+    if not _claude_extension_ready(profile, profiles_dir, finishing_setup=True):
         return 1
     staging_dir.mkdir(parents=True, exist_ok=True)
     changed = claude_export.write_preferences(

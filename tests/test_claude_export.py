@@ -1468,8 +1468,8 @@ def test_preferences_ready_compares_normalized_paths(tmp_path):
         {"download": {"default_directory": str(tmp_path / "exports2")}}, staging)
 
 
-def _extension_prefs(path) -> dict:
-    return {"extensions": {"settings": {claude_export.EXTENSION_ID: {"path": str(path)}}}}
+def _extension_prefs(path, **fields) -> dict:
+    return {"extensions": {"settings": {claude_export.EXTENSION_ID: {"path": str(path), **fields}}}}
 
 
 def test_secure_preferences_path(tmp_path):
@@ -1489,6 +1489,41 @@ def test_extension_install_state(tmp_path):
     # 同じ ID が別の場所から読み込まれている
     assert extension_install_state([other], expected) == "other_path"
     assert extension_install_state([other, _extension_prefs(expected)], expected) == "ok"
+
+
+@pytest.mark.parametrize("reasons,state", [
+    ([16777216], "disabled"),
+    ([1], "disabled"),
+    (16777216, "disabled"),
+    ([], "ok"),
+    (0, "ok"),
+    (True, "ok"),
+    ("16777216", "ok"),
+    ({"reason": 16777216}, "ok"),
+])
+def test_extension_install_state_reads_disable_reasons(tmp_path, reasons, state):
+    """一致するパスでは空でないリストと 0 でない整数を無効の理由として扱う。"""
+    expected = tmp_path / "browser_extension"
+    prefs = _extension_prefs(expected, disable_reasons=reasons)
+    assert extension_install_state([prefs], expected) == state
+
+
+def test_extension_install_state_ignores_disable_reasons_without_a_matching_path(tmp_path):
+    """同梱の場所との一致が無ければ、無効の理由があってもパスの有無で判定する。"""
+    expected = tmp_path / "browser_extension"
+    other = _extension_prefs(tmp_path / "old" / "extension", disable_reasons=[16777216])
+    assert extension_install_state([other], expected) == "other_path"
+    del other["extensions"]["settings"][claude_export.EXTENSION_ID]["path"]
+    assert extension_install_state([other], expected) == "missing"
+
+
+def test_extension_install_state_checks_all_matching_paths(tmp_path):
+    """どちらか一方に無効の理由があれば、設定ファイルの順にかかわらず無効にする。"""
+    expected = tmp_path / "browser_extension"
+    enabled = _extension_prefs(expected)
+    disabled = _extension_prefs(expected, disable_reasons=[16777216])
+    assert extension_install_state([enabled, disabled], expected) == "disabled"
+    assert extension_install_state([disabled, enabled], expected) == "disabled"
 
 
 @pytest.mark.parametrize("prefs", [

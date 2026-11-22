@@ -1320,33 +1320,47 @@ def secure_preferences_path(profiles_dir: Path, profile: str) -> Path:
 
 # 拡張機能の読み込みの状態（`extension_install_state` の戻り）
 EXTENSION_OK = "ok"
+EXTENSION_DISABLED = "disabled"
 EXTENSION_OTHER_PATH = "other_path"
 EXTENSION_MISSING = "missing"
 
 
 def extension_install_state(prefs_dicts: Iterable[object], expected_dir: Path) -> str:
-    """同梱の拡張機能がプロファイルに読み込まれているか。
+    """同梱の拡張機能がプロファイルに読み込まれ、有効になっているか。
 
     prefs_dicts は Secure Preferences と Preferences の内容（読めなかったものは渡さない）。
-    どちらかの `extensions.settings[EXTENSION_ID].path` が expected_dir（同梱の拡張機能の
-    場所）と一致すれば `EXTENSION_OK`、同じ ID が別の場所から読み込まれていれば
-    `EXTENSION_OTHER_PATH`、どちらにも無ければ `EXTENSION_MISSING`。パスの比較は区切りの
-    重なりや `.` を畳んでから行う（Windows は大文字小文字も区別しない）。
+    `extensions.settings[EXTENSION_ID].path` が expected_dir（同梱の場所）と一致する項目の
+    どれかに `disable_reasons`（空でないリストか 0 でない整数）があれば `EXTENSION_DISABLED`、
+    理由が無ければ `EXTENSION_OK`。未知の型は理由として扱わない。一致する項目が無く、同じ ID が
+    別の場所から読み込まれていれば `EXTENSION_OTHER_PATH`、無ければ `EXTENSION_MISSING`。
+    パスの比較は区切りの重なりや `.` を畳んでから行う（Windows は大文字小文字も区別しない）。
     """
     def key(path: str) -> str:
         return os.path.normcase(os.path.normpath(path))
 
+    expected_key = key(str(expected_dir))
+    found_expected = False
     found_elsewhere = False
     for prefs in prefs_dicts:
         extensions = prefs.get("extensions") if isinstance(prefs, dict) else None
         settings = extensions.get("settings") if isinstance(extensions, dict) else None
         entry = settings.get(EXTENSION_ID) if isinstance(settings, dict) else None
-        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
         if not isinstance(path, str) or not path:
             continue
-        if key(path) == key(str(expected_dir)):
-            return EXTENSION_OK
-        found_elsewhere = True
+        if key(path) != expected_key:
+            found_elsewhere = True
+            continue
+        found_expected = True
+        reasons = entry.get("disable_reasons")
+        if (isinstance(reasons, list) and reasons) or (
+            isinstance(reasons, int) and not isinstance(reasons, bool) and reasons != 0
+        ):
+            return EXTENSION_DISABLED
+    if found_expected:
+        return EXTENSION_OK
     return EXTENSION_OTHER_PATH if found_elsewhere else EXTENSION_MISSING
 
 
