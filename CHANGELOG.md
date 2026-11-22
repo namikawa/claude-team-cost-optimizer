@@ -1,10 +1,11 @@
 # 変更履歴
 
-## [未リリース]
+## [1.7.1] - 2026-11-22
 
 ### 変更
 
 - claude.ai の CSV の取得・`--check-login`・`--login`・`--list-orgs` で、Chrome を起動する前に拡張機能が読み込まれていて無効でないことを確かめ、満たさなければ起動せずに直し方を表示するようにした（`--finish-setup` も無効の拡張機能では止まる）
+- `collect --source claude` で、支出レポートのエクスポートのボタンが見つからないときに、そのページにあったボタンの表記を実行の記録に残すようにした
 
 ### 修正
 
@@ -305,6 +306,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.7.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.7.1
 [1.7.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.7.0
 [1.6.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.6.1
 [1.6.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.6.0
