@@ -10,8 +10,9 @@ import yaml
 from seat_analyzer.analyze import analyze
 from seat_analyzer.cli import main
 from seat_analyzer.config import _validate, load_config
-from seat_analyzer.ingest import discover_months
+from seat_analyzer.ingest import discover_months, file_period, load_spend_file
 from seat_analyzer.pricing import unmatched_models
+from seat_analyzer.product_usage import normalize_product_name
 from seat_analyzer.report import write_csv, write_html
 from seat_analyzer.report.html import (
     _DASHBOARD_SECTIONS,
@@ -25,7 +26,13 @@ from seat_analyzer.report.html import (
     _assemble,
 )
 
-from .conftest import CONFIG, SPEND_HEADER, requires_posix_filenames, spend_row
+from .conftest import (
+    CONFIG,
+    REPO_ROOT,
+    SPEND_HEADER,
+    requires_posix_filenames,
+    spend_row,
+)
 
 # --- 出力の安全性 ---
 
@@ -416,17 +423,48 @@ def _policy(cfg, **overrides) -> dict:
 
 
 def test_product_policy_defaults(cfg):
-    """既定設定がそのままロードでき、各キーが期待どおりの型で読める。"""
+    """既定の product 分類が期待どおりの型・値・順序で読める。"""
     policy = cfg["product_policy"]
     for key in ("primary", "supplementary", "prohibited"):
         assert isinstance(policy[key], list)
         assert all(isinstance(v, str) and v.strip() for v in policy[key])
     assert policy["primary"] == ["Claude Code"]
-    assert "Chat" in policy["supplementary"]
+    assert policy["supplementary"] == [
+        "Chat",
+        "Cowork",
+        "Claude Design",
+        "Research",
+        "Code Review",
+        "Claude Tag",
+        "Claude in Chrome",
+        "Office Agents",
+        "Other",
+        "Claude in Slack",
+        "Claude in Slack (legacy)",
+    ]
     # 既定に具体的な product を入れない（配布物に特定組織の方針を含めないため）
     assert policy["prohibited"] == []
     assert isinstance(policy["supplementary_high_usd"], float)
     assert policy["supplementary_high_usd"] == 100.0
+
+
+def test_sample_spend_products_match_default_policy(cfg):
+    """サンプルの全 spend CSV の product 名が既定の分類に当たる。"""
+    policy = cfg["product_policy"]
+    names = policy["primary"] + policy["supplementary"]
+    classified = set(map(normalize_product_name, names)) - {None}
+
+    input_dir = REPO_ROOT / "examples" / "input"
+    paths = sorted(input_dir.glob("**/spend/*.csv"))
+    assert paths, f"{input_dir}: spend CSV がありません"
+    for path in paths:
+        relative_path = path.relative_to(input_dir)
+        period = file_period(path)
+        assert period is not None, f"{relative_path}: ファイル名に期間がありません"
+        products = load_spend_file(path, period.month, cfg)["product"]
+        keys = products.map(normalize_product_name, na_action="ignore")
+        unmatched = products[~keys.isin(classified)].unique().tolist()
+        assert not unmatched, f"{relative_path}: 既定の分類に無い product 名 {unmatched!r}"
 
 
 def test_product_policy_empty_primary_rejected(cfg):

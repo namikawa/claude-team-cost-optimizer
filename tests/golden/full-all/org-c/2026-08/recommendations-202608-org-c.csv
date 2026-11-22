@@ -1,7 +1,7 @@
 ﻿email,workspace,current_seat,api_cost_usd,cost_current_usd,recommended_seat,monthly_saving_usd,status,confidence,reason,billed_extra_usd,prompt_tokens,completion_tokens,product_breakdown,model_breakdown,department,team,role,note,credit_limit_usd,credits_mode,prs_with_cc,loc_with_cc
 morita@example.co.jp,main,premium,15.0,125.0,standard,100.0,変更推奨,高,需要が続けて方針線未満; 5時間・週の上限は観測できない,0.0,10000000,1000000,Chat 100%,Haiku 4.5 100%,コーポレート,,エンジニア,,250.0,enabled,0,0
 ota@example.co.jp,main,premium,180.0,125.0,standard,100.0,変更推奨,高,需要が続けて方針線未満; 5時間・週の上限は観測できない,0.0,40000000,4000000,Cowork 70% / Claude Code 30%,Sonnet 4.6 100%,コーポレート,,マネージャー,,250.0,enabled,0,0
-takagi@example.co.jp,main,premium,160.0,125.0,standard,100.0,変更推奨,高,需要が続けて方針線未満; 5時間・週の上限は観測できない,0.0,35555554,3555554,Claude Code 50% / Design 50%,Sonnet 4.6 100%,コーポレート,,デザイナー,,0.0,disabled,0,0
+takagi@example.co.jp,main,premium,160.0,125.0,standard,100.0,変更推奨,高,需要が続けて方針線未満; 5時間・週の上限は観測できない,0.0,35555554,3555554,Claude Code 50% / Claude Design 50%,Sonnet 4.6 100%,コーポレート,,デザイナー,,0.0,disabled,0,0
 ueda@example.co.jp,main,premium,300.5,125.0,standard,100.0,変更推奨,高,需要が続けて方針線未満; 5時間・週の上限は観測できない,0.0,66666666,6666666,Claude Code 100%,Sonnet 4.6 100%,プロダクト開発部,Webチーム,エンジニア,,250.0,enabled,4,1200
 fujii@example.co.jp,main,premium,900.0,165.0,premium,0.0,現状維持,高,,40.0,80000000,8000000,Claude Code 100%,Opus 4.8 100%,プラットフォーム開発部,基盤チーム,テックリード,,250.0,enabled,15,4200
 hoshino@example.co.jp,main,premium,520.0,125.0,premium,0.0,現状維持,中,,0.0,66666666,6666666,Claude Code 100%,Opus 4.8 100%,プラットフォーム開発部,SREチーム,エンジニア,2026-08 から別案件のため副の利用が減っている,250.0,enabled,9,2600

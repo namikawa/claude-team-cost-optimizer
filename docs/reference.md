@@ -160,8 +160,9 @@ code-analytics も同じ月に日付付きスナップショットを複数置�
 
 - `primary` — 活用評価の主軸にする product。ここに挙げたものの需要が「Code需要」になる
   （既定は Claude Code）。空にはできない
-- `supplementary` — 補助的な利用面（既定は Chat・Cowork・Design・Research・Code Review・
-  Claude in Slack）
+- `supplementary` — 補助的な利用面（既定は Chat・Cowork・Claude Design・Research・
+  Code Review・Claude Tag・Claude in Chrome・Office Agents・Other と、置き換えられた以前の名前の
+  Claude in Slack・Claude in Slack (legacy)）
 - `prohibited` — 組織の方針で使わせない product（既定は空）。観測されると警告に出る。
   シート判定には影響しない
 - `supplementary_high_usd` — supplementary の需要合計がこの額以上なら ⚑（既定 $100/月）
@@ -169,9 +170,21 @@ code-analytics も同じ月に日付付きスナップショットを複数置�
 primary と supplementary は排他で、同じ product 名を両方に書くとエラーになる。prohibited は
 分類と直交する指定なので、primary・supplementary に挙げた product を重ねて書いてよい。
 
-product 名の照合は、正規化（前後空白の除去・大小文字・Unicode の正規化形式）後の完全一致で行う。
-部分一致・あいまい一致はしない（`Code Review` が `Claude Code` に一致するような取り違えは、
-費用ではなく活用の評価を歪めるため）。CSV 側の表記ゆれは、リストに名前を並べて吸収する。
+product 名は、支出レポートの `product` 列に現れる表記で書く。照合は、正規化（前後空白の除去・
+大小文字・Unicode の正規化形式）後の完全一致で行う。部分一致・あいまい一致はしない
+（`Code Review` が `Claude Code` に一致するような取り違えは、費用ではなく活用の評価を歪めるため）。
+CSV 側の表記ゆれは、リストに名前を並べて吸収する。
+
+既定の `supplementary` には、支出レポートに現れる primary 以外の名前を並べる。置き換えられた
+以前の名前も残し、以前の名前で書き出された CSV を分析するときに同じ利用面として数える。
+`Other` は特定の product に帰属しない利用を表す値。
+
+一覧を変えるときは、ワークスペースの `config.yaml` に一覧の全体を書く。リストは丸ごと置き換わる。
+
+`supplementary` を上書きしていない設定で、既定の `supplementary` に足した名前を `primary` に
+書いていると、既定の一覧と名前が重複し、設定の読み込み時にエラーになる。その名前を外した
+`supplementary` の全体も書けば、これまでの分類を保てる。`supplementary` を上書きしている
+設定には、既定に足した名前は入らず、このエラーにもならない。
 
 ## recommendations の列
 

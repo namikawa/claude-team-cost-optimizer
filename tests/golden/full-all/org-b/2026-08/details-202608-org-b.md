@@ -58,7 +58,7 @@
 |---|---|---|---|---|---|---|
 | mori@example.co.jp | 69.3M | 6.9M | 5,900 | $520.00 | Opus 4.8 100% | Claude Code 70% / Cowork 20% / Chat 10% |
 | kudo@example.co.jp | 42.7M | 4.3M | 2,600 | $320.00 | Opus 4.8 100% | Claude Code 60% / Chat 40% |
-| tanabe@example.co.jp | 40.0M | 4.0M | 1,500 | $180.00 | Sonnet 4.6 100% | Claude Code 80% / Design 20% |
+| tanabe@example.co.jp | 40.0M | 4.0M | 1,500 | $180.00 | Sonnet 4.6 100% | Claude Code 80% / Claude Design 20% |
 | abe@example.co.jp | 30.7M | 3.1M | 180 | $46.00 | Haiku 4.5 100% | Chat 100% |
 | shimizu@example.co.jp | 10.7M | 1.1M | 310 | $48.00 | Sonnet 4.6 100% | Claude Code 100% |
 | endo@example.co.jp | 5.3M | 533K | 0 | $8.00 | Haiku 4.5 100% | Chat 100% |

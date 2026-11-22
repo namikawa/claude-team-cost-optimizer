@@ -11,4 +11,4 @@ ota@example.co.jp,uuid-7af4eeae,Cowork,claude-sonnet-4-6,claude-sonnet,504,28000
 morita@example.co.jp,uuid-c6033c81,Chat,claude-haiku-4-5,claude-haiku,60,10000000,1000000,0.0000,0.0000
 sakai@example.co.jp,uuid-186abcf3,Claude Code,claude-sonnet-4-6,claude-sonnet,100,5555555,555555,0.0000,0.0000
 takagi@example.co.jp,uuid-1f873c47,Claude Code,claude-sonnet-4-6,claude-sonnet,320,17777777,1777777,0.0000,0.0000
-takagi@example.co.jp,uuid-1f873c47,Design,claude-sonnet-4-6,claude-sonnet,320,17777777,1777777,0.0000,0.0000
+takagi@example.co.jp,uuid-1f873c47,Claude Design,claude-sonnet-4-6,claude-sonnet,320,17777777,1777777,0.0000,0.0000

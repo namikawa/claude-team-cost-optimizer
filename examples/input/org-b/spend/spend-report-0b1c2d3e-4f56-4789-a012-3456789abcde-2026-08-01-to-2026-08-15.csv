@@ -5,7 +5,7 @@ mori@example.co.jp,uuid-83567d9d,Chat,claude-opus-4-8,claude-opus,120,4000000,40
 kudo@example.co.jp,uuid-cccfb0f6,Claude Code,claude-opus-4-8,claude-opus,480,16000000,1600000,0.0000,0.0000
 kudo@example.co.jp,uuid-cccfb0f6,Chat,claude-opus-4-8,claude-opus,320,10666666,1066666,0.0000,0.0000
 tanabe@example.co.jp,uuid-c4d92aa4,Claude Code,claude-sonnet-4-6,claude-sonnet,384,21333333,2133333,10.0000,10.0000
-tanabe@example.co.jp,uuid-c4d92aa4,Design,claude-sonnet-4-6,claude-sonnet,96,5333333,533333,0.0000,0.0000
+tanabe@example.co.jp,uuid-c4d92aa4,Claude Design,claude-sonnet-4-6,claude-sonnet,96,5333333,533333,0.0000,0.0000
 shimizu@example.co.jp,uuid-6d746156,Claude Code,claude-sonnet-4-6,claude-sonnet,190,10577777,1057777,0.0000,0.0000
 abe@example.co.jp,uuid-39e417ae,Chat,claude-haiku-4-5,claude-haiku,120,20000000,2000000,0.0000,0.0000
 endo@example.co.jp,uuid-e3b58735,Chat,claude-haiku-4-5,claude-haiku,32,5333333,533333,0.0000,0.0000
