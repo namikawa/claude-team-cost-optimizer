@@ -1,6 +1,6 @@
 # 変更履歴
 
-## [未リリース]
+## [1.7.2] - 2026-11-23
 
 ### 追加
 
@@ -317,6 +317,7 @@
 - ワークスペースとプログラムの分離（`uv tool install` と `init` / `init-org`）
 - macOS / Windows / Linux で動作確認済み
 
+[1.7.2]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.7.2
 [1.7.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.7.1
 [1.7.0]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.7.0
 [1.6.1]: https://github.com/namikawa/claude-team-cost-optimizer/releases/tag/v1.6.1
