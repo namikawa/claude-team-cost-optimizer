@@ -1,7 +1,7 @@
 # Claude利活用・シート適正化機能 実装設計書
 
 - ステータス: Draft
-- 最終更新: 2026-10-12
+- 最終更新: 2026-11-22
 - 対象: `seat-analyzer` v1.0 以降の段階的拡張
 - 関連文書: [Claude利活用・シート適正化機能提案書](./claude-adoption-cost-management-proposal.md)
 - 進捗管理: [実装ステータス](./implementation-status.md)
@@ -112,7 +112,7 @@ Premium → Standard:
 ### 3.5 プロダクト
 
 - Claude Codeをprimaryとする
-- Chat、Cowork、Design等はsupplementaryとする
+- Chat、Cowork、Claude Design等はsupplementaryとする
 - 費用には全プロダクトを含める
 - シートの判定（昇格・降格・credit）は全プロダクトの需要で行い、primary / supplementaryの
   区別を条件にしない（Track 11）。開発者以外が主に使う組織では、CoworkやChatが主な利用先に
@@ -570,13 +570,50 @@ product_policy:
   supplementary:
     - "Chat"
     - "Cowork"
-    - "Design"
+    - "Claude Design"
     - "Research"
     - "Code Review"
+    - "Claude Tag"
+    - "Claude in Chrome"
+    - "Office Agents"
+    - "Other"
+    # 置き換えられた以前の名前
     - "Claude in Slack"
+    - "Claude in Slack (legacy)"
   prohibited: []
   supplementary_high_usd: 100.0
 ```
+
+product名は、支出レポートの`product`列に現れる表記で書く。照合は正規化（前後の空白の除去・
+Unicodeの正規化・大小文字の同一視）の後の完全一致で、部分一致では拾わない（`Code Review`が
+`Claude Code`に当たるような取り違えを避ける）。
+
+既定の`supplementary`には、支出レポートに現れるproductのうちprimary以外の名前を並べる。
+
+- 名前が置き換えられたproductは、以前の名前も残す（`Claude Tag`に置き換えられた
+  `Claude in Slack`と、その別表記の`Claude in Slack (legacy)`）。以前の名前で書き出された
+  CSVを分析したときに、同じ利用面として数えるため
+- `Other`は特定のproductに帰属しない利用を表す値。Claude Codeの利用として数える根拠が
+  無いので、supplementaryに入れる。どちらにも入れない案は採らなかった。`Other`の現れる
+  月のたびに分類に無いproductの通知（§9.4）が出て、それを止めるには通知から外す名前の
+  設定が要る
+
+primaryにもsupplementaryにも書いていないproductの需要は、`total_demand_usd`には入るが、
+`code_demand_usd`にも`supplementary_high`にも数えない。支出レポートのproductの名前は
+増えたり置き換わったりするので、一覧に無い名前が現れたら通知する（§9.4）。
+
+primary以外のproductをすべてsupplementaryとして数える（一覧を持たない）案は採らなかった。
+新しく現れた名前がprimaryの側かsupplementaryの側かは、名前からは決められない（Claude Codeに
+まとめられていた利用が、別の名前の明細に分かれて現れることがある）。分類は設定で決め、
+決まっていない名前は通知にとどめる。
+
+一覧を変えるときは、ワークスペースの`config.yaml`に一覧の全体を書く（リストは丸ごと
+置き換わる）。一覧へ名前を足すだけの設定は持たない。
+
+既定の一覧に名前を足すと、上書きの設定を持つ利用者に2つの影響がある。足した名前を
+`primary`に書いている設定は、読み込み時にエラーになる（primaryとsupplementaryに同じ名前を
+書けないため）。その名前を外した`supplementary`の全体も上書きに書けば、これまでの分類を
+保てる。`supplementary`を上書きしている設定には、既定に足した名前は入らない。
 
 `supplementary_high_usd`は`supplementary_high`の閾値。supplementary productの需要が
 この額以上なら真とする。
@@ -605,6 +642,43 @@ product_policy:
   判定の条件にしない（Track 11で分類軸を外した）
 - 活用の可視化と習熟の時系列（§27）は`code_demand_usd`を主にする
 - 禁止productはseat判定へ影響させずpolicy warning
+
+### 9.4 分類に無いproductの通知
+
+指定した月の分析で特徴量の計算に使った利用者の明細に、primaryにもsupplementaryにも書いて
+いない名前のproductがあれば、正式分析の実行時の出力で警告する
+（`UNCLASSIFIED_PRODUCT_OBSERVED`）。支出レポートのproductの名前は予告なく増えたり
+置き換わったりし、一覧に無い名前の需要は`code_demand_usd`にも`supplementary_high`にも
+数えられないまま、実態とのずれに気づけないため。
+
+- 警告はworkspaceごとに1件で、CSVに現れた表記と、分類に無い名前の行を持つ利用者の人数
+  （名前ごとではなく全体で1つ。同じ人は1度だけ数える）を示し、`product_policy`への追記を
+  案内する。禁止productの警告（`PROHIBITED_PRODUCT_OBSERVED`）と同じ形にする
+- 名前の照合は特徴量と同じ規則（§9.1）。正規化で一覧の名前に当たる表記は通知しない
+- `prohibited`だけに書いた名前は、分類が決まっていないので通知する（禁止productの警告と
+  両方が出る）
+- 特徴量の値は変えない。分類に無い行は、これまでどおりprimaryでもsupplementaryでもない
+  行として数える
+- 宛先は分析の実行者なので、成果物には載せず、終了コードも変えない。複数workspaceの
+  組織では表示名を前に付ける。実行時の出力に出すpolicyのissueは、禁止productと分類に無い
+  productの2つで、`CAPACITY_SIGNAL_UNAVAILABLE`はこれまでどおり出さない
+- 設定での切り替えは持たない。成果物を変えない実行時の警告で、既定の設定のまま使う
+  実行者にこそ要るため
+
+通知しないもの:
+
+- `product`列の無い入力と、product名が空（空白だけを含む）の行
+  （`CAPACITY_SIGNAL_UNAVAILABLE`が扱う）
+- 組織サービス利用の行にだけ現れる名前（特徴量の計算に入らない行なので、分類が無くても
+  結果は変わらない）
+- 指定した月より前の月の明細（`adoption.enabled`の表のために過去の月を分析し直すときの
+  分を含む）
+- 同じ月の、主データに採用しなかったスナップショットにだけ現れる名前
+- 速報（productの特徴量を計算しない）
+
+doctorの検査には足さない。単価表に無いモデル名（`UNKNOWN_MODEL`）はdoctorと実行時の両方で
+知らせるが、あちらは費用の計算に効く。productの分類はシートの判定と金額に効かないので、
+正式分析の実行時の1か所にとどめる。
 
 ## 10. Seat change event
 
@@ -1630,6 +1704,11 @@ decision-evidenceを常に併記する。`v1`は従来の判定（allowanceモ�
 
 - `PROHIBITED_PRODUCT_OBSERVED`
 - `CAPACITY_SIGNAL_UNAVAILABLE`
+- `UNCLASSIFIED_PRODUCT_OBSERVED`
+
+`UNCLASSIFIED_PRODUCT_OBSERVED`は、`product_policy`の分類に無い名前のproductが、指定した
+月の利用者の明細に現れたことを、正式分析の実行時の出力で伝える警告（§9.4）。doctorの
+検査には足さない。
 
 ## 18. マイクロステップ実装順序
 
@@ -2415,8 +2494,8 @@ dashboardで読めるようにする。
   grant_suggested_cap_usdと同じ流儀）から表示し、テンプレートへ直書きしない
 - prohibited_observedは載せない（禁止指定の報告はCLIのみ・§Step 8）
 - セクションの表示条件: product_usageがあり、featuresが非空で、code_demand_usdに確定値が
-  1つ以上あること。満たさなければセクションごと省略する（product列が無い入力の理由説明は
-  CLIのCAPACITY_SIGNAL_UNAVAILABLE警告が担う）
+  1つ以上あること。満たさなければセクションごと省略する（product列が無いことは、
+  読み込み時の任意カラムなしの警告が伝える）
 - CSSは変更しない: dashboard.cssは速報と共有され、変更するとpreview-dashboard.htmlの
   バイト一致が壊れる。既存クラスの再利用とpartial内のinline styleで作る
 
@@ -2433,6 +2512,92 @@ dashboardで読めるようにする。
 - 速報ダッシュボードへの掲載
 - report.md / details.md への掲載
 
+
+#### Step 76: productの分類の既定を支出レポートの名前に合わせる
+
+依存:
+
+- Step 6
+
+対象:
+
+- `src/seat_analyzer/default-config.yaml`
+- `examples/generate_sample_data.py`・`examples/input/`
+- `tests/test_hardening.py`・`tests/test_golden.py`・`tests/golden/`
+- `docs/reference.md`・`CHANGELOG.md`
+
+実装:
+
+- §9.1の既定
+- サンプルの合成データのproduct名を、既定の一覧にある名前にする（`Design` → `Claude Design`）
+- `docs/reference.md`と`CHANGELOG.md`に、上書きの設定を持つ利用者への注意を書く（§9.1）
+- V1の成果物を固定したgoldenの説明に、サンプルの入力を変えたときはその差だけを作り直す
+  ことを書く
+
+受け入れ条件:
+
+- 既定の`supplementary`が§9.1の一覧と一致し、`Design`を含まない
+- サンプルの合成データのproduct名が、すべて既定のprimaryかsupplementaryに当たる
+- サンプルの成果物の差は、product名の表示（`Design` → `Claude Design`）だけ。V1の成果物を
+  固定したgoldenも、入力のproduct名を変えた分のこの差だけを作り直す
+- シートの判定と金額は、判定の版（v1・v2）によらず変わらない。一覧に足した名前の需要が
+  ある入力で変わりうるのは、`supplementary_high`とdashboardの印だけ
+- 特徴量の計算・設定の検証・上書きの規則は変わらない
+
+今回は行わない:
+
+- 分類に無いproductの通知（Step 77）
+- 一覧へ名前を足すだけの設定
+
+#### Step 77: 分類に無いproductの通知
+
+依存:
+
+- Step 7
+- Step 76（サンプルの分析で通知が出ない状態にしてから入れる）
+
+対象:
+
+- `src/seat_analyzer/domain.py`
+- `src/seat_analyzer/product_usage.py`
+- `src/seat_analyzer/cli.py`
+- `src/seat_analyzer/report/html.py`（コメントだけ）
+- `tests/test_product_usage.py`・`tests/test_cli.py`・`tests/test_data_quality.py`
+- `docs/reference.md`・`CHANGELOG.md`
+
+実装:
+
+- §9.4の通知
+- `docs/reference.md`に、警告の意味と一覧の変え方（一覧の全体を書く）を書く
+- dashboardのproductのセクションを組み立てる処理の説明にある「`product`列が無いことは
+  CLIの`CAPACITY_SIGNAL_UNAVAILABLE`警告が伝える」という記述を、実装（読み込み時の
+  任意カラムなしの警告）に合わせる
+
+受け入れ条件:
+
+- 指定した月の利用者の明細に、primaryにもsupplementaryにも無い名前のproductがあると、
+  正式分析の実行時の出力に警告が出る。警告は、CSVに現れた表記と、該当する利用者の全体の
+  人数と、`product_policy`の案内を含む
+- 分類に無い名前を含む合成の入力で、終了コードは0のまま、成果物に警告の文は載らない
+- 照合は特徴量と同じ正規化で行う。前後の空白・Unicodeの正規化形式・大小文字の違いだけで
+  一覧の名前に当たる表記は通知しない。部分一致では拾わない（`Design`は`Claude Design`に
+  当たらず、通知する）
+- `prohibited`だけに書いた名前は、禁止productの警告と分類に無いproductの警告の両方が出る
+- `product`列の無い入力・product名が空の行・組織サービス利用の行にだけ現れる名前は
+  通知しない
+- 複数workspaceの組織ではworkspaceごとに、表示名を前に付けて出る
+- `adoption.enabled`の分析で、過去の月にだけ現れる名前は出ず、指定した月の名前は1度だけ
+  出る
+- 特徴量と成果物（golden）は変わらない
+- 速報とdoctorでは出ない。issueの種類の一覧には足す
+- サンプルの分析では出ない
+
+今回は行わない:
+
+- doctorの検査への追加
+- 組織サービス利用の行の通知
+- 通知から外す名前の設定
+- 名前ごとの人数
 
 ### Track 3: シート変更履歴
 
@@ -5011,13 +5176,18 @@ organizations:
 
 product_policy:
   primary: ["Claude Code"]
-  supplementary:
+  supplementary:              # 既定の一覧と、名前の決まりは§9.1
     - "Chat"
     - "Cowork"
-    - "Design"
+    - "Claude Design"
     - "Research"
     - "Code Review"
+    - "Claude Tag"
+    - "Claude in Chrome"
+    - "Office Agents"
+    - "Other"
     - "Claude in Slack"
+    - "Claude in Slack (legacy)"
   prohibited: []
 
 decision:
