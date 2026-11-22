@@ -38,7 +38,7 @@ const LOGIN_URL = "https://claude.ai/login";
 // ボタンと選択肢の名前（日本語と英語を併記した正規表現）
 const LABEL = {
   membersExport: "CSV\\s*をエクスポート|Export\\s*CSV",  // 「CSV をエクスポート」と空白が入ることがある
-  spendExport: "支出レポートをエクスポート|Export spend report",
+  spendExport: "^(?:支出レポートをエクスポート|エクスポート|Export spend report|Export)$",  // 入口は「エクスポート」とだけ書かれることがある
   monthToDate: "^(?:今月|月累計|Month to date)(?:\\s|$)",
   lastMonth: "^(?:先月|Last month)(?:\\s|$)",
   download: "^(?:ダウンロード|Download)$",
@@ -159,15 +159,19 @@ function pageState() {
   return { state: "app", title: t, path: location.pathname };
 }
 
+// ボタンが現れるまで待つ。現れなければ、ページにあったボタンの表記（先頭の 20 件）を返す
+// （画面の表記が変わったときに、実行の記録から新しい表記を見つけられるようにする）
 async function waitForButton(pattern, timeoutMs) {
   const re = new RegExp(pattern);
   const deadline = Date.now() + timeoutMs;
+  let seen = [];
   while (Date.now() < deadline) {
-    const b = [...document.querySelectorAll("button, [role=button]")].find((e) => re.test(e.innerText.trim()));
-    if (b) return true;
+    const buttons = [...document.querySelectorAll("button, [role=button]")];
+    if (buttons.some((e) => re.test(e.innerText.trim()))) return { ok: true };
+    seen = buttons.map((e) => e.innerText.trim()).filter(Boolean).slice(0, 20);
     await new Promise((r) => setTimeout(r, 500));
   }
-  return false;
+  return { ok: false, seen };
 }
 
 // ボタンが現れて有効になるまで待ってから押す（データの読み込み中は無効のことがある）
@@ -586,13 +590,16 @@ async function exportMembers(tabId, org) {
   });
 }
 
-// 支出レポート。当月は「月累計」、前月は「先月」を選び、期間が月の 1 日から始まることを
+// 支出レポート。当月は「今月」、前月は「先月」を選び、期間が月の 1 日から始まることを
 // 確かめてからダウンロードする
 async function exportSpend(tabId, org) {
   await openPage(tabId, PAGES.spend);
   await ensureOrg(tabId, org, "spend");
   const present = await exec(tabId, waitForButton, [LABEL.spendExport, WAIT.button]);
-  if (!present) throw new Error("spend report unavailable");
+  if (!present || !present.ok) {
+    log(`[${org.dir}] spend export button not found; buttons seen: ${JSON.stringify(present ? present.seen : null)}`);
+    throw new Error("spend report unavailable");
+  }
   const previous = runMode === "previous";
   let range = null;
   const saved = await exportWith(prefixFor(org, "spend"), async () => {
