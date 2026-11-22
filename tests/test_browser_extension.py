@@ -236,6 +236,117 @@ global.document = {
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
+def _run_wait_for_spend_export(labels: list[str], expected: dict) -> None:
+    """本番のラベルと waitForButton を node で動かし、labels のボタンが並ぶページでの戻りを確かめる。"""
+    run_js = _text("run.js")
+    label_table = re.search(r"^const LABEL = \{.*?^\};", run_js, re.MULTILINE | re.DOTALL)
+    assert label_table is not None
+    script = (
+        'const assert = require("node:assert/strict");\n'
+        + label_table[0] + "\nasync " + _function(run_js, "waitForButton") + "\n}\n"
+        + "const labels = " + json.dumps(labels, ensure_ascii=False) + ";\n"
+        + "const expected = " + json.dumps(expected, ensure_ascii=False) + ";\n"
+        + """
+const buttons = labels.map((text) => ({ innerText: text }));
+global.document = {
+  querySelectorAll(selector) { assert.equal(selector, "button, [role=button]"); return buttons; },
+};
+(async () => {
+  assert.deepEqual(await waitForButton(LABEL.spendExport, 600), expected);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    proc = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, check=False, timeout=10,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node が無い環境では動作モックを検査しない")
+@pytest.mark.parametrize("label", ["支出レポートをエクスポート", "エクスポート", "Export spend report", "Export"])
+def test_spend_export_button_matches_the_new_and_old_labels(label):
+    """支出レポートの入口のボタンを、新旧の表記（「エクスポート」だけの表記を含む）と前後の空白を除いて見つける。"""
+    _run_wait_for_spend_export(
+        ["30日\n", "費用", "ファイル操作", f" {label}\n", "すべての製品\n"], {"ok": True})
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node が無い環境では動作モックを検査しない")
+def test_spend_export_button_reports_the_labels_seen_when_missing():
+    """表記が完全に一致しないボタンには一致せず、見つからなければ空でない表記を先頭 20 件まで返す。"""
+    others = [f"ボタン{i}" for i in range(20)]
+    _run_wait_for_spend_export(
+        ["CSV をエクスポート", "エクスポートする", "", " \n", "\n費用 ", "Export CSV", *others],
+        {"ok": False, "seen": ["CSV をエクスポート", "エクスポートする", "費用", "Export CSV", *others[:16]]},
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node が無い環境では動作モックを検査しない")
+def test_export_spend_waits_and_clicks_with_the_same_label():
+    """exportSpend は待つ段と押す段で同じ表記を使い、見つからなければ記録を残して押さずに止める。"""
+    run_js = _text("run.js")
+    label_table = re.search(r"^const LABEL = \{.*?^\};", run_js, re.MULTILINE | re.DOTALL)
+    assert label_table is not None
+    script = (
+        'const assert = require("node:assert/strict");\n'
+        + label_table[0] + "\n" + _function(run_js, "expectOk") + "\n}\n"
+        + "async " + _function(run_js, "exportSpend") + "\n}\n"
+        + """
+const WAIT = { button: 60000 };
+const PAGES = { spend: "/analytics/overview" };
+let runMode = "current";
+const logs = [];
+function log(message) { logs.push(message); }
+async function pauseBeforeClick() {}
+async function openPage() {}
+async function ensureOrg() {}
+function prefixFor(org, kind) { return `run/${org.dir}/${kind}`; }
+// exec に渡される関数（ページの中で動く本体の代わり。呼ばれたら誤り）
+async function waitForButton() { throw new Error("waitForButton runs only through exec"); }
+async function clickButton() { throw new Error("clickButton runs only through exec"); }
+async function spendDialog() { throw new Error("spendDialog runs only through exec"); }
+const seen = ["費用", "ファイル操作"];
+const range = "2026-11-01 to 2026-11-21";
+let found = true;
+let exported = 0;
+const calls = [];
+async function exec(tabId, func, args) {
+  calls.push([func.name, args]);
+  if (func === waitForButton) return found ? { ok: true } : { ok: false, seen };
+  if (func === clickButton) return { ok: true, text: args[0] };
+  if (func === spendDialog) return { ok: true, wasChecked: true, checked: true, range };
+  throw new Error(`unexpected ${func.name}`);
+}
+async function exportWith(prefix, trigger) {
+  exported++;
+  assert.equal(prefix, "run/org-a/spend");
+  await trigger();
+  return { filename: "spend.csv" };
+}
+(async () => {
+  // 見つかれば、待つ段と押す段で同じ表記を使ってダウンロードまで進む
+  assert.deepEqual(await exportSpend(1, { dir: "org-a" }), { filename: "spend.csv", range });
+  const waits = calls.filter(([name]) => name === "waitForButton");
+  const clicks = calls.filter(([name]) => name === "clickButton");
+  assert.deepEqual(waits.map(([, args]) => args[0]), [LABEL.spendExport]);
+  assert.deepEqual(clicks.map(([, args]) => args.slice(0, 2)),
+    [[LABEL.spendExport, null], [LABEL.download, "dialog"]]);
+  // 見つからなければ、ページのボタンの表記を記録して、押しに進まずに止める
+  found = false;
+  calls.length = 0;
+  exported = 0;
+  await assert.rejects(exportSpend(1, { dir: "org-a" }), { message: "spend report unavailable" });
+  assert.deepEqual(calls.map(([name]) => name), ["waitForButton"]);
+  assert.equal(exported, 0);
+  assert.ok(logs.some((line) => line.startsWith("[org-a] ") && line.includes(JSON.stringify(seen))));
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    )
+    proc = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, check=False, timeout=10,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
 def test_run_page_confirms_the_org_on_every_page():
     """組織の切替の直後だけでなく、支出レポートと Claude Code のページでも組織を確かめる。"""
     run_js = _text("run.js")
