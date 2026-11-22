@@ -84,6 +84,7 @@ class IssueCode(enum.StrEnum):
     # Policy
     PROHIBITED_PRODUCT_OBSERVED = "PROHIBITED_PRODUCT_OBSERVED"
     CAPACITY_SIGNAL_UNAVAILABLE = "CAPACITY_SIGNAL_UNAVAILABLE"
+    UNCLASSIFIED_PRODUCT_OBSERVED = "UNCLASSIFIED_PRODUCT_OBSERVED"
 
 
 # --------------------------------------------------------------- V2判定の語彙

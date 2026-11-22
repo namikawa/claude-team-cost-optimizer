@@ -2,6 +2,10 @@
 
 ## [未リリース]
 
+### 追加
+
+- 正式分析の実行時に、`product_policy` の primary にも supplementary にも無い名前の product が対象月の利用者の明細にあれば、警告するようにした
+
 ### 変更
 
 - `product_policy.supplementary` の既定を、支出レポートの product の名前に合わせた（`Design` を `Claude Design` に改め、`Claude Tag`・`Claude in Chrome`・`Office Agents`・`Other`・`Claude in Slack (legacy)` を足した）。足した product の需要は usage-summary の `supplementary_high` と dashboard の ⚑ に数えられる（`supplementary` を上書きしている設定には、足した名前は入らない）

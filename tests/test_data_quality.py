@@ -79,6 +79,7 @@ EXPECTED_CODES = {
     # Policy
     "PROHIBITED_PRODUCT_OBSERVED",
     "CAPACITY_SIGNAL_UNAVAILABLE",
+    "UNCLASSIFIED_PRODUCT_OBSERVED",
 }
 
 
@@ -86,8 +87,8 @@ def test_issue_code_vocabulary_is_fixed():
     # __members__はaliasも列挙するため、別名の紛れ込みも検出できる
     members = IssueCode.__members__
     assert set(members) == EXPECTED_CODES
-    assert len(members) == 38
-    assert len(EXPECTED_CODES) == 38
+    assert len(members) == 39
+    assert len(EXPECTED_CODES) == 39
 
 
 def test_issue_code_value_equals_name():

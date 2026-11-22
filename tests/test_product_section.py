@@ -235,8 +235,8 @@ def test_dashboard_renders_without_a_product_column(cfg, tmp_path):
     """product 列の無いスペンドでは、セクションが出ないだけで他は崩れない。
 
     列が無いと Code の需要は誰の分も確定しないため、棒も比率も全部 — になる。
-    その状態のセクションは読み手に何も渡さないので出さない（列が無い理由は CLI の
-    CAPACITY_SIGNAL_UNAVAILABLE 警告が担う）。
+    その状態のセクションは読み手に何も渡さないので出さない（product 列が無いことは、
+    読み込み時の任意カラムなしの警告が伝える）。
     """
     def _drop_product(line: str) -> str:
         cells = line.split(",")

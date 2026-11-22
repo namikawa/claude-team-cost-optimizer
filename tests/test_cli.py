@@ -171,6 +171,7 @@ ORG_SERVICE_EMAIL = "(org service usage)"
 # ユーザ向けの警告（人数で数える）と組織サービス向けの警告（行数で数える）の目印
 USER_PROHIBITED = "product の利用行があります"
 ORG_PROHIBITED = "product の組織サービス利用行があります"
+UNCLASSIFIED_WARNING = "product_policy の分類に無い product の明細があります"
 
 
 def test_prohibited_product_is_warned(make_input, tmp_path, capsys):
@@ -233,6 +234,98 @@ def test_prohibited_product_warned_for_users_and_org_service_separately(
     out = capsys.readouterr().out
     assert USER_PROHIBITED in out and "1 名" in out
     assert ORG_PROHIBITED in out and "1 行" in out
+
+
+def test_unclassified_product_warns_only_in_cli_output(make_input, tmp_path, capsys):
+    """正式分析の警告に表記と人数を示し、終了コードと成果物には反映しない。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@x.jp", 10.0, product="Prototype Console")]},
+        members=["alice@x.jp,Standard"], org="org-a",
+    )
+    rc, out_dir = _run_with_config(input_dir, tmp_path, CONFIG)
+    assert rc == 0
+    out = capsys.readouterr().out
+    warnings = out.partition("--- 警告 ---\n")[2].partition("\n--- 出力 ---")[0]
+    assert f"{UNCLASSIFIED_WARNING}: Prototype Console（1 名）" in warnings
+    assert "config.yaml > product_policy" in warnings
+
+    assert out_file(out_dir, REPORT).is_file()
+    marker = UNCLASSIFIED_WARNING.encode("utf-8")
+    for path in out_dir.rglob("*"):
+        if path.is_file():
+            assert marker not in path.read_bytes(), path
+
+
+def test_prohibited_and_unclassified_warnings_exclude_blank_names(make_input, tmp_path, capsys):
+    """禁止指定だけの名前は両方の警告に出て、名前が空の行の issue は出ない。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@x.jp", 10.0, product="Prototype Console"),
+                     spend_row("alice@x.jp", 5.0, product="")]},
+        members=["alice@x.jp,Standard"], org="org-a",
+    )
+    config = _prohibited_config(tmp_path, "Prototype Console")
+    assert _run_with_config(input_dir, tmp_path, config)[0] == 0
+    out = capsys.readouterr().out
+    warnings = out.partition("--- 警告 ---\n")[2].partition("\n--- 出力 ---")[0]
+    assert warnings.count(f"{USER_PROHIBITED}: Prototype Console（1 名）") == 1
+    assert warnings.count(f"{UNCLASSIFIED_WARNING}: Prototype Console（1 名）") == 1
+    assert "product 名が空の明細行が" not in out
+
+
+def test_unclassified_product_in_org_service_rows_is_not_warned(make_input, tmp_path, capsys):
+    """組織サービス利用にだけ現れる新しい名前は分類の警告に出ない。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@x.jp", 10.0),
+                     spend_row(ORG_SERVICE_EMAIL, 3.0, product="Prototype Console")]},
+        members=["alice@x.jp,Standard"], org="org-a",
+    )
+    assert _run_with_config(input_dir, tmp_path, CONFIG)[0] == 0
+    assert UNCLASSIFIED_WARNING not in capsys.readouterr().out
+
+
+def test_unclassified_product_in_unused_snapshot_is_not_warned(make_snapshots, tmp_path, capsys):
+    """同月の主データに採用しなかったスナップショットの名前は報告しない。"""
+    input_dir = make_snapshots(
+        "2026-06", {"2026-06-10": [spend_row("alice@x.jp", 5.0, product="Prototype Console")],
+                    "2026-06-30": [spend_row("alice@x.jp", 10.0)]},
+        members=["alice@x.jp,Standard"], org="org-a",
+    )
+    assert _run_with_config(input_dir, tmp_path, CONFIG)[0] == 0
+    assert UNCLASSIFIED_WARNING not in capsys.readouterr().out
+
+
+def test_preview_does_not_warn_about_unclassified_products(make_input, tmp_path, capsys):
+    """速報では分類に無い名前の警告を出さない。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@x.jp", 10.0, product="Prototype Console")]},
+        members=["alice@x.jp,Standard"], org="org-a",
+    )
+    assert _run_with(input_dir, tmp_path / "reports", CONFIG, "--preview", "--days", "10") == 0
+    assert UNCLASSIFIED_WARNING not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("extra", [(), ("--format", "json")], ids=["text", "json"])
+def test_doctor_does_not_warn_about_unclassified_products(make_input, capsys, extra):
+    """doctor のテキストと JSON のどちらにも分類に無い名前の警告は出ない。"""
+    input_dir = make_input(
+        {"2026-06": [spend_row("alice@x.jp", 10.0, product="Prototype Console")]},
+        members=["alice@x.jp,Standard"], org="org-a",
+    )
+    assert _doctor(input_dir, "--month", "2026-06", *extra) == 0
+    out = capsys.readouterr().out
+    assert UNCLASSIFIED_WARNING not in out
+    assert "UNCLASSIFIED_PRODUCT_OBSERVED" not in out
+
+
+def test_example_analysis_does_not_warn_about_unclassified_products(tmp_path, capsys):
+    """サンプルの対象月を両組織で分析し、分類に無い名前の警告が無いことを確かめる。"""
+    examples = REPO_ROOT / "examples"
+    assert _analyze_nested(str(examples / "config.yaml"), examples / "input", tmp_path,
+                           "--month", "2026-08", "--org", "org-b", "--org", "org-c") == 0
+    out = capsys.readouterr().out
+    assert "=== org-b 2026-08" in out
+    assert "=== org-c 2026-08" in out
+    assert UNCLASSIFIED_WARNING not in out
 
 
 def test_unknown_org_errors(make_input, tmp_path, capsys):
@@ -3864,6 +3957,28 @@ def test_analyze_accepts_nested_layout(make_input, tmp_path, capsys):
     assert "| 対象メンバー数 | 2 名（アカウント 3） |" in report_text
 
 
+def test_unclassified_product_warning_includes_workspace_label(make_input, tmp_path, capsys):
+    """複数 workspace では名前を観測した workspace の表示名を警告に添える。"""
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@x.jp", 8.0)],
+         "2026-06": [spend_row("alice@x.jp", 10.0)]},
+        members=["alice@x.jp,Premium", "bob@x.jp,Premium"], org="org-x", workspace="main",
+    )
+    make_input(
+        {"2026-05": [spend_row("alice@x.jp", 20.0)],
+         "2026-06": [spend_row("alice@x.jp", 20.0, product="Prototype Console")]},
+        members=["alice@x.jp,Premium"], org="org-x", workspace="second",
+    )
+    config = tmp_path / "nested-org-x.yaml"
+    config.write_text(_NESTED_CONFIG.format(org="org-x"), encoding="utf-8", newline="\n")
+    assert _analyze_nested(str(config), input_dir, tmp_path, "--month", "2026-06") == 0
+    out = capsys.readouterr().out
+    warnings = [line.removeprefix("  ! ") for line in out.splitlines()
+                if UNCLASSIFIED_WARNING in line]
+    warning, = warnings
+    assert warning.startswith(f"[副スペース] {UNCLASSIFIED_WARNING}: Prototype Console（1 名）")
+
+
 def test_analyze_nested_v2_writes_the_workspace_column(make_input, tmp_path):
     input_dir, config = _nested_ready(make_input, tmp_path)
     assert _analyze_nested(config, input_dir, tmp_path, "--month", "2026-06",
@@ -4904,6 +5019,23 @@ def test_adoption_is_written_for_a_single_org_run(make_input, tmp_path, capsys):
     path = _adoption_path(out)
     assert path.is_file()
     assert f"adoption: {path}（2 名 × 2026-04〜2026-06・6 行）" in capsys.readouterr().out
+
+
+def test_adoption_warns_once_for_current_unclassified_products(make_input, tmp_path, capsys):
+    """adoption を有効にしても対象月の分類の警告だけが一度出る。"""
+    input_dir = make_input(
+        {"2026-05": [spend_row("alice@x.jp", 10.0, product="Beta Surface")],
+         "2026-06": [spend_row("alice@x.jp", 20.0, product="Prototype Console")]},
+        members=["alice@x.jp,Standard"], org="org-a",
+    )
+    out_dir = tmp_path / "reports"
+    assert _run_with(input_dir, out_dir, _adoption_config(tmp_path), "--org", "org-a") == 0
+    rows = _summary_rows(_adoption_path(out_dir))
+    assert {row["month"] for row in rows} == {"2026-05", "2026-06"}
+    out = capsys.readouterr().out
+    assert out.count(UNCLASSIFIED_WARNING) == 1
+    assert f"{UNCLASSIFIED_WARNING}: Prototype Console（1 名）" in out
+    assert "Beta Surface" not in out
 
 
 def test_adoption_rows_of_past_months_match_their_own_runs(make_input, tmp_path):

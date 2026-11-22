@@ -17,6 +17,10 @@ prohibited は primary / supplementary の分類と直交する属性で、同�
 行（組織サービス利用）は特徴量の計算対象ではないので、compute とは別の関数
 （find_org_service_prohibited）で同じ照合規則をあてる。
 
+primary にも supplementary にも当たらない名前の product は、分類に無い名前として
+報告する。名前が空の行は CAPACITY_SIGNAL_UNAVAILABLE が扱う。組織サービス利用の行は
+compute に渡らないため、この報告の対象外とする。
+
 観測していないものは 0・False で埋めない。product 名が空の行・requests が欠けた行・
 列そのものが無い入力は、どれも「その行の値が分からない」として同じ規則で扱う。分からない
 行の寄与を最小・最大に見積もった範囲を出し、結論が動かないときだけ値を確定させる:
@@ -233,6 +237,10 @@ def compute(spend_df: pd.DataFrame, policy: Mapping) -> ProductUsage:
             n_rows=int(unknown_name.sum())))
     if bool(observed.any()):
         issues.append(_prohibited_issue(names[is_prohibited], int(observed.sum())))
+    is_unclassified = keys.notna() & ~is_code & ~is_supplementary
+    if bool(is_unclassified.any()):
+        n_users = int(_any_by_email(is_unclassified, email, index).sum())
+        issues.append(_unclassified_issue(names[is_unclassified], n_users))
 
     return ProductUsage(features=_finalize(features), issues=issues)
 
@@ -509,6 +517,22 @@ def _prohibited_issue(names: pd.Series, n_users: int) -> QualityIssue:
         message=(
             f"policy で禁止指定された product の利用行があります: {_listed(products)}"
             f"（{n_users} 名）。seat 判定には影響しません"
+        ),
+        scope={"products": products, "n_users": n_users},
+    )
+
+
+def _unclassified_issue(names: pd.Series, n_users: int) -> QualityIssue:
+    """分類に無い名前の product を観測したことの警告。"""
+    products = _observed_products(names)
+    return QualityIssue(
+        severity=Severity.WARNING,
+        code=IssueCode.UNCLASSIFIED_PRODUCT_OBSERVED,
+        message=(
+            f"product_policy の分類に無い product の明細があります: {_listed(products)}"
+            f"（{n_users} 名）。Code 需要にも supplementary_high にも数えません"
+            "（seat 判定には影響しません）。config.yaml > product_policy の primary か"
+            " supplementary に、残す名前も含めた一覧の全体を書くと分類できます"
         ),
         scope={"products": products, "n_users": n_users},
     )

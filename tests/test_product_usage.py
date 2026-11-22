@@ -98,6 +98,75 @@ def test_matching_ignores_spacing_case_and_unicode_form(policy):
     assert features.loc["alice@x.jp", "code_demand_share"] == 1.0
 
 
+def test_unclassified_products_report_names_and_distinct_users(policy):
+    """分類に無い product の表記を列挙し、利用者は重複なく数える。"""
+    result = product_usage.compute(detail([
+        ("alice@x.jp", 10.0, 1.0, "Prototype Console"),
+        ("bob@x.jp", 20.0, 2.0, "prototype console"),
+        ("bob@x.jp", 30.0, 3.0, "Beta Surface"),
+        ("carol@x.jp", 40.0, 4.0, "Claude Code"),
+    ]), policy)
+
+    issue, = result.issues
+    assert issue.code is IssueCode.UNCLASSIFIED_PRODUCT_OBSERVED
+    assert issue.severity is Severity.WARNING
+    assert issue.scope == {
+        "products": ("Beta Surface", "Prototype Console", "prototype console"),
+        "n_users": 2,
+    }
+    assert "Beta Surface、Prototype Console、prototype console（2 名）" in issue.message
+    assert "product_policy" in issue.message
+
+
+@pytest.mark.parametrize("name", ["  claude code  ", "CHAT", "Cafe\u0301"],
+                         ids=["primary", "case", "nfd"])
+def test_unclassified_warning_uses_normalized_names(policy, name):
+    """正規化後に primary または supplementary に当たる名前は報告しない。"""
+    config = dict(policy, supplementary=[*policy["supplementary"], "Café"])
+    result = product_usage.compute(detail([("alice@x.jp", 10.0, 1.0, name)]), config)
+
+    assert result.issues == []
+
+
+def test_partial_matches_are_reported_as_unclassified(policy):
+    """既定の分類に完全一致しない名前は報告する。"""
+    result = product_usage.compute(detail([
+        ("alice@x.jp", 10.0, 1.0, "Design"),
+        ("alice@x.jp", 20.0, 2.0, "Claude Code (CLI)"),
+    ]), policy)
+
+    issue, = result.issues
+    assert issue.code is IssueCode.UNCLASSIFIED_PRODUCT_OBSERVED
+    assert issue.scope["products"] == ("Claude Code (CLI)", "Design")
+
+
+def test_blank_product_names_only_raise_capacity_issue(policy):
+    """空欄と空白だけの名前は、特徴量を確定できないことだけを報告する。"""
+    result = product_usage.compute(detail([
+        ("alice@x.jp", 10.0, 1.0, ""),
+        ("alice@x.jp", 20.0, 2.0, "   "),
+        ("bob@x.jp", 30.0, 3.0, "Chat"),
+    ]), policy)
+
+    issue, = result.issues
+    assert issue.code is IssueCode.CAPACITY_SIGNAL_UNAVAILABLE
+    assert issue.scope["n_rows"] == 2
+
+
+def test_unclassified_rows_preserve_total_and_code_features(policy):
+    """補助に分類する前後で全需要・Code 需要・Code 回数は変わらない。"""
+    df = detail([
+        ("alice@x.jp", 150.0, 5.0, "Prototype Console"),
+        ("alice@x.jp", 40.0, 2.0, "Claude Code"),
+    ])
+    columns = ["total_demand_usd", "code_demand_usd", "code_requests"]
+    unclassified = product_usage.compute(df, policy).features
+    config = dict(policy, supplementary=[*policy["supplementary"], "Prototype Console"])
+    classified = product_usage.compute(df, config).features
+
+    pd.testing.assert_frame_equal(unclassified[columns], classified[columns])
+
+
 def test_missing_product_column_leaves_code_features_unknown(policy):
     result = product_usage.compute(detail([
         ("alice@x.jp", 300.0, 30.0, "Claude Code"),
@@ -625,13 +694,14 @@ def test_prohibited_products_are_reported(policy):
     features = result.features
 
     assert features["prohibited_observed"].tolist() == [True, True, False]
-    assert len(result.issues) == 1
-    issue = result.issues[0]
-    assert issue.code is IssueCode.PROHIBITED_PRODUCT_OBSERVED
+    assert len(result.issues) == 2
+    issue = next(i for i in result.issues if i.code is IssueCode.PROHIBITED_PRODUCT_OBSERVED)
     assert issue.severity is Severity.WARNING
     # 実データに現れた表記を挙げる（該当行を探せるようにするため）
     assert issue.scope["products"] == ("Prototype Console", "prototype console")
     assert issue.scope["n_users"] == 2
+    assert result.issues[0] is issue
+    assert result.issues[1].code is IssueCode.UNCLASSIFIED_PRODUCT_OBSERVED
 
 
 def test_no_prohibited_product_by_default(policy):

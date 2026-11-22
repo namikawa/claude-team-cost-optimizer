@@ -59,6 +59,13 @@ _OUTPUT_DIR_HELP = f"出力ディレクトリ (default: {WORKSPACE_CONFIG_NAME} 
 # 追記する行の目印にもなるので、文言は変えずに使う
 _GITIGNORE_NOTE = "# 実データと組織固有の設定をコミットしない（seat-analyzer init）"
 
+# 正式分析の実行時に表示する product_policy の issue（CAPACITY_SIGNAL_UNAVAILABLE は表示しない。
+# 理由は _product_policy_warnings）
+_PRODUCT_POLICY_WARNING_CODES = frozenset({
+    IssueCode.PROHIBITED_PRODUCT_OBSERVED,
+    IssueCode.UNCLASSIFIED_PRODUCT_OBSERVED,
+})
+
 
 def _add_dir_options(parser: argparse.ArgumentParser, *, output: bool = True) -> None:
     """入出力ディレクトリのオプションを足す。
@@ -2512,8 +2519,8 @@ def _print_preview(pv, paths: dict[str, Path]) -> None:
     print(f"\n--- 出力 ---\n  preview:   {paths['markdown']}\n  dashboard: {paths['html']}")
 
 
-def _prohibited_warnings(result: analyze.OrgAnalysisResult) -> list[str]:
-    """policy で禁止指定した product を観測したことの警告。
+def _product_policy_warnings(result: analyze.OrgAnalysisResult) -> list[str]:
+    """policy で禁止指定した product と分類に無い product の観測の警告。
 
     宛先は分析の実行者なので、共有物であるレポートには載せず実行時の出力にだけ出す
     （レポートの内容は判定に使う値だけで決まることを保つ）。product 名の欠落
@@ -2532,7 +2539,7 @@ def _prohibited_warnings(result: analyze.OrgAnalysisResult) -> list[str]:
         prefix = f"[{result.contexts[name].label}] " if multi else ""
         found += [
             prefix + issue.message for issue in usage.issues
-            if issue.code == IssueCode.PROHIBITED_PRODUCT_OBSERVED
+            if issue.code in _PRODUCT_POLICY_WARNING_CODES
         ]
     return found
 
@@ -2578,7 +2585,7 @@ def _stale_evidence_notices(
     食い違うことを伝える。
 
     宛先は分析の実行者なので、共有物であるレポートには載せず実行時の出力にだけ出す
-    （_prohibited_warnings と同じ扱い。レポートの内容が出力先に残っているファイルの
+    （_product_policy_warnings と同じ扱い。レポートの内容が出力先に残っているファイルの
     有無で変わらないようにするため）。
     """
     path = report.DECISION_EVIDENCE.path(org_output, result.month, result.org)
@@ -3097,10 +3104,10 @@ def _print_result(
     for name, workspace in result.workspaces.items():
         prefix = f"[{result.contexts[name].label}] " if multi else ""
         warnings += [prefix + w for w in workspace.warnings]
-    prohibited = _prohibited_warnings(result)
-    if warnings or prohibited or notices:
+    product_warnings = _product_policy_warnings(result)
+    if warnings or product_warnings or notices:
         print("\n--- 警告 ---")
-        for w in [*warnings, *prohibited, *notices]:
+        for w in [*warnings, *product_warnings, *notices]:
             print(f"  ! {w}")
 
     print("\n--- 出力 ---")
