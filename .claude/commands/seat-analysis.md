@@ -76,6 +76,11 @@ uv run seat-analyzer analyze [--month YYYY-MM] [--org <組織名>]
   - **spend突合の乖離警告** → 既定設定（`src/seat_analyzer/default-config.yaml`）の
     `model_prices` の単価が最新か、spend列の意味（実課金 vs API等価見積り）を確認し、
     docs/reference.md に解釈を記録する
+  - **分類に無い product の警告** → 警告に出た名前を primary（開発利用の主軸）と
+    supplementary（補助的な利用面）のどちらに数えるかを決め、ワークスペースの
+    `config.yaml` の `product_policy` に一覧の全体を書く。書いたら、手順 4 に進む前に
+    手順 2 と同じ対象月・組織で分析し直す（Code 需要と ⚑ が新しい分類で書き直される）。
+    シートの判定と金額には影響しない。設定の詳細は docs/reference.md の[product の分類](../../docs/reference.md#product-の分類configyaml--product_policy)を参照する
   - **シート不明ユーザ** → members ファイルの更新漏れの可能性を指摘する
     （「対象外（シート未割当）」は意図的な未割当のため指摘不要）
   - **スキップされた組織** → 対象月のエクスポート漏れ。手順を案内する

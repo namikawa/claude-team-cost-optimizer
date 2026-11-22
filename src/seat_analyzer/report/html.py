@@ -448,8 +448,8 @@ def _product_view(usage: ProductUsage | None, threshold_usd: float) -> dict | No
     規則。0 で埋めると「観測した結果が 0 だった」ことと区別できなくなる）。
 
     Code の需要が1人も確定しない組織ではセクションごと出さない（棒も比率も全部 —
-    になり、読み手が得るものが無い）。product 列が無いことの説明は CLI の
-    CAPACITY_SIGNAL_UNAVAILABLE 警告が担う。
+    になり、読み手が得るものが無い）。product 列が無いことは、読み込み時の任意カラムなしの
+    警告が伝える。
     """
     if usage is None:
         return None
