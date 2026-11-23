@@ -500,9 +500,9 @@ Claude Code analytics）を、`seat-analyzer collect --source claude` で取得�
   `seat-analyzer collect --source claude --check-login` を実行する（プロファイルごとに有効・
   期限間近・無効・不明と Cookie の期限までの日数を表示し、有効でないものがあれば終了コード 1。
   使い方は [usage.md](./usage.md) の「ログインセッションの確認」）。ログインし直すときは
-  `seat-analyzer collect --source claude --login <プロファイル名>` を実行する。セッションの
-  Cookie を消してからログイン画面を開くので、期限の前でも更新できる。人がログインしたら
-  Chrome を閉じる（次回の取得から有効）
+  `seat-analyzer collect --source claude --login <プロファイル名>` を実行し、ブラウザに開く
+  実行ページで「ログインし直す」を押す。押すとセッションの Cookie を消してからログイン画面を
+  開くので、期限の前でも更新できる。ログインしたら Chrome を閉じる（次回の取得から有効）
 - 外部セキュリティ検証の確認が出た: 人がチェックを入れれば取得は続く
 - 既にプロファイルがある（seat-analyzer を入れ直して拡張機能のフォルダが変わった、別の手順で
   作ったプロファイルを使う等）: 手順 2 をもう一度行う（`--setup` → ブラウザで拡張機能を

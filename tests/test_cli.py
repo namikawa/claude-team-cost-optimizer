@@ -3501,7 +3501,8 @@ def test_collect_claude_login_opens_the_login_page(claude_env, capsys):
     assert not (env.staging / spec["run_id"]).exists()
     assert env.listed == []           # 終了は待たない
     out = capsys.readouterr().out
-    assert "専用プロファイルのセッション Cookie を消してから開きます" in out
+    assert "「ログインし直す」を押すと" in out
+    assert "セッション Cookie を消してからログイン画面を開きます" in out
     assert "ログインしたら Chrome を閉じてください" in out
 
 

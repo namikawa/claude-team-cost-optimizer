@@ -502,3 +502,29 @@ def test_login_removes_only_the_session_cookies():
     assert "if (!isLogin) await releaseActiveRun(runId);" in main
     assert main.index("if (!(await claimRun(spec.run_id)))") \
         < main.index("else if (isLogin) await runLogin(tab.id);")
+
+
+def test_login_waits_for_the_button_before_removing_cookies():
+    """再ログインは開始済みの記録を付けた後、作業タブを作る前にボタンの操作を待つ。"""
+    run_js = _text("run.js")
+    main = _function(run_js, "main")
+    confirmation = "if (isLogin) await confirmLogin();"
+    assert confirmation in main
+    assert main.index("if (!(await claimRun(spec.run_id)))") < main.index(confirmation)
+    assert main.index(confirmation) < main.index("chrome.tabs.create(")
+    for name in ("runLogin", "confirmLogin"):
+        assert main.count(f"{name}(") == 1
+        assert run_js.count(f"{name}(") == 2  # 定義と main からの呼び出し
+    assert '<button id="confirm" type="button" hidden>ログインし直す</button>' in _text("run.html")
+    assert "chrome.cookies" not in _function(run_js, "confirmLogin")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node が無い環境では動作モックを検査しない")
+def test_login_confirmation_with_real_extension_script():
+    """本番スクリプトでクリック前後の動作と埋め込み・開始済みの拒否を検査する。"""
+    proc = subprocess.run(
+        ["node", str(Path(__file__).with_name("browser_extension_login.cjs")), str(EXT)],
+        capture_output=True, text=True, check=False, timeout=15,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert len(json.loads(proc.stdout)["passed"]) == 3

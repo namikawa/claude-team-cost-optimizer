@@ -301,9 +301,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     pcol.add_argument(
         "--login", metavar="プロファイル名",
-        help="claude のみ: プロファイルのセッションの Cookie を消してから、その Chrome で "
-             "claude.ai のログイン画面を開く（セッションが切れたとき・期限の前に更新するとき。"
-             "単独で使う）",
+        help="claude のみ: 実行ページを開き、「ログインし直す」を押すとセッションの Cookie を消して "
+             "claude.ai のログイン画面を開く（セッションが切れたとき・期限の前に更新するとき。単独で使う）",
     )
     pcol.add_argument(
         "--list-orgs", metavar="プロファイル名",
@@ -1998,11 +1997,12 @@ def _claude_finish_setup_locked(
 
 
 def _claude_login(profile: str, settings: dict) -> int:
-    """プロファイルの Chrome で、セッションの Cookie を消してからログイン画面を開く（終了は待たない）。
+    """プロファイルの Chrome で再ログインの実行ページを開く（終了は待たない）。
 
-    Cookie の削除とログイン画面の表示は拡張機能が行う（有効なセッションのままログイン画面を
-    開くとアプリへ戻されるため、期限の前に更新するには先に消す）。ロックは取らず、staging にも
-    何も書かない。拡張機能を読み込む前の --setup は従来どおりログイン画面を直接開く。
+    実行ページで「ログインし直す」を押すと、拡張機能がセッションの Cookie を消してからログイン
+    画面を開く（有効なセッションのままログイン画面を開くとアプリへ戻されるため、期限の前に
+    更新するには先に消す）。ロックは取らず、staging にも何も書かない。拡張機能を読み込む前の
+    --setup は従来どおりログイン画面を直接開く。
     """
     claude_export.validate_profile_name(profile)
     profiles_dir, staging_dir = _claude_dirs(settings)
@@ -2023,8 +2023,9 @@ def _claude_login(profile: str, settings: dict) -> int:
     _claude_launch(
         chrome, profile_dir, claude_export.trigger_url(claude_export.login_spec(run_id)))
     print(
-        "ブラウザにログイン画面が開きます（専用プロファイルのセッション Cookie を消してから"
-        "開きます）。ログインしたら Chrome を閉じてください。次回の取得から有効です"
+        "ブラウザに実行ページが開きます。「ログインし直す」を押すと、専用プロファイルの"
+        "セッション Cookie を消してからログイン画面を開きます。"
+        "ログインしたら Chrome を閉じてください。次回の取得から有効です"
     )
     return 0
 

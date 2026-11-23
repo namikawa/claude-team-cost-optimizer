@@ -15,8 +15,9 @@
 //
 // claude.ai の上で押すのはエクスポート系のボタンと、支出レポートのダイアログの期間の選択・
 // ダウンロードだけで、設定を変える操作は持たない。通信先は claude.ai だけ。Cookie を書き換える
-// のは組織の切替（lastActiveOrg）と、再ログインの前のセッションの Cookie の削除だけで、
-// セッションの Cookie は期限だけを見る（値はファイルにもログにも出さない）。
+// のは組織の切替（lastActiveOrg）と、再ログインで人が実行ページのボタンを押したときの
+// セッションの Cookie の削除だけ。セッションの Cookie は期限だけを見る（値はファイルにも
+// ログにも出さない）。
 
 const ORIGIN = "https://claude.ai";
 const KINDS = ["members", "spend", "code"];
@@ -69,6 +70,7 @@ const PAUSE = {
 const logLines = [];
 const logEl = document.getElementById("log");
 const statusEl = document.getElementById("status");
+const confirmEl = document.getElementById("confirm");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // PAUSE の範囲 [最小, 最大] から待ち時間（ミリ秒）を選ぶ
 const pauseMs = ([min, max]) => min + Math.floor(Math.random() * (max - min + 1));
@@ -789,9 +791,25 @@ async function runCheckLogin(tabId) {
   setStatus(`${runId}: 確認が終わりました（結果はコマンドに表示されます）`);
 }
 
-// 再ログイン。セッションの Cookie（名前が sessionKey で始まるもの）を消してからログイン画面を
-// 開く（有効なセッションのままログイン画面を開いても、アプリへ戻されて再認証にならないため）。
-// 他の Cookie（lastActiveOrg 等）には触れない。ログインは人が行い、ここでは待たない
+// トリガー URL は外部のページからも開けるので、実行内容の指示だけではセッションの Cookie を
+// 消さず、人がこのページのボタンを押すまで待つ
+function confirmLogin() {
+  setStatus("「ログインし直す」を押すと、このプロファイルのログインの Cookie を消してログイン画面を開きます", true);
+  confirmEl.hidden = false;
+  return new Promise((resolve) => {
+    confirmEl.addEventListener("click", () => {
+      confirmEl.disabled = true;
+      confirmEl.hidden = true;
+      log("login confirmed");
+      resolve();
+    }, { once: true });
+  });
+}
+
+// 再ログイン。main が実行ページのボタンが押されるのを待ってから呼ぶ。セッションの Cookie
+// （名前が sessionKey で始まるもの）を消してからログイン画面を開く（有効なセッションのまま
+// ログイン画面を開いても、アプリへ戻されて再認証にならないため）。他の Cookie（lastActiveOrg 等）
+// には触れない。ログインは人が行い、ここでは待たない
 async function runLogin(tabId) {
   const cookies = await chrome.cookies.getAll({ domain: "claude.ai" });
   let removed = 0;
@@ -829,9 +847,10 @@ async function main() {
     setStatus(`実行内容が不正です（${problem}）`, true);
     return;
   }
-  // 再ログイン（login）は何も書かず、進行中の取得（ログイン待ちで止まっているものを含む）を
-  // 妨げないので、進行中の実行の記録（activeRun）による拒否と登録の対象にしない。同じ
-  // run_id を 2 度実行しない claimRun は対象のまま（再読み込みで Cookie を消し直さないため）
+  // 再ログイン（login）は staging に何も書かず、進行中の取得（ログイン待ちで止まっているものを
+  // 含む）を妨げないので、進行中の実行の記録（activeRun）による拒否と登録の対象にしない。
+  // 作業タブを作る前に実行ページのボタンが押されるまで待つ。再読み込みではボタンも出さない
+  // ように、同じ run_id を 2 度実行しない claimRun はボタンを出す前に行う
   const isLogin = spec.action === "login";
   const other = isLogin ? null : await otherActiveRun(spec.run_id);
   if (other) {
@@ -846,6 +865,7 @@ async function main() {
   runMode = spec.mode || null;
   if (!isLogin) await chrome.storage.session.set({ activeRun: { run_id: runId, started_at: Date.now() } });
   log(spec.action ? `run ${runId} ${spec.action}` : `run ${runId} mode=${runMode} orgs=${spec.orgs.length}`);
+  if (isLogin) await confirmLogin();
   const tab = await chrome.tabs.create({ url: "about:blank", active: true });
   if (spec.action === "list-orgs") await runListOrgs(tab.id);
   else if (spec.action === "check-login") await runCheckLogin(tab.id);
